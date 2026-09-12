@@ -84,6 +84,7 @@
 - PROMPT §3.7 wording (`prepare`, `tail_samples()`, "documented per adapter" dual-mono) is superseded by ADR-005 (D-008) — mention at M0 checkpoint.
 - T-007 must also verify: raw channel/`Response` payloads arrive as ArrayBuffer on WebKitGTK; 30 vs 60 Hz telemetry cost; cpal `playback` timestamps meaningful on PipeWire; opening devices at document rate doesn't disturb other apps.
 - **SPEC-017 (TP limiter, M4 W0):** `ebur128` true peak reads ~+0.10 dB high near fs/4 (−2.886 dBTP vs analytic −2.990). A "ceiling −1.0 → pass if ≤ −0.9 dBTP" criterion leaves no margin for meter error — characterise the meter (or use an independent higher-oversampling reference in testkit) and set tolerances accordingly.
+- **Spec consistency pass (before M0 checkpoint, after T-008 Opus half lands):** SPEC-001 default Linux host should be PipeWire when the feature is compiled in and the server is reachable (ALSA fallback), not ALSA; SPEC-003 §2.1 Stop vs Pause semantics are muddled ("cancels pending loop-region state") — simplify (Stop = Pause + clears nothing, or make Stop return to play-start); SPEC-003 AC-4 loop-seam "no click" needs a measurable criterion (e.g. testkit derivative/HF-energy detector threshold vs a click-free reference, in dB); check SPEC-002 treats the Record shortcut as unverified like SPEC-003.
 - Consider a `just deps-check` recipe enforcing ADR-001 rule 4 (forbidden crate edges).
 
 ## Ticket learnings

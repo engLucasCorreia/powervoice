@@ -32,6 +32,11 @@
 - Model tiers: Haiku 4.5 (bootstrap/templates/docs), Sonnet 5 (UI/IPC/IO/editing/harness), Opus 5 (architecture/RT/DSP/plugins/reviews).
 - Max 4 parallel agents per wave.
 
+## Rules (enforced in review)
+- RT allocation checks go **only** through `vox_module_api::test_util::no_alloc` (raw `assert_no_alloc::assert_no_alloc` is clippy-disallowed): `assert_no_alloc` runs in warn mode workspace-wide via feature unification, so raw calls would only warn and pass.
+- Types promising "no reallocation" (fixed-capacity lists/buffers) must implement `Clone` by hand preserving capacity — derived `Clone` on a `Vec` drops spare capacity.
+- T-103 handoff: (1) rack currently drops module output events — needs an RT drain to the control thread; (2) chain edits may move unchanged module instances from the retiring chain (pointer moves) instead of cold-restarting all slots; crossfade needs one extra `max_block` buffer; (3) module registry, same-offset/id event coalescing, dual-mono shim.
+
 ## Gotchas / learnings
 - `cpal` 0.18: no per-channel input selection (open full device, deinterleave), no hot-plug events (poll ~1 s off-thread), input/output are separate streams (monitoring needs drift-corrected ring). Enable `pipewire`/`jack` features on Linux; ALSA headers still required.
 - `hound` has no `cue`/`LIST adtl` support → custom RIFF chunk code.
@@ -68,6 +73,7 @@
 - (ADR-008) VST2 via Carla bridge (T-811): approve or reject.
 - (ADR-006) Module id namespace `org.voxedit.*` + app identifier `app.voxedit.editor` become permanent at M3 (first sidecar) — decide together with the product name.
 - (ADR-006) Allow installing unsigned native modules? (sandbox isolates crashes, not malice)
+- (SPEC-003) Audition default shortcuts: Space = play/stop and Home = return to start are verified; **Record (PROMPT says Shift+Space) and loop-toggle bindings are unverified** (one source says Shift+Space = "play from start"). Owner knows Audition — confirm Record/loop keys. Also: adopt Audition's "return playhead to start on stop" preference (Shift+X)?
 - (ADR-008) One extra block of latency per sandboxed plugin (~5 ms at 256 frames) when monitoring through the rack — acceptable?
 
 ## Orchestrator follow-ups

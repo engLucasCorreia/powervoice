@@ -79,6 +79,11 @@
 | D-020 | Record works with only an input device (SPEC-001 §2.3) |
 Deferred to the M8 checkpoint: VST2 via Carla, unsigned native modules, sandboxed-plugin monitoring latency (SPEC-002 OD-1).
 
+## Autonomous decisions (after D-021; owner may revisit)
+| ID | Source | Decision |
+|---|---|---|
+| A-001 | SPEC-006 (T-200) | Waveform: dots at ≥ 3 px/sample; clip highlight at \|x\| ≥ 1.0; PARTIAL buckets drawn as `--wave-pending`; reject out-of-order `request_id`s as well as stale `audio_rev`; vertical zoom 1×–256×; default amplitude ruler dBFS, time ruler `hh:mm:ss.fff`; zoom-full exact fit; `=`/`-` zoom (playhead-centred if visible), `Alt+=`/`Alt+-` vertical, Ctrl+wheel cursor-centred zoom, Alt+wheel vertical; double-click selects all; smooth follow within a 10–90 % band; zero-crossing snap ±512 samples on selection edges only; handle hit width 6 px; perf AC p99 ≤ 50 ms with ≤ 1 outlier per 10 s sweep. Zoom-to-selection / zoom-full keys unbound until SPEC-019. |
+
 ## Open questions for the owner (M0 items below were resolved — see the table above)
 - Project license (none chosen yet — private).
 - Final product name (working name "PowerVoice").

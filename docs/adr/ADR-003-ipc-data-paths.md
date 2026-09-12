@@ -237,4 +237,4 @@ Mechanics:
 
 ## Open questions
 - None for the owner.
-- For T-007: the 30 Hz vs 60 Hz telemetry default, depending on the measurement.
+- ~~For T-007: the 30 Hz vs 60 Hz telemetry default~~ — **resolved by ADR-009 §3: telemetry default is 60 Hz** (measured free on the owner's machine), with a settings toggle to 30 Hz. ADR-009 also confirmed raw `Response`/`Channel` payloads arrive as `ArrayBuffer`.

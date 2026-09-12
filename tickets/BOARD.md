@@ -7,12 +7,12 @@ Tickets for M1+ are stubs; full ticket files are written in each milestone's W0.
 ## M0 — Foundations
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
-| T-001 | Bootstrap: workspace, crate skeletons, lints, justfile, hooks | W1 | H | — | ready |
-| T-002 | ADRs A: architecture, threading/RT, IPC, document storage | W1 | O | — | ready |
-| T-003 | ADRs B: Module API, module ABI (CLAP), licensing, sandbox outline | W1 | O | — | ready |
+| T-001 | Bootstrap: workspace, crate skeletons, lints, justfile, hooks | W1 | H | — | done |
+| T-002 | ADRs A: architecture, threading/RT, IPC, document storage | W1 | O | — | in-progress |
+| T-003 | ADRs B: Module API, module ABI (CLAP), licensing, sandbox outline | W1 | O | — | in-progress |
 | T-004 | Tauri 2 + Svelte 5 scaffold, theme, i18n, shared types, mocks | W2 | S | T-001, T-002 | todo |
 | T-005 | `module-api` v0 + `rack` skeleton + module test host | W2 | O | T-001, T-003 | todo |
-| T-006 | `testkit` + `voxedit-cli` gen/analyze + `just fixtures` | W2 | S+OR | T-001 | todo |
+| T-006 | `testkit` + `voxedit-cli` gen/analyze + `just fixtures` | W2 | S+OR | T-001 | in-progress |
 | T-007 | Platform spike: renderers, Wayland input, IPC throughput → ADR-009 | W3 | S+OR | T-004 | todo |
 | T-008 | M1 spec wave: SPEC-000/001/002/003/004/012 | W3 | O/S | T-002, T-003, T-005 | todo |
 

@@ -1,0 +1,6 @@
+#!/bin/bash
+
+# Pre-commit hook: check code formatting
+set -e
+
+cargo fmt --all --check

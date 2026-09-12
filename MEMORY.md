@@ -3,7 +3,11 @@
 ## Status
 - **Current milestone:** M0 Foundations — W1 starting
 - **Last checkpoint:** none
-- **Next action:** dispatch M0 W1 (T-001 bootstrap, T-002 ADRs A, T-003 ADRs B)
+- **Next action:** M0 W1 running: T-001 (Haiku), T-002/T-003 (Opus, docs-only) — all in main tree, disjoint files. Then W2: T-006 after T-001; T-004 after T-001+T-002; T-005 after T-001+T-003.
+
+## Environment
+- Rust 1.98.1 stable via pacman `rustup` (+ rustfmt, clippy, x86_64-pc-windows-gnu target); `just` 1.58 via pacman; Node 26.7 / npm 11.19; git 2.55.
+- Package naming: `vox-<crate>` for libraries (dirs stay `crates/<crate>`), `voxedit-cli` (bin `voxedit-cli`), `voxedit-app` (src-tauri).
 
 ## Decisions log
 | ID | Date | Decision | Where |
@@ -45,3 +49,4 @@
 
 ## Ticket learnings
 _(appended after each merged ticket)_
+- **T-001** (Haiku, 2026-09-12): workspace + 9 crate skeletons, lints, justfile, `.githooks/pre-commit` (fmt check; `core.hooksPath` set). `just check` UI steps auto-activate once `ui/package.json` exists. Parallel tickets that edit root `Cargo.toml`/`justfile` must run in worktrees from now on.

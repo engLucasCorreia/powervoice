@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/module-api",
+    "crates/dsp",
+    "crates/modules",
+    "crates/rack",
+    "crates/engine",
+    "crates/io",
+    "crates/project",
+    "crates/testkit",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = "warn"
+cast_lossless = "warn"
+float_cmp = "warn"
+dbg_macro = "warn"
+todo = "warn"
+
+[workspace.dependencies]
+clap = { version = "4", features = ["derive"] }

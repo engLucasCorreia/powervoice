@@ -15,7 +15,28 @@ pub use commands::*;
 pub use dto::AppInfo;
 pub use error::{IpcError, IpcErrorCode};
 
+// T-007 / ADR-009: the dev-only platform spike registers its commands here too (rather than
+// duplicating `ipc_commands!`/`invoke_handler` machinery) only when built with `--features
+// spike` (see `src-tauri/Cargo.toml`, `just spike`). A production build (`just dev`/`just
+// build`/`just check` with default features) never sees `crate::spike` at all.
+#[cfg(feature = "spike")]
+pub use crate::spike::*;
+
+#[cfg(not(feature = "spike"))]
 crate::ipc_commands!(app_info);
+
+#[cfg(feature = "spike")]
+crate::ipc_commands!(
+    app_info,
+    spike_env,
+    spike_waveform_peaks,
+    spike_spectrogram_texture,
+    spike_ipc_response_10mb,
+    spike_ipc_channel_10mb,
+    spike_telemetry_run,
+    spike_write_results,
+    spike_exit,
+);
 
 #[cfg(test)]
 mod tests {

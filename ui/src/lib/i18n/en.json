@@ -5,5 +5,25 @@
   "panel.rack.title": "Rack",
   "panel.markers.title": "Markers",
   "panel.properties.title": "Properties",
-  "panel.meters.title": "Meters"
+  "panel.meters.title": "Meters",
+
+  "spike.title": "T-007 Platform Spike",
+  "spike.subtitle": "Dev-only renderer + IPC measurements for ADR-009. Not part of the production UI (only present when voxedit-app is built with --features spike).",
+  "spike.env.autoRun": "auto-run: {value}",
+  "spike.env.exitAfter": "exit after write: {value}",
+  "spike.env.webkitDmabufDisabled": "WEBKIT_DISABLE_DMABUF_RENDERER: {value}",
+  "spike.runButton": "Run automated suite",
+  "spike.exitButton": "Exit",
+  "spike.status.idle": "Idle. Click \"Run automated suite\", or it already ran (VOXEDIT_SPIKE=1).",
+  "spike.status.running": "Running: {step}…",
+  "spike.status.done": "Done. Results written to {path}",
+  "spike.status.error": "Error: {message}",
+  "spike.waveform.title": "Waveform zoom sweep (10s, whole file → ~1 sample/px → back)",
+  "spike.spectrogram.title": "Spectrogram scroll (10s)",
+  "spike.canvas.webgl2": "WebGL2",
+  "spike.canvas.canvas2d": "Canvas2D",
+  "spike.rawResults": "Raw results JSON",
+  "spike.inputLog.title": "Manual input checklist",
+  "spike.inputLog.hint": "Owner: with this window focused, press Space, Shift+Space, Ctrl+Z and Ctrl+Shift+Z, and drag inside the box below with the mouse. Check the log lines below look right (ADR-009 has the full checklist) — this does not run automatically.",
+  "spike.inputLog.dragSurface": "Drag here"
 }

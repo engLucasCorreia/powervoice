@@ -63,6 +63,18 @@ dev:
     fi
     npm --prefix ui run tauri dev
 
+# T-007 platform spike (ADR-009): builds voxedit-app with the `spike` cargo feature and launches
+# it. VOXEDIT_SPIKE=1 (default here) makes the spike view auto-run its measurement suite and
+# write results to bench-results/spike-<timestamp>.json; set VOXEDIT_SPIKE_EXIT=1 beforehand to
+# also close the window once results are written (used for automated/scripted runs). Without
+# VOXEDIT_SPIKE_EXIT the window stays open for the owner's manual input checks (ADR-009). Set
+# WEBKIT_DISABLE_DMABUF_RENDERER=1 beforehand to run that configuration.
+spike:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export VOXEDIT_SPIKE="${VOXEDIT_SPIKE:-1}"
+    npm --prefix ui run tauri dev -- --features spike
+
 # Check for Windows cross-compilation
 check-cross:
     cargo check -p vox-module-api --target x86_64-pc-windows-gnu

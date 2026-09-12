@@ -4,6 +4,8 @@
 //! domain types to the DTOs in [`ipc`].
 
 pub mod ipc;
+#[cfg(feature = "spike")]
+pub mod spike;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

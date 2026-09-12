@@ -1,0 +1,9 @@
+/target/
+node_modules/
+/ui/dist/
+/fixtures/generated/
+/bench-results/
+/.claude/worktrees/
+*.vo.session
+*.log
+.DS_Store

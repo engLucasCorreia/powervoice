@@ -3,6 +3,7 @@ name = "voxedit-cli"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+default-run = "voxedit-cli"
 
 [[bin]]
 name = "voxedit-cli"
@@ -10,6 +11,10 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
+vox-testkit = { path = "../testkit" }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
 
 [lints]
 workspace = true

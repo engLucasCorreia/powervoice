@@ -31,3 +31,9 @@ todo = "warn"
 
 [workspace.dependencies]
 clap = { version = "4", features = ["derive"] }
+hound = "3.5"
+ebur128 = { version = "0.1", features = ["precision-true-peak"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"

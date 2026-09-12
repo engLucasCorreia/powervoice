@@ -49,9 +49,9 @@ build:
 bench:
     cargo bench --workspace
 
-# Generate test fixtures
+# Generate test fixtures into fixtures/generated/ (gitignored)
 fixtures:
-    @echo "generating test fixtures (placeholder — T-006 fills this)"
+    cargo run --release -p voxedit-cli --bin gen-fixtures
 
 # Run app in dev mode. Set VOXEDIT_WEBKIT_SAFE=1 to work around slow/broken WebKitGTK GPU
 # compositing on some Linux setups (see ui/README.md).

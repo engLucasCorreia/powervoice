@@ -11,17 +11,17 @@ Tickets for M1+ are stubs; full ticket files are written in each milestone's W0.
 | T-002 | ADRs A: architecture, threading/RT, IPC, document storage | W1 | O | — | done |
 | T-003 | ADRs B: Module API, module ABI (CLAP), licensing, sandbox outline | W1 | O | — | done |
 | T-004 | Tauri 2 + Svelte 5 scaffold, theme, i18n, shared types, mocks | W2 | S | T-001, T-002 | done |
-| T-005 | `module-api` v0 + `rack` skeleton + module test host | W2 | O | T-001, T-003 | in-progress |
+| T-005 | `module-api` v0 + `rack` skeleton + module test host | W2 | O+OR | T-001, T-003 | review |
 | T-006 | `testkit` + `voxedit-cli` gen/analyze + `just fixtures` | W2 | S+OR | T-001 | done |
 | T-007 | Platform spike: renderers, Wayland input, IPC throughput → ADR-009 | W3 | S+OR | T-004 | in-progress |
-| T-008 | M1 spec wave: SPEC-000/001/002/003/004/012 | W3 | O/S | T-002, T-003, T-005 | todo |
+| T-008 | M1 spec wave: SPEC-000/001/002/003/004/012 | W3 | O/S | T-002, T-003, T-005 | in-progress |
 
 ## M1 — Core engine, recording & playback
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
 | T-101 | Document model: chunk store, snapshots, piece table, markers, take writer | W1 | O | M0 | todo |
 | T-102 | Devices: enumeration, channel deinterleave, hot-plug polling, device lost | W1 | O | M0 | todo |
-| T-103 | Rack core: chain, host bypass/crossfade, param routing, latency sum, Gain, offline render, `cli render --rack` | W1 | O | M0 | todo |
+| T-103 | Rack core: module registry, chain swap/retire, host bypass/crossfade, dual-mono shim, param routing + same-offset/id event coalescing, latency sum, Gain, offline render, `cli render --rack` | W1 | O | M0 | todo |
 | T-104 | App infra: tracing log, RT event ring, typed errors→toasts, panic hook, settings, stores, keymap registry | W1 | S | M0 | todo |
 | T-105 | Backend trait + cpal/fake backends, RT thread, command queue, transport, reader prefetch, SR resampling | W2 | O | T-101, T-102, T-103 | todo |
 | T-106 | Recording: crash-safe WAV, peaks stream, take → undoable edit | W3 | O | T-105 | todo |

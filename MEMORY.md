@@ -81,4 +81,5 @@
 
 ## Ticket learnings
 _(appended after each merged ticket)_
+- **T-004** (Sonnet, 2026-09-12): Tauri 2.11.5 / @tauri-apps/api 2.11.1 / cli 2.11.4, Svelte 5.57, Vite 8.3, Vitest 5.0, TypeScript 6.0, jsdom 30. Gotchas: `cargo test -p X` runs with cwd = package dir → pass absolute paths (`{{justfile_directory()}}`) for `TS_RS_EXPORT_DIR`; `#[tauri::command]` emits a hidden macro → import command modules by glob for `generate_handler!`; Vitest needs `resolve.conditions: ["browser"]` for Svelte `mount()`; Tauri CLI run from `ui/` needs `TAURI_APP_PATH=../src-tauri`; plain `cargo test` writes ts-rs output to `src-tauri/bindings/` (gitignored). `check-types` diffs only ts-rs-generated files. Main tree needs `npm --prefix ui ci` after merges touching `ui/package-lock.json`.
 - **T-001** (Haiku, 2026-09-12): workspace + 9 crate skeletons, lints, justfile, `.githooks/pre-commit` (fmt check; `core.hooksPath` set). `just check` UI steps auto-activate once `ui/package.json` exists. Parallel tickets that edit root `Cargo.toml`/`justfile` must run in worktrees from now on.

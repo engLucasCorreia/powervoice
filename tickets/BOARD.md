@@ -15,19 +15,19 @@ Tickets for M1+ are stubs; full ticket files are written in each milestone's W0.
 | T-006 | `testkit` + `powervoice-cli` gen/analyze + `just fixtures` | W2 | S+OR | T-001 | done |
 | T-007 | Platform spike: renderers, Wayland input, IPC throughput → ADR-009 | W3 | S+OR | T-004 | done |
 | T-008 | M1 spec wave: SPEC-000/001/002/003/004/012 | W3 | O/S | T-002, T-003, T-005 | done |
-| T-009 | Rename code/config to PowerVoice + license metadata | post-checkpoint | S | M0 | in-progress |
+| T-009 | Rename code/config to PowerVoice + license metadata | post-checkpoint | S | M0 | done |
 
 ## M1 — Core engine, recording & playback
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
-| T-101 | Document model: chunk store, snapshots, piece table, markers, take writer | W1 | O | M0 | todo |
-| T-102 | Devices: enumeration, channel deinterleave, hot-plug polling, device lost | W1 | O | M0 | todo |
-| T-103 | Rack core: module registry, chain swap/retire, host bypass/crossfade, dual-mono shim, param routing + same-offset/id event coalescing, latency sum, Gain, offline render, `cli render --rack` | W1 | O | M0 | todo |
-| T-104 | App infra: tracing log, RT event ring, typed errors→toasts, panic hook, settings, stores, keymap registry | W1 | S | M0 | todo |
-| T-105 | Backend trait + cpal/fake backends, RT thread, command queue, transport, reader prefetch, SR resampling | W2 | O | T-101, T-102, T-103 | todo |
+| T-101 | Document model: chunk store, snapshots, piece table, markers, take writer | W1 | O | M0 | in-progress |
+| T-102 | Devices: enumeration, channel deinterleave, hot-plug polling, device lost | W1 | O | M0 | in-progress |
+| T-103 | Rack core: module registry, chain swap/retire, host bypass/crossfade, dual-mono shim, param routing + same-offset/id event coalescing, latency sum, Gain, offline render, `cli render --rack` | W1 | O | M0 | in-progress |
+| T-104 | App infra: tracing log, typed errors→toasts/banners, panic hook, settings, stores, keymap registry, WebKit DMA-BUF default | W1 | S | M0 | in-progress |
+| T-105 | Engine core: control thread, RT callbacks, transport (Stop→play start), reader/prefetch, resampling, heard clock, 60 Hz telemetry | W2 | O | T-101, T-102, T-103 | todo |
 | T-106 | Recording: crash-safe WAV, peaks stream, take → undoable edit | W3 | O | T-105 | todo |
 | T-107 | Monitoring off/dry/through-rack, drift-corrected in→out ring | W3 | O | T-105 | todo |
-| T-108 | Meters + Tauri commands/events + playhead (pos, time) | W3 | S | T-104, T-105 | todo |
+| T-108 | IPC layer: M1 commands/events, VXTM/VXRP channels, binary decoders + golden fixtures, clock sync | W3 | S | T-104, T-105 | todo |
 | T-110 | Bench harness (divan, callback-time histogram) | W3 | S | T-105 | todo |
 | T-109 | UI: device settings, transport bar, meter bridge, live recording waveform | W4 | S | T-106, T-107, T-108 | todo |
 

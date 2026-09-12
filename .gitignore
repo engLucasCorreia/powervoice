@@ -3,6 +3,10 @@ node_modules/
 /ui/dist/
 /fixtures/generated/
 /bench-results/
+# ts-rs writes here when TS_RS_EXPORT_DIR isn't set (plain `cargo test`); the real output goes to
+# ui/src/lib/ipc/bindings.ts via `just gen-types` / `just check-types`.
+/src-tauri/bindings/
+/src-tauri/gen/
 /.claude/worktrees/
 *.vo.session
 *.log

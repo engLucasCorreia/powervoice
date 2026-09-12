@@ -1,0 +1,65 @@
+/*
+ * VoxEdit dark theme tokens (ADR-001, PROMPT §3.6: "Audition-like dark layout").
+ * Every color used by components should come from one of these custom properties, never a
+ * literal, so a future light/alt theme only needs to redefine this file.
+ */
+:root {
+  color-scheme: dark;
+
+  /* Surfaces, darkest to lightest. */
+  --surface-app: #1a1c20;
+  --surface-panel: #202226;
+  --surface-panel-raised: #26292e;
+  --surface-inset: #16171a;
+  --surface-border: #34373d;
+
+  /* Text. */
+  --text-primary: #e6e7ea;
+  --text-secondary: #9a9da4;
+  --text-disabled: #5c5f66;
+  --text-on-accent: #0d0e10;
+
+  /* Accent (transport/primary actions). */
+  --accent: #4da3ff;
+  --accent-hover: #6fb6ff;
+  --accent-active: #2f8ce0;
+
+  /* Waveform + selection. */
+  --waveform-fill: #7fc8ff;
+  --waveform-rms: #3f6f94;
+  --waveform-baseline: #454850;
+  --selection-fill: rgba(77, 163, 255, 0.22);
+  --selection-border: #4da3ff;
+
+  /* Meter ballistics. */
+  --meter-green: #35c46a;
+  --meter-yellow: #e0c93f;
+  --meter-red: #e5484d;
+
+  /* Focus ring, used on every interactive control. */
+  --focus-ring: #7fc8ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--surface-app);
+  color: var(--text-primary);
+  font-family:
+    "Inter",
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+  font-size: 13px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}

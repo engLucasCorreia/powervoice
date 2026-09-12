@@ -1,0 +1,26 @@
+[package]
+name = "voxedit-app"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "voxedit_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "voxedit-app"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2.11", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ts-rs = "12"
+anyhow = "1"
+
+[lints]
+workspace = true

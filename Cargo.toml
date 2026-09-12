@@ -10,6 +10,7 @@ members = [
     "crates/project",
     "crates/testkit",
     "crates/cli",
+    "src-tauri",
 ]
 
 [workspace.package]

@@ -1,0 +1,9 @@
+{
+  "app.title": "VoxEdit",
+  "toolbar.transport.play": "Play",
+  "panel.editor.empty": "No file open",
+  "panel.rack.title": "Rack",
+  "panel.markers.title": "Markers",
+  "panel.properties.title": "Properties",
+  "panel.meters.title": "Meters"
+}

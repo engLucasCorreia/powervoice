@@ -1,8 +1,9 @@
 # MEMORY.md — Project memory (curated by the orchestrator only)
 
 ## Status
-- **Current milestone:** M0 Foundations — W1 starting
-- **Last checkpoint:** none
+- **Current milestone:** M0 Foundations — **all tickets done; at M0 checkpoint, waiting for owner review** (`docs/checkpoints/M0.md`)
+- **Last checkpoint:** none (M0 is the first)
+- **Status line superseded:** the "Next action" line below is historical; after owner answers, apply decisions to specs (OD boxes), mark specs/ADRs approved, then write full M1 ticket files (T-101…T-110) and dispatch M1 W1.
 - **Next action:** M0 W1 running: T-001 (Haiku), T-002/T-003 (Opus, docs-only) — all in main tree, disjoint files. Then W2: T-006 after T-001; T-004 after T-001+T-002; T-005 after T-001+T-003.
 
 ## Environment

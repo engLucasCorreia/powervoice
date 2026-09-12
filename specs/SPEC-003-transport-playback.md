@@ -121,7 +121,7 @@ Shift+Space = Record without the same caveat, since recording's shortcut is equa
 | `loop_enabled` | Loop toggle | bool | on/off | off | n/a | inert with no time selection |
 | `loop_start_sample` / `loop_end_sample` | Loop region | doc samples (`u64`) | `0..=len_samples` | current selection | n/a | set from the current time selection when loop is enabled |
 | `playhead_follow` | Playhead-follow view toggle | bool | on/off | on | n/a | view-only; does not affect audio |
-| `telemetry_rate_hz` | Playhead/meter update rate | Hz | {30, 60} | 30 | n/a | ADR-003 §1; 60 Hz becomes available only if T-007 finds it cheap on WebKitGTK |
+| `telemetry_rate_hz` | Playhead/meter update rate | Hz | {30, 60} | 60 | n/a | ADR-003 §1; 60 Hz measured free on WebKitGTK (ADR-009 §3); 30 Hz kept as a Settings option |
 
 ## 4. Algorithm / implementation notes
 

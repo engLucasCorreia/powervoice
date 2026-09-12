@@ -14,7 +14,7 @@ Tickets for M1+ are stubs; full ticket files are written in each milestone's W0.
 | T-005 | `module-api` v0 + `rack` skeleton + module test host | W2 | O+OR | T-001, T-003 | done |
 | T-006 | `testkit` + `voxedit-cli` gen/analyze + `just fixtures` | W2 | S+OR | T-001 | done |
 | T-007 | Platform spike: renderers, Wayland input, IPC throughput → ADR-009 | W3 | S+OR | T-004 | done |
-| T-008 | M1 spec wave: SPEC-000/001/002/003/004/012 | W3 | O/S | T-002, T-003, T-005 | in-progress |
+| T-008 | M1 spec wave: SPEC-000/001/002/003/004/012 | W3 | O/S | T-002, T-003, T-005 | done |
 
 ## M1 — Core engine, recording & playback
 | ID | Title | Wave | Tier | Deps | Status |

@@ -8,7 +8,8 @@
 ## Environment
 - Rust 1.98.1 stable via pacman `rustup` (+ rustfmt, clippy, x86_64-pc-windows-gnu target); `just` 1.58 via pacman; Node 26.7 / npm 11.19; git 2.55.
 - Worktrees: the Agent tool's `isolation: "worktree"` fails in this session (session started before `git init`). Use manual worktrees: `git worktree add .claude/worktrees/T-NNN -b ticket/T-NNN main`; the agent works there and commits on its branch; the orchestrator squash-merges and removes the worktree.
-- Orchestrator: never `cd` into a worktree in Bash — the harness then switches the session's primary working directory into it. Use `git -C <path>` and absolute paths / `--manifest-path`.
+- Orchestrator: never `cd` into a worktree in Bash — the harness then switches the session's primary working directory into it. Use `git -C <path>` and absolute paths / `--manifest-path`. If it happens anyway, `cd` back to the main repo **before** `git worktree remove` of that worktree (removing the shell's cwd breaks the shell).
+- Squash-merging a ticket branch that predates other merges usually conflicts only in `Cargo.lock`: take `--ours` (main) and let `just check` re-resolve, then `git add Cargo.lock`.
 - Edition 2024 reserves `gen` — don't use it as an identifier (testkit uses `signal`).
 - Package naming: `vox-<crate>` for libraries (dirs stay `crates/<crate>`), `voxedit-cli` (bin `voxedit-cli`), `voxedit-app` (src-tauri).
 

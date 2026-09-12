@@ -23,7 +23,7 @@
    * spectrogram fetch + rAF benches, IPC throughput, telemetry) and catches its own failures — see
    * ADR-009 on why (rAF can be entirely withheld for an unfocused-but-visible Hyprland window).
    * This is one more layer of defense so a completely unforeseen hang still resolves and
-   * `VOXEDIT_SPIKE_EXIT=1` still closes the app rather than leaving it stuck open forever. */
+   * `POWERVOICE_SPIKE_EXIT=1` still closes the app rather than leaving it stuck open forever. */
   const OVERALL_SUITE_TIMEOUT_MS = 4 * 60 * 1000;
 
   async function runSuite(): Promise<void> {

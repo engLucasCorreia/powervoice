@@ -17,7 +17,7 @@ test:
 # Regenerate Rust -> TS shared types (ADR-003) into ui/src/lib/ipc/bindings.ts
 gen-types:
     TS_RS_EXPORT_DIR="{{justfile_directory()}}/ui/src/lib/ipc" TS_RS_LARGE_INT=number \
-        cargo test -p voxedit-app export_bindings
+        cargo test -p powervoice-app export_bindings
 
 # Fail if ui/src/lib/ipc/bindings.ts is stale relative to the Rust DTOs (ADR-003)
 check-types:
@@ -26,7 +26,7 @@ check-types:
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT
     TS_RS_EXPORT_DIR="$tmp" TS_RS_LARGE_INT=number \
-        cargo test -p voxedit-app export_bindings >/dev/null
+        cargo test -p powervoice-app export_bindings >/dev/null
     stale=0
     for generated in "$tmp"/*; do
         name="$(basename "$generated")"
@@ -51,28 +51,28 @@ bench:
 
 # Generate test fixtures into fixtures/generated/ (gitignored)
 fixtures:
-    cargo run --release -p voxedit-cli --bin gen-fixtures
+    cargo run --release -p powervoice-cli --bin gen-fixtures
 
-# Run app in dev mode. Set VOXEDIT_WEBKIT_SAFE=1 to work around slow/broken WebKitGTK GPU
+# Run app in dev mode. Set POWERVOICE_WEBKIT_SAFE=1 to work around slow/broken WebKitGTK GPU
 # compositing on some Linux setups (see ui/README.md).
 dev:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ "${VOXEDIT_WEBKIT_SAFE:-0}" = "1" ]; then
+    if [ "${POWERVOICE_WEBKIT_SAFE:-0}" = "1" ]; then
         export WEBKIT_DISABLE_DMABUF_RENDERER=1
     fi
     npm --prefix ui run tauri dev
 
-# T-007 platform spike (ADR-009): builds voxedit-app with the `spike` cargo feature and launches
-# it. VOXEDIT_SPIKE=1 (default here) makes the spike view auto-run its measurement suite and
-# write results to bench-results/spike-<timestamp>.json; set VOXEDIT_SPIKE_EXIT=1 beforehand to
+# T-007 platform spike (ADR-009): builds powervoice-app with the `spike` cargo feature and launches
+# it. POWERVOICE_SPIKE=1 (default here) makes the spike view auto-run its measurement suite and
+# write results to bench-results/spike-<timestamp>.json; set POWERVOICE_SPIKE_EXIT=1 beforehand to
 # also close the window once results are written (used for automated/scripted runs). Without
-# VOXEDIT_SPIKE_EXIT the window stays open for the owner's manual input checks (ADR-009). Set
+# POWERVOICE_SPIKE_EXIT the window stays open for the owner's manual input checks (ADR-009). Set
 # WEBKIT_DISABLE_DMABUF_RENDERER=1 beforehand to run that configuration.
 spike:
     #!/usr/bin/env bash
     set -euo pipefail
-    export VOXEDIT_SPIKE="${VOXEDIT_SPIKE:-1}"
+    export POWERVOICE_SPIKE="${POWERVOICE_SPIKE:-1}"
     npm --prefix ui run tauri dev -- --features spike
 
 # Check for Windows cross-compilation
@@ -85,7 +85,7 @@ check-cross:
     cargo check -p vox-io --target x86_64-pc-windows-gnu
     cargo check -p vox-project --target x86_64-pc-windows-gnu
     cargo check -p vox-testkit --target x86_64-pc-windows-gnu
-    cargo check -p voxedit-cli --target x86_64-pc-windows-gnu
+    cargo check -p powervoice-cli --target x86_64-pc-windows-gnu
 
 # Setup git hooks
 hooks:

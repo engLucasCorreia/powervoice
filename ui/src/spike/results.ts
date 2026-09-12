@@ -23,7 +23,7 @@ function errorMessage(e: unknown): string {
  * follow-up) and returns the assembled results. Every step is individually guarded: a hang or
  * throw in one step (rAF withheld entirely, a Channel/Response that never arrives — both observed
  * running this spike on an unfocused Hyprland window, see ADR-009) must not stop the others from
- * running or stop results from being written, so `VOXEDIT_SPIKE_EXIT=1` always eventually closes
+ * running or stop results from being written, so `POWERVOICE_SPIKE_EXIT=1` always eventually closes
  * the app instead of leaving it stuck open.
  */
 export async function runFullSpikeSuite(
@@ -96,7 +96,7 @@ export async function runFullSpikeSuite(
 
 /** A last-resort placeholder for when the whole suite (not just one step — those are already
  * caught individually above) fails or blows through the overall watchdog in `SpikeApp.svelte`, so
- * `VOXEDIT_SPIKE_EXIT=1` still has *something* to write and exit after instead of hanging. */
+ * `POWERVOICE_SPIKE_EXIT=1` still has *something* to write and exit after instead of hanging. */
 export function makeFailureResults(webkitDmabufDisabled: boolean, message: string): SpikeResults {
   return {
     timestamp: new Date().toISOString(),

@@ -103,10 +103,10 @@ impl Probe {
         value.smoothing_ms = 0.0;
         Self {
             desc: ModuleDescriptor {
-                id: "org.voxedit.test-probe".into(),
+                id: "org.powervoice.test-probe".into(),
                 version: Version::new(0, 1, 0),
                 name: LocalizedText::plain("Probe"),
-                vendor: "VoxEdit".into(),
+                vendor: "PowerVoice".into(),
                 description: LocalizedText::plain("delay + event log"),
                 url: None,
                 features: Vec::new(),

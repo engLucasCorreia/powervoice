@@ -33,9 +33,9 @@ impl ExtensionId {
     /// Wire id; also the CLAP custom-extension id (ADR-006).
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Telemetry => "org.voxedit.telemetry/1",
-            Self::ResponseCurve => "org.voxedit.response-curve/1",
-            Self::NoiseProfile => "org.voxedit.noise-profile/1",
+            Self::Telemetry => "org.powervoice.telemetry/1",
+            Self::ResponseCurve => "org.powervoice.response-curve/1",
+            Self::NoiseProfile => "org.powervoice.noise-profile/1",
         }
     }
 }
@@ -355,14 +355,17 @@ mod tests {
 
     #[test]
     fn ids_are_stable_wire_strings() {
-        assert_eq!(ExtensionId::Telemetry.as_str(), "org.voxedit.telemetry/1");
+        assert_eq!(
+            ExtensionId::Telemetry.as_str(),
+            "org.powervoice.telemetry/1"
+        );
         assert_eq!(
             ExtensionId::ResponseCurve.as_str(),
-            "org.voxedit.response-curve/1"
+            "org.powervoice.response-curve/1"
         );
         assert_eq!(
             ExtensionId::NoiseProfile.as_str(),
-            "org.voxedit.noise-profile/1"
+            "org.powervoice.noise-profile/1"
         );
     }
 

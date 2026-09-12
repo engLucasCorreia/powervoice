@@ -1,5 +1,5 @@
 {
-  "app.title": "VoxEdit",
+  "app.title": "PowerVoice",
   "toolbar.transport.play": "Play",
   "panel.editor.empty": "No file open",
   "panel.rack.title": "Rack",
@@ -8,13 +8,13 @@
   "panel.meters.title": "Meters",
 
   "spike.title": "T-007 Platform Spike",
-  "spike.subtitle": "Dev-only renderer + IPC measurements for ADR-009. Not part of the production UI (only present when voxedit-app is built with --features spike).",
+  "spike.subtitle": "Dev-only renderer + IPC measurements for ADR-009. Not part of the production UI (only present when powervoice-app is built with --features spike).",
   "spike.env.autoRun": "auto-run: {value}",
   "spike.env.exitAfter": "exit after write: {value}",
   "spike.env.webkitDmabufDisabled": "WEBKIT_DISABLE_DMABUF_RENDERER: {value}",
   "spike.runButton": "Run automated suite",
   "spike.exitButton": "Exit",
-  "spike.status.idle": "Idle. Click \"Run automated suite\", or it already ran (VOXEDIT_SPIKE=1).",
+  "spike.status.idle": "Idle. Click \"Run automated suite\", or it already ran (POWERVOICE_SPIKE=1).",
   "spike.status.running": "Running: {step}…",
   "spike.status.done": "Done. Results written to {path}",
   "spike.status.error": "Error: {message}",

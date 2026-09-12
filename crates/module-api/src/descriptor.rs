@@ -97,7 +97,7 @@ impl<'de> Deserialize<'de> for Version {
     }
 }
 
-/// `"id@version"`, e.g. `"org.voxedit.gain@1.0.0"`. What presets and the sidecar store.
+/// `"id@version"`, e.g. `"org.powervoice.gain@1.0.0"`. What presets and the sidecar store.
 /// Serialized as that string. Resolution looks up by `id`; the version is informational.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ModuleRef {
@@ -200,7 +200,7 @@ impl LocalizedText {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModuleDescriptor {
     /// Built-ins and packaged modules (ADR-006): reverse-DNS, `[a-z0-9.-]+`, e.g.
-    /// `"org.voxedit.gain"`. External plugins (adapters): `"<format>:<native id>"` —
+    /// `"org.powervoice.gain"`. External plugins (adapters): `"<format>:<native id>"` —
     /// `"clap:com.u-he.diva"`, `"vst3:<32 hex cid>"`, `"lv2:<uri>"`,
     /// `"jsfx:<path relative to the effects root>"`, `"vst2:<id>"`. Ids are permanent.
     pub id: String,
@@ -309,17 +309,17 @@ mod tests {
 
     #[test]
     fn module_ref_round_trip_and_serde() {
-        let r: ModuleRef = "org.voxedit.gain@1.0.0".parse().unwrap();
-        assert_eq!(r.id, "org.voxedit.gain");
+        let r: ModuleRef = "org.powervoice.gain@1.0.0".parse().unwrap();
+        assert_eq!(r.id, "org.powervoice.gain");
         assert_eq!(r.version, Version::new(1, 0, 0));
-        assert_eq!(r.to_string(), "org.voxedit.gain@1.0.0");
+        assert_eq!(r.to_string(), "org.powervoice.gain@1.0.0");
         let json = serde_json::to_string(&r).unwrap();
-        assert_eq!(json, "\"org.voxedit.gain@1.0.0\"");
+        assert_eq!(json, "\"org.powervoice.gain@1.0.0\"");
         assert_eq!(serde_json::from_str::<ModuleRef>(&json).unwrap(), r);
 
         let lv2: ModuleRef = "lv2:urn:a@b@1.2.3".parse().unwrap();
         assert_eq!(lv2.id, "lv2:urn:a@b");
-        assert!("org.voxedit.gain".parse::<ModuleRef>().is_err());
+        assert!("org.powervoice.gain".parse::<ModuleRef>().is_err());
         assert!("@1.0.0".parse::<ModuleRef>().is_err());
         assert!("x@1.0".parse::<ModuleRef>().is_err());
     }

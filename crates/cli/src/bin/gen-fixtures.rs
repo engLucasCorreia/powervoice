@@ -1,6 +1,6 @@
 //! Generates `fixtures/generated/*.wav` for DSP acceptance tests and
 //! performance benchmarking (`just fixtures`). Not part of the
-//! `voxedit-cli` command surface.
+//! `powervoice-cli` command surface.
 
 use std::path::{Path, PathBuf};
 
@@ -11,7 +11,7 @@ use vox_testkit::wav::{self, BitDepth};
 const SAMPLE_RATE: u32 = 48_000;
 
 /// Workspace-root-relative, not CWD-relative: `just fixtures` happens to run
-/// from the workspace root today, but `cargo run -p voxedit-cli --bin
+/// from the workspace root today, but `cargo run -p powervoice-cli --bin
 /// gen-fixtures` from any other directory should still land in the same
 /// place rather than creating a stray `fixtures/generated` under wherever
 /// the shell happened to be.

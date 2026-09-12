@@ -1,4 +1,4 @@
-//! `voxedit-app`: the thin Tauri command/event layer (ADR-001 §3, ADR-003).
+//! `powervoice-app`: the thin Tauri command/event layer (ADR-001 §3, ADR-003).
 //!
 //! No business logic lives here. This crate wires Tauri commands to domain crates and maps
 //! domain types to the DTOs in [`ipc`].

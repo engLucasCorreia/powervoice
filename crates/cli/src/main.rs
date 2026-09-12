@@ -1,4 +1,4 @@
-//! `voxedit-cli`: the DSP acceptance tool. `gen` writes synthetic test
+//! `powervoice-cli`: the DSP acceptance tool. `gen` writes synthetic test
 //! signals to WAV, `analyze` reports objective measurements on a WAV file.
 //! `render --rack` (T-103) and `bench` (T-110) are stubs owned by other
 //! tickets.
@@ -32,7 +32,7 @@ use vox_testkit::wav::{BitDepth, SampleFormat};
 use vox_testkit::{measure, signal, wav};
 
 #[derive(Parser)]
-#[command(name = "voxedit-cli")]
+#[command(name = "powervoice-cli")]
 #[command(version)]
 #[command(about, long_about = None)]
 #[command(arg_required_else_help = true)]

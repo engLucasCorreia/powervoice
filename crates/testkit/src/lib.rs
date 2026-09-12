@@ -1,6 +1,6 @@
 //! `vox-testkit`: deterministic signal generators, objective measurements
 //! (peak/RMS/LUFS/true-peak/noise-floor), and golden-file helpers used by
-//! DSP acceptance tests and `voxedit-cli`.
+//! DSP acceptance tests and `powervoice-cli`.
 
 pub mod error;
 pub mod golden;

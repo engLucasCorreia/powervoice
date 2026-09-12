@@ -6,7 +6,7 @@ use crate::ipc::error::IpcError;
 #[tauri::command]
 pub async fn app_info() -> Result<AppInfo, IpcError> {
     Ok(AppInfo {
-        name: "VoxEdit".to_string(),
+        name: "PowerVoice".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
     })
 }

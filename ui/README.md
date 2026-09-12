@@ -1,4 +1,4 @@
-# VoxEdit UI
+# PowerVoice UI
 
 Svelte 5 + TypeScript (strict) frontend, built with Vite. Talks to the Rust core only through the
 typed wrappers in `src/lib/ipc/commands.ts`, over generated types in `src/lib/ipc/bindings.ts`
@@ -22,7 +22,7 @@ WebKitGTK's GPU (DMA-BUF) compositing path can be slow or broken on some Linux s
 some NVIDIA configurations). If `just dev` renders a blank/garbled window or a laggy UI, set:
 
 ```sh
-VOXEDIT_WEBKIT_SAFE=1 just dev
+POWERVOICE_WEBKIT_SAFE=1 just dev
 ```
 
 `just dev` then sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` before launching, which forces a software

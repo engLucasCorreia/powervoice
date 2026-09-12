@@ -10,7 +10,7 @@ if (!target) {
 
 /**
  * T-007 / ADR-009: `detectSpike()` calls the `spike_env` command, which only exists when
- * `voxedit-app` is built with `--features spike` (`just spike`). A normal production build has
+ * `powervoice-app` is built with `--features spike` (`just spike`). A normal production build has
  * no such command, `detectSpike()` resolves `null`, and this falls straight through to the real
  * `App` below — unchanged from before the spike existed.
  */

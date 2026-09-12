@@ -31,7 +31,7 @@ impl BitDepth {
 
 /// On-disk sample encoding: integer PCM or IEEE float. A `testkit`-owned
 /// type (rather than re-exporting `hound::SampleFormat`) so that consumers
-/// like `voxedit-cli` don't need a direct dependency on `hound` just to
+/// like `powervoice-cli` don't need a direct dependency on `hound` just to
 /// read this one field back from [`WavInfo`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SampleFormat {

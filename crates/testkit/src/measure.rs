@@ -7,7 +7,7 @@
 //!   measurement that depends on it reports `NaN` rather than silently
 //!   dropping the bad sample (which is what a naive `f32::max`-based fold
 //!   would do) or laundering it into a plausible-looking finite number.
-//!   `NaN` serializes as JSON `null` (see `voxedit-cli analyze --json`).
+//!   `NaN` serializes as JSON `null` (see `powervoice-cli analyze --json`).
 //! - **Exact digital silence** reports `-inf` (`f64::NEG_INFINITY`), not a
 //!   floored sentinel value -- see [`crate::units::linear_to_dbfs`]. `-inf`
 //!   serializes as JSON `null` and prints as the text `-inf`.

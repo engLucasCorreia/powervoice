@@ -11,7 +11,7 @@ describe("App shell", () => {
   it("renders all five layout regions and the mocked app_info version", async () => {
     mockIPC((cmd) => {
       if (cmd === "app_info") {
-        return { name: "VoxEdit", version: "9.9.9" };
+        return { name: "PowerVoice", version: "9.9.9" };
       }
       throw new Error(`unmocked command: ${cmd}`);
     });

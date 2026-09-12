@@ -1,11 +1,11 @@
-//! T-006 acceptance: `voxedit-cli gen sine --freq 1000 --level -20 -o - |
-//! voxedit-cli analyze -` works.
+//! T-006 acceptance: `powervoice-cli gen sine --freq 1000 --level -20 -o - |
+//! powervoice-cli analyze -` works.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
 
 fn cli() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_voxedit-cli"))
+    Command::new(env!("CARGO_BIN_EXE_powervoice-cli"))
 }
 
 #[test]

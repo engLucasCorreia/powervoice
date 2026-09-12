@@ -27,8 +27,8 @@ fn env_flag(name: &str) -> bool {
 #[tauri::command]
 pub async fn spike_env() -> Result<SpikeEnv, IpcError> {
     Ok(SpikeEnv {
-        auto_run: env_flag("VOXEDIT_SPIKE"),
-        exit_after: env_flag("VOXEDIT_SPIKE_EXIT"),
+        auto_run: env_flag("POWERVOICE_SPIKE"),
+        exit_after: env_flag("POWERVOICE_SPIKE_EXIT"),
         webkit_dmabuf_disabled: env_flag("WEBKIT_DISABLE_DMABUF_RENDERER"),
     })
 }
@@ -233,7 +233,7 @@ pub async fn spike_write_results(results_json: String) -> Result<String, IpcErro
     Ok(path.to_string_lossy().into_owned())
 }
 
-/// Closes the app. Used only when `VOXEDIT_SPIKE_EXIT=1` (automated runs) after results are
+/// Closes the app. Used only when `POWERVOICE_SPIKE_EXIT=1` (automated runs) after results are
 /// written; otherwise the window is left open for the owner's manual input checks.
 ///
 /// `AppHandle<R>` (unlike `Channel<T>`, which has no `Runtime` type parameter) must stay generic

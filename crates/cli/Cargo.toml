@@ -1,12 +1,13 @@
 [package]
-name = "voxedit-cli"
+name = "powervoice-cli"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish.workspace = true
-default-run = "voxedit-cli"
+default-run = "powervoice-cli"
 
 [[bin]]
-name = "voxedit-cli"
+name = "powervoice-cli"
 path = "src/main.rs"
 
 [dependencies]

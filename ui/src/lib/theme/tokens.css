@@ -1,5 +1,5 @@
 /*
- * VoxEdit dark theme tokens (ADR-001, PROMPT §3.6: "Audition-like dark layout").
+ * PowerVoice dark theme tokens (ADR-001, PROMPT §3.6: "Audition-like dark layout").
  * Every color used by components should come from one of these custom properties, never a
  * literal, so a future light/alt theme only needs to redefine this file.
  */

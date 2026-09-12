@@ -39,7 +39,7 @@ pub struct TestGain {
 
 impl TestGain {
     /// Module id.
-    pub const ID: &'static str = "org.voxedit.test-gain";
+    pub const ID: &'static str = "org.powervoice.test-gain";
     /// The `gain_db` parameter.
     pub const GAIN_DB: ParamId = ParamId(0);
     /// Declared smoothing of `gain_db`.
@@ -85,7 +85,7 @@ impl TestGain {
             id: Self::ID.into(),
             version: Version::new(1, 0, 0),
             name: LocalizedText::keyed("module.test_gain.name", "Test Gain"),
-            vendor: "VoxEdit".into(),
+            vendor: "PowerVoice".into(),
             description: LocalizedText::keyed(
                 "module.test_gain.description",
                 "Reference module for tests: smoothed gain.",

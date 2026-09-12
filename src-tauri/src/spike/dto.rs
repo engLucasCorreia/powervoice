@@ -14,9 +14,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpikeEnv {
-    /// `VOXEDIT_SPIKE=1`: run the automated measurement suite on load.
+    /// `POWERVOICE_SPIKE=1`: run the automated measurement suite on load.
     pub auto_run: bool,
-    /// `VOXEDIT_SPIKE_EXIT=1`: close the app once results are written (automated runs only —
+    /// `POWERVOICE_SPIKE_EXIT=1`: close the app once results are written (automated runs only —
     /// without this the window stays open for the owner's manual input checks).
     pub exit_after: bool,
     /// `WEBKIT_DISABLE_DMABUF_RENDERER=1`, recorded alongside results per run (ADR-009 asks for

@@ -18,10 +18,10 @@ Format for each `ADR-NNN-title.md`:
 ## Index
 | ADR | Title | Ticket | Status |
 |---|---|---|---|
-| ADR-001 | Architecture overview & crate graph | T-002 | pending |
-| ADR-002 | Threading & real-time rules | T-002 | pending |
-| ADR-003 | IPC data paths & shared types | T-002 | pending |
-| ADR-004 | Document storage, snapshots, undo, journal | T-002 | pending |
+| ADR-001 | Architecture overview & crate graph | T-002 | proposed (owner review at M0) |
+| ADR-002 | Threading & real-time rules | T-002 | proposed (owner review at M0) |
+| ADR-003 | IPC data paths & shared types (ts-rs 12) | T-002 | proposed (owner review at M0) |
+| ADR-004 | Document storage, snapshots, undo, journal | T-002 | proposed (owner review at M0) |
 | ADR-005 | Module API | T-003 | pending |
 | ADR-006 | Installable module ABI (CLAP bundles) | T-003 | pending |
 | ADR-007 | Dependency & plugin-format licensing | T-003 | pending |

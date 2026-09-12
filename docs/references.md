@@ -45,5 +45,5 @@ Source: https://www.itu.int/dms_pubrec/itu-r/rec/bs/R-REC-BS.1770-5-202311-I!!PD
 - TPDF (sum of two independent uniform sources, ±1 LSB each) when reducing to 16/24-bit — best-practice convention (https://www.airwindows.com/tpdf-dither/).
 
 ## Ecosystem facts (see MEMORY.md gotchas for implications)
-- cpal 0.18.2 · rtrb 0.4 · hound 3.5.1 · symphonia 0.6.1 (MPL-2.0) · flacenc 0.5.1 · mp3lame-encoder (LGPL-3.0) · rubato 5.0 · realfft 3.5 · rustfft 6.4 · ebur128 0.1.10 · Tauri 2.11.5 · Svelte 5.57 · Vite 8.3 · Vitest 5.0 · svelte-check 4.7 · just 1.58.
-- Plugins: clack (MIT/Apache), vst3 coupler-rs (MIT/Apache; VST3 SDK MIT since 3.8.0, Oct 2025), livi/lilv (ISC-style), ysfx JoepVanlier fork (GPLv3), VST2 = reverse-engineered headers only (legal risk).
+- cpal 0.18.2 · rtrb 0.4 · hound 3.5.1 · symphonia 0.6.1 (MPL-2.0) · flacenc 0.5.1 · LAME (LGPL-2.0-or-later) **loaded at runtime via `libloading`**; `mp3lame-encoder`/`mp3lame-sys` rejected because they always link LAME statically (ADR-007) · rubato 5.0 · realfft 3.5 · rustfft 6.4 · ebur128 0.1.10 · Tauri 2.11.5 · Svelte 5.57 · Vite 8.3 · Vitest 5.0 · svelte-check 4.7 · just 1.58.
+- Plugins: clack (MIT/Apache), vst3 coupler-rs (MIT/Apache; VST3 SDK MIT since 3.8.0, Oct 2025), livi/lilv (ISC-style), ysfx JoepVanlier fork (library **Apache-2.0**; GPLv3 only for its JUCE plugin build, per ADR-007), VST2 = reverse-engineered headers only (legal risk). Versions seen 2026-09-12: CLAP 1.2.10, clack 0.2.0, VST3 SDK 3.8.1, LAME 4.0.

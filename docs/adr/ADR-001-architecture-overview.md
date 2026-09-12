@@ -13,7 +13,7 @@ platform-neutral code paths even though only Linux is tested.
 
 We need dependency rules that (a) keep the real-time and DSP code testable without devices, a
 WebView or disk, (b) give the rack exactly **one code path** for real-time and offline use, and
-(c) keep licensing-sensitive code (GPL ysfx, LGPL LAME) at known edges.
+(c) keep licensing-sensitive or crash-prone code (LGPL LAME, the ysfx JIT) at known edges.
 
 ## Decision
 
@@ -71,7 +71,7 @@ graph TD
      without system audio libraries.
    - `tauri` and `ts-rs`: only `src-tauri` (ADR-003).
    - `memmap2`: only `project` (ADR-004).
-   - codec crates (`hound`, `symphonia`, `flacenc`, `mp3lame-encoder`): only `io`.
+   - codec crates (`hound`, `symphonia`, `flacenc`) and `libloading` for the runtime-loaded LAME library (ADR-007): only `io`.
    - `rubato` and `realfft`: only `dsp`. `io` and `engine` resample through `dsp::resample`.
 4. **Forbidden edges:**
    - `rack` never depends on `engine`, `project`, `io` or `cpal`.
@@ -82,7 +82,7 @@ graph TD
      on `plugin-host`.
    - The composition roots (`src-tauri`, `cli`) register its proxy-module factories into the rack
      registry at startup.
-   - Adapter code that links GPL `ysfx` is feature-gated so only `plugin-sandbox` enables it (ADR-007).
+   - Adapter code that links `ysfx` (Apache-2.0 library with an EEL2 JIT, so it can crash) is feature-gated so only `plugin-sandbox` enables it (ADR-007).
    - `module-clap` (M8, ADR-006) depends only on `module-api` plus `clack-*`. CLAP-packaged modules
      built with it are separate cdylibs and never part of the app's own dependency graph.
 6. `testkit` is a dev-dependency of the library crates and a normal dependency of `cli` only.

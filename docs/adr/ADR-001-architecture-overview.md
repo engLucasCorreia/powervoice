@@ -71,7 +71,7 @@ graph TD
      without system audio libraries.
    - `tauri` and `ts-rs`: only `src-tauri` (ADR-003).
    - `memmap2`: only `project` (ADR-004).
-   - codec crates (`hound`, `symphonia`, `flacenc`) and `libloading` for the runtime-loaded LAME library (ADR-007): only `io`.
+   - codec crates (`hound`, `symphonia`, `flacenc`) and `libloading` for the runtime-loaded LAME library (ADR-007): only `io`. **Exception:** `testkit` may use `hound` (plain f32/PCM WAV I/O for fixtures and `analyze`) so the measuring stick stays independent of production `io` code (amended after T-006 review).
    - `rubato` and `realfft`: only `dsp`. `io` and `engine` resample through `dsp::resample`.
 4. **Forbidden edges:**
    - `rack` never depends on `engine`, `project`, `io` or `cpal`.

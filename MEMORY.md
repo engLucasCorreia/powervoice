@@ -8,6 +8,8 @@
 ## Environment
 - Rust 1.98.1 stable via pacman `rustup` (+ rustfmt, clippy, x86_64-pc-windows-gnu target); `just` 1.58 via pacman; Node 26.7 / npm 11.19; git 2.55.
 - Worktrees: the Agent tool's `isolation: "worktree"` fails in this session (session started before `git init`). Use manual worktrees: `git worktree add .claude/worktrees/T-NNN -b ticket/T-NNN main`; the agent works there and commits on its branch; the orchestrator squash-merges and removes the worktree.
+- Orchestrator: never `cd` into a worktree in Bash — the harness then switches the session's primary working directory into it. Use `git -C <path>` and absolute paths / `--manifest-path`.
+- Edition 2024 reserves `gen` — don't use it as an identifier (testkit uses `signal`).
 - Package naming: `vox-<crate>` for libraries (dirs stay `crates/<crate>`), `voxedit-cli` (bin `voxedit-cli`), `voxedit-app` (src-tauri).
 
 ## Decisions log
@@ -74,6 +76,7 @@
 - M8: ADR-002 RT rules need a narrow documented exception — the sandbox proxy's non-blocking wake is a syscall on the audio thread.
 - PROMPT §3.7 wording (`prepare`, `tail_samples()`, "documented per adapter" dual-mono) is superseded by ADR-005 (D-008) — mention at M0 checkpoint.
 - T-007 must also verify: raw channel/`Response` payloads arrive as ArrayBuffer on WebKitGTK; 30 vs 60 Hz telemetry cost; cpal `playback` timestamps meaningful on PipeWire; opening devices at document rate doesn't disturb other apps.
+- **SPEC-017 (TP limiter, M4 W0):** `ebur128` true peak reads ~+0.10 dB high near fs/4 (−2.886 dBTP vs analytic −2.990). A "ceiling −1.0 → pass if ≤ −0.9 dBTP" criterion leaves no margin for meter error — characterise the meter (or use an independent higher-oversampling reference in testkit) and set tolerances accordingly.
 - Consider a `just deps-check` recipe enforcing ADR-001 rule 4 (forbidden crate edges).
 
 ## Ticket learnings

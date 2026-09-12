@@ -1,5 +1,5 @@
 # ADR-002 — Threading & real-time rules
-- Status: proposed
+- Status: accepted (owner, M0 checkpoint 2026-09-12)
 - Date: 2026-09-12
 - Deciders: owner, orchestrator
 

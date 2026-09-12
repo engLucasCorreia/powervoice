@@ -1,4 +1,4 @@
-# T-006 — `testkit` + `voxedit-cli` gen/analyze + `just fixtures`
+# T-006 — `testkit` + `powervoice-cli` gen/analyze + `just fixtures`
 
 - **Milestone / wave:** M0 / W2
 - **Tier:** Sonnet (+ Opus review)
@@ -14,10 +14,10 @@ Objective measurement tooling used by every DSP acceptance test and by the owner
   - Generators (deterministic, seeded): sine (freq, level dBFS, duration, sample rate), log sweep, white and pink noise, tone bursts (on/off pattern), silence, impulse, "voice-like" test signal (tone bursts over noise at a set SNR), EBU Tech 3341 cases 1–2 (stereo, for verifying the loudness wrapper).
   - Measurements: sample peak dBFS, RMS dB, crest factor, DC offset; loudness via `ebur128` (feature `precision-true-peak`): integrated, max momentary, max short-term, LRA, true peak dBTP; noise floor = quietest 500 ms unweighted RMS window; null test (max abs difference in dB).
   - Golden helpers: compare buffers with tolerance; read/write f32 WAV via `hound`.
-- `voxedit-cli`:
+- `powervoice-cli`:
   - `gen <signal> [options] -o <file|->` — writes WAV (default 48 kHz mono 32-bit float; `--bits 16|24|32f`, `--rate`).
   - `analyze <file|-> [--json]` — prints all measurements above plus duration, rate, channels, bit depth.
-  - `-` means stdout/stdin so `voxedit-cli gen sine --freq 1000 --level -20 -o - | voxedit-cli analyze -` works.
+  - `-` means stdout/stdin so `powervoice-cli gen sine --freq 1000 --level -20 -o - | powervoice-cli analyze -` works.
   - `bench` stays a stub (T-110).
 - `just fixtures` → generates into `fixtures/generated/`: a set of short signals, and `long-60min-48k-mono.wav` (pink noise + tone bursts) for performance tests.
 

@@ -1,6 +1,6 @@
 # SPEC-001 — Audio devices & I/O
 
-- **Status:** draft
+- **Status:** approved (owner, M0 checkpoint 2026-09-12)
 - **Milestone:** M1
 - **Related:** SPEC-000 (architecture overview, glossary), SPEC-002 (recording & monitoring), SPEC-003
   (transport & playback), ADR-001 (crate graph — `engine` owns the backend), ADR-002 (threading &
@@ -9,9 +9,9 @@
 
 ## 1. Purpose
 
-VoxEdit records and plays back through one input device/channel and one output device at a time
+PowerVoice records and plays back through one input device/channel and one output device at a time
 (§3.1). Before any recording or playback can happen, the user has to be able to see what hardware is
-available, pick it, and trust that VoxEdit will tell them — clearly and without crashing — when that
+available, pick it, and trust that PowerVoice will tell them — clearly and without crashing — when that
 hardware misbehaves (unplugged mid-session, claimed by another app, wrong sample rate). This spec
 defines that behavior: enumeration, selection, fallback rules, hot-plug, device loss/recovery, and
 persistence. It does not define recording or playback mechanics themselves (SPEC-002, SPEC-003).
@@ -33,7 +33,7 @@ the same settings page). The panel has, top to bottom:
 2. **Input device** — dropdown of input-capable devices on the selected host, plus "None". Selecting
    "None" disarms recording/monitoring input entirely.
 3. **Input channel** — dropdown of 1..N, N = the selected device's max input channels (cpal has no
-   per-channel input API — VoxEdit opens the full device and deinterleaves; MEMORY.md). Disabled
+   per-channel input API — PowerVoice opens the full device and deinterleaves; MEMORY.md). Disabled
    when input device is "None". Mono only: exactly one channel is captured.
 4. **Output device** — dropdown of output-capable devices on the selected host.
 5. **Sample rate** — dropdown of common rates (44100, 48000, 88200, 96000, 176400, 192000 Hz)
@@ -48,14 +48,14 @@ the same settings page). The panel has, top to bottom:
 ### 2.2 Selection & fallback rules
 
 - Enumeration lists every device the selected host currently reports. Devices are identified to the
-  user by their host-reported name; internally VoxEdit keys persisted choices by a stable
+  user by their host-reported name; internally PowerVoice keys persisted choices by a stable
   `(host, name)` pair, not by index (cpal indices are not stable across enumerations).
 - If the user's chosen **sample rate** is not in the output device's supported set (e.g. after
-  switching to a different device, or a device firmware that changed its supported list), VoxEdit
+  switching to a different device, or a device firmware that changed its supported list), PowerVoice
   falls back to that device's **default sample rate** and shows a one-line notice: "48000 Hz isn't
   supported by *Device X* — using 44100 Hz." The dropdown updates to reflect the fallback value; the
   user's original preference is not silently forgotten — see persistence (§2.5).
-- If the chosen **buffer size** is outside the device's supported range, VoxEdit clamps to the
+- If the chosen **buffer size** is outside the device's supported range, PowerVoice clamps to the
   nearest boundary (min or max) of that range and shows the same style of notice.
 - If, after a fallback, the resulting stream still fails to open, the input or output is treated as
   "device lost" (§2.4) even though it was never lost — the messaging is the same because the user
@@ -90,7 +90,13 @@ open, SPEC-002):
 4. The status banner and notice from §2.3 appear.
 5. The engine keeps polling for the device; it does not require the user to reopen Settings.
 
-On replug of the **same** device (matched by `(host, name)` — VoxEdit does not require the OS to
+**Exception — output lost while recording (owner decision, M0 checkpoint):** losing only the
+**output** device while **recording** does not stop the recording, because the take needs only the
+input. Monitoring and playback stop, the device-lost banner appears, and recording continues until the
+user stops it (SPEC-002 §2.6, AC-16). Losing the **input** device while recording always stops and keeps
+the take.
+
+On replug of the **same** device (matched by `(host, name)` — PowerVoice does not require the OS to
 reuse the same numeric device ID):
 1. The engine reopens the stream with the previously-configured rate/buffer (applying the fallback
    rules of §2.2 again if the replugged device's capabilities changed).
@@ -103,8 +109,8 @@ reuse the same numeric device ID):
 
 Host, input device, input channel, output device, sample rate and buffer size are saved to the app
 settings file as soon as they are successfully applied (not merely selected in the UI — a value that
-triggered a fallback per §2.2 is saved as the user's *intent*, so VoxEdit retries it the next time
-that device's capabilities might have changed). On startup, VoxEdit attempts to open the saved
+triggered a fallback per §2.2 is saved as the user's *intent*, so PowerVoice retries it the next time
+that device's capabilities might have changed). On startup, PowerVoice attempts to open the saved
 devices; if a saved device is absent, it falls back to the host's reported default device for that
 direction and shows: "*Device X* not found — using default output *Device Y*." The saved preference
 is kept, not overwritten, so returning the original device later restores it (subject to §2.2
@@ -168,18 +174,18 @@ risk). Track as a known risk until someone tests them.
   meter (SPEC-002) reflects that signal and shows silence when audio is present only on channel 1,
   confirmed within one meter update interval (≤ 33 ms at the 30 Hz telemetry rate, ADR-003).
 - **AC-3 (sample-rate fallback).** Given an output device whose supported rates do not include
-  192000 Hz and the user selects/persists 192000 Hz, when VoxEdit opens that device, then it opens at
+  192000 Hz and the user selects/persists 192000 Hz, when PowerVoice opens that device, then it opens at
   the device's default supported rate instead, the Settings panel shows that rate, and a fallback
-  notice naming both the requested and applied rate is shown within 1 s — VoxEdit does not fail to
+  notice naming both the requested and applied rate is shown within 1 s — PowerVoice does not fail to
   start audio.
 - **AC-4 (buffer-size fallback).** Given a device whose supported buffer-size range is [128, 1024]
-  frames and the user has 2048 frames selected, when VoxEdit opens that device, then the applied
+  frames and the user has 2048 frames selected, when PowerVoice opens that device, then the applied
   buffer size is clamped to 1024 frames and the same style of notice (AC-3) is shown.
 - **AC-5 (hot-plug refresh).** Given the Settings panel is open (or closed — polling is
   background), when a USB audio device is physically connected or disconnected, then the relevant
   device dropdown(s) reflect the change within **≤ 2 s** of the physical event (device-poll interval
   ~1 s plus one control tick).
-- **AC-6 (device-lost, output, mid-playback).** Given VoxEdit is playing back through output device D,
+- **AC-6 (device-lost, output, mid-playback).** Given PowerVoice is playing back through output device D,
   when D is physically disconnected, then: transport stops within one control tick (≤ 16 ms after the
   loss is detected) with a fade rather than a sample-accurate discontinuity, the app does not panic or
   become unresponsive (other panels remain interactive), and the device-lost banner (§2.3) appears
@@ -189,9 +195,9 @@ risk). Track as a known risk until someone tests them.
   (stream reopened with the previously-applied rate/buffer) within ≤ 2 s, a reconnected notice is
   shown, and playback does **not** auto-resume (the user must press Play again).
 - **AC-8 (persistence across restart).** Given the user has configured host/input device/channel/
-  output device/rate/buffer and closes VoxEdit, when VoxEdit is relaunched with the same devices still
+  output device/rate/buffer and closes PowerVoice, when PowerVoice is relaunched with the same devices still
   present, then all six values are restored exactly with no additional notices; when relaunched with
-  the saved output device absent, then VoxEdit falls back to the host's default output device, shows
+  the saved output device absent, then PowerVoice falls back to the host's default output device, shows
   the "not found — using default" notice (§2.5), and still retains the original saved preference (not
   overwritten by the fallback) for the next launch.
 
@@ -204,7 +210,7 @@ risk). Track as a known risk until someone tests them.
 | AC-3 | Fallback-selection function given a synthetic supported-rate set | Fake backend advertises a limited rate set; assert applied rate + notice event | Select an unsupported rate for a real device if available; else defer to fake-backend coverage |
 | AC-4 | Same fallback function for buffer-size clamping | Fake backend advertises a narrow buffer range; assert clamped value + notice | n/a (buffer ranges rarely restrictive on real hardware; fake backend is authoritative) |
 | AC-5 | n/a (timing behavior, not pure logic) | Fake backend/device-poll driven by a simulated clock; inject add/remove events, assert UI-facing diff arrives within 2 simulated seconds | Physically unplug/replug a USB audio device, stopwatch the dropdown update |
-| AC-6 | Device-lost state-machine transitions (unit-testable pure state machine) | Fake backend raises the lost-device error flag mid-playback; assert transport-stop event, no panic, banner event, within budget | Unplug the real output device (e.g. USB DAC) while VoxEdit plays; confirm no crash and the banner |
+| AC-6 | Device-lost state-machine transitions (unit-testable pure state machine) | Fake backend raises the lost-device error flag mid-playback; assert transport-stop event, no panic, banner event, within budget | Unplug the real output device (e.g. USB DAC) while PowerVoice plays; confirm no crash and the banner |
 | AC-7 | Recovery state-machine transitions | Fake backend clears the lost flag and re-reports the device; assert reopen with prior config, no auto-resume | Replug the same device; confirm reconnect notice and that playback does not resume by itself |
 | AC-8 | Settings load/save round-trip (serialize/deserialize), fallback-not-overwriting-preference logic | Engine startup against a fixture settings file with a missing device name; assert default-device fallback + notice + preference preserved on save | Restart the real app twice: once with all devices present, once with the output device unplugged |
 

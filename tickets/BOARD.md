@@ -12,9 +12,10 @@ Tickets for M1+ are stubs; full ticket files are written in each milestone's W0.
 | T-003 | ADRs B: Module API, module ABI (CLAP), licensing, sandbox outline | W1 | O | — | done |
 | T-004 | Tauri 2 + Svelte 5 scaffold, theme, i18n, shared types, mocks | W2 | S | T-001, T-002 | done |
 | T-005 | `module-api` v0 + `rack` skeleton + module test host | W2 | O+OR | T-001, T-003 | done |
-| T-006 | `testkit` + `voxedit-cli` gen/analyze + `just fixtures` | W2 | S+OR | T-001 | done |
+| T-006 | `testkit` + `powervoice-cli` gen/analyze + `just fixtures` | W2 | S+OR | T-001 | done |
 | T-007 | Platform spike: renderers, Wayland input, IPC throughput → ADR-009 | W3 | S+OR | T-004 | done |
 | T-008 | M1 spec wave: SPEC-000/001/002/003/004/012 | W3 | O/S | T-002, T-003, T-005 | done |
+| T-009 | Rename code/config to PowerVoice + license metadata | post-checkpoint | S | M0 | in-progress |
 
 ## M1 — Core engine, recording & playback
 | ID | Title | Wave | Tier | Deps | Status |
@@ -33,6 +34,7 @@ Tickets for M1+ are stubs; full ticket files are written in each milestone's W0.
 ## M2 — Editor view
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
+| T-200 | M2 spec wave: SPEC-005 formats, SPEC-006 waveform view, SPEC-007 spectral & analyzer | W0 | O/S | M0 | in-progress |
 | T-201 | WAV 16/24/32f r/w + cue/adtl chunks | W1 | S | M1 | todo |
 | T-202 | Import (symphonia) + stereo downmix + FLAC encode | W1 | S | M1 | todo |
 | T-203 | Per-chunk peak pyramid + binary IPC | W1 | S+OR | M1 | todo |

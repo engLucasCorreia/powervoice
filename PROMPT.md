@@ -3,7 +3,7 @@
 > This is the founding prompt for every AI agent working on this project.
 > The orchestrator reads it in full; subagents read the sections referenced by their ticket.
 > Decisions marked **LOCKED** were made by the product owner and must not be changed without asking.
-> Working product name: **VoxEdit** (placeholder — rename freely).
+> Product name: **PowerVoice** (chosen by the owner at the M0 checkpoint; formerly the working name "VoxEdit").
 
 ---
 
@@ -33,7 +33,7 @@ and measurably verified.
 | Shortcuts | **Audition-compatible defaults** (not remappable in v1). |
 | Repo | **Local git**, one reviewed commit per ticket. No remote, no CI service in v1 (local check scripts instead). |
 | Test platform | Product owner tests on **Linux (Arch, PipeWire)** only. Windows/macOS must compile and follow platform-neutral code paths, but are unverified until someone tests them — track this as a known risk. |
-| Orchestration | Main Claude session = **orchestrator** using the Agent tool; subagents per ticket; **pause for owner review after each milestone**. |
+| Orchestration | Main Claude session = **orchestrator** using the Agent tool; subagents per ticket. ~~Pause for owner review after each milestone~~ — **after the M0 checkpoint the owner authorized autonomous execution to the end of the tickets, without checkpoints or questions** (2026-09-12, MEMORY D-021). |
 | Module system | Every rack effect implements one **Module API** (processor + parameter schema + presets + latency report). Built-in modules are compiled in for v1; the same API later loads **separately installed module packages**. |
 | External plugins | Host **VST3, CLAP, LV2, VST2 (legacy)** and **REAPER JSFX** (via `ysfx`). Delivered as **M8**, after the core editor, but the rack is plugin-shaped from day one. |
 | Plugin isolation | External plugins run **out-of-process** in a sandbox host with shared-memory audio; a crashing plugin never takes down the editor or a recording. |
@@ -82,7 +82,7 @@ Rack applies to playback, monitoring ("through rack" mode) and export. Parameter
 ### 3.6 App shell
 - Audition-like dark layout: toolbar + transport (top), editor (center, waveform/spectral), effects rack (right), markers + properties (left/bottom), meters (bottom).
 - Settings: devices, buffer size, default format, monitoring mode, loudness mono compensation, theme accents.
-- Audition-compatible shortcuts (Space play/stop, Shift+Space record, Ctrl+Z/Shift+Z, etc. — the spec lists the full map).
+- Audition-compatible shortcuts (Space play/pause, Shift+Space play from start, Shift+R record (provisional), Ctrl+Z / Ctrl+Shift+Z, M add marker, etc. — SPEC-019 lists the full map; owner decision D-014).
 - Autosave + crash recovery; recent files.
 
 ### 3.7 Module & plugin system
@@ -116,7 +116,7 @@ repo/
 │   ├── io/           decode/encode (WAV, FLAC, MP3, AAC, Vorbis), resampling, dither
 │   ├── project/      document model (disk-backed chunk store, Arc snapshots, piece table, edit journal), edit ops, undo, markers, sidecar, autosave/recovery
 │   ├── testkit/      signal generators, measurements (peak/RMS/LUFS/TP), golden-file helpers (dev-dependency)
-│   └── cli/          `voxedit-cli`: gen / render --rack / analyze / bench — DSP acceptance tool
+│   └── cli/          `powervoice-cli`: gen / render --rack / analyze / bench — DSP acceptance tool
 ├── src-tauri/        thin command/event layer only — no business logic
 └── ui/               Svelte 5 + TS; Canvas/WebGL renderers for waveform & spectrogram
 ```
@@ -155,7 +155,7 @@ repo/
 
 ## 7. Milestones (authoritative ticket list: `tickets/BOARD.md`)
 
-- **M0 Foundations** — install toolchain (rustup/cargo, just, Tauri CLI; Node 26 + WebKitGTK/ALSA/PipeWire already present), git, Cargo workspace, Tauri 2 + Svelte 5 scaffold, check scripts (`just check`), CLAUDE.md, MEMORY.md, spec/ticket templates, ADRs, **Module API v0**, test harness + `voxedit-cli`, platform spike (WebKitGTK rendering, Wayland input), M1 specs.
+- **M0 Foundations** — install toolchain (rustup/cargo, just, Tauri CLI; Node 26 + WebKitGTK/ALSA/PipeWire already present), git, Cargo workspace, Tauri 2 + Svelte 5 scaffold, check scripts (`just check`), CLAUDE.md, MEMORY.md, spec/ticket templates, ADRs, **Module API v0**, test harness + `powervoice-cli`, platform spike (WebKitGTK rendering, Wayland input), M1 specs.
 - **M1 Core engine, recording & playback** — document model (chunk store/snapshots), rack core in the signal path (Gain module, offline render), app infrastructure (logging, errors, settings, keymap registry), device/channel selection, meters, mono recording, playback, transport, monitoring off/dry/through-rack.
 - **M2 Editor view** — WAV open/save + cue markers, importers, per-chunk waveform pyramid, zoom/scroll/selection, spectral display, analyzer.
 - **M3 Editing & history** — clipboard ops, trim/silence/insert silence, undo/redo, markers, punch-in, normalize favorites, sidecar + autosave/recovery.

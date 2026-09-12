@@ -1,6 +1,6 @@
 # SPEC-003 — Transport & playback
 
-- **Status:** draft
+- **Status:** approved (owner, M0 checkpoint 2026-09-12)
 - **Milestone:** M1
 - **Related:** SPEC-000 (architecture overview, glossary — document time vs. device time, heard
   position), SPEC-001 (audio devices & I/O — device/rate selection this spec builds on), SPEC-002
@@ -21,17 +21,20 @@ device disagree on sample rate — so it's fast enough and honest enough to trus
 
 ### 2.1 Transport model
 
-VoxEdit's transport bar (PROMPT §3.6, top of the app shell) exposes:
+PowerVoice's transport bar (PROMPT §3.6, top of the app shell) exposes:
 
 - **Play/Pause** (single toggle control): while stopped, starts playback from the current playhead
   position; while playing, pauses — playback halts and the playhead stays exactly where it stopped,
   ready to resume from there on the next press. This mirrors Adobe Audition's actual default
   behavior, where Space is a single Play/Stop toggle that, by default, does **not** return the
   playhead to the start on stop (that legacy behavior is an opt-in preference — see §2.5).
-- **Stop**: in v1 behaves exactly like Pause (playback halts, playhead stays where it stopped). The
-  button exists so the transport bar matches Audition's layout; the only planned difference is the
-  optional "return playhead to where playback started on stop" preference (OWNER DECISION, §2.5 open
-  question 1). Until the owner decides, Stop = Pause.
+- **Stop** (owner decision, M0 checkpoint): halts playback (~5 ms fade) and **returns the playhead to
+  where playback last started** — the position Play (or Play from start) was pressed at, like
+  Audition's "return CTI to start position on stop". **Pause** (Space while playing) halts and keeps the
+  playhead where it stopped. Stop while already stopped does nothing. Stops initiated by the engine
+  (destructive edit, device loss) behave like **Pause**: the playhead stays at the heard position.
+- **Play from start** (Shift+Space, owner-confirmed Audition behavior): starts playback from the start
+  of the current time selection, or from sample 0 when there is no selection.
 - **Return to Start**: seeks the playhead to document sample 0. If playback was in progress, it
   continues playing from 0 (a seek, not a stop); if stopped, the playhead simply moves.
 - **Loop**: toggles looping. When on and a time selection exists, playback loops between the
@@ -75,7 +78,7 @@ and to resuming from Pause.
 ### 2.4 Device/document sample-rate mismatch
 
 The document has its own sample rate (set at recording or import); the output device has whatever
-rate is configured (SPEC-001). VoxEdit always opens the device at the document's rate when the device
+rate is configured (SPEC-001). PowerVoice always opens the device at the document's rate when the device
 supports it — the common case, so most playback needs no resampling. When the device cannot run at
 the document's rate (SPEC-001 §2.2's fallback already applied, or the document rate simply isn't in
 the device's supported set), the **reader** resamples document → device rate with `rubato::Fft`
@@ -90,7 +93,7 @@ transparent to the user other than:
 
 ### 2.5 Transport keyboard shortcuts
 
-VoxEdit's shortcuts are meant to be Audition-compatible (PROMPT §2 "Shortcuts", locked) and not
+PowerVoice's shortcuts are meant to be Audition-compatible (PROMPT §2 "Shortcuts", locked) and not
 remappable in v1. `docs/references.md` flags the exact bindings as **⚠ unverified**; this section
 records what was verified via web research for this ticket, with sources, and marks the rest
 **unverified** rather than guessing, per this ticket's instructions.
@@ -99,12 +102,15 @@ records what was verified via web research for this ticket, with sources, and ma
 |---|---|---|---|
 | Play/Pause (start/stop playback in place) | **Space** | **Verified** | Multiple independent sources agree Space is Audition's Start/Stop-playback toggle: [Complete Adobe Audition Keyboard Shortcuts](https://tutorialtactic.com/blog/adobe-audition-shortcuts/) ("Start/stop playback... Spacebar"), [Adobe Audition shortcuts (pie-menu mirror)](https://www.pie-menu.com/shortcuts/adobe-audition) ("Start/stop playback uses the spacebar"), [35 Essential Shortcuts for Adobe Audition (Domestika)](https://www.domestika.org/en/blog/7961-35-essential-shortcuts-for-adobe-audition), [UW–Madison Audition manual mirror](https://sts.doit.wisc.edu/manuals/audition/), [Adobe Audition shortcut keys list](https://techguruplus.com/adobe-audition-shortcut-keys-list/). The official page (`helpx.adobe.com/audition/desktop/keyboard-shortcuts/default-keyboard-shortcuts.html`) returned HTTP 403 to automated fetch and could not be read directly, consistent with `docs/references.md`'s existing note that this page 403s. |
 | Return to Start (seek playhead to 0) | **Home** | **Verified** | [Complete Adobe Audition Keyboard Shortcuts](https://tutorialtactic.com/blog/adobe-audition-shortcuts/) ("Return to Beginning: Home key"); [Adobe Audition shortcuts (pie-menu mirror)](https://www.pie-menu.com/shortcuts/adobe-audition) ("Set time indicator to beginning uses the Home key"). Two independent sources agree. |
-| "Return playhead to start on stop" legacy preference (context only — see open question below; **not** itself a transport action VoxEdit necessarily implements) | Shift+X (toggles the *preference*, not playback) | Verified as an Audition preference toggle, **not evaluated for VoxEdit adoption** | [Adobe Audition shortcuts (pie-menu mirror)](https://www.pie-menu.com/shortcuts/adobe-audition) ("Toggle Preference for return cti to start position uses ⇧+x") |
-| Record | **Unverified — contradiction found, see below** | **Unverified** | No independent source found a default Record binding. |
+| "Return playhead to start on stop" legacy preference (context only — see open question below; **not** itself a transport action PowerVoice necessarily implements) | Shift+X (toggles the *preference*, not playback) | Verified as an Audition preference toggle, **not evaluated for PowerVoice adoption** | [Adobe Audition shortcuts (pie-menu mirror)](https://www.pie-menu.com/shortcuts/adobe-audition) ("Toggle Preference for return cti to start position uses ⇧+x") |
+| Play from start | **Shift+Space** | **Owner-confirmed** (M0 checkpoint) | The owner's Audition muscle memory; also the only web source found (tutorialtactic). |
+| Record | **Shift+R** (provisional) | **Provisional** (M0 checkpoint) | Shift+Space is not Record in Audition (owner). Final binding in SPEC-019 (M7 shortcut audit). |
 | Loop Playback toggle | **Unverified** | **Unverified** | No source (official or mirror) documents a default binding for toggling loop playback. `docs/references.md` does not cover it either. |
-| Pause as a distinct action from Play | n/a — VoxEdit models Play/Pause as one toggle (§2.1), matching Audition's actual single Space toggle | — | See Play/Pause row above |
+| Pause as a distinct action from Play | n/a — PowerVoice models Play/Pause as one toggle (§2.1), matching Audition's actual single Space toggle | — | See Play/Pause row above |
 
-**⚠ Contradiction to flag, not silently resolve:** PROMPT §3.6 states "Shift+Space record" as part of
+**Resolved at the M0 checkpoint:** the owner confirms Shift+Space = Play from start in Audition, so
+PROMPT §3.6's "Shift+Space record" was wrong; Record is provisionally Shift+R. Original research note,
+kept for the record — **⚠ Contradiction:** PROMPT §3.6 states "Shift+Space record" as part of
 its illustrative shortcut list, and this ticket's "must cover" line repeats "Space, Shift+Space —
 verify bindings." The one source this research found that mentions Shift+Space at all —
 [Complete Adobe Audition Keyboard Shortcuts](https://tutorialtactic.com/blog/adobe-audition-shortcuts/)
@@ -170,7 +176,7 @@ Shift+Space = Record without the same caveat, since recording's shortcut is equa
   rack, when playback runs for at least 3 loop passes, then the rendered output is **sample-exact**
   equal (max abs difference ≤ 1e-6) to the concatenation source[S..E) ‖ source[S..E) ‖ … — no
   dropped, duplicated or gap samples at any seam, and the sample after E − 1 is S. (Any click at the
-  seam is then inherent to the content, as in Audition's hard-cut loop; VoxEdit adds no artifact of
+  seam is then inherent to the content, as in Audition's hard-cut loop; PowerVoice adds no artifact of
   its own.) With a non-empty rack, the rack is `reset()` exactly at each seam (§4), verified by a
   fake module that records reset positions. Looping repeats until Stop or loop is disabled.
 - **AC-5 (playhead follow).** Given `playhead_follow` is on and the view is zoomed such that the full
@@ -192,6 +198,12 @@ Shift+Space = Record without the same caveat, since recording's shortcut is equa
 - **AC-8 (destructive edit stops playback).** Given playback is running, when a destructive edit
   commits (SPEC-004), then playback stops (fade, per ADR-004) before the new snapshot is handed to the
   reader — the user never hears audio from a snapshot that no longer matches the document.
+- **AC-9 (Stop returns to the play start; Pause keeps position).** Given playback started (Play) at
+  document sample P₀ and now at P > P₀, when Stop is pressed, then playback halts with a ≤ 6 ms fade and
+  the playhead is set to P₀ exactly; when Pause is pressed instead, it stays at P (AC-2). Given Play from
+  start with a selection [S, E), playback starts at S (± 0 samples) and Stop returns to S; without a
+  selection it starts at 0. An engine-initiated stop (AC-8, SPEC-001 device loss) leaves the playhead at
+  the heard position.
 
 ## 6. Test plan
 
@@ -205,6 +217,7 @@ Shift+Space = Record without the same caveat, since recording's shortcut is equa
 | AC-6 | Extrapolation formula (`§2.2`) unit-tested against synthetic anchors + a fake now-clock, checked against a ground-truth linear position function | Fake backend + simulated clock-sync offset/jitter; assert predicted vs. true position error stays within ± 10 ms across a played interval | n/a (sub-frame timing not practically eyeballed); rely on the integration test |
 | AC-7 | Resample-ratio exactness (`rubato::Fft` wrapper) against a synthetic 1 kHz tone, measured with `testkit` frequency estimation | Fake backend configured with a device rate ≠ document rate; assert tone frequency and playhead accuracy (reuses AC-6's harness) | Force a rate mismatch via Settings (SPEC-001) on a real device if one is available that doesn't support the document's rate; otherwise this AC is covered by the integration test only |
 | AC-8 | n/a (cross-spec sequencing, not a pure function here) | Fake backend: trigger a destructive edit mid-playback (stub from SPEC-004's test surface), assert transport-stop event precedes the snapshot swap | Perform a destructive edit (e.g. trim) while a file plays, confirm playback stops before the edit visibly applies |
+| AC-9 | Transport state machine: Stop → play-start position, Pause → hold, engine stop → hold; Play from start with/without selection | Fake backend: play from P₀, stop at P, assert heard position = P₀; pause variant = P | Play, Stop (jumps back), Play, Space (stays); Shift+Space with and without a selection |
 
 ## 7. Out of scope
 
@@ -216,17 +229,19 @@ Shift+Space = Record without the same caveat, since recording's shortcut is equa
 - Undo/redo shortcuts (Ctrl+Z / Shift+Z, PROMPT §3.6) — SPEC-004.
 - The full Audition shortcut map beyond the transport commands named in this ticket (owner review at
   M7 per PROMPT §7).
-- Whether VoxEdit adopts Audition's "return playhead to start on stop" legacy preference (Shift+X) —
-  noted in §2.5 as verified Audition behavior but not decided for VoxEdit; open question below.
+- Whether PowerVoice adopts Audition's "return playhead to start on stop" legacy preference (Shift+X) —
+  noted in §2.5 as verified Audition behavior but not decided for PowerVoice; open question below.
 
 ---
 
-**Open questions for the owner:**
-1. Should VoxEdit implement Audition's "return playhead to start on stop" preference (default off,
-   toggle verified as Shift+X in Audition)? This spec currently assumes VoxEdit always leaves the
+**Open questions for the owner** — resolved at the M0 checkpoint: (1) Stop returns the playhead to
+the play start (§2.1, AC-9); (2) Shift+Space = Play from start, Record provisionally Shift+R; (3) the
+loop-toggle key is assigned in SPEC-019. Original questions:
+1. Should PowerVoice implement Audition's "return playhead to start on stop" preference (default off,
+   toggle verified as Shift+X in Audition)? This spec currently assumes PowerVoice always leaves the
    playhead in place on Pause/Stop (Audition's modern default), with no such preference in v1.
 2. Record's default shortcut is unverified and contradicts PROMPT §3.6's "Shift+Space record" claim
    (§2.5). Needs either a working fetch of the official Adobe page or an explicit owner decision to
    keep/drop that binding.
 3. Loop Playback's default shortcut is unverified (no source found any binding at all) — assign a
-   VoxEdit-specific key, or leave loop toggle mouse/menu-only for v1?
+   PowerVoice-specific key, or leave loop toggle mouse/menu-only for v1?

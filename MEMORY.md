@@ -1,7 +1,8 @@
 # MEMORY.md — Project memory (curated by the orchestrator only)
 
 ## Status
-- **Current milestone:** M0 Foundations — **all tickets done; at M0 checkpoint, waiting for owner review** (`docs/checkpoints/M0.md`)
+- **AUTONOMOUS MODE (D-021, 2026-09-12, owner going to sleep):** "keep the development without asking me anything anymore … not doing checkpoints anymore … until the end of the tickets." → Run every milestone back-to-back with no owner checkpoints and no questions. Owner-facing choices use the documented recommended default and are logged as "D-0xx (autonomous)". Still gate every ticket (`just check`, Opus review where required). **T-811 VST2 stays gated** (needs explicit legal sign-off; skip it and report at the end). M8 deferred choices use defaults: sandboxed-plugin monitoring latency = accept + show (SPEC-002 OD-1 A); unsigned native modules = allowed with a warning dialog.
+- **Current milestone:** M0 done (checkpoint passed 2026-09-12, decisions D-011…D-020). M1 starting after T-009 (code rename) merges; M2 spec wave (T-200) running in parallel.
 - **Last checkpoint:** none (M0 is the first)
 - **Status line superseded:** the "Next action" line below is historical; after owner answers, apply decisions to specs (OD boxes), mark specs/ADRs approved, then write full M1 ticket files (T-101…T-110) and dispatch M1 W1.
 - **Next action:** M0 W1 running: T-001 (Haiku), T-002/T-003 (Opus, docs-only) — all in main tree, disjoint files. Then W2: T-006 after T-001; T-004 after T-001+T-002; T-005 after T-001+T-003.
@@ -12,7 +13,7 @@
 - Orchestrator: never `cd` into a worktree in Bash — the harness then switches the session's primary working directory into it. Use `git -C <path>` and absolute paths / `--manifest-path`. If it happens anyway, `cd` back to the main repo **before** `git worktree remove` of that worktree (removing the shell's cwd breaks the shell).
 - Squash-merging a ticket branch that predates other merges usually conflicts only in `Cargo.lock`: take `--ours` (main) and let `just check` re-resolve, then `git add Cargo.lock`.
 - Edition 2024 reserves `gen` — don't use it as an identifier (testkit uses `signal`).
-- Package naming: `vox-<crate>` for libraries (dirs stay `crates/<crate>`), `voxedit-cli` (bin `voxedit-cli`), `voxedit-app` (src-tauri).
+- Package naming: `vox-<crate>` for libraries (dirs stay `crates/<crate>`), `powervoice-cli` (bin `powervoice-cli`), `powervoice-app` (src-tauri).
 
 ## Decisions log
 | ID | Date | Decision | Where |
@@ -25,7 +26,7 @@
 | D-006 | 2026-09-12 | Installable modules packaged as CLAP bundles (`clack-plugin`) | ADR-006 (pending) |
 | D-007 | 2026-09-12 | LAME (LGPL-2.0+) **loaded at runtime via `libloading`** with our own FFI table (mp3lame-encoder rejected: static-only); MP3 export disabled if lib missing. ysfx (Apache-2.0 lib) only in sandbox (crash isolation). VST2 gated, via Carla | ADR-007 |
 | D-008 | 2026-09-12 | Module API per ADR-005 (`activate`/`process`/`reset`/`deactivate`, event lists with offsets, host-owned bypass, typed extensions); supersedes PROMPT §3.7 wording `prepare`/`tail_samples()`; `module-api` deps: serde + thiserror | ADR-005 |
-| D-009 | 2026-09-12 | Installable modules = CLAP plugins via `clack-plugin` 0.2 in a `module-clap` crate, `org.voxedit.module-info/1` extension, `.voxmod` zip packages, run in the sandbox | ADR-006 |
+| D-009 | 2026-09-12 | Installable modules = CLAP plugins via `clack-plugin` 0.2 in a `module-clap` crate, `org.powervoice.module-info/1` extension, `.voxmod` zip packages, run in the sandbox | ADR-006 |
 | D-010 | 2026-09-12 | Sandbox: one process per plugin instance; pipelined realtime path (+1 block latency, reported), blocking offline path; failure → bypass + notice (playback), abort (export/bake) | ADR-008 |
 
 ## Conventions
@@ -63,16 +64,31 @@
 | ysfx JIT crashes | confined to `plugin-sandbox` (library is Apache-2.0) |
 | AAC decoding patents | legal review before public distribution (symphonia AAC is opt-in feature) |
 
-## Open questions for the owner (ask at M0 checkpoint)
+## Owner decisions at the M0 checkpoint (2026-09-12)
+| ID | Decision |
+|---|---|
+| D-011 | License **MIT OR Apache-2.0** (LICENSE-MIT, LICENSE-APACHE; metadata in T-104) |
+| D-012 | **Renamed to PowerVoice** (formerly the working name VoxEdit); app id `app.<name>.editor`, module ids `org.<name>.*` unless the owner gives a domain |
+| D-013 | MP3 export via runtime-loaded `libmp3lame` (`libloading`) approved |
+| D-014 | Shortcuts: **Shift+Space = Play from start** (plays from selection start or 0); **Record = Shift+R (provisional)**; loop key in SPEC-019. PROMPT §3.6 "Shift+Space record" was wrong |
+| D-015 | SPEC-004 OD-1 drop oldest undo steps with notice · OD-2 keep recovery data until discarded · OD-3 accept import cost (< 3 s open on SSD/NVMe only) · OD-4 rack edits not undoable except bake restores the rack (ADR-004 Amendment 1) |
+| D-016 | `WEBKIT_DISABLE_DMABUF_RENDERER=1` **on by default** on Linux, opt-out `POWERVOICE_WEBKIT_DMABUF=1` (ADR-009 Amendment 1; T-104) |
+| D-017 | Output device lost while recording → **recording continues** (SPEC-001 §2.4 exception, SPEC-002 AC-16) |
+| D-018 | **Stop returns the playhead to the play-start position**; Pause keeps it; engine-initiated stops behave like Pause (SPEC-003 §2.1, AC-9) |
+| D-019 | Whole-rack A/B is listening-only; exports always render the rack |
+| D-020 | Record works with only an input device (SPEC-001 §2.3) |
+Deferred to the M8 checkpoint: VST2 via Carla, unsigned native modules, sandboxed-plugin monitoring latency (SPEC-002 OD-1).
+
+## Open questions for the owner (M0 items below were resolved — see the table above)
 - Project license (none chosen yet — private).
-- Final product name (working name "VoxEdit").
+- Final product name (working name "PowerVoice").
 - (ADR-004) Session disk budget exceeded (proposed max(8 GiB, 8× doc), keep ≥ 2 GiB free): auto-drop oldest undo steps with a notice, or warn only?
 - (ADR-004) Recoverable sessions: keep until the user discards them (proposed), or auto-delete after N days?
 - (ADR-004) Opening a file imports it into the session store (~1.33× file size on disk for 24-bit). Acceptable? Slow HDDs may miss the < 3 s open target.
 - (ADR-007) Confirm LAME via runtime-loaded `libmp3lame` (bundled as a separate replaceable library on Windows/macOS/AppImage; system dependency on deb/Arch). Needed before M6.
 - (ADR-007) Project license: MIT OR Apache-2.0 (recommended) vs GPL-3.0-or-later (GPL-2.0-only is incompatible with Apache-2.0 deps).
 - (ADR-008) VST2 via Carla bridge (T-811): approve or reject.
-- (ADR-006) Module id namespace `org.voxedit.*` + app identifier `app.voxedit.editor` become permanent at M3 (first sidecar) — decide together with the product name.
+- (ADR-006) Module id namespace `org.powervoice.*` + app identifier `app.powervoice.editor` become permanent at M3 (first sidecar) — decide together with the product name.
 - (ADR-006) Allow installing unsigned native modules? (sandbox isolates crashes, not malice)
 - (SPEC-003) Audition default shortcuts: Space = play/stop and Home = return to start are verified; **Record (PROMPT says Shift+Space) and loop-toggle bindings are unverified** (one source says Shift+Space = "play from start"). Owner knows Audition — confirm Record/loop keys. Also: adopt Audition's "return playhead to start on stop" preference (Shift+X)?
 - (ADR-009) Make `WEBKIT_DISABLE_DMABUF_RENDERER=1` the default for Linux (`just dev` and packaged launcher), with an opt-out? Also: run the ADR-009 §6 manual input checklist (`just spike`, focused window: Space, Shift+Space, Ctrl+Z, Ctrl+Shift+Z, drag coordinates).
@@ -92,9 +108,9 @@
 
 ## Ticket learnings
 _(appended after each merged ticket)_
-- **T-007** (Sonnet + orchestrator Opus review, 2026-09-12): ADR-009 — WebGL2 primary, Canvas2D fallback (feature-detect `webgl2`, fall back on `webglcontextlost`); IPC `Response`/`Channel` raw payloads arrive as `ArrayBuffer`, ~80–88 MB/s for 10 MB; **telemetry default 60 Hz** (free); `WEBKIT_DISABLE_DMABUF_RENDERER=1` roughly halves frame time on AMD/Mesa too (p50 17 → 10 ms, ~59 → ~100 fps; slightly higher worst-case spikes); Hyprland doesn't throttle rAF for visible-but-unfocused windows. Gotchas: Tauri commands taking `AppHandle<R>` must stay generic over `R: tauri::Runtime` to work inside `ipc_commands!`; automation must race rAF/IPC steps against `setTimeout` watchdogs (one unexplained >15 min hang seen once). `just spike` (+ `VOXEDIT_SPIKE_EXIT=1`) is the reusable harness.
+- **T-007** (Sonnet + orchestrator Opus review, 2026-09-12): ADR-009 — WebGL2 primary, Canvas2D fallback (feature-detect `webgl2`, fall back on `webglcontextlost`); IPC `Response`/`Channel` raw payloads arrive as `ArrayBuffer`, ~80–88 MB/s for 10 MB; **telemetry default 60 Hz** (free); `WEBKIT_DISABLE_DMABUF_RENDERER=1` roughly halves frame time on AMD/Mesa too (p50 17 → 10 ms, ~59 → ~100 fps; slightly higher worst-case spikes); Hyprland doesn't throttle rAF for visible-but-unfocused windows. Gotchas: Tauri commands taking `AppHandle<R>` must stay generic over `R: tauri::Runtime` to work inside `ipc_commands!`; automation must race rAF/IPC steps against `setTimeout` watchdogs (one unexplained >15 min hang seen once). `just spike` (+ `POWERVOICE_SPIKE_EXIT=1`) is the reusable harness.
 - **T-005 review outcome** (1 fix round; 1 blocking = derived Clone dropping EventList capacity): `ModuleTestHost` immediate-effect check is now **opt-out** — built-in modules must declare deliberately delayed params (time constants, thresholds, neutral-section enables) via `ModuleTestHost::allow_delayed_effect(id)`; event-timing/flush/state checks are latency-aware and run in `Offline` mode; `display_decimals()` derives text precision from step (exact round-trip); `ProcessStatus` is `#[non_exhaustive]` (deviation from ADR-005 sketch); workspace `serde_json` has `float_roundtrip`; `clippy.toml` disallows raw `assert_no_alloc`.
 - **T-005** (Opus, 2026-09-12): ADR-005 implemented in `vox-module-api` (+ `test-util`: `ModuleTestHost`, `TestGain`, `TestRng`, `install_test_allocator!()`) and `vox-rack` skeleton. Gotchas: `serde_json` needs feature `float_roundtrip` for bit-exact f64 (sidecar in `project` must enable it); `assert_no_alloc` workspace dep has no default features, module-api enables `warn_debug`+`warn_release` (never enable `disable_release` → compile_error); every test binary using `ModuleTestHost` must call `vox_module_api::install_test_allocator!();`; clippy wants `.is_multiple_of(n)` instead of `x % n == 0`. Orchestrator decisions: stepped params' display decimals derive from step (exact text round-trip); module registry → T-103; T-103 coalesces same-offset same-id param events in place (latest wins).
-- **T-006** (Sonnet + Opus review, 2026-09-12; 1 fix round, 2 blocking findings): `vox-testkit` = generators (PCG32 verified vs reference vector, Kellet pink, sweeps, bursts, Tech 3341/3342 cases), measurements, golden helpers, WAV I/O; `voxedit-cli gen|analyze [--json]`, `gen-fixtures` bin (`just fixtures`, 60-min file streams at ~15 MB RSS). **Measurement conventions:** `-inf` = digital silence, `NaN` = non-finite input anywhere (never masquerades as silence), `None`/"n/a" = input shorter than the window (noise floor 500 ms, momentary 0.4 s, short-term 3 s); JSON uses `null` for −inf/NaN. Noise generator levels are **RMS dBFS**. Noise floor is per channel, worst reported. `hound::WavWriter` accepts `Cursor<&mut Vec<u8>>`. `ebur128` only exposes current M/S windows → poll every 100 ms for max values.
+- **T-006** (Sonnet + Opus review, 2026-09-12; 1 fix round, 2 blocking findings): `vox-testkit` = generators (PCG32 verified vs reference vector, Kellet pink, sweeps, bursts, Tech 3341/3342 cases), measurements, golden helpers, WAV I/O; `powervoice-cli gen|analyze [--json]`, `gen-fixtures` bin (`just fixtures`, 60-min file streams at ~15 MB RSS). **Measurement conventions:** `-inf` = digital silence, `NaN` = non-finite input anywhere (never masquerades as silence), `None`/"n/a" = input shorter than the window (noise floor 500 ms, momentary 0.4 s, short-term 3 s); JSON uses `null` for −inf/NaN. Noise generator levels are **RMS dBFS**. Noise floor is per channel, worst reported. `hound::WavWriter` accepts `Cursor<&mut Vec<u8>>`. `ebur128` only exposes current M/S windows → poll every 100 ms for max values.
 - **T-004** (Sonnet, 2026-09-12): Tauri 2.11.5 / @tauri-apps/api 2.11.1 / cli 2.11.4, Svelte 5.57, Vite 8.3, Vitest 5.0, TypeScript 6.0, jsdom 30. Gotchas: `cargo test -p X` runs with cwd = package dir → pass absolute paths (`{{justfile_directory()}}`) for `TS_RS_EXPORT_DIR`; `#[tauri::command]` emits a hidden macro → import command modules by glob for `generate_handler!`; Vitest needs `resolve.conditions: ["browser"]` for Svelte `mount()`; Tauri CLI run from `ui/` needs `TAURI_APP_PATH=../src-tauri`; plain `cargo test` writes ts-rs output to `src-tauri/bindings/` (gitignored). `check-types` diffs only ts-rs-generated files. Main tree needs `npm --prefix ui ci` after merges touching `ui/package-lock.json`.
 - **T-001** (Haiku, 2026-09-12): workspace + 9 crate skeletons, lints, justfile, `.githooks/pre-commit` (fmt check; `core.hooksPath` set). `just check` UI steps auto-activate once `ui/package.json` exists. Parallel tickets that edit root `Cargo.toml`/`justfile` must run in worktrees from now on.

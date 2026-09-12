@@ -1,10 +1,10 @@
 # ADR-001 — Architecture overview & crate graph
-- Status: proposed
+- Status: accepted (owner, M0 checkpoint 2026-09-12)
 - Date: 2026-09-12
 - Deciders: owner, orchestrator
 
 ## Context
-VoxEdit is a Tauri 2 desktop editor for one mono file at a time, with a non-destructive effects rack
+PowerVoice is a Tauri 2 desktop editor for one mono file at a time, with a non-destructive effects rack
 applied identically to playback, monitoring and export (PROMPT §2). All audio, DSP, file I/O and
 document state are in Rust; the Svelte 5 UI only renders and sends intents. Every rack slot is a
 Module API processor, so the rack must be "plugin-shaped" from day one even though external plugins
@@ -21,7 +21,7 @@ WebView or disk, (b) give the rack exactly **one code path** for real-time and o
 - **App process**: Tauri core (Rust) + system WebView (WebKitGTK / WebView2 / WKWebView). The engine,
   document and jobs all run in the Rust core. See ADR-002 for threads and ADR-003 for IPC.
 - **`plugin-sandbox` processes** (M8): host external plugins behind shared memory (ADR-008).
-- **`voxedit-cli`**: a separate binary with no Tauri. It never opens audio devices except through
+- **`powervoice-cli`**: a separate binary with no Tauri. It never opens audio devices except through
   the engine's fake backend for `bench`.
 
 ### 2. Crate graph
@@ -30,11 +30,11 @@ are omitted for readability).
 
 ```mermaid
 graph TD
-  app["src-tauri (voxedit-app)"] --> engine
+  app["src-tauri (powervoice-app)"] --> engine
   app --> project
   app --> rack
   app -. "M8: registers factories" .-> phost[plugin-host]
-  cli[voxedit-cli] --> rack
+  cli[powervoice-cli] --> rack
   cli --> project
   cli --> io
   cli --> testkit

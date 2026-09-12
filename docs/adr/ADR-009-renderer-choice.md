@@ -1,5 +1,5 @@
 # ADR-009 — Renderer choice & Linux workarounds
-- Status: proposed (owner review at M0)
+- Status: accepted (owner, M0 checkpoint 2026-09-12)
 - Date: 2026-09-12
 - Deciders: owner, orchestrator
 
@@ -14,10 +14,10 @@ machine (Arch, Hyprland/Wayland, AMD Phoenix iGPU/Mesa, WebKitGTK 4.1, Tauri 2.1
 rendering performance" with `WEBKIT_DISABLE_DMABUF_RENDERER=1` as a candidate workaround, previously
 only linked to NVIDIA.
 
-T-007 builds a dev-only spike (`--features spike` on `voxedit-app`, `ui/src/spike/`, `just spike`)
+T-007 builds a dev-only spike (`--features spike` on `powervoice-app`, `ui/src/spike/`, `just spike`)
 that generates synthetic data in Rust matching these shapes, renders it with both WebGL2 and
 Canvas2D, and measures frame times, IPC throughput and telemetry cost automatically
-(`VOXEDIT_SPIKE=1`, `VOXEDIT_SPIKE_EXIT=1`), on the owner's real hardware, with and without
+(`POWERVOICE_SPIKE=1`, `POWERVOICE_SPIKE_EXIT=1`), on the owner's real hardware, with and without
 `WEBKIT_DISABLE_DMABUF_RENDERER=1`. This ADR records the results and the decision.
 
 ## Decision
@@ -50,7 +50,7 @@ All runs: synthetic 60-minute 48 kHz mono waveform peaks (337 500 buckets, spp 5
 delivered over a `Channel`), a synthetic 1024×512 u8 spectrogram texture (≈512 KB, delivered via
 `ipc::Response`), 10 s zoom/scroll sweeps, 10 MB IPC throughput both ways, and 30 Hz/60 Hz telemetry
 (72-byte `VXTM`-shaped frames) for 5 s each. Two full runs per configuration (`just spike`, i.e.
-`npm run tauri dev --features spike`, `VOXEDIT_SPIKE=1 VOXEDIT_SPIKE_EXIT=1`), window mapped and on
+`npm run tauri dev --features spike`, `POWERVOICE_SPIKE=1 POWERVOICE_SPIKE_EXIT=1`), window mapped and on
 the active workspace throughout but **not focused** (launched non-interactively) — recorded per run
 via `document.visibilityState`/`document.hasFocus()`; every run below had
 `visibilityState: "visible"` start-to-end and was **not** flagged `likelyThrottled` (see §5). Full
@@ -127,7 +127,7 @@ settings toggle back to 30 Hz kept only for headroom on lower-end machines (unte
 - **`WEBKIT_DISABLE_DMABUF_RENDERER=1`**: MEMORY.md previously linked this workaround only to
   NVIDIA. This spike shows a clear, repeatable ~1.7x frame-time improvement on **AMD Phoenix/Mesa**
   too (§3), so the gotcha is broader than one vendor. `just dev` already exposes
-  `VOXEDIT_WEBKIT_SAFE=1` for this; recommend making it the **documented default** for Linux
+  `POWERVOICE_WEBKIT_SAFE=1` for this; recommend making it the **documented default** for Linux
   builds/packaging (an env var set by the launcher script/`.desktop` file, not a code change), with
   an escape hatch to unset it if a future driver update changes the balance. This is an environment
   workaround, not a renderer-choice fork: it affects both WebGL2 and Canvas2D equally (§3), so it
@@ -146,7 +146,7 @@ That said, during development one run of the automated suite hung indefinitely (
 output, the window mapped/visible/unfocused on its active workspace) before this behavior was
 reproduced reliably; the cause was not conclusively identified (candidates: a first-run WebKitGTK/
 JIT warm-up hiccup, a transient compositor issue — genuine rAF starvation was not observed in any
-of the 4 recorded runs). Since a hang either way would silently block `VOXEDIT_SPIKE_EXIT=1` forever
+of the 4 recorded runs). Since a hang either way would silently block `POWERVOICE_SPIKE_EXIT=1` forever
 in automation, `ui/src/spike/frameBench.ts`/`telemetry.ts`/`results.ts` now race every rAF- and
 IPC-driven step against a plain `setTimeout` watchdog independent of rAF, and `results.ts` catches
 each step's failure independently so the suite always writes a JSON (flagging `incomplete`/
@@ -156,7 +156,7 @@ meaningfully from this appendix, rAF throttling-when-unfocused is real on your s
 called out before M2.
 
 ### 6. Manual input checklist (owner, at the M0 checkpoint)
-Run `just spike` (window stays open without `VOXEDIT_SPIKE_EXIT`) and, with the window focused:
+Run `just spike` (window stays open without `POWERVOICE_SPIKE_EXIT`) and, with the window focused:
 1. Press **Space** — confirm a `keydown Space` / `keyup Space` line appears in the input log.
 2. Press **Shift+Space** — confirm it logs as `Shift+Space` (not just `Space`, i.e. the modifier is
    captured).
@@ -228,3 +228,9 @@ Run `just spike` (window stays open without `VOXEDIT_SPIKE_EXIT`) and, with the 
   run, and confirm the `WEBKIT_DISABLE_DMABUF_RENDERER=1`-by-default packaging decision (§4).
 - For M2: re-measure with production-realistic tile sizes/update rates once the real spectrogram
   pipeline exists, to confirm §2's Canvas2D-widens-the-gap argument rather than assume it.
+
+## Amendment 1 — M0 checkpoint (2026-09-12): DMA-BUF workaround on by default
+The owner decided: on Linux, `WEBKIT_DISABLE_DMABUF_RENDERER=1` is **on by default** — set by the app
+itself at startup (before the WebView initializes, only if the variable is not already set) and by
+`just dev`/`just spike` — with an opt-out: `POWERVOICE_WEBKIT_DMABUF=1` keeps the default WebKit DMA-BUF
+renderer. Implemented in T-104.

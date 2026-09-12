@@ -1,8 +1,8 @@
 # SPEC-012 — Module API & rack
 
-- **Status:** draft
+- **Status:** approved (owner, M0 checkpoint 2026-09-12)
 - **Milestone:** M1 (T-103: registry, chain swap, host bypass, dual-mono shim, parameter routing and
-  coalescing, latency sum, Gain, offline render, `voxedit-cli render --rack`). M4 adds latency
+  coalescing, latency sum, Gain, offline render, `powervoice-cli render --rack`). M4 adds latency
   compensation (T-401), the rack panel and generic parameter UI (T-405) and presets (T-406). Each AC
   is tagged with its milestone.
 - **Related:** SPEC-000 (glossary), SPEC-002 (through-rack monitoring latency), SPEC-003 (heard
@@ -158,7 +158,7 @@ Loading a parameter-only module preset behaves like typed values: smoothed, with
 with a state blob replaces the instance behind the 15 ms crossfade. The storage format belongs to
 T-406.
 
-### 2.8 Offline render (M1: T-103 and `voxedit-cli render --rack`; used by export, bake and ACX later)
+### 2.8 Offline render (M1: T-103 and `powervoice-cli render --rack`; used by export, bake and ACX later)
 - **Same code.** The offline render uses the same rack code as realtime, with its own module
   instances, in offline mode, with 4096-frame blocks (ADR-001 §5, ADR-002 §2).
 - **Length and alignment.**
@@ -173,7 +173,7 @@ T-406.
 - **Equal to preview.** Realtime output with the same input and parameter changes at the same sample
   positions differs by at most **1e-6** absolute (≈ −120 dBFS), after aligning by the reported latency
   (ADR-001 §5).
-- **CLI.** `voxedit-cli render --rack <rack.json> <in.wav> <out.wav>`:
+- **CLI.** `powervoice-cli render --rack <rack.json> <in.wav> <out.wav>`:
   - the rack file uses the sidecar's slot schema (ADR-005 §10);
   - an unknown module id is an **error** (exit ≠ 0, listing the missing ids), because a render must
     never be silently dry;
@@ -204,15 +204,16 @@ T-406.
 
 > **OWNER DECISION OD-1 — Are rack edits undoable?**
 > This is decided together with SPEC-004 **OD-4**, and the options and rationale are there.
-> **Recommended default used here: rack edits are not in the document undo history in v1. Undoing a
+> **✅ Decided by the owner at the M0 checkpoint: rack edits are not in the document undo history in v1. Undoing a
 > bake restores the pre-bake rack.**
 
 > **OWNER DECISION OD-2 — Module id namespace (ADR-005 open question 1, ADR-006 open question 3).**
-> Built-in ids (`org.voxedit.gain`, …) become permanent once the first sidecar is written (M3, T-306).
-> - **A.** Keep `org.voxedit.*`, even if the product is renamed.
+> Built-in ids (`org.powervoice.gain`, …) become permanent once the first sidecar is written (M3, T-306).
+> - **A.** Keep `org.powervoice.*`, even if the product is renamed.
 > - **B.** Switch to the final product's namespace before M3.
 >
-> **Recommended default: A until the owner names the product; decide at the M2 checkpoint at the
+> **Owner decision (M0 checkpoint): rename the product now; built-in ids use the new product's
+> namespace from M1 on (MEMORY D-012).** Superseded recommendation: A until the owner names the product; decide at the M2 checkpoint at the
 > latest.**
 
 ## 3. Parameters
@@ -228,7 +229,7 @@ Rack behavior constants:
 | `edit_audible_ms` | Rack edit → audible | ms | — | ≤ 50 | fixed | plus heavy module activation |
 | `latency_update_ms` | Latency readout update after a change | ms | — | ≤ 100 | fixed | |
 
-Built-in **Gain** module (M1, `org.voxedit.gain@1.0.0`):
+Built-in **Gain** module (M1, `org.powervoice.gain@1.0.0`):
 
 | id | name | unit | range | default | taper/step | notes |
 |---|---|---|---|---|---|---|
@@ -372,11 +373,11 @@ to offset 0 and are coalesced the same way.
   - Two offline renders are bit-identical (FNV-1a hash equal).
 - **AC-10 [M1] (offline alignment and CLI).**
   - Given an impulse at sample 1000 of a 48 000-sample WAV and a rack [TestDelay 480], when rendered
-    offline (engine job or `voxedit-cli render --rack`), then the output is 48 000 samples long with
+    offline (engine job or `powervoice-cli render --rack`), then the output is 48 000 samples long with
     the impulse at exactly sample 1000.
   - Given a rack file naming an unknown module, the CLI exits with a non-zero status and lists the
     missing id.
-  - The CLI's output for a Gain −6 dB rack on a −20 dBFS 997 Hz sine analyses (`voxedit-cli analyze`)
+  - The CLI's output for a Gain −6 dB rack on a −20 dBFS 997 Hz sine analyses (`powervoice-cli analyze`)
     to a peak of −26.00 ± 0.01 dBFS.
 - **AC-11 [M1] (exact text round-trip for stepped parameters).** For each of the following synthetic
   stepped parameters, and every stepped parameter of every built-in, `text_to_value(value_to_text(v))`
@@ -425,7 +426,7 @@ to offset 0 and are coalesced the same way.
 | AC-7 | `push_event` coalescing and overflow | — | — |
 | AC-8 | latency sum incl. bypass/placeholder | restart swap updates readouts (T-401 for compensation) | check readouts (M4) |
 | AC-9 | — | fake backend vs `rack::offline::render`, seeded | — |
-| AC-10 | offline trim | `voxedit-cli gen impulse` → `render --rack` → `analyze` | — |
+| AC-10 | offline trim | `powervoice-cli gen impulse` → `render --rack` → `analyze` | — |
 | AC-11 | exhaustive / seeded text round-trip | — | type values into fields (M4) |
 | AC-12 | — | Vitest with a schema fixture and mocked IPC | inspect a built-in's panel (M4) |
 | AC-13 | registry resolution → placeholder | sidecar round-trip (M3) | — |
@@ -452,7 +453,7 @@ Signals come from testkit (`sine`, `white`, `pink`, `log_sweep`, `impulse`); not
 - CPU budget and pausing bypassed modules (ADR-005 open question 2, T-704).
 
 **Open questions**
-1. Whole-rack A/B is a listening-only aid that offline renders ignore (§2.3). This spec decides that
+1. ✅ Owner-confirmed at the M0 checkpoint: whole-rack A/B is a listening-only aid that offline renders ignore (§2.3). This spec decides that
    to prevent accidentally dry exports. The owner may prefer "export what you hear".
 2. Should reordering require moved modules to keep their state as well? Currently they may reset
    behind the crossfade.

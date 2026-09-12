@@ -1,5 +1,5 @@
 # ADR-008 — Plugin sandbox outline
-- Status: proposed
+- Status: accepted (owner, M0 checkpoint 2026-09-12)
 - Date: 2026-09-12
 - Deciders: owner, orchestrator
 
@@ -15,13 +15,13 @@ come from PROMPT §3.7:
 - native editors in M9, using X11/XWayland on Linux.
 
 This is the outline M8 builds on (T-801 ring/wakeup, T-802 process/watchdog/proxy, T-804 scanning,
-T-901 editors). Real-time rules (CLAUDE.md, ADR-002) apply to the engine side. Installed VoxEdit
+T-901 editors). Real-time rules (CLAUDE.md, ADR-002) apply to the engine side. Installed PowerVoice
 modules run here too (ADR-006).
 
 ## Decision
 
 ### 1. One sandbox process per plugin instance
-Each external plugin instance in the rack gets its own `voxedit-plugin-sandbox` process. Reasons:
+Each external plugin instance in the rack gets its own `powervoice-plugin-sandbox` process. Reasons:
 - **Exact blame:** a crash or hang identifies exactly one plugin, so flagging and blocklisting are
   precise.
 - **Minimal blast radius:** other slots keep running.
@@ -139,9 +139,9 @@ flowchart LR
   Runtime crashes only flag, and the user decides whether to blocklist.
 
 ### 6. Scanning happens in the sandbox
-- `voxedit-plugin-sandbox --scan <file> --format <clap|vst3|lv2|jsfx>` loads **one plugin file per
+- `powervoice-plugin-sandbox --scan <file> --format <clap|vst3|lv2|jsfx>` loads **one plugin file per
   process**, enumerates its plugins (descriptor, audio ports, supported layouts, parameter count,
-  VoxEdit `module-info` if present), prints JSON and exits.
+  PowerVoice `module-info` if present), prints JSON and exits.
 - T-804 orchestrates scans: N parallel scans (N = cores/2), cached by (path, size, mtime).
 - VST3 bundles with `moduleinfo.json` are indexed without loading code (T-806).
 - A crashing scan can't kill the editor or the rest of the scan.

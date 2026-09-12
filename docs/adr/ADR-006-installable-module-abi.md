@@ -1,5 +1,5 @@
 # ADR-006 — Installable module ABI (CLAP bundles)
-- Status: proposed
+- Status: accepted (owner, M0 checkpoint 2026-09-12)
 - Date: 2026-09-12
 - Deciders: owner, orchestrator
 
@@ -25,7 +25,7 @@ Relevant facts, checked 2026-09-12:
 ## Decision
 
 ### 1. Binary: a standard CLAP plugin, built with `clack-plugin`
-A separately installed VoxEdit module is a **standard CLAP 1.2 plugin** built with `clack-plugin`
+A separately installed PowerVoice module is a **standard CLAP 1.2 plugin** built with `clack-plugin`
 and `clack-extensions`. There is no custom ABI. A new crate **`module-clap`** (M8, T-805; depends on
 `module-api`, `clack-plugin`, `clack-extensions`) provides a generic wrapper
 `ClapModule<F: ModuleFactory>` plus an export macro. A module author writes an ordinary `Module`
@@ -48,17 +48,17 @@ vendor extensions (C ABI structs, ids fixed here, shared with ADR-005 `Extension
 
 | Extension id | Purpose | Calls (thread) |
 |---|---|---|
-| `org.voxedit.module-info/1` | Everything CLAP can't express: param keys, i18n keys, taper, unit, decimals, `smoothing_ms`, enum labels, groups with `enable_param`, `state_format_version`, `api_version`, telemetry channel list, which of the extensions below are present | `get_info(plugin, clap_ostream*)` writes **UTF-8 JSON = serde of the ADR-005 types** (`ParamInfo[]` keyed by `clap_id`, `ParamGroup[]`, …) [main-thread] |
-| `org.voxedit.telemetry/1` | `Telemetry` | `count`, `read(index) -> float` [thread-safe, wait-free] |
-| `org.voxedit.response-curve/1` | `ResponseCurve` | `magnitude_db(values*, n, sr, freqs*, out*, m)`, `component_*` [thread-safe, non-RT] |
-| `org.voxedit.noise-profile/1` | `NoiseProfile` | `capture(samples*, n, sr, values*, out_stream)`, `describe(blob, out_stream)` [main-thread] |
+| `org.powervoice.module-info/1` | Everything CLAP can't express: param keys, i18n keys, taper, unit, decimals, `smoothing_ms`, enum labels, groups with `enable_param`, `state_format_version`, `api_version`, telemetry channel list, which of the extensions below are present | `get_info(plugin, clap_ostream*)` writes **UTF-8 JSON = serde of the ADR-005 types** (`ParamInfo[]` keyed by `clap_id`, `ParamGroup[]`, …) [main-thread] |
+| `org.powervoice.telemetry/1` | `Telemetry` | `count`, `read(index) -> float` [thread-safe, wait-free] |
+| `org.powervoice.response-curve/1` | `ResponseCurve` | `magnitude_db(values*, n, sr, freqs*, out*, m)`, `component_*` [thread-safe, non-RT] |
+| `org.powervoice.noise-profile/1` | `NoiseProfile` | `capture(samples*, n, sr, values*, out_stream)`, `describe(blob, out_stream)` [main-thread] |
 
 - **JSON inside the extension:** one serde schema is shared by the sidecar, the IPC and the package.
   This keeps the C struct small and stable (one function), and schema evolution is additive JSON
   fields. A breaking change bumps the id to `/2`, and the host keeps accepting `/1` as long as that is
   practical.
-- **CLAP state for VoxEdit modules = UTF-8 JSON of `ModuleState`** (the same schema as the sidecar).
-  Our CLAP adapter recognises `module-info` and treats such a plugin as a **VoxEdit module**:
+- **CLAP state for PowerVoice modules = UTF-8 JSON of `ModuleState`** (the same schema as the sidecar).
+  Our CLAP adapter recognises `module-info` and treats such a plugin as a **PowerVoice module**:
   - it is registered under its bare id, not `clap:<id>`;
   - its state is **key-based**, not blob-only, so presets stay readable and migratable;
   - migrations run inside the plugin on `state.load`.
@@ -98,7 +98,7 @@ licenses/…
 }
 ```
 
-The runtime extension is self-sufficient. A bare `.clap` VoxEdit module dropped into a CLAP folder
+The runtime extension is self-sufficient. A bare `.clap` PowerVoice module dropped into a CLAP folder
 works fully; it just lacks the package's presets and translations. The package format needs one new
 dependency, a zip reader. The proposed `zip` crate's license is recorded in ADR-007 and it needs
 orchestrator approval before M8.
@@ -106,7 +106,7 @@ orchestrator approval before M8.
 ### 4. Built-in modules
 Built-ins stay compiled in and in-process in v1, implementing the same Module API. The shipping app
 never loads built-ins from CLAP. **T-805** proves the path end to end:
-1. Wrap `org.voxedit.gain` with `module-clap`, using the id suffix `.packaged` to avoid a registry
+1. Wrap `org.powervoice.gain` with `module-clap`, using the id suffix `.packaged` to avoid a registry
    collision.
 2. Load it through the M8 CLAP adapter in the sandbox.
 3. Acceptance: the `ModuleTestHost` suite passes through the adapter. Output is bit-identical to the
@@ -167,7 +167,7 @@ sandbox isolates crashes, **not** malicious code. Packages are unsigned in v1.
 **Negative**
 - `clack` 0.2 may still break its API: pin exact versions and isolate it behind `module-clap` and the
   CLAP adapter.
-- Our extensions only mean something in VoxEdit (other hosts degrade to plain CLAP).
+- Our extensions only mean something in PowerVoice (other hosts degrade to plain CLAP).
 - Installed modules pay sandbox latency and IPC for telemetry and curves.
 - macOS bundle, quarantine and notarization behaviour for installed `.clap` bundles is unverified
   (owner tests Linux only).

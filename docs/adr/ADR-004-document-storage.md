@@ -1,5 +1,5 @@
 # ADR-004 — Document storage, snapshots, undo, journal
-- Status: proposed
+- Status: accepted (owner, M0 checkpoint 2026-09-12)
 - Date: 2026-09-12
 - Deciders: owner, orchestrator
 
@@ -21,7 +21,7 @@
 ### 1. Session directory
 Each open document has one session directory at `<app_local_data_dir>/sessions/<session-id>/`.
 The root is passed in by the composition root (Tauri `app_local_data_dir()` for the identifier
-`app.voxedit.editor`), so `project` has no Tauri or `directories` dependency.
+`app.powervoice.editor`), so `project` has no Tauri or `directories` dependency.
 
 ```
 session.lock          PID, host, start time; OS advisory lock held while the session is open
@@ -202,7 +202,7 @@ Guarantees:
   - Estimate for 60 min at 24-bit: ≈ 518 MB read and 691 MB written, about 1–2 s on NVMe.
   - The source file is never mapped or kept open, so it can be saved over safely on every OS.
 - **Save.**
-  1. A worker renders the current `Arc<DocSnapshot>` to `<target dir>/.<name>.voxedit-tmp-<pid>`
+  1. A worker renders the current `Arc<DocSnapshot>` to `<target dir>/.<name>.powervoice-tmp-<pid>`
      through `io`. Bit depth and dither follow the WAV/export specs. Editing may continue, because
      snapshots are immutable.
   2. `fdatasync`.
@@ -291,3 +291,11 @@ Recoverable sessions are **never deleted silently**.
 3. **Import cost.** Opening converts the whole file into the session store, using disk ≈ 1.33× the
    file for 24-bit sources. Is that acceptable, including for users on slow HDDs, where the < 3 s
    target may not hold?
+
+## Amendment 1 — M0 checkpoint (2026-09-12): bake undo carries the rack (SPEC-004 OD-4 = A)
+The owner decided that rack edits are not part of the document undo history, except that undoing a
+**bake** restores the pre-bake rack. Therefore every undo entry and every journal `edit` record may
+carry an optional opaque `attachment: Option<Vec<u8>>`. `project` stores and returns it verbatim and
+never interprets it (ADR-001: `project` must not depend on `rack`). The engine supplies the serialized
+pre-bake `RackModel` when it commits a bake and consumes it on undo/redo. Recovery restores
+attachments exactly like the rest of the journal.

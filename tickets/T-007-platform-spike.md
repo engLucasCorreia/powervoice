@@ -15,7 +15,7 @@ Measured evidence, on the owner's machine (Arch, Hyprland/Wayland, AMD Phoenix/M
   2. **Spectrogram**: 1024×512 u8 magnitude texture scrolled/updated per frame with a colormap in WebGL2 (and a Canvas2D `putImageData` fallback), frame times.
   3. **IPC throughput**: 10 MB via `Channel` and via `Response`, measured end-to-end in ms.
   4. **Input log**: on-screen log of keydown/keyup (Space, Shift+Space, Ctrl+Z, Ctrl+Shift+Z) and pointer drag coordinates vs element-relative position — for the owner to verify manually on Hyprland.
-- The spike auto-runs on load when launched with `VOXEDIT_SPIKE=1` and writes results as JSON through a Tauri command to `bench-results/spike-<timestamp>.json`, then keeps the window open for manual input tests.
+- The spike auto-runs on load when launched with `POWERVOICE_SPIKE=1` and writes results as JSON through a Tauri command to `bench-results/spike-<timestamp>.json`, then keeps the window open for manual input tests.
 - Run it with and without `WEBKIT_DISABLE_DMABUF_RENDERER=1` and record both.
 - Write `docs/adr/ADR-009-renderer-choice.md`: measurements table, decision (renderer per view), fallbacks, env workarounds, how production code will detect/choose.
 

@@ -1,5 +1,5 @@
 # ADR-007 — Dependency & plugin-format licensing
-- Status: proposed
+- Status: accepted (owner, M0 checkpoint 2026-09-12)
 - Date: 2026-09-12
 - Deciders: owner, orchestrator
 
@@ -211,3 +211,9 @@ before the first public distribution or outside contribution, and it doesn't blo
 3. **VST2:** approve (or not) the Carla-based route in T-811.
 4. Before public distribution: counsel review of the process-boundary argument (only if GPL code
    enters the sandbox) and of AAC-decoding patent exposure.
+
+## Amendment 1 — M0 checkpoint (2026-09-12): owner decisions
+- **Project license: `MIT OR Apache-2.0`** (dual, Rust-ecosystem standard). `LICENSE-MIT` and
+  `LICENSE-APACHE` are in the repo root; crate and npm metadata follow in T-104.
+- **LAME:** runtime loading of `libmp3lame` via `libloading` is **approved**.
+- VST2 via Carla and unsigned native modules are deferred to the M8 checkpoint.

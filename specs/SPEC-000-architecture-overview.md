@@ -1,6 +1,6 @@
 # SPEC-000 — Architecture overview
 
-- **Status:** draft
+- **Status:** approved (owner, M0 checkpoint 2026-09-12)
 - **Milestone:** M1 (applies to every later milestone)
 - **Related:** ADR-001 … ADR-009 · SPEC-001, SPEC-002, SPEC-003, SPEC-004,
   SPEC-012
@@ -9,12 +9,12 @@
 Specs describe **behavior**, ADRs describe **structure**. This page is the map a spec reader or
 implementer needs before opening any other spec. It shows which part of the system produces each
 user-visible behavior and where the structural decision is recorded. It also fixes the shared
-vocabulary: every VoxEdit spec uses the terms in §2.4 with exactly these meanings.
+vocabulary: every PowerVoice spec uses the terms in §2.4 with exactly these meanings.
 
 ## 2. Behavior / UX
 
 ### 2.1 The system in one paragraph
-VoxEdit is one desktop process: Tauri 2, with a Rust core and a system WebView. The Svelte UI only
+PowerVoice is one desktop process: Tauri 2, with a Rust core and a system WebView. The Svelte UI only
 renders and sends intents. Audio, DSP, file I/O and document state all live in Rust (ADR-001 §1).
 The engine runs two real-time device callbacks: output is always open, input is opened on demand.
 They touch only lock-free rings, atomics, the rack and preallocated buffers (ADR-002). The open
@@ -89,7 +89,7 @@ milestone's spec wave.
 | **Epoch** | A counter tagging playback packets, so that stale audio is discarded after a seek, stop or loop wrap. |
 | **Telemetry frame** | The 60 Hz (30 Hz selectable) binary message carrying the playhead anchor, meter values and xrun/clip flags (`VXTM`, ADR-003). |
 | **Fake backend** | The engine audio backend without hardware. It drives the *real* callback code with synthetic timing, random buffer sizes and injected faults, and is the basis of the integration tests. |
-| **testkit / `voxedit-cli analyze`** | The independent measuring stick: peak, RMS (`20·log10(rms)`), LUFS, true peak and noise floor. `-inf` means digital silence, `NaN` means non-finite input, and `None`/`n/a` means the input is shorter than the measurement window. JSON prints `null` for `-inf` and `NaN`. |
+| **testkit / `powervoice-cli analyze`** | The independent measuring stick: peak, RMS (`20·log10(rms)`), LUFS, true peak and noise floor. `-inf` means digital silence, `NaN` means non-finite input, and `None`/`n/a` means the input is shorter than the measurement window. JSON prints `null` for `-inf` and `NaN`. |
 
 ### 2.5 Naming note
 PROMPT §3.7's `prepare(sample_rate, max_block)` and `tail_samples()` are `activate(&ActivateConfig)`
@@ -148,13 +148,13 @@ change is made there first.
 - **AC-1 (crate edges).** Given the workspace, when `cargo tree -e normal -p <crate>` is run for
   every library crate, then no forbidden edge from ADR-001 §3 rule 4 appears. In addition, `cpal`
   appears only under `vox-engine`, `memmap2` only under `vox-project`, `tauri`/`ts-rs` only under
-  `voxedit-app`, and `rubato`/`realfft` only under `vox-dsp`.
+  `powervoice-app`, and `rubato`/`realfft` only under `vox-dsp`.
 - **AC-2 (real-time safety, whole engine).** Given the fake backend with random callback sizes
   1…4096 frames, when a scripted 60 s simulated session runs play, seek, loop wrap, record, all three
   monitoring modes, 20 rack edits and 200 parameter changes, then `assert_no_alloc` reports
   **0** allocations and **0** deallocations inside the input/output callbacks and `process()`.
 - **AC-3 (one rack code path).** Given the same input WAV and the same rack description, when
-  rendered by `voxedit-cli render --rack` and by the engine's offline render job, then the outputs
+  rendered by `powervoice-cli render --rack` and by the engine's offline render job, then the outputs
   are bit-identical (FNV-1a hash equal). The realtime path matches them within 1e-6 absolute
   (SPEC-012 AC-9).
 - **AC-4 (document time vs device time).** Given a 44 100 Hz document played on a 48 000 Hz output
@@ -179,7 +179,7 @@ change is made there first.
 |---|---|---|
 | AC-1 | integration (script) | proposed `just deps-check` recipe (ADR-001 follow-up), run inside `just check` |
 | AC-2 | integration (fake backend) | `engine` test harness (T-105), seeded script; runs in `just test` |
-| AC-3 | integration | `cli` test: `voxedit-cli gen pink` fixture → `render --rack` vs engine job; T-103/T-602 |
+| AC-3 | integration | `cli` test: `powervoice-cli gen pink` fixture → `render --rack` vs engine job; T-103/T-602 |
 | AC-4 | integration (fake backend) | `engine` (T-105); fake device rate 48 000 Hz, document 44 100 Hz |
 | AC-5 | integration (environment) | `just test` under `env -u WAYLAND_DISPLAY -u DISPLAY`; no fixture |
 | AC-6 | integration (build) | `just check-cross` |

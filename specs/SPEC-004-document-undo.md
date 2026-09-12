@@ -1,6 +1,6 @@
 # SPEC-004 — Document model & undo
 
-- **Status:** draft
+- **Status:** approved (owner, M0 checkpoint 2026-09-12)
 - **Milestone:** M1 (T-101: snapshots, chunk store, markers, take writer). The history-facing parts
   land in M3 (T-301: undo/redo, budgets, journal, recovery; T-302/T-303 edit and marker ops; T-306
   sidecar). Each AC is tagged with its milestone.
@@ -14,7 +14,7 @@ A voice-over editor is used for hours of cut-listen-undo. The user must be able 
 2. long files don't make the app slow or hungry for memory;
 3. a crash never loses an edit that appeared to succeed;
 4. playback never plays stale audio;
-5. VoxEdit cleans up after itself.
+5. PowerVoice cleans up after itself.
 
 This spec defines that behavior. ADR-004 defines how it is built.
 
@@ -76,7 +76,7 @@ This spec defines that behavior. ADR-004 defines how it is built.
 - **An audio edit during playback,** including undo/redo of an audio entry:
   - playback stops with a ~5 ms fade (no click) *before* the edit commits;
   - the playhead stays at the heard position where playback stopped, clamped to the new length
-    (SPEC-003 Stop = Pause semantics);
+    (an engine-initiated stop behaves like Pause, SPEC-003 §2.1);
   - playback does not resume by itself.
   The user never hears audio from a revision that is no longer current.
 - **A marker-only change during playback** has no audible effect: the output is identical to
@@ -100,7 +100,7 @@ This spec defines that behavior. ADR-004 defines how it is built.
 - **Limits.** The session's soft limit is max(8 GiB, 8 × document size), and at least 2 GiB must stay
   free on the volume (ADR-004 §4).
 - **When a limit is exceeded** (checked after every committed edit, and every 10 s while idle):
-  1. VoxEdit first reclaims unused space automatically (compaction). This is silent.
+  1. PowerVoice first reclaims unused space automatically (compaction). This is silent.
   2. If that is not enough, it applies **OD-1**. Default: it removes the oldest undo steps and shows
      "Low disk space: the 12 oldest undo steps were removed (freed 4.1 GB)." The current document and
      the redo steps are never touched.
@@ -116,7 +116,7 @@ This spec defines that behavior. ADR-004 defines how it is built.
 >   fail for lack of space.
 > - **C.** Ask each time with a modal ("Remove oldest undo steps?").
 >
-> **Recommended default, used by this spec until decided: A.** Losing the oldest history is
+> **✅ Decided by the owner at the M0 checkpoint: A.** Losing the oldest history is
 > recoverable by the user (save a copy); a full disk mid-recording is not.
 
 ### 2.6 Save and "modified"
@@ -124,16 +124,16 @@ This spec defines that behavior. ADR-004 defines how it is built.
   back to the saved state removes the `*`, and redoing away from it sets it again.
 - **History lifetime.** History survives Save and ends when the document is closed. There is no
   persistent undo across sessions.
-- **When the user's file is written.** VoxEdit writes the user's audio file only on explicit Save,
+- **When the user's file is written.** PowerVoice writes the user's audio file only on explicit Save,
   Save As or Export to a new file. Save is atomic: a crash or power loss during Save leaves either the
-  complete old file or the complete new one. At most a hidden temp file `.<name>.voxedit-tmp-<pid>`
-  remains next to it. VoxEdit deletes such leftovers (dead pid only) the next time it saves into that
+  complete old file or the complete new one. At most a hidden temp file `.<name>.powervoice-tmp-<pid>`
+  remains next to it. PowerVoice deletes such leftovers (dead pid only) the next time it saves into that
   folder.
 - **Sidecar autosave.** Sidecar autosave policy belongs to the M3 sidecar spec (T-306). Crash safety
   never depends on it; it comes from the session journal (§2.7).
 
 ### 2.7 Crash recovery
-- **Start-up.** After an unclean exit, a dialog appears before any document opens: "VoxEdit didn't
+- **Start-up.** After an unclean exit, a dialog appears before any document opens: "PowerVoice didn't
   shut down properly". It lists each recoverable session with:
   - the file name, or "Untitled recording";
   - the original path;
@@ -161,8 +161,8 @@ This spec defines that behavior. ADR-004 defines how it is built.
 - **Damaged data.** Recovery keeps everything up to the last intact record. If later records are
   damaged, a notice says "The last N changes could not be recovered." If stored audio fails its
   checksum, recovery returns to the newest state whose audio is intact, with the same notice. If
-  nothing is intact, only Discard is offered. VoxEdit never crashes on damaged recovery data.
-- **Sessions in use** by another running VoxEdit instance are neither listed nor touched.
+  nothing is intact, only Discard is offered. PowerVoice never crashes on damaged recovery data.
+- **Sessions in use** by another running PowerVoice instance are neither listed nor touched.
 
 ### 2.8 Session cleanup
 - **Normal close.** After Save or Don't Save, the session directory is deleted within 5 s, including
@@ -178,7 +178,7 @@ This spec defines that behavior. ADR-004 defines how it is built.
 > - **A.** Keep recoverable sessions until the user discards them. Settings shows their total size.
 > - **B.** Auto-delete them after N days (e.g. 30), with a reminder notice at start-up a week before.
 >
-> **Recommended default, used by this spec: A.** Voice-over sessions are irreplaceable, and the
+> **✅ Decided by the owner at the M0 checkpoint: A.** Voice-over sessions are irreplaceable, and the
 > start-up dialog plus the Settings total keep them visible.
 
 > **OWNER DECISION OD-3 — Import cost (ADR-004 open question 3).**
@@ -191,7 +191,7 @@ This spec defines that behavior. ADR-004 defines how it is built.
 > - **B.** Reference uncompressed WAV sources in place, without importing. ADR-004 rejected this: it
 >   needs page faults on a foreign file and breaks save-over-source on Windows.
 >
-> **Recommended default, used by this spec: A.**
+> **✅ Decided by the owner at the M0 checkpoint: A.**
 
 > **OWNER DECISION OD-4 — Are rack edits undoable? (ADR-005 open question 3, ADR-004 §6 `state`).**
 > - **A.** Rack edits are not in the document history (v1). The exception is **bake**, whose undo
@@ -203,7 +203,7 @@ This spec defines that behavior. ADR-004 defines how it is built.
 > - **C.** A separate rack history, used when the rack panel has focus. It is more code and harder to
 >   explain.
 >
-> **Recommended default, used by this spec and SPEC-012: A.** Structural consequence: undo entries
+> **✅ Decided by the owner at the M0 checkpoint: A.** Structural consequence (ADR-004 amended): undo entries
 > and journal `edit` records need an optional opaque rack-state attachment. `project` stores it as
 > opaque data, keeping ADR-001's "`project` never depends on `rack`". That is an ADR-004 amendment,
 > flagged in SPEC-000 §4.
@@ -300,7 +300,7 @@ This spec defines that behavior. ADR-004 defines how it is built.
   - An interrupted deletion is completed at the next start.
   - Recoverable sessions survive 5 restarts with "Decide later".
   - Settings → Clear deletes exactly the confirmed sessions and never a locked one.
-  - A stale `.voxedit-tmp-<dead pid>` file is deleted at the next save into that folder; one whose
+  - A stale `.powervoice-tmp-<dead pid>` file is deleted at the next save into that folder; one whose
     pid is alive is not.
 - **AC-13 [M3] (disk pressure, OD-1 default A).** Given a session over its disk limit:
   - when ≥ 25 % of its data is unreachable, compaction runs first, with no undo steps removed and no

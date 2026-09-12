@@ -1,5 +1,5 @@
 # ADR-003 — IPC data paths & shared types
-- Status: proposed
+- Status: accepted (owner, M0 checkpoint 2026-09-12)
 - Date: 2026-09-12
 - Deciders: owner, orchestrator
 
@@ -195,7 +195,7 @@ Mechanics:
 - **Integers.** Doc positions are `u64` in Rust and `number` in TS (`TS_RS_LARGE_INT=number`). They
   stay < 2^53, which is 5.9 years at 48 kHz.
 - **`just gen-types`.** Runs
-  `TS_RS_EXPORT_DIR=ui/src/lib/ipc TS_RS_LARGE_INT=number cargo test -p voxedit-app export_bindings`.
+  `TS_RS_EXPORT_DIR=ui/src/lib/ipc TS_RS_LARGE_INT=number cargo test -p powervoice-app export_bindings`.
   The `gen_ipc_fixtures` test also writes golden `VXPK`/`VXST`/`VXTM`/`VXRP` frames to
   `ui/src/lib/ipc/__fixtures__/`.
 - **Staleness check.** `just check` generates into a temporary directory and runs `diff -r` against the

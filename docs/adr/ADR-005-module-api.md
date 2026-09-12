@@ -1,5 +1,5 @@
 # ADR-005 — Module API
-- Status: proposed
+- Status: accepted (owner, M0 checkpoint 2026-09-12)
 - Date: 2026-09-12
 - Deciders: owner, orchestrator
 
@@ -51,7 +51,7 @@ pub const MODULE_API_VERSION: u32 = 1;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Version { pub major: u32, pub minor: u32, pub patch: u32 }   // serde: "1.2.0"
 
-/// "id@version", e.g. "org.voxedit.gain@1.0.0". What presets and the sidecar store.
+/// "id@version", e.g. "org.powervoice.gain@1.0.0". What presets and the sidecar store.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ModuleRef { pub id: String, pub version: Version }          // serde: the string form
 
@@ -61,7 +61,7 @@ pub struct LocalizedText { pub text: String, pub key: Option<String> }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModuleDescriptor {
-    /// Built-ins and packaged modules (ADR-006): reverse-DNS, `[a-z0-9.-]+`, e.g. "org.voxedit.gain".
+    /// Built-ins and packaged modules (ADR-006): reverse-DNS, `[a-z0-9.-]+`, e.g. "org.powervoice.gain".
     /// External plugins (adapters): "<format>:<native id>" — "clap:com.u-he.diva",
     /// "vst3:<32 hex cid>", "lv2:<uri>", "jsfx:<path relative to the effects root>", "vst2:<id>".
     pub id: String,
@@ -99,8 +99,8 @@ pub trait ModuleFactory: Send + Sync {
 pub struct ModulePreset { pub key: String, pub name: LocalizedText, pub state: ModuleState }
 ```
 
-Built-in ids: `org.voxedit.gain`, `org.voxedit.noise-gate`, `org.voxedit.noise-reduction`,
-`org.voxedit.parametric-eq`, `org.voxedit.dynamics`, `org.voxedit.true-peak-limiter`. Ids are
+Built-in ids: `org.powervoice.gain`, `org.powervoice.noise-gate`, `org.powervoice.noise-reduction`,
+`org.powervoice.parametric-eq`, `org.powervoice.dynamics`, `org.powervoice.true-peak-limiter`. Ids are
 permanent; renaming the product does not change them (see Open questions). The module registry
 (`id → Arc<dyn ModuleFactory>`) lives in `rack`. Only one version per id is installed at a time.
 
@@ -544,7 +544,7 @@ pub fn prepare_state(m: &dyn Module, s: ModuleState) -> Result<ModuleState, Stat
   adapter frames multi-part states, e.g. VST3 component + controller state. `format_version` is the
   adapter's framing version.
 - In the sidecar (owned by `project`), a slot is
-  `{ "module": "org.voxedit.gain@1.0.0", "bypass": false, "state": { "format_version": 1, "params": { "gain_db": -6.0 } } }`.
+  `{ "module": "org.powervoice.gain@1.0.0", "bypass": false, "state": { "format_version": 1, "params": { "gain_db": -6.0 } } }`.
 - A module preset is `{ module, name, state }`. A rack preset is an ordered list of slots. The storage
   format is T-406's.
 - Module `version` is identity and display. `format_version` alone drives migration.
@@ -563,9 +563,9 @@ impl ExtensionId {
     /// Wire id; also the CLAP custom-extension id (ADR-006).
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Telemetry => "org.voxedit.telemetry/1",
-            Self::ResponseCurve => "org.voxedit.response-curve/1",
-            Self::NoiseProfile => "org.voxedit.noise-profile/1",
+            Self::Telemetry => "org.powervoice.telemetry/1",
+            Self::ResponseCurve => "org.powervoice.response-curve/1",
+            Self::NoiseProfile => "org.powervoice.noise-profile/1",
         }
     }
 }
@@ -661,9 +661,9 @@ slot's committed blob and performs a replacement (§12). The capture input is th
 input: the host offline-renders the preceding slots over the selection (details in T-502).
 
 **Reserved for M8** (added as `ExtensionId` variants when needed; ids fixed now):
-- `ParamText` (`org.voxedit.param-text/1`): adapter-provided `value_to_text`/`text_to_value`,
+- `ParamText` (`org.powervoice.param-text/1`): adapter-provided `value_to_text`/`text_to_value`,
   callable concurrently with processing, which overrides `ParamInfo`'s rules.
-- `LiveState` (`org.voxedit.live-state/1`): snapshot the state of a live instance.
+- `LiveState` (`org.powervoice.live-state/1`): snapshot the state of a live instance.
 - M9 adds a GUI extension.
 
 ### 12. Changes to a live module
@@ -801,9 +801,9 @@ For any `Module`:
   as wire ids.
 
 ## Open questions
-1. **Owner:** the id namespace `org.voxedit.*` follows the placeholder product name. Ids are permanent
+1. **Owner:** the id namespace `org.powervoice.*` follows the placeholder product name. Ids are permanent
    once the first sidecar is written (M3, T-306). Confirm, or give the final namespace, before M3.
-   Decide it together with the Tauri app identifier (ADR-004 uses `app.voxedit.editor`). Both depend on
+   Decide it together with the Tauri app identifier (ADR-004 uses `app.powervoice.editor`). Both depend on
    the final name or domain.
 2. Processing bypassed modules costs CPU. Keep it, or pause and reset with a crossfade from dry?
    Revisit in T-704 against the "< 20 % of one core" target.

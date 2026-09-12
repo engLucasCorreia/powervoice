@@ -1,6 +1,6 @@
-# CLAUDE.md — VoxEdit agent rules
+# CLAUDE.md — PowerVoice agent rules
 
-VoxEdit is a Tauri 2 + Rust + Svelte 5 mono voice-over editor (Audition alternative). Development is
+PowerVoice is a Tauri 2 + Rust + Svelte 5 mono voice-over editor (Audition alternative). Development is
 spec-driven and orchestrated: one orchestrator session dispatches tickets to subagents.
 
 ## Read order (every agent, every ticket)

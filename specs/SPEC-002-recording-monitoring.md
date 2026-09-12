@@ -1,6 +1,6 @@
 # SPEC-002 — Recording & monitoring
 
-- **Status:** draft
+- **Status:** approved (owner, M0 checkpoint 2026-09-12)
 - **Milestone:** M1 (T-106 recording, T-107 monitoring, T-108 meters/telemetry, T-109 UI)
 - **Related:** SPEC-000 (glossary), SPEC-001 (devices, device loss), SPEC-003 (transport, playhead),
   SPEC-004 (undo, recovery), SPEC-012 (rack latency, bypass) · ADR-002 §1, §2, §6–§8 · ADR-003 (`VXTM`,
@@ -27,7 +27,7 @@ This spec covers **new-file recording** (M1) and the three monitoring modes. Rec
 - **Arm.** An **Input** toggle in the transport bar (next to Record) arms the input. Arming opens the
   input stream (ADR-002 §1) and starts the input meter. Record arms automatically.
   - While recording, the toggle is locked on.
-  - The armed state is **not** persisted. VoxEdit always starts disarmed, so the OS microphone
+  - The armed state is **not** persisted. PowerVoice always starts disarmed, so the OS microphone
     indicator is never lit just because the app is open.
 - **Input meter** (meter bridge, visible while armed). It shows the selected input channel **before**
   any processing:
@@ -50,9 +50,8 @@ This spec covers **new-file recording** (M1) and the three monitoring modes. Rec
 
 ### 2.2 New recording (M1)
 - **Entry points.** The Record button, File → New Recording…, and the Record shortcut.
-  - The Record shortcut is **unverified**. PROMPT §3.6's "Shift+Space" is contradicted by the only
-    source found (see SPEC-003 §2.5). The binding is left to SPEC-019, and this spec does not assume
-    one.
+  - The Record shortcut is provisionally **Shift+R** (owner, M0 checkpoint: in Audition Shift+Space is
+    Play from start, not Record — SPEC-003 §2.5). The final binding is set in SPEC-019.
 - **Target document.**
   - If the open document is a new, empty, untitled document, Record records into it.
   - If the open document contains audio, M1 Record opens the **New Recording** dialog, which
@@ -164,8 +163,9 @@ This follows SPEC-001 §2.4:
 - The notice reads "Input device disconnected — recording stopped. 3:12 recorded and kept."
 - The app does not crash, and recording does not resume automatically on replug.
 
-SPEC-001 §2.4 also stops recording when the **output** device is lost, even though the take doesn't
-need the output. This spec follows SPEC-001 for M1; see the open questions.
+**Output device lost while recording** (owner decision, M0 checkpoint; SPEC-001 §2.4 exception):
+recording **continues**, because the take needs only the input. Monitoring stops (there is no output),
+the SPEC-001 device-lost banner appears, and the take proceeds until the user stops it (AC-16).
 
 ### 2.7 Monitoring
 - **Modes.** **Off / Dry / Through rack**; the factory default is **Off** (PROMPT §2, LOCKED). The
@@ -351,6 +351,10 @@ need the output. This spec follows SPEC-001 for M1; see the open questions.
 - **AC-15 (marker while recording).** Given a recording in progress, when Add marker is pressed at
   app time T, then after Stop the take contains a marker within ±10 ms of the take position captured
   at T (the SPEC-003 AC-6 bound), and undoing the take removes it.
+- **AC-16 (output device lost while recording).** Given a recording in progress with Dry monitoring,
+  when the fake backend raises `DEVICE_LOST` on the **output** stream only, then recording continues
+  with no gap in the take (every sample bit-identical to the source), monitoring output stops, the
+  device-lost banner appears within 2 s, and Stop later commits the whole take as one undoable edit.
 
 ## 6. Test plan
 
@@ -385,7 +389,8 @@ T-105/T-106/T-107, and no audio files are committed.
 - The Record key binding (SPEC-019). Sandboxed-plugin monitoring implementation (M8).
 - The output-device meter and analyzer (SPEC-003 / M2 specs).
 
-**Open questions**
+**Open questions** — 1 and 2 resolved at the M0 checkpoint (recording continues on output loss, AC-16;
+Record works with only an input device, SPEC-001 §2.3). Original questions:
 1. Should recording continue when only the **output** device is lost? The take doesn't need it.
    SPEC-001 §2.4 currently stops, and this spec follows it for M1.
 2. SPEC-001 §2.3 disables the transport without an output device. New-file recording needs only an

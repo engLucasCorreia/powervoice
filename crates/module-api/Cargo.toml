@@ -4,5 +4,22 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[features]
+# `ModuleTestHost`, `TestGain` and the allocation checker (ADR-005 §15).
+test-util = ["dep:assert_no_alloc"]
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+# Warn mode in every profile: violations are counted instead of aborting, so the test host can
+# report them, and the checker exists in release test builds too (no cfg(debug_assertions)
+# mismatch between this crate and assert_no_alloc).
+assert_no_alloc = { workspace = true, optional = true, features = ["warn_debug", "warn_release"] }
+
+[dev-dependencies]
+# Self dev-dependency: the integration tests always see the `test-util` feature.
+vox-module-api = { path = ".", features = ["test-util"] }
+serde_json.workspace = true
+
 [lints]
 workspace = true

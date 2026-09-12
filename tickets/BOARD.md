@@ -11,7 +11,7 @@ Tickets for M1+ are stubs; full ticket files are written in each milestone's W0.
 | T-002 | ADRs A: architecture, threading/RT, IPC, document storage | W1 | O | — | done |
 | T-003 | ADRs B: Module API, module ABI (CLAP), licensing, sandbox outline | W1 | O | — | done |
 | T-004 | Tauri 2 + Svelte 5 scaffold, theme, i18n, shared types, mocks | W2 | S | T-001, T-002 | done |
-| T-005 | `module-api` v0 + `rack` skeleton + module test host | W2 | O+OR | T-001, T-003 | review |
+| T-005 | `module-api` v0 + `rack` skeleton + module test host | W2 | O+OR | T-001, T-003 | done |
 | T-006 | `testkit` + `voxedit-cli` gen/analyze + `just fixtures` | W2 | S+OR | T-001 | done |
 | T-007 | Platform spike: renderers, Wayland input, IPC throughput → ADR-009 | W3 | S+OR | T-004 | in-progress |
 | T-008 | M1 spec wave: SPEC-000/001/002/003/004/012 | W3 | O/S | T-002, T-003, T-005 | in-progress |

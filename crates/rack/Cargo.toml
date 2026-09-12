@@ -4,5 +4,12 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[dependencies]
+vox-module-api = { path = "../module-api" }
+thiserror.workspace = true
+
+[dev-dependencies]
+vox-module-api = { path = "../module-api", features = ["test-util"] }
+
 [lints]
 workspace = true

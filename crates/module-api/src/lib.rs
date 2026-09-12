@@ -1,6 +1,58 @@
-//! Module API: the contract for rack processors.
+//! Module API: the single contract for everything in the rack (ADR-005).
+//!
+//! Built-in modules, separately installed module packages and external-plugin adapters all
+//! implement [`Module`]. The rack, latency compensation, presets, the sidecar and the generic
+//! parameter UI only ever see this API.
+//!
+//! Overview:
+//! - Identity: [`ModuleDescriptor`], [`ModuleRef`], [`Version`], [`ModuleFactory`] (ADR-005 §2).
+//! - Parameters: [`ParamInfo`] with [`Taper`], [`Unit`], [`ParamFlags`] and locale-neutral text
+//!   conversion, [`ParamGroup`], [`validate_schema`] (§3).
+//! - Sample-accurate parameter events: [`ParamEvent`], [`EventList`], [`OutputEvents`],
+//!   [`segments`] (§4).
+//! - Lifecycle and processing: [`ActivateConfig`], [`ProcessContext`], [`ProcessMode`], [`Tail`]
+//!   (§5–§6).
+//! - State: [`ModuleState`], [`prepare_state`] (§10).
+//! - Extensions: [`ExtensionId`], [`Extension`], [`Telemetry`], [`ResponseCurve`],
+//!   [`NoiseProfile`] (§11).
+//!
+//! Feature `test-util` adds [`test_util::ModuleTestHost`] and the reference module
+//! [`test_util::TestGain`].
+//!
+//! Real-time rules: [`Module::process`] and [`Module::reset`] never allocate, lock, block, log or
+//! panic on valid input. Everything in this crate that is documented as "RT-safe" follows the
+//! same rules.
 
-#[test]
-fn it_works() {
-    assert_eq!(2 + 2, 4);
-}
+mod descriptor;
+mod event;
+mod extension;
+mod module;
+mod param;
+mod process;
+mod state;
+mod text;
+
+#[cfg(feature = "test-util")]
+pub mod test_util;
+
+pub use descriptor::{
+    LocalizedText, MODULE_API_VERSION, ModuleDescriptor, ModuleFactory, ModulePreset, ModuleRef,
+    ParseModuleRefError, ParseVersionError, Version, features,
+};
+pub use event::{
+    DEFAULT_EVENT_CAPACITY, EventList, EventListError, OutputEvents, ParamEvent, Segment, segments,
+};
+pub use extension::{
+    AtomicF32, CurveHandle, Extension, ExtensionId, Hold, NoiseProfile, ResponseCurve, Telemetry,
+    TelemetryCells, TelemetryInfo, TelemetryKind, noise_profile, response_curve, telemetry,
+};
+pub use module::{Module, ModuleError};
+pub use param::{
+    GroupId, ParamFlags, ParamGroup, ParamId, ParamInfo, SchemaError, Taper, Unit, validate_schema,
+};
+pub use process::{
+    ActivateConfig, ChannelLayout, HostRequest, ProcessContext, ProcessMode, ProcessStatus, Tail,
+    Transport,
+};
+pub use state::{ModuleState, StateError, prepare_state};
+pub use text::{TEXT_KEY_OFF, TEXT_KEY_ON};

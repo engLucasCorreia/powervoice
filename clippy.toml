@@ -1,0 +1,5 @@
+# RT allocation checks must go through `vox_module_api::test_util::no_alloc`, which counts
+# violations and reports them; the raw function only prints a warning in warn mode.
+disallowed-methods = [
+    { path = "assert_no_alloc::assert_no_alloc", reason = "use vox_module_api::test_util::no_alloc, which reports violations" },
+]

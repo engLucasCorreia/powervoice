@@ -22,7 +22,8 @@ spec-driven and orchestrated: one orchestrator session dispatches tickets to sub
 
 ## Real-time rules (`engine`, `rack`, `modules`, `dsp`, `module-api`)
 - Audio callbacks and `process()`: **no allocation, no locks, no I/O, no logging, no syscalls, no panics on valid input, no unbounded loops.**
-- UI↔audio communication through `rtrb` SPSC queues and atomics only. Drop heavy objects off the audio thread (`basedrop` or a worker thread).
+- UI↔audio communication through `rtrb` SPSC queues and atomics only. Drop heavy objects off the audio thread via the **return ring** to the control thread (ADR-002; `basedrop` is not used).
+- RT allocation checks go only through `vox_module_api::test_util::no_alloc` (raw `assert_no_alloc` is clippy-disallowed).
 - Enable flush-to-zero/denormals-are-zero on audio threads; DSP must still be denormal-safe.
 - Tests run `process()` under `assert_no_alloc` (debug/test builds).
 - The audio thread never reads the memory-mapped chunk store — a reader thread prefetches into a ring.

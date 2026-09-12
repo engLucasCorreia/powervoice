@@ -173,7 +173,10 @@ If the peaks file is missing or corrupt, pyramids are recomputed.
 
 Guarantees:
 - Every edit whose command succeeded survives a crash.
-- A recording loses nothing on a process crash and at most ~1 s on power loss.
+- A recording loses at most the last **250 ms** on a process crash (audio still in the capture
+  ring / writer hands; the writer drains ≥ every 50 ms) and at most **~1.5 s** on power loss
+  (header patched + `fdatasync` every ~1 s). Everything recovered is bit-identical to what was
+  captured (SPEC-002 §2.3, AC-6; amended at T-008 — previously "loses nothing").
 
 ### 7. Recording
 1. **Start.** Create `takes/take-NNNN.wav` as 32-bit float at the document rate: lossless for any

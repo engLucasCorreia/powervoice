@@ -42,8 +42,10 @@ Control tick (16 ms):
 The engine API (`EngineHandle: Clone + Send + Sync`) is synchronous. `src-tauri` calls it from async
 commands through `tauri::async_runtime::spawn_blocking` when a reply can take > 1 ms.
 
-The input stream is opened **on demand**: when input is armed (record panel/meter visible),
-monitoring ≠ off, or recording. This avoids a permanent mic-in-use indicator. The output stream runs
+The input stream is opened **on demand**: when input is armed (record panel/meter visible) or
+recording. A persisted monitoring mode ≠ off does **not** by itself open the input; monitoring is
+audible only while armed or recording (SPEC-002 §2.7, amended at T-008). This avoids a permanent
+mic-in-use indicator. The output stream runs
 **continuously** while an output device is configured, emitting silence when idle, so Play never
 pays device start-up latency.
 
@@ -82,7 +84,8 @@ flowchart LR
   | Return (audio → control) | 64 |
 
   - A full ring never blocks the RT side. Events are dropped and counted in an atomic.
-  - Capture overflow marks the take damaged (ADR-004).
+  - Capture overflow stops recording and finalizes the take at the last good sample, keeping it
+    (ADR-004 §7.4, SPEC-002 §2.4; amended at T-008 — previously "marks the take damaged").
 - **Heap objects** handed to the audio thread (chains, module instances) are never dropped there.
   - When replaced, they are pushed onto the **return ring** to the control thread. The control thread
     calls `deactivate()` and drops them, or reuses them (ADR-005).

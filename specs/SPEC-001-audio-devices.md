@@ -68,7 +68,7 @@ the same settings page). The panel has, top to bottom:
 
 | State | What the user sees |
 |---|---|
-| No device selected | Greyed control, "No output device selected" placeholder, transport disabled |
+| No device selected | Greyed control, "No output device selected" placeholder; **playback** controls disabled. Recording a new file stays available when an input device is selected (it needs no output — SPEC-002 open question 2, adopted at T-008) |
 | Selected, stream open, healthy | Device name, a small steady green dot |
 | Selected, fallback applied (rate/buffer) | Device name, an amber dot, and the fallback notice (§2.2), dismissible, reappears only on the next fallback event |
 | Selected, device lost | Device name struck through or dimmed, a red dot, persistent banner: "Output device disconnected — recording/playback stopped." with a manual "Rescan" action |

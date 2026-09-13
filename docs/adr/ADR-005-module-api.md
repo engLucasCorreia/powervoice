@@ -809,3 +809,16 @@ For any `Module`:
    Revisit in T-704 against the "< 20 % of one core" target.
 3. Are rack edits (parameter changes, noise-print capture) part of the undo history? ADR-004 and the M4
    specs decide. This API supports either.
+
+## Amendment 1 — slices + hardening (S3-06, S3-07, H-03), 2026-09-14
+- **§13 command `param_set_plain(slot, id, value)`** (S3-07, SPEC-015/016 §4.12): graph handles send
+  plain values; the control thread clamps/quantizes, updates the mirror, sends the event and echoes
+  `param_changed`, like `param_set_normalized` / `param_set_text`. Engine side:
+  `RackCommand::SetParamPlain`.
+- **Typed extensions in the host:** `RackHost` captures a module's `NoiseProfile` and `ResponseCurve`
+  handles when the slot is loaded (the instance itself moves to the audio thread) and exposes them per
+  slot (`SlotInfo::noise_profile`, `SlotInfo::curve_handles`). `Telemetry` handles belong to one
+  instance and are refreshed whenever the slot's instance is replaced (`replace_with`).
+- **Meters:** the rack UI renders every `GainReduction`-kind telemetry channel in the slot header
+  (generic, not module-specific); other kinds are T-410. Values reach the UI through ADR-003's `VXMT`
+  frame (ADR-003 Amendment 3).

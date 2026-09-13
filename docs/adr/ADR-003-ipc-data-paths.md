@@ -270,3 +270,34 @@ Mechanics:
 New events: `record_phase { take, phase: PreRoll | Recording | PostRoll | Finished | Cancelled, at_sample }`
 and `record_finished { take, outcome, len_samples, offset_samples }`. Calibration commands
 (`calibration_start`, `calibration_verify`, `calibration_cancel`) report progress through `job_progress`.
+
+## Amendment 3 — slices + hardening (S3-07, S4-01, S4-04, H-03, H-09), 2026-09-14
+Records what the vertical slices built, as implemented.
+- **New frame `VXMT` — module telemetry** (SPEC-016 §4.12; the table's reserved "module telemetry"
+  row). Channel `module_telemetry_subscribe`, one frame per control tick at the telemetry rate, sent
+  only while a subscriber exists and at least one slot has a `Telemetry` extension. The engine's meter
+  publisher is the single reader of every handle; channel descriptions (`TelemetryInfo`) travel once
+  with the rack-state DTOs (`RackSlotDto.telemetry`).
+
+  | Off | Type | Field |
+  |---|---|---|
+  | 0 | `[u8;4]` | `"VXMT"` |
+  | 4 | u16 | version = 1 |
+  | 6 | u16 | header_len = 32 |
+  | 8 | u32 | seq |
+  | 12 | u32 | flags = 0 (reserved) |
+  | 16 | u64 | frame_time_ns (app clock) |
+  | 24 | u32 | record count R |
+  | 28 | u32 | reserved = 0 |
+  | 32 | R × {u32 slot_uid, u16 count, u16 reserved, f32[count]} | values in `channels()` order |
+
+  Golden fixture: `ui/src/lib/ipc/vxmt_fixture.ts` (Rust-generated).
+- **Interim JSON:** `rack_response_curve(slot, freqs ≤ 512)` returns `{ freqs_hz, total_db,
+  components_db }` as JSON (S3-07). The binary `VXRC` frame stays the hardening target; this is the
+  one sanctioned exception to "bulk data is binary" until then (≤ 512 × (C + 1) floats).
+- **Jobs:** `job_progress { job_id, kind, state, fraction }` is the single progress channel. Kinds so
+  far: `Export`, `NrCapture`, `LoudnessAnalyze`, `NormalizePeak`, `NormalizeLufs`. A job whose result
+  is more than a fraction carries it in its own event, tagged with `job_id`: `loudness_report`
+  (S4-01), `normalize_result` (H-09).
+- **Write-back jobs** (H-09 normalize) refuse concurrent audio edits with `IpcErrorCode::Busy`
+  (`error.document_busy`) and commit only if the document snapshot and session are unchanged.

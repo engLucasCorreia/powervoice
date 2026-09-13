@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-crate::ipc_events!(notice);
+crate::ipc_events!(notice, transport_state, devices_changed);
 
 /// A user-facing notice (ADR-003 `notice` event). Two shapes, distinguished by `persistent`:
 /// - a **toast** (`persistent: false`, `id: None`): transient, auto-dismisses in the UI (e.g.

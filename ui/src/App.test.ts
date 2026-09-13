@@ -2,9 +2,13 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
 import App from "./App.svelte";
+import { clearActionHandlers } from "./lib/keymap";
+import { resetTransportForTest } from "./lib/state/transport.svelte";
 
 afterEach(() => {
   clearMocks();
+  clearActionHandlers();
+  resetTransportForTest();
 });
 
 describe("App shell", () => {
@@ -30,7 +34,21 @@ describe("App shell", () => {
           memory_budget_mib: 2048,
         };
       }
-      throw new Error(`unmocked command: ${cmd}`);
+      if (cmd === "transport_get") {
+        return {
+          playing: false,
+          playhead_samples: 0,
+          play_start_samples: 0,
+          doc_len_samples: 0,
+          doc_rate_hz: 0,
+          can_play: false,
+        };
+      }
+      if (cmd === "clock_now_ns") {
+        return 0;
+      }
+      // telemetry_subscribe, event listeners, …
+      return null;
     });
 
     const target = document.createElement("div");
@@ -46,6 +64,7 @@ describe("App shell", () => {
       expect(target.querySelector(`[data-testid="${testId}"]`), `missing region: ${testId}`).not.toBeNull();
     }
     expect(target.querySelector('[data-testid="app-version"]')?.textContent).toBe("9.9.9");
+    expect(target.querySelector('[data-testid="transport-time"]')?.textContent).toBe("00:00:00.000");
 
     unmount(app);
     target.remove();

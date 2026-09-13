@@ -28,6 +28,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 directories = "6"
+# S1-01: the audio engine and the built-in modules registered into its rack (composition root).
+vox-engine = { path = "../crates/engine" }
+vox-rack = { path = "../crates/rack" }
+vox-modules = { path = "../crates/modules" }
 
 [features]
 # Dev-only platform spike (T-007 / ADR-009): renderer + IPC throughput measurements. Off by

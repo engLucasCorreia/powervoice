@@ -7,9 +7,38 @@ export type AppInfo = { name: string, version: string, };
 
 export type BitDepth = "16" | "24" | "32f";
 
-export type CommandName = "app_info" | "settings_get" | "settings_set";
+export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns";
 
 export type DefaultFormatDto = { sample_rate_hz: number, bit_depth: BitDepth, };
+
+/**
+ * One device of the selected host.
+ */
+export type DeviceDto = { 
+/**
+ * Unique name (the key saved in the prefs).
+ */
+name: string, 
+/**
+ * Display name.
+ */
+base_name: string, input: boolean, output: boolean, 
+/**
+ * A "follow the system default" pseudo-device.
+ */
+system_default: boolean, 
+/**
+ * Its capture side monitors an output (hidden from the input list).
+ */
+input_is_monitor: boolean, 
+/**
+ * SPEC-001 §2.1 common rates the output supports (empty while unknown).
+ */
+output_rates_hz: Array<number>, 
+/**
+ * SPEC-001 §2.1 common buffer sizes within the output's range ("Auto" is implicit).
+ */
+output_buffer_sizes: Array<number>, };
 
 /**
  * Persisted device selection — "saved intent", not the applied value: SPEC-001 §2.5 requires
@@ -49,7 +78,25 @@ sample_rate_hz: number | null,
  */
 buffer_size_frames: number | null, };
 
-export type EventName = "notice";
+/**
+ * Output status dot (SPEC-001 §2.3).
+ */
+export type DeviceStatusDto = "not_selected" | "healthy" | "fallback" | "lost";
+
+/**
+ * The Audio Devices dialog's data (`devices_list`, `devices_select`, `devices_changed`).
+ */
+export type DevicesDto = { hosts: Array<string>, host: string | null, devices: Array<DeviceDto>, default_input: string | null, default_output: string | null, 
+/**
+ * The saved intent.
+ */
+prefs: DevicePrefsDto, 
+/**
+ * Applied output device, rate and buffer (`None` = Auto / not open).
+ */
+output_device: string | null, output_rate_hz: number | null, output_buffer_frames: number | null, output_status: DeviceStatusDto, };
+
+export type EventName = "notice" | "transport_state" | "devices_changed";
 
 /**
  * Error shape returned by every command (ADR-003). `key` is an i18n key, `params` fills its
@@ -100,3 +147,13 @@ export type Settings = { version: number, device: DevicePrefsDto, default_format
  * SPEC-003 §3: {30, 60} Hz, default 60 (measured free on WebKitGTK, ADR-009 §3).
  */
 telemetry_rate_hz: number, memory_budget_mib: number, };
+
+/**
+ * Transport state (`transport_state` event, transport command results). While playing, the
+ * moving playhead comes from `VXTM` telemetry; `playhead_samples` is then where the pass began.
+ */
+export type TransportStateDto = { playing: boolean, playhead_samples: number, play_start_samples: number, doc_len_samples: number, doc_rate_hz: number, 
+/**
+ * A document is loaded and an output device is open.
+ */
+can_play: boolean, };

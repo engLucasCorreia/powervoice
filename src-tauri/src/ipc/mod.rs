@@ -6,6 +6,8 @@
 //! their schema derives `ts_rs::TS` directly) are where DTOs live; domain crates never see
 //! either dependency. `src-tauri` maps domain → DTO with `From` impls, which the compiler checks.
 
+mod audio_commands;
+mod audio_dto;
 mod commands;
 mod dto;
 mod error;
@@ -15,6 +17,10 @@ mod macros;
 // A glob import, not a named one: `#[tauri::command]` also generates a hidden macro alongside
 // each command function (in the macro namespace), and `tauri::generate_handler!` below needs
 // that hidden macro in scope, not just the function.
+pub use audio_commands::*;
+pub use audio_dto::{
+    DeviceDto, DeviceStatusDto, DevicesDto, TransportStateDto, notice_from_device,
+};
 pub use commands::*;
 pub use dto::AppInfo;
 pub use error::{IpcError, IpcErrorCode};
@@ -28,13 +34,39 @@ pub use events::{EVENT_NAME_VARIANTS, EVENT_NAMES, EventName, Notice, NoticeLeve
 pub use crate::spike::*;
 
 #[cfg(not(feature = "spike"))]
-crate::ipc_commands!(app_info, settings_get, settings_set);
+crate::ipc_commands!(
+    app_info,
+    settings_get,
+    settings_set,
+    devices_list,
+    devices_select,
+    transport_get,
+    transport_play,
+    transport_pause,
+    transport_stop,
+    transport_play_from_start,
+    transport_return_to_start,
+    transport_seek,
+    telemetry_subscribe,
+    clock_now_ns,
+);
 
 #[cfg(feature = "spike")]
 crate::ipc_commands!(
     app_info,
     settings_get,
     settings_set,
+    devices_list,
+    devices_select,
+    transport_get,
+    transport_play,
+    transport_pause,
+    transport_stop,
+    transport_play_from_start,
+    transport_return_to_start,
+    transport_seek,
+    telemetry_subscribe,
+    clock_now_ns,
     spike_env,
     spike_waveform_peaks,
     spike_spectrogram_texture,

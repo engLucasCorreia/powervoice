@@ -9,6 +9,7 @@
   import Toolbar from "./lib/layout/Toolbar.svelte";
   import NoticeHost from "./lib/notices/NoticeHost.svelte";
   import { loadSettings } from "./lib/state/settings.svelte";
+  import { initTransport } from "./lib/state/transport.svelte";
 
   let version = $state("");
 
@@ -18,13 +19,28 @@
   });
 
   onMount(() => {
-    // No handlers are registered for any action yet (T-104): transport/recording/marker/history
-    // features register their own in later tickets. Until then every key resolves to a no-op.
+    // Features register their action handlers (S1-01: transport); unhandled keys are no-ops.
     return attachKeymap();
   });
 
   onMount(() => {
     void loadSettings();
+  });
+
+  onMount(() => {
+    let disposed = false;
+    let teardown: (() => void) | null = null;
+    void initTransport().then((cleanup) => {
+      if (disposed) {
+        cleanup();
+      } else {
+        teardown = cleanup;
+      }
+    });
+    return () => {
+      disposed = true;
+      teardown?.();
+    };
   });
 </script>
 

@@ -47,6 +47,9 @@ pub use mix::xfade_gain;
 pub use model::{RackModel, SlotModel};
 pub use registry::{Registry, RegistryError, Resolved};
 pub use shim::DualMonoShim;
+/// Module-API types a rack driver needs (the engine drives the rack through these without a
+/// direct `module-api` edge, ADR-001 §2).
+pub use vox_module_api::{ActivateConfig, ChannelLayout, ModuleFactory, ProcessMode, Transport};
 
 use vox_module_api::{
     DEFAULT_EVENT_CAPACITY, EventListError, ModuleError, ParamId, SchemaError, StateError,

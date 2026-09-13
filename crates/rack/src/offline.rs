@@ -7,8 +7,7 @@
 //! never affects a render. Missing modules and slot failures are errors (a render is never
 //! silently dry).
 //!
-//! TODO(T-105): call the `dsp::fp` FTZ/DAZ guard (`DenormalGuard`) at the top of
-//! [`render_with_automation`] once T-105 adds it (ADR-002 §2, SPEC-012 §4.4). The modules are
+//! The render runs under the `dsp::fp` FTZ/DAZ guard (ADR-002 §2, SPEC-012 §4.4); the modules are
 //! denormal-safe regardless.
 
 use vox_module_api::{
@@ -120,6 +119,7 @@ pub fn render_with_automation(
     input: &[f32],
     automation: &[AutomationEvent],
 ) -> Result<Vec<f32>, RenderError> {
+    let _fp = vox_dsp::fp::DenormalGuard::new();
     let mut chain = build_chain(registry, model, sample_rate)?;
     let mut events = Vec::with_capacity(automation.len());
     for a in automation {

@@ -6,18 +6,38 @@
 //! - [`devices`]: selection and fallback rules, input-channel deinterleaving, hot-plug polling.
 //! - [`device_state`]: the device-lost / recovery state machine.
 //! - [`prefs`]: persisted device preferences (saved intent vs applied value).
+//!
+//! Playback (S1-01, SPEC-003, ADR-002):
+//! - [`Engine`] / [`EngineHandle`] / [`ManualEngine`]: the facade over the control thread.
+//! - [`transport`]: the transport state machine and its commands.
+//! - [`telemetry`]: `VXTM` frames (playhead anchor + output meter) at 60 Hz.
+//! - Internals: `control` (16.7 ms tick, device handling), `output` (the RT output callback),
+//!   `reader` (prefetch + resampling), `rt` (ring element types).
 
 pub mod backend;
+mod control;
 pub mod device_state;
 pub mod devices;
+mod engine;
+mod output;
 pub mod prefs;
+mod reader;
+mod rt;
+pub mod telemetry;
+pub mod transport;
 
 pub use backend::{
     Backend, BackendError, BufferRequest, DeviceInfo, DeviceKey, DeviceSnapshot, Direction,
     DirectionCaps, Enumerate, HostId, InputCallback, InputTimestamp, OutputCallback,
     OutputTimestamp, StreamHandle, StreamInfo, StreamRequest, StreamStatus,
 };
+pub use engine::{
+    Clock, DevicesView, Engine, EngineConfig, EngineEvent, EngineHandle, EventSink, ManualEngine,
+    PlaybackDoc,
+};
 pub use prefs::DevicePrefs;
+pub use telemetry::{TelemetryFrame, TelemetrySink};
+pub use transport::{TransportCommand, TransportState};
 
 // Unit tests of RT wrappers run under the allocation checker.
 #[cfg(test)]

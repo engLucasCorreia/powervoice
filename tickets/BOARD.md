@@ -23,7 +23,7 @@ Tickets for M1+ are stubs; full ticket files are written in each milestone's W0.
 | T-101 | Document model: chunk store, snapshots, piece table, markers, take writer | W1 | O | M0 | in-progress |
 | T-102 | Devices: enumeration, channel deinterleave, hot-plug polling, device lost | W1 | O | M0 | in-progress |
 | T-103 | Rack core: module registry, chain swap/retire, host bypass/crossfade, dual-mono shim, param routing + same-offset/id event coalescing, latency sum, Gain, offline render, `cli render --rack` | W1 | O | M0 | in-progress |
-| T-104 | App infra: tracing log, typed errors→toasts/banners, panic hook, settings, stores, keymap registry, WebKit DMA-BUF default | W1 | S | M0 | in-progress |
+| T-104 | App infra: tracing log, typed errors→toasts/banners, panic hook, settings, stores, keymap registry, WebKit DMA-BUF default | W1 | S | M0 | done |
 | T-105 | Engine core: control thread, RT callbacks, transport (Stop→play start), reader/prefetch, resampling, heard clock, 60 Hz telemetry | W2 | O | T-101, T-102, T-103 | todo |
 | T-106 | Recording: crash-safe WAV, peaks stream, take → undoable edit | W3 | O | T-105 | todo |
 | T-107 | Monitoring off/dry/through-rack, drift-corrected in→out ring | W3 | O | T-105 | todo |
@@ -34,15 +34,16 @@ Tickets for M1+ are stubs; full ticket files are written in each milestone's W0.
 ## M2 — Editor view
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
-| T-200 | M2 spec wave: SPEC-005 formats, SPEC-006 waveform view, SPEC-007 spectral & analyzer | W0 | O/S | M0 | in-progress |
-| T-201 | WAV 16/24/32f r/w + cue/adtl chunks | W1 | S | M1 | todo |
-| T-202 | Import (symphonia) + stereo downmix + FLAC encode | W1 | S | M1 | todo |
+| T-200 | M2 spec wave: SPEC-005 formats, SPEC-006 waveform view, SPEC-007 spectral & analyzer | W0 | O/S | M0 | done |
+| T-201 | Save pipeline: WAV writer 16/24/32f, TPDF dither, clip policy, cue/adtl markers, atomic save job, FLAC encode | W1 | S+OR | M1 | todo |
+| T-202 | Import pipeline: symphonia decode (WAV variants, FLAC, MP3, M4A, Ogg), downmix, session import job, CLI convert/markers | W1 | S+OR | M1 | todo |
 | T-203 | Per-chunk peak pyramid + binary IPC | W1 | S+OR | M1 | todo |
 | T-204 | STFT spectrogram tile service | W1 | O | M1 | todo |
 | T-205 | Waveform renderer: zoom/scroll, amplitude zoom, rulers, extrapolated playhead | W2 | S | T-203 | todo |
 | T-206 | Selection model, time formats, zero-crossing snap | W3 | S | T-205 | todo |
 | T-207 | Spectrogram renderer, log/linear, split view | W3 | S | T-204, T-205 | todo |
-| T-208 | Live output spectrum analyzer | W3 | S | T-205 | todo |
+| T-208 | Live output analyzer: post-rack tap, FFT worker, 1/24-oct bands, VXSA, bottom-dock UI | W3 | S+OR | T-205 | todo |
+| T-209 | File menu & dialogs: Open, Save, Save As, downmix dialog, save format, clip prompt, unsaved-changes prompt, import progress | W3 | S | T-201, T-202, T-205 | todo |
 
 ## M3 — Editing & history
 | ID | Title | Wave | Tier | Deps | Status |

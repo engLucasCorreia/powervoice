@@ -75,8 +75,10 @@ This spec defines that behavior. ADR-004 defines how it is built.
 ### 2.3 Destructive edits vs playback and recording
 - **An audio edit during playback,** including undo/redo of an audio entry:
   - playback stops with a ~5 ms fade (no click) *before* the edit commits;
-  - the playhead stays at the heard position where playback stopped, clamped to the new length
-    (an engine-initiated stop behaves like Pause, SPEC-003 §2.1);
+  - at the stop, the playhead holds the heard position (an engine-initiated stop behaves like Pause,
+    SPEC-003 §2.1); after the commit the cursor/playhead moves as the operation's own spec defines
+    (SPEC-008 §2.3 per-op table, e.g. to the edit start after a delete), clamped to the new length
+    (amended at T-300 for consistency with SPEC-008);
   - playback does not resume by itself.
   The user never hears audio from a revision that is no longer current.
 - **A marker-only change during playback** has no audible effect: the output is identical to

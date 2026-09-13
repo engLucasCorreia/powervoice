@@ -217,3 +217,14 @@ before the first public distribution or outside contribution, and it doesn't blo
   `LICENSE-APACHE` are in the repo root; crate and npm metadata follow in T-104.
 - **LAME:** runtime loading of `libmp3lame` via `libloading` is **approved**.
 - VST2 via Carla and unsigned native modules are deferred to the M8 checkpoint.
+
+## Amendment 2 — T-200, 2026-09-13
+- **`tauri-plugin-dialog`** (MIT OR Apache-2.0) approved, confined to `src-tauri`, for native
+  Open/Save/Save As dialogs (SPEC-005).
+- **`rubato`** lives in `dsp` only (ADR-001 rule 3); `io` resamples through `dsp::resample`. The table
+  row that listed it under `io` is superseded.
+- **Committed codec test vectors:** an exception to "no committed audio" — tiny MP3/M4A/Ogg/Opus test
+  files (≤ 512 KiB total) generated from synthetic signals by a script (`just fixtures-codec`) may be
+  committed under `crates/io/tests/data/`, so importer tests don't need external encoders in CI.
+- **symphonia features:** `default-features = false` with `wav`, `pcm`, `flac`, `ogg`, `vorbis`, `mp3`,
+  `isomp4`, `aac` (AAC-LC; patent note stays in the risk list).

@@ -238,3 +238,30 @@ Mechanics:
 ## Open questions
 - None for the owner.
 - ~~For T-007: the 30 Hz vs 60 Hz telemetry default~~ — **resolved by ADR-009 §3: telemetry default is 60 Hz** (measured free on the owner's machine), with a settings toggle to 30 Hz. ADR-009 also confirmed raw `Response`/`Channel` payloads arrive as `ArrayBuffer`.
+
+## Amendment 1 — T-200 (SPEC-005/006/007), 2026-09-13
+- **Rates:** telemetry-cadence channels (VXTM, VXRP, module telemetry, analyzer) run at the telemetry
+  rate, **60 Hz by default** (ADR-009), 30 Hz selectable.
+- **`VXST` flags:** bit1 `PREVIEW` — a reduced-resolution tile sent first for responsiveness; the
+  full tile for the same `tile_index` replaces it when ready.
+- **Tile invalidation wording:** an edit invalidates the tiles whose input content changes.
+  Length-changing edits (cut, paste, insert) re-key every later tile; cached tiles are still reused
+  when their content key (chunk runs + parameters) matches.
+- **New frame `VXSA` — live output analyzer** (channel `analyzer_subscribe`, telemetry rate):
+
+  | Off | Type | Field |
+  |---|---|---|
+  | 0 | `[u8;4]` | `"VXSA"` |
+  | 4 | u16 | version = 1 |
+  | 6 | u16 | header_len = 32 |
+  | 8 | u32 | seq |
+  | 12 | u32 | flags: bit0 `HAS_PEAK_HOLD` |
+  | 16 | u32 | bands (number of 1/24-octave bands) |
+  | 20 | u32 | fft_size |
+  | 24 | u32 | sample_rate_hz |
+  | 28 | u32 | reserved = 0 |
+  | 32 | f32[] | `bands` levels in dBFS (−inf allowed), then, if `HAS_PEAK_HOLD`, `bands` peak-hold levels |
+
+  Band centre frequencies are derived deterministically from `bands`, `fft_size` and the rate
+  (SPEC-007 §4); they are not transmitted.
+- **New event** `clipboard_changed { has_audio, len_samples, rate_hz }` (SPEC-008).

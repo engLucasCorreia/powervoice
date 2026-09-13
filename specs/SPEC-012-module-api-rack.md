@@ -45,8 +45,9 @@ installed modules and external plugins later.
 ### 2.2 Slot operations
 - **Add, remove and reorder** (drag handle) are **live**: they apply during playback and monitoring,
   never stop the transport, and never create an undo entry (SPEC-004 OD-4 default).
-  - The change is audible within **50 ms** of the command (plus the new module's own activation time
-    for heavyweight modules).
+  - The change is audible within **50 ms** of the command, plus the new module's own activation time
+    for heavyweight modules, **plus its reported latency**: a new or replacement instance's fade-in
+    waits until its output is valid (amended at T-103 review).
   - It arrives through a **15 ms crossfade**, so there are no clicks and no time jump.
 - **Untouched slots keep their state.** A rack edit must not audibly restart the modules the user
   didn't touch: no envelope reset, no delay line emptied. Inserting a neutral module leaves the
@@ -252,8 +253,10 @@ Built-in **Gain** module (M1, `org.powervoice.gain@1.0.0`):
 The rack's `push_event` checks whether the slot's pending queue already holds an event with the same
 `(offset, id)` in the block being assembled. If so, it overwrites that event's value in place and
 leaves its position unchanged; otherwise it appends. This keeps the ADR-005 §4 guarantee ("for the
-same `(offset, id)`, the last one wins") without spending queue capacity. Carried-over events all move
-to offset 0 and are coalesced the same way.
+same `(offset, id)`, the last one wins") without spending queue capacity. Carried-over events move
+to offset 0 but are **not** merged with each other — every value is delivered (ADR-005 "delayed,
+never lost", AC-7 bullet 3); only a new push coalesces with the last queued event of the same
+`(offset, id)` (amended at T-103 review).
 
 ### 4.3 Zipper / click measurement (normative for AC-3, AC-4, AC-5 and SPEC-002 AC-9)
 - **Signal.** A 997 Hz sine at −20 dBFS peak, 48 kHz, f32, 3.0 s, starting phase 0. The tone is

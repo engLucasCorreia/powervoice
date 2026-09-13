@@ -129,6 +129,7 @@ repo/
 
 ## 5. Spec-driven development
 
+0. **Vertical slices first (owner, 2026-09-13, MEMORY D-022).** Build thin end-to-end slices that work (record & play → edit → clean → deliver), then harden to the full specs. Slice tickets implement the essential subset of a spec and list deferred ACs; the rules below apply fully in the hardening phase.
 1. **Specs first, just-in-time.** Each milestone opens with a spec wave (W0); the owner approves those specs at the previous milestone's checkpoint. Every feature has `specs/SPEC-NNN-name.md` containing: purpose, UX description, parameters (name, unit, range, default), algorithm notes, **acceptance criteria as Given/When/Then with numeric tolerances**, and a test plan.
 2. **Tickets reference specs.** `tickets/T-NNN-name.md` contains: spec refs, scope, files/crates touched, dependencies, **model tier**, Definition of Done, and the acceptance tests to write.
 3. **Tests encode the spec.** DSP acceptance = golden/numeric tests against synthetic signals. Examples of the precision expected:

@@ -4,6 +4,31 @@ Status: `todo` → `ready` (deps done) → `in-progress` → `review` → `done`
 Tiers: H = Haiku 4.5 · S = Sonnet 5 · O = Opus 5 · "+OR" = Opus review required.
 Tickets for M1+ are stubs; full ticket files are written in each milestone's W0.
 
+## ▶ Vertical slices — CURRENT PLAN (owner D-022, 2026-09-13)
+Build thin end-to-end slices that work, then harden. Milestone sections further down are the **hardening backlog**: their full-spec scope is done after the slices (tickets partly absorbed by a slice are marked "→ S#").
+
+### Slice 1 — Record & play (open WAV, see waveform, play, record, save)
+| ID | Title | Tier | Deps | Status |
+|---|---|---|---|---|
+| S1-01 | Playback end-to-end: engine core, output device, rack in path, transport, VXTM telemetry, transport + device UI | O | T-101, T-102, T-103 | ready |
+| S1-02 | WAV read/write (`vox-io`) + document peaks query (`vox-project`) — libraries only | S | T-101 | ready |
+| S1-03 | Open/Save WAV in the app + Canvas2D waveform view (zoom/scroll/playhead/click-to-seek) | S | S1-01, S1-02 | todo |
+| S1-04 | Recording end-to-end: input device, arm, input meter, record → take → document, live waveform | O | S1-01 | todo |
+
+### Slice 2 — Edit (planned)
+Selection, cut/copy/paste/delete, undo/redo, peak normalize favorites, markers (add/list/jump) — lean subsets of T-206, T-301, T-302, T-303, T-305.
+
+### Slice 3 — Clean & shape (planned)
+Rack panel + generic parameter UI, parametric EQ, compressor/limiter, noise gate, noise reduction (capture + module), true-peak limiter — subsets of M4/M5; first fix H-01.
+
+### Slice 4 — Deliver (planned)
+LUFS normalize, ACX check, export WAV/FLAC/MP3 — subsets of M6.
+
+### Hardening & backlog
+| ID | Title | Tier | Status |
+|---|---|---|---|
+| H-01 | Rack: bypass toggle during a new instance's warm-up hold re-introduces the cold-output click (T-103 re-review #1) + restart of load-failed slots, stuck held-back restart, count dropped moved events | O | todo (before Slice 3) |
+
 ## M0 — Foundations
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|

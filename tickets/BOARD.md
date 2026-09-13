@@ -90,10 +90,10 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-201 | Save pipeline: WAV writer 16/24/32f, TPDF dither, clip policy, cue/adtl markers, atomic save job, FLAC encode | W1 | S+OR | M1 | → S1-02/S1-03 (WAV subset), rest hardening |
 | T-202 | Import pipeline: symphonia decode (WAV variants, FLAC, MP3, M4A, Ogg), downmix, session import job, CLI convert/markers | W1 | S+OR | M1 | todo |
 | T-203 | Per-chunk peak pyramid + binary IPC | W1 | S+OR | M1 | → S1-02/S1-03 (subset), rest hardening |
-| T-204 | STFT spectrogram tile service | W1 | O | M1 | in progress |
+| T-204 | STFT spectrogram tile service | W1 | O | M1 | done |
 | T-205 | Waveform renderer: zoom/scroll, amplitude zoom, rulers, extrapolated playhead | W2 | S | T-203 | → S1-03 (Canvas2D subset), rest hardening |
 | T-206 | Selection model, time formats, zero-crossing snap | W3 | S | T-205 | todo |
-| T-207 | Spectrogram renderer, log/linear, split view | W3 | S | T-204, T-205 | todo |
+| T-207 | Spectrogram renderer, log/linear, split view | W3 | S | T-204, T-205 | in progress |
 | T-208 | Live output analyzer: post-rack tap, FFT worker, 1/24-oct bands, VXSA, bottom-dock UI | W3 | S+OR | T-205 | todo |
 | T-209 | File menu & dialogs: Open, Save, Save As, downmix dialog, save format, clip prompt, unsaved-changes prompt, import progress | W3 | S | T-201, T-202, T-205 | → S1-03 (subset), rest hardening |
 

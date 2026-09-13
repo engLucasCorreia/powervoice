@@ -265,3 +265,8 @@ Mechanics:
   Band centre frequencies are derived deterministically from `bands`, `fft_size` and the rate
   (SPEC-007 §4); they are not transmitted.
 - **New event** `clipboard_changed { has_audio, len_samples, rate_hz }` (SPEC-008).
+
+## Amendment 2 — T-300 (SPEC-022), 2026-09-13
+New events: `record_phase { take, phase: PreRoll | Recording | PostRoll | Finished | Cancelled, at_sample }`
+and `record_finished { take, outcome, len_samples, offset_samples }`. Calibration commands
+(`calibration_start`, `calibration_verify`, `calibration_cancel`) report progress through `job_progress`.

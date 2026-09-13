@@ -48,11 +48,11 @@ Tickets for M1+ are stubs; full ticket files are written in each milestone's W0.
 ## M3 — Editing & history
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
-| T-300 | M3 spec wave: SPEC-008 ✓, SPEC-010 ✓, SPEC-009 ✓, SPEC-018 ✓, SPEC-022 punch-in | W0 | O | M0, SPEC-005 | in-progress |
+| T-300 | M3 spec wave: SPEC-008, SPEC-009, SPEC-010, SPEC-018, SPEC-022 | W0 | O | M0, SPEC-005 | done |
 | T-301 | Undo/redo, resident memory budget, edit journal, crash recovery | W1 | O | M2 | todo |
 | T-302 | Cut/copy/paste/delete, trim, silence, insert silence, clipboard | W2 | S+OR | T-301 | todo |
 | T-303 | Markers: kinds, add/region, rename, drag, delete, navigation, Markers panel | W2 | S | T-301 | todo |
-| T-304 | Record at cursor (insert/overwrite) + punch-in + latency calibration (SPEC-022) | W2 | O | T-301, SPEC-022 | todo |
+| T-304 | Record at cursor (Insert/Overwrite) + punch-in + latency offset & calibration | W2 | O | T-301 | todo |
 | T-305 | Peak normalize favorites | W2 | S+OR | T-301 | todo |
 | T-306 | Sidecar `.vo.json`, identity check, sidecar-only saves, recent files, second-instance warning | W3 | S+OR | T-302, T-303 | todo |
 

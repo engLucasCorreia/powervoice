@@ -309,3 +309,16 @@ attachments exactly like the rest of the journal.
 - The rack and view sections of the sidecar are stored by `project` as **opaque JSON** (like the
   Amendment 1 attachment), preserving ADR-001's "`project` never depends on `rack`".
 - T-301's journal label-params change becomes **Amendment 3**.
+
+## Amendment 4 — T-300 (SPEC-022 punch-in), 2026-09-13
+(Amendment 3 is reserved for T-301's journal label params.)
+- `take_begin` gains `mode` (`New` | `Insert` | `Overwrite` | `Punch`), `at`, and for Punch the
+  replaced window `[start, end)`, pre/post-roll and the applied recording offset.
+- New records: `take_window {take, start, end}` (the part of the take file that becomes document audio,
+  after latency compensation) and `take_cancel {take}` (pre-roll cancel; the take file stays as a backup
+  until GC).
+- Edits gain a marker mapping choice: Overwrite and Punch keep markers in place (`MarkerMapping::Identity`),
+  Insert shifts them (SPEC-008 §4.2). Crossfades at punch boundaries are rendered into new chunks inside
+  the replaced range, so audio outside the selection stays bit-identical.
+- The capture writer keeps ~2 s of look-back so a take can start at a sample that is already in the past
+  when the start position becomes known.

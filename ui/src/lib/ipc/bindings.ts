@@ -476,7 +476,12 @@ monitoring: boolean,
  * H-10 item 4: dropout events so far this take (SPEC-002 §2.1's live amber counter), `0`
  * while not recording.
  */
-dropout_count: number, };
+dropout_count: number, 
+/**
+ * H-11 (SPEC-002 §2.5, AC-13): remaining recording time on the session volume, in whole
+ * seconds; `None` when the free-space query failed.
+ */
+disk_remaining_s: number | null, };
 
 /**
  * `rack_response_curve`'s response (S3-07, SPEC-015 §2.6.6, lean slice: JSON — the binary

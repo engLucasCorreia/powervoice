@@ -20,6 +20,19 @@ use vox_project::{FinishedTake, ProjectError};
 
 use crate::device_state::DeviceStatus;
 
+/// SPEC-002 §3 `disk_floor_mib`: recording stops when free space on the session volume falls
+/// below this (AC-13).
+pub const DISK_FLOOR_BYTES: u64 = 512 * 1024 * 1024;
+/// SPEC-002 §2.5: recording writes two copies (the take WAV and the session chunks) — 8 bytes/s
+/// per Hz of the document rate (4-byte f32 samples × 2 copies).
+pub const RECORD_BYTES_PER_SAMPLE: u64 = 8;
+/// SPEC-002 §3 `disk_warn_min`: below this many minutes of remaining recording time, Record
+/// confirms first ("Only N min of disk space left. Record anyway?").
+pub const DISK_WARN_MINUTES: u64 = 10;
+/// SPEC-002 §3 `dropout_fill_max_s` / §2.4 second row (A-011): input gaps longer than this are
+/// device loss (stop, keep the take up to the gap), not a fillable dropout.
+pub const DROPOUT_FILL_MAX_S: u64 = 2;
+
 /// Monitoring mode (SPEC-002 §2.7). Through-rack monitoring is T-107 (not in this slice).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MonitorMode {
@@ -57,6 +70,11 @@ pub struct RecordState {
     /// `0` while not recording. Read from [`crate::input::InputShared::dropout_events`] each
     /// tick — the same count [`RecordingResult::dropouts`] reports at Stop.
     pub dropout_count: u32,
+    /// H-11 (SPEC-002 §2.5, AC-13): remaining recording time on the session volume at the
+    /// current (or, while idle/armed, the configured default) rate — `(free − 512 MiB) / (8 ×
+    /// rate)`, floored to whole seconds so it settles once a second instead of every tick.
+    /// `None` when the free-space query failed (e.g. the volume doesn't exist yet).
+    pub disk_remaining_s: Option<u64>,
 }
 
 /// Why a take ended.
@@ -74,6 +92,10 @@ pub enum StopReason {
     /// Appending to the take failed ([`RecordingResult::write_error`]): the recording stopped
     /// and the take is kept up to the last good sample (SPEC-002 §2.5).
     WriteError,
+    /// H-11 (SPEC-002 §2.5, AC-13): free space on the session volume fell below
+    /// [`DISK_FLOOR_BYTES`]. The take is finalized at the last good sample and kept, like
+    /// [`StopReason::WriteError`].
+    DiskFull,
 }
 
 /// What the capture-writer hands to [`RecordDone`] once the take is finished.
@@ -96,9 +118,9 @@ pub struct RecordingResult {
     pub write_error: Option<ProjectError>,
     /// H-10 item 4 (SPEC-002 §2.4/§4.3, AC-7): dropouts filled with silence during the take, in
     /// take order — the caller turns each into a "Dropout N ms" marker alongside the take's own
-    /// undo entry. Always empty when the capture-writer resampled (H-06 capture resampling is out
-    /// of this ticket's scope — dropouts are still counted live, via `RecordState::dropout_count`,
-    /// but not spliced/marked on that path).
+    /// undo entry. H-11 item 5: spliced and marked on the resampled capture path too (H-06), in
+    /// document-rate samples like every other position here — `pos_samples` is read from the
+    /// take's own (already document-rate) sample count, so resampling needs no extra mapping.
     pub dropouts: Vec<DropoutMark>,
 }
 

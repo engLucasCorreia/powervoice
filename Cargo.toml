@@ -47,6 +47,9 @@ cpal = "0.18"
 memmap2 = "0.9"
 crc32fast = "1"
 libc = "0.2"
+# A-010: Windows counterpart of `libc::statvfs` (`vox-project::disk`), already in the dependency
+# tree via tauri/cpal.
+windows-sys = "0.61"
 # T-103: lock-free SPSC rings between the rack host (control thread) and the live rack (audio thread).
 rtrb = "0.4"
 # S1-01: document → device rate conversion in the playback reader (ADR-002 §5); only in vox-dsp.

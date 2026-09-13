@@ -40,6 +40,7 @@ function recordedDto(rate: number): RecordStateDto {
     monitor: "off",
     monitoring: false,
     dropout_count: 0,
+    disk_remaining_s: null,
   };
 }
 

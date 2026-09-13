@@ -4901,6 +4901,7 @@ dependencies = [
  "vox-dsp",
  "vox-io",
  "vox-testkit",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -160,10 +160,11 @@ pub(crate) struct CaptureWriter {
     done: Option<RecordDone>,
     /// H-07: running min/max peaks of the samples appended to `capture` so far.
     peaks: LivePeaksHandle,
-    /// H-10 item 4 (SPEC-002 §2.4/§4.3): where the RT input callback reports dropouts, in the
-    /// same device-rate ring-position numbering as [`Self::rx`]. `None` when the take is being
-    /// resampled (H-06 capture resampling stays out of this ticket's scope, see module docs) or
-    /// the ring wasn't available — dropouts are then simply not detected for this take.
+    /// H-10 item 4 / H-11 item 5 (SPEC-002 §2.4/§4.3): where the RT input callback reports
+    /// dropouts, in the same device-rate ring-position numbering as [`Self::rx`] — regardless of
+    /// whether [`Self::resampler`] is active (the silence fill is spliced in before resampling,
+    /// `splice_gaps_and_append`). `None` only when the ring wasn't available for this take —
+    /// dropouts are then simply not detected.
     gap_rx: Option<Consumer<GapEvent>>,
     gap_home: GapHome,
     /// Raw (device-rate) ring samples consumed so far — the same numbering as `GapEvent::take_index`.
@@ -230,13 +231,17 @@ impl CaptureWriter {
         }
     }
 
-    /// Appends `frames` samples of digital silence, in bounded chunks (H-10 item 4: a dropout
-    /// fill). No allocation — [`SILENCE_CHUNK`] zeros are stack-local.
-    fn append_silence(&mut self, mut frames: u32) {
+    /// Feeds `frames` device-rate samples of digital silence through the take path, in bounded
+    /// chunks (H-10 item 4: a dropout fill). Goes through [`Self::drain_part`] rather than
+    /// appending straight to [`Self::capture`], so a resampled take (H-06/H-11 item 5) converts
+    /// the fill's duration to document-rate samples the same way it would real captured silence,
+    /// instead of splicing in a mismatched number of raw zeros. No allocation beyond the
+    /// resampler's own reused scratch buffer — [`SILENCE_CHUNK`] zeros are stack-local.
+    fn fill_silence(&mut self, mut frames: u32) {
         let zeros = [0.0f32; SILENCE_CHUNK];
         while frames > 0 && self.write_error.is_none() {
             let n = (frames as usize).min(SILENCE_CHUNK);
-            self.append_take(&zeros[..n]);
+            self.drain_part(&zeros[..n]);
             frames -= n as u32;
         }
     }
@@ -264,9 +269,13 @@ impl CaptureWriter {
     }
 
     /// Like [`Self::drain_part`], but first splices in silence for every gap event whose position
-    /// falls within `part` (H-10 item 4, SPEC-002 §2.4/§4.3) — only reached when no resampler is
-    /// active (see [`Self::gap_rx`]). `part` covers ring positions `[self.ring_consumed,
-    /// self.ring_consumed + part.len())`.
+    /// falls within `part` (H-10 item 4, H-11 item 5, SPEC-002 §2.4/§4.3) — `part` covers ring
+    /// (device-rate) positions `[self.ring_consumed, self.ring_consumed + part.len())`, the same
+    /// numbering [`GapEvent::take_index`] uses whether or not [`Self::resampler`] is active: the
+    /// splice always happens on the raw, pre-resample stream, and the segments either side of it
+    /// (pass-through audio and the fill) both go through [`Self::drain_part`], so a resampled take
+    /// still ends up with the right *document*-rate marker position/length
+    /// ([`Self::capture`]'s own sample count, read right before the fill).
     fn splice_gaps_and_append(&mut self, part: &[f32]) {
         if let Some(rx) = self.gap_rx.as_mut() {
             while let Ok(ev) = rx.pop() {
@@ -282,11 +291,11 @@ impl CaptureWriter {
             }
             let local = ev.take_index.saturating_sub(base).min(part.len() as u64) as usize;
             if local > cursor {
-                self.append_take(&part[cursor..local]);
+                self.drain_part(&part[cursor..local]);
                 cursor = local;
             }
             let pos_samples = self.capture.samples_written();
-            self.append_silence(ev.lost_frames);
+            self.fill_silence(ev.lost_frames);
             self.dropouts.push(DropoutMark {
                 pos_samples,
                 len_samples: u64::from(ev.lost_frames),
@@ -294,7 +303,7 @@ impl CaptureWriter {
             self.pending_gaps.pop_front();
         }
         if cursor < part.len() {
-            self.append_take(&part[cursor..]);
+            self.drain_part(&part[cursor..]);
         }
     }
 
@@ -359,6 +368,7 @@ impl CaptureWriter {
             stop_code::SHUTDOWN => StopReason::Shutdown,
             stop_code::OVERFLOW => StopReason::Overflow,
             stop_code::WRITE_ERROR => StopReason::WriteError,
+            stop_code::DISK_FULL => StopReason::DiskFull,
             _ => StopReason::User,
         };
         let finished = self.capture.finish();

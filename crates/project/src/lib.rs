@@ -30,6 +30,7 @@
 //! - Snapshots are immutable and shared by `Arc`; dropping the last reference to one is cheap and
 //!   never touches the store.
 
+pub mod disk;
 pub mod edit;
 pub mod error;
 mod fs_util;
@@ -47,6 +48,7 @@ pub mod store;
 pub mod take;
 pub mod vxpk;
 
+pub use disk::{FixedFreeSpace, FreeSpaceProvider, SystemFreeSpace};
 pub use edit::{PostEdit, Range, RangeError, Target as EditTarget, validate_range};
 pub use error::{ProjectError, Result};
 pub use history::{Edit, EditOp, History, HistoryStep, MarkerMapping, MarkerOp};

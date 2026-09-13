@@ -151,6 +151,15 @@ fn on_take_finished(inner: &Inner, result: RecordingResult) {
             ),
         );
     }
+    if result.reason == StopReason::DiskFull {
+        // H-11, SPEC-002 §2.5, AC-13: free space fell below the hard floor; say what was kept.
+        notice(
+            Notice::toast(NoticeLevel::Error, "notice.record.disk_full").with_param(
+                "duration",
+                duration_text(result.finished.wav_samples, result.sample_rate_hz),
+            ),
+        );
+    }
     if result.clip_events > 0 {
         notice(
             Notice::toast(NoticeLevel::Warning, "notice.record.clipped")

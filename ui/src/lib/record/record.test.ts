@@ -17,10 +17,11 @@ import {
   onInputTelemetry,
   recordState,
   resetRecordForTest,
+  resolveLowDiskPrompt,
 } from "../state/record.svelte";
 import { initTransport, resetTransportForTest } from "../state/transport.svelte";
 import { PeakBallistics } from "./ballistics";
-import { formatElapsed } from "./format";
+import { DISK_WARN_MINUTES, formatElapsed, formatRemaining } from "./format";
 import RecordControls from "./RecordControls.svelte";
 
 let calls: Array<{ cmd: string; args: unknown }> = [];
@@ -29,6 +30,7 @@ let recording = false;
 let inputDevice: string | null = "Mic";
 let failRecordStart = false;
 let dropoutCount = 0;
+let diskRemainingS: number | null = null;
 
 function recDto(): RecordStateDto {
   return {
@@ -43,6 +45,7 @@ function recDto(): RecordStateDto {
     monitor: "off",
     monitoring: false,
     dropout_count: dropoutCount,
+    disk_remaining_s: diskRemainingS,
   };
 }
 
@@ -84,6 +87,7 @@ beforeEach(() => {
   inputDevice = "Mic";
   failRecordStart = false;
   dropoutCount = 0;
+  diskRemainingS = null;
   mockIPC(
     (cmd, args) => {
       calls.push({ cmd, args });
@@ -319,6 +323,52 @@ describe("record panel (S1-04)", () => {
     onInputTelemetry(frame(VXTM_FLAGS.RECORDING, 48_000 * 2.5), 0);
     flushSync();
     expect(el("record-elapsed").textContent).toBe("0:00:02.5");
+    teardown();
+  });
+
+  it("formats remaining disk time as h:mm:ss / m:ss (H-11)", () => {
+    expect(formatRemaining(59)).toBe("0:59");
+    expect(formatRemaining(600)).toBe("10:00");
+    expect(formatRemaining(3_661)).toBe("1:01:01");
+    expect(DISK_WARN_MINUTES).toBe(10);
+  });
+
+  it("H-11: shows the remaining disk time, amber below the warn threshold", async () => {
+    const { el, teardown } = await setup();
+    expect(document.querySelector('[data-testid="record-disk-remaining"]')).toBeNull();
+
+    diskRemainingS = 20 * 60;
+    await emit("record_state", recDto());
+    await settle();
+    expect(el("record-disk-remaining").textContent?.trim()).toBe("20:00 left");
+    expect(el("record-disk-remaining").classList.contains("low")).toBe(false);
+
+    diskRemainingS = 8 * 60;
+    await emit("record_state", recDto());
+    await settle();
+    expect(el("record-disk-remaining").classList.contains("low")).toBe(true);
+    teardown();
+  });
+
+  it("H-11 (SPEC-002 §2.5): Record below the low-disk threshold confirms first", async () => {
+    diskRemainingS = 8 * 60;
+    const { el, teardown } = await setup();
+    el("record-button").click();
+    await settle();
+    // Blocked on the confirm prompt: `record_start` hasn't run yet.
+    expect(recordCalls()).toEqual([]);
+    expect(recordState().lowDiskPrompt?.minutes).toBe(8);
+
+    resolveLowDiskPrompt(false);
+    await settle();
+    expect(recordCalls()).toEqual([]);
+    expect(recordState().lowDiskPrompt).toBeNull();
+
+    el("record-button").click();
+    await settle();
+    resolveLowDiskPrompt(true);
+    await settle();
+    expect(recordCalls()).toEqual([{ cmd: "record_start", args: { replace: false } }]);
     teardown();
   });
 });

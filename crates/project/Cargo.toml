@@ -20,6 +20,10 @@ vox-dsp = { path = "../dsp" }
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
+# A-010: `GetDiskFreeSpaceExW` for the recording disk floor / remaining-time query (`disk.rs`).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 vox-testkit = { path = "../testkit" }
 

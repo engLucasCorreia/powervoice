@@ -1,6 +1,7 @@
 //! Audio engine wiring (S1-01): starts the engine with the saved device prefs and the built-in
 //! modules, and forwards its events to the UI (`transport_state`, `devices_changed`, `notice`).
 
+use std::path::Path;
 use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Runtime};
@@ -28,14 +29,18 @@ impl AudioEngine {
 }
 
 /// Starts the engine on the real (cpal) backend. Devices are enumerated and the output opened
-/// on the engine's own threads; the UI hears about it through `devices_changed`.
+/// on the engine's own threads; the UI hears about it through `devices_changed`. `record_volume`
+/// (H-11, SPEC-002 §2.5): the sessions directory recordings are written to — the engine polls its
+/// free space for the disk floor and the record panel's remaining-time display.
 pub fn start<R: Runtime>(
     app: &AppHandle<R>,
     prefs: &DevicePrefsDto,
+    record_volume: &Path,
 ) -> anyhow::Result<AudioEngine> {
     let registry = Arc::new(Registry::with_factories(vox_modules::builtin_factories())?);
     let mut config = EngineConfig::new(Arc::new(CpalBackend::new()), registry);
     config.prefs = prefs.into();
+    config.record_volume = record_volume.to_path_buf();
     let app = app.clone();
     config.events = Arc::new(move |event| forward(&app, event));
     let engine = Engine::start(config)?;

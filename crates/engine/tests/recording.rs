@@ -15,7 +15,8 @@ use vox_engine::backend::fake::{
 };
 use vox_engine::devices::DeviceNotice;
 use vox_engine::record::{
-    DropoutMark, LIVE_PEAKS_SPB, MonitorMode, RecordError, RecordState, RecordingResult, StopReason,
+    DISK_FLOOR_BYTES, DropoutMark, LIVE_PEAKS_SPB, MonitorMode, RECORD_BYTES_PER_SAMPLE,
+    RecordError, RecordState, RecordingResult, StopReason,
 };
 use vox_engine::telemetry::vxtm_flags;
 use vox_engine::{
@@ -27,7 +28,8 @@ use vox_project::gc::{SessionClass, classify_session};
 use vox_project::session::TAKES_DIR_NAME;
 use vox_project::take::{read_take_samples, recover_take, take_part_path};
 use vox_project::{
-    DocSnapshot, Session, SessionConfig, StoreOptions, TAKE_LABEL_KEY, TakeMode, TakeWriterOptions,
+    DocSnapshot, FixedFreeSpace, Session, SessionConfig, StoreOptions, TAKE_LABEL_KEY, TakeMode,
+    TakeWriterOptions,
 };
 use vox_rack::Registry;
 
@@ -135,7 +137,13 @@ struct Rig {
     dir: TempDir,
     /// Fake time the input stream opened (its frame 0).
     t_open: u64,
+    /// H-11: the injected free-space provider (`EngineConfig::disk_space`), defaulting to a
+    /// generous value so unrelated tests never trip the disk floor by accident.
+    disk: FixedFreeSpace,
 }
+
+/// H-11: a generous default so tests that don't care about disk space never trip the floor.
+const PLENTY_OF_DISK: u64 = 100 << 30;
 
 /// A manual engine with a 2-channel "Mic" (recording `channel`, `None` = no input device) and,
 /// optionally, a "DAC" output.
@@ -171,6 +179,10 @@ fn rig_with_mic(mic: FakeDevice, with_output: bool, channel: Option<u16>) -> Rig
     cfg.events = Arc::new(move |e| ev.lock().unwrap().push(e));
     let clock = fake.clone();
     cfg.clock = Arc::new(move || clock.now_ns());
+    let dir = TempDir::new("take");
+    let disk = FixedFreeSpace::new(PLENTY_OF_DISK);
+    cfg.disk_space = Arc::new(disk.clone());
+    cfg.record_volume = dir.0.clone();
     let mut eng = ManualEngine::new(cfg);
     let frames = Arc::new(Mutex::new(Vec::new()));
     let fr = frames.clone();
@@ -182,8 +194,9 @@ fn rig_with_mic(mic: FakeDevice, with_output: bool, channel: Option<u16>) -> Rig
         events,
         frames,
         done: Arc::new(Mutex::new(None)),
-        dir: TempDir::new("take"),
+        dir,
         t_open: 0,
+        disk,
     }
 }
 
@@ -1035,6 +1048,183 @@ fn write_error_stops_the_recording_and_keeps_the_take() {
     let res = r.result();
     assert_eq!(res.reason, StopReason::User);
     assert!(res.write_error.is_none() && res.finished.audio.len_samples > 9_000);
+    assert_eq!(r.fake.rt_violations(), 0, "a callback allocated");
+}
+
+/// H-11 (SPEC-002 §2.5, AC-13): the remaining-time formula while idle/armed, and the injected
+/// free-space provider dropping below the hard floor mid-take stops the recording gracefully and
+/// keeps the take, like a write error.
+#[test]
+fn disk_floor_stops_and_keeps_the_take() {
+    let mut r = rig(src, true, Some(1));
+    r.run_ms(20);
+    r.arm();
+    r.run_ms(50);
+
+    // Remaining time before any take: (free - floor) / (8 * rate), at the armed input's rate.
+    let want = (PLENTY_OF_DISK - DISK_FLOOR_BYTES) / (RECORD_BYTES_PER_SAMPLE * u64::from(RATE));
+    let st = r.eng.record_state();
+    assert_eq!(st.disk_remaining_s, Some(want), "{st:?}");
+
+    let mut session = r.session();
+    let t_rec = r.start(&mut session);
+    r.run_ms(100);
+    // Free space drops below the 512 MiB floor.
+    r.disk.set(300 << 20);
+    // The next ~1 s poll (SPEC-002 §2.5) picks it up and stops within 1 s (AC-13).
+    r.run_ms(1_000);
+    let res = r
+        .done
+        .lock()
+        .unwrap()
+        .take()
+        .expect("the take finished by itself, without Stop");
+    let st = r.eng.record_state();
+    assert!(!st.recording && !st.finishing, "{st:?}");
+    assert_eq!(res.reason, StopReason::DiskFull);
+    assert!(res.finished.error.is_none(), "{:?}", res.finished.error);
+
+    let step = session.commit_take(&res.finished, &[]).unwrap().unwrap();
+    let take = take_samples(&session, &step.snapshot);
+    assert!(!take.is_empty());
+    let k = locate(&take, 0, r.frame_at(t_rec));
+    assert!(k.abs_diff(r.frame_at(t_rec)) <= 1, "bit-exact from t_rec");
+    assert_eq!(r.fake.rt_violations(), 0, "a callback allocated");
+}
+
+/// H-11 item 4 (SPEC-002 §2.4 second row, A-011): an input gap over the 2 s fill cap is handled
+/// like device loss end-to-end — the recording stops, the take is kept up to the gap, and it is
+/// *not* padded with seconds of silence (unlike a fillable dropout, H-10).
+#[test]
+fn input_gap_over_two_seconds_is_device_loss_not_a_fillable_dropout() {
+    let mut r = rig_with_mic(mic_fixed(src, 64), false, Some(1));
+    r.run_ms(20);
+    r.arm();
+    r.run_ms(50);
+    let mut session = r.session();
+    let t_rec = r.start(&mut session);
+    r.run_ms(200);
+
+    let input_id = r
+        .fake
+        .streams()
+        .iter()
+        .rev()
+        .find(|s| s.info.direction == Direction::Input)
+        .map(|s| s.info.id)
+        .expect("an input stream");
+    // A 2.1 s gap: past the fill cap, so it cuts over to device loss instead of being filled.
+    // The fake backend "loses" wall-clock time along with the skipped frames (`Slot::reschedule`
+    // computes the next callback's time from the jumped `frame_pos`), so the callback carrying
+    // the gap doesn't arrive until fake time has advanced by roughly the gap's own duration too.
+    r.fake.schedule(
+        r.fake.now_ns(),
+        FakeEvent::InputDropout(input_id, u64::from(RATE) * 21 / 10),
+    );
+    r.run_ms(2_200);
+
+    let res = r
+        .done
+        .lock()
+        .unwrap()
+        .take()
+        .expect("the take finished by itself, like device loss");
+    assert_eq!(res.reason, StopReason::InputLost);
+    assert!(
+        res.dropouts.is_empty(),
+        "not a fillable dropout: {:?}",
+        res.dropouts
+    );
+    assert_eq!(r.eng.record_state().dropout_count, 0);
+
+    let step = session.commit_take(&res.finished, &[]).unwrap().unwrap();
+    let take = take_samples(&session, &step.snapshot);
+    // Kept up to the gap (≈200 ms + the run before the schedule took effect), nowhere near the
+    // ~2.1 s that a fill would have added.
+    assert!(
+        take.len() < (u64::from(RATE) as usize),
+        "kept only up to the gap, got {} samples",
+        take.len()
+    );
+    let k = locate(&take, 0, r.frame_at(t_rec));
+    assert!(k.abs_diff(r.frame_at(t_rec)) <= 1);
+    assert_eq!(r.fake.rt_violations(), 0, "a callback allocated");
+}
+
+/// H-11 item 5 (SPEC-002 §2.4/§4.3): a dropout on the resampled capture path (H-06, input rate ≠
+/// document rate) is still filled with silence and marked, converted to document-rate samples by
+/// the same resampler real audio goes through — not silently dropped as H-10 left it.
+#[test]
+fn resampled_take_still_fills_and_marks_dropouts() {
+    const DOC_RATE: u32 = 44_100;
+    let mut r = rig_with_mic(mic_fixed(src, 64), false, Some(1));
+    r.run_ms(20);
+    let st = r.eng.set_armed(true);
+    assert!(st.armed && st.input_open, "{st:?}");
+    assert_eq!(st.input_rate_hz, Some(48_000));
+    r.run_ms(50);
+
+    let mut session = Session::create(
+        &r.dir.0,
+        SessionConfig {
+            sample_rate_hz: DOC_RATE,
+            source: None,
+            store: StoreOptions::with_memory_budget(64 << 20),
+        },
+    )
+    .unwrap();
+    let capture = session
+        .begin_take(TakeMode::New, TakeWriterOptions::default())
+        .unwrap();
+    let done = r.done.clone();
+    r.eng
+        .record_start(
+            DOC_RATE,
+            capture,
+            Box::new(move |res| *done.lock().unwrap() = Some(res)),
+        )
+        .expect("a rate mismatch resamples instead of being refused (H-06)");
+    r.run_ms(200);
+
+    let input_id = r
+        .fake
+        .streams()
+        .iter()
+        .rev()
+        .find(|s| s.info.direction == Direction::Input)
+        .map(|s| s.info.id)
+        .expect("an input stream");
+    // A 20 ms dropout at the input's 48 kHz rate.
+    r.fake
+        .schedule(r.fake.now_ns(), FakeEvent::InputDropout(input_id, 960));
+    r.run_ms(200);
+
+    r.eng.record_stop();
+    let res = r.result();
+    assert_eq!(res.reason, StopReason::User);
+    assert!(res.finished.error.is_none(), "{:?}", res.finished.error);
+    assert_eq!(
+        res.dropouts.len(),
+        1,
+        "the resampled path must still splice and mark it: {:?}",
+        res.dropouts
+    );
+    // 20 ms of input silence resamples to ≈20 ms of document-rate silence; the resampler
+    // processes in fixed 1024-input-frame chunks, so allow one chunk's worth of slack (H-06's own
+    // resampling test uses the same tolerance style).
+    let want_len = (0.020 * f64::from(DOC_RATE)).round() as u64;
+    let block = (1024.0 * f64::from(DOC_RATE) / 48_000.0).ceil() as u64;
+    assert!(
+        res.dropouts[0].len_samples.abs_diff(want_len) <= block,
+        "got {}, expected {want_len} +/- {block}",
+        res.dropouts[0].len_samples
+    );
+
+    let step = session.commit_take(&res.finished, &[]).unwrap().unwrap();
+    let take = take_samples(&session, &step.snapshot);
+    let pos = res.dropouts[0].pos_samples as usize;
+    let len = res.dropouts[0].len_samples as usize;
+    assert!(pos + len <= take.len());
     assert_eq!(r.fake.rt_violations(), 0, "a callback allocated");
 }
 

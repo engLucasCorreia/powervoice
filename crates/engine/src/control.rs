@@ -6,6 +6,7 @@
 //! capture-writer, ticks the rack host, checks stream flags and the stall detectors, sends a
 //! telemetry frame.
 
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -14,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use rtrb::{Consumer, Producer, RingBuffer};
 use vox_dsp::capture_resample::CaptureResampler;
-use vox_project::TakeCapture;
+use vox_project::{FreeSpaceProvider, TakeCapture};
 use vox_rack::{
     ActivateConfig, ChannelLayout, MAX_BLOCK, ModuleDescriptor, ProcessMode, RackHost, RackModel,
     RackNotice, RackOptions, Registry,
@@ -45,7 +46,10 @@ use crate::rack_api::{
     RackSnapshot, ResponseCurvePoints,
 };
 use crate::reader::{self, Reader, ReaderCmd};
-use crate::record::{LiveTakePeaks, MonitorMode, RecordDone, RecordError, RecordState, StopReason};
+use crate::record::{
+    DISK_FLOOR_BYTES, LiveTakePeaks, MonitorMode, RECORD_BYTES_PER_SAMPLE, RecordDone, RecordError,
+    RecordState, StopReason,
+};
 use crate::rt::{
     AUDIO_CMD_CAPACITY, AudioCmd, PLAYBACK_RING_PACKETS, RT_EVENT_CAPACITY, RtCounters, RtEvent,
 };
@@ -60,6 +64,9 @@ pub(crate) const TICK: Duration = Duration::from_nanos(16_666_667);
 
 /// A stop the input callback doesn't complete within this (stalled stream) is forced.
 const FORCE_FINISH_NS: u64 = 1_000_000_000;
+/// SPEC-002 §2.5: the disk-space query (free-space provider) runs about this often, not every
+/// tick — it may hit the file system, and the remaining-time display only needs ~1 Hz anyway.
+const DISK_CHECK_INTERVAL_NS: u64 = 1_000_000_000;
 /// Inline (manual) writer: sync the take WAV every this many ticks (~1 s).
 const INLINE_SYNC_TICKS: u32 = 60;
 /// Callback period assumed for the monitor fill target when a stream doesn't report one.
@@ -230,6 +237,14 @@ pub(crate) struct Control {
     recording: Option<Recording>,
     in_meter: InputMeter,
     last_record: Option<RecordState>,
+    /// H-11 (SPEC-002 §2.5, A-010): the free-space provider (the real one, or a fake in tests).
+    disk_space: Arc<dyn FreeSpaceProvider>,
+    /// The volume recordings are written to.
+    record_volume: PathBuf,
+    /// Fake/app clock time of the last [`Self::disk_space`] query.
+    disk_checked_ns: Option<u64>,
+    /// The last query's result (`None`: never queried yet, or it failed).
+    disk_free_bytes: Option<u64>,
 }
 
 impl Control {
@@ -245,6 +260,8 @@ impl Control {
             events,
             clock,
             record_rate_hz,
+            disk_space,
+            record_volume,
         } = config;
         let threaded = inbox.is_some();
         let (reader, poll) = match inbox {
@@ -322,6 +339,10 @@ impl Control {
             recording: None,
             in_meter: InputMeter::default(),
             last_record: None,
+            disk_space,
+            record_volume,
+            disk_checked_ns: None,
+            disk_free_bytes: None,
         }
     }
 
@@ -1373,6 +1394,56 @@ impl Control {
                 .recording
                 .as_ref()
                 .map_or(0, |r| r.shared.dropout_events.load(Ordering::Relaxed)),
+            disk_remaining_s: self.disk_remaining_seconds(),
+        }
+    }
+
+    /// SPEC-002 §2.5, AC-13: `(free − 512 MiB) / (8 × rate)`, at the open input's rate while
+    /// armed/recording, else the configured default rate a new recording would use next.
+    /// Floored to whole seconds (settles at ~1 Hz instead of jittering every tick) — `None`
+    /// before the first successful [`Self::poll_disk`].
+    fn disk_remaining_seconds(&self) -> Option<u64> {
+        let free = self.disk_free_bytes?;
+        let rate = u64::from(
+            self.input
+                .as_ref()
+                .map_or(self.record_rate_hz, |i| i.rate_hz)
+                .max(1),
+        );
+        let usable = free.saturating_sub(DISK_FLOOR_BYTES);
+        Some(usable / (RECORD_BYTES_PER_SAMPLE * rate))
+    }
+
+    /// SPEC-002 §2.5: refreshes [`Self::disk_free_bytes`] about once a second — never more often,
+    /// since the provider may hit the file system (CLAUDE.md: no I/O on the RT input thread, but
+    /// this runs on the control thread, so an occasional blocking call is acceptable, unlike every
+    /// 16.7 ms tick).
+    fn poll_disk(&mut self, now: u64) {
+        if self
+            .disk_checked_ns
+            .is_some_and(|t| now.saturating_sub(t) < DISK_CHECK_INTERVAL_NS)
+        {
+            return;
+        }
+        self.disk_checked_ns = Some(now);
+        self.disk_free_bytes = self.disk_space.free_bytes(&self.record_volume).ok();
+    }
+
+    /// SPEC-002 §2.5, AC-13: below the hard floor while actively recording, flag it like a write
+    /// error ([`InputShared::disk_full`] mirrors `writer_failed`) — `service_recording` turns it
+    /// into a graceful [`StopReason::DiskFull`] stop that keeps the take.
+    fn check_disk_floor(&mut self) {
+        let Some(rec) = self.recording.as_ref() else {
+            return;
+        };
+        if rec.stop_at.is_some() {
+            return;
+        }
+        if self
+            .disk_free_bytes
+            .is_some_and(|free| free < DISK_FLOOR_BYTES)
+        {
+            rec.shared.disk_full.store(true, Ordering::Release);
         }
     }
 
@@ -1489,18 +1560,13 @@ impl Control {
         {
             chunk.commit_all();
         }
-        // H-10 item 4: only taken (and used) for a non-resampled take — capture resampling (H-06)
-        // stays out of this ticket's scope, so a resampled take detects dropouts live (the
-        // counter still updates, RT-side) but doesn't splice/mark them (`CaptureWriter` docs).
-        let gap_rx = if resampler.is_none() {
-            let mut gap_rx = inp.gap_rx.take().or_else(|| take_gap_home(&inp.gap_home));
-            if let Some(rx) = gap_rx.as_mut() {
-                while rx.pop().is_ok() {} // drop stale events from a previous take
-            }
-            gap_rx
-        } else {
-            None
-        };
+        // H-10 item 4 / H-11 item 5: taken for every take, resampled or not — `CaptureWriter`
+        // splices the silence fill through the resampler too when one is active, so the marked
+        // position/length still land in document-rate samples (`CaptureWriter` docs).
+        let mut gap_rx = inp.gap_rx.take().or_else(|| take_gap_home(&inp.gap_home));
+        if let Some(rx) = gap_rx.as_mut() {
+            while rx.pop().is_ok() {} // drop stale events from a previous take
+        }
         inp.shared.reset_take();
         let shared = inp.shared.clone();
         let peaks: LivePeaksHandle = Arc::new(Mutex::new(LivePeaks::default()));
@@ -1577,6 +1643,7 @@ impl Control {
             StopReason::Shutdown => stop_code::SHUTDOWN,
             StopReason::Overflow => stop_code::OVERFLOW,
             StopReason::WriteError => stop_code::WRITE_ERROR,
+            StopReason::DiskFull => stop_code::DISK_FULL,
         };
         // The first reason sticks: a take the input callback already ended (its Stop time was
         // reached, or the capture ring overflowed) or that a write error stopped keeps it.
@@ -1588,13 +1655,15 @@ impl Control {
                 Ordering::Relaxed,
             );
         }
-        // User and write-error stops end the take in the input callback, so it stops pushing
-        // (nothing stale reaches the next take); the others have no live input to ask.
-        let sent = matches!(reason, StopReason::User | StopReason::WriteError)
-            && self.input.as_mut().is_some_and(|i| {
-                Arc::ptr_eq(&i.shared, &rec.shared)
-                    && i.cmds.push(InputCmd::StopCapture { stop_ns: now }).is_ok()
-            });
+        // User, write-error and disk-full stops end the take in the input callback, so it stops
+        // pushing (nothing stale reaches the next take); the others have no live input to ask.
+        let sent = matches!(
+            reason,
+            StopReason::User | StopReason::WriteError | StopReason::DiskFull
+        ) && self.input.as_mut().is_some_and(|i| {
+            Arc::ptr_eq(&i.shared, &rec.shared)
+                && i.cmds.push(InputCmd::StopCapture { stop_ns: now }).is_ok()
+        });
         if !sent {
             // No input to end the take at its stop time: finish with what was captured.
             rec.shared.force_finish.store(true, Ordering::Release);
@@ -1615,6 +1684,10 @@ impl Control {
                 // H-05: nothing more reaches the take — stop now instead of recording into the
                 // void until the user presses Stop (SPEC-002 §2.5, ADR-004 §7.4).
                 self.stop_recording(StopReason::WriteError);
+            } else if rec.shared.disk_full.load(Ordering::Acquire) {
+                // H-11: `check_disk_floor` flagged the hard floor — stop now and keep the take
+                // (SPEC-002 §2.5, AC-13), the same shape as a write error.
+                self.stop_recording(StopReason::DiskFull);
             }
         }
         let Some(rec) = self.recording.as_mut() else {
@@ -1735,6 +1808,8 @@ impl Control {
         }
         self.drain_rt();
         self.drain_input();
+        self.poll_disk(now);
+        self.check_disk_floor();
         self.service_recording(now);
         let notices = self.output.as_mut().map(|out| out.rack.tick());
         if let Some(notices) = notices {

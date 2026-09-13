@@ -93,6 +93,9 @@ pub(crate) mod stop_code {
     pub(crate) const OVERFLOW: u8 = 3;
     /// H-05: appending to the take failed; the control thread stopped it (SPEC-002 §2.5).
     pub(crate) const WRITE_ERROR: u8 = 4;
+    /// H-11: free space on the session volume fell below the hard floor; the control thread
+    /// stopped it (SPEC-002 §2.5, AC-13).
+    pub(crate) const DISK_FULL: u8 = 5;
 }
 
 /// Shared by the input callback, the control thread and the capture-writer (atomics only).
@@ -118,6 +121,9 @@ pub(crate) struct InputShared {
     /// H-05: set by the capture-writer when appending to the take failed; the control thread
     /// then stops the take (the writer drops the rest of it).
     pub(crate) writer_failed: AtomicBool,
+    /// H-11: set by the control thread's periodic disk-space check (SPEC-002 §2.5); mirrors
+    /// `writer_failed` so `service_recording` stops the take the same way.
+    pub(crate) disk_full: AtomicBool,
 }
 
 impl InputShared {
@@ -126,6 +132,7 @@ impl InputShared {
         self.capture_done.store(false, Ordering::Release);
         self.force_finish.store(false, Ordering::Release);
         self.writer_failed.store(false, Ordering::Release);
+        self.disk_full.store(false, Ordering::Release);
         self.stop_reason.store(stop_code::USER, Ordering::Relaxed);
         self.clip_events.store(0, Ordering::Relaxed);
         self.dropout_events.store(0, Ordering::Relaxed);
@@ -262,8 +269,14 @@ impl InputSide {
     /// undisturbed while the device's own reported position jumps) to the expected continuation
     /// of the previous block, and reports a gap event when it slipped by at least
     /// `max(0.5 × period, 1 ms)`. Called only while `self.capturing`, before this block's own
-    /// samples are pushed (so `self.captured` is still the position right before the gap). RT-safe:
-    /// one non-blocking ring push, no allocation.
+    /// samples are pushed (so `self.captured` is still the position right before the gap).
+    ///
+    /// H-11 item 4 (SPEC-002 §2.4 second row, A-011): a gap of more than
+    /// [`crate::record::DROPOUT_FILL_MAX_S`] is device loss, not a fillable dropout — the take
+    /// ends right here (like a capture-ring overflow, no gap event, no live counter bump) instead
+    /// of being asked to silently fill seconds of silence.
+    ///
+    /// RT-safe: one non-blocking ring push, no allocation.
     fn detect_dropout(&mut self, capture_ns: u64) {
         if let Some(expected) = self.last_capture_end_ns
             && capture_ns > expected
@@ -275,6 +288,17 @@ impl InputSide {
                 // Round to the nearest frame: (gap_ns * rate + 0.5 s worth of ns) / 1 s of ns.
                 let lost =
                     (u128::from(gap_ns) * u128::from(self.rate_hz) + 500_000_000) / 1_000_000_000;
+                let max_fill =
+                    u128::from(self.rate_hz) * u128::from(crate::record::DROPOUT_FILL_MAX_S);
+                if lost > max_fill {
+                    // A-011: handled like device loss (SPEC-001 §2.4) — finalize at the last good
+                    // sample and keep the take, no silence fill.
+                    self.shared
+                        .stop_reason
+                        .store(stop_code::INPUT_LOST, Ordering::Relaxed);
+                    self.end_capture();
+                    return;
+                }
                 let lost_frames = u32::try_from(lost).unwrap_or(u32::MAX);
                 if lost_frames > 0
                     && self
@@ -575,6 +599,62 @@ mod tests {
 
         assert!(gaps.pop().is_err(), "below threshold: not a dropout");
         assert_eq!(shared.dropout_events.load(Ordering::Relaxed), 0);
+    }
+
+    /// H-11 item 4 (SPEC-002 §2.4 second row, A-011): a gap longer than the 2 s fill cap is
+    /// handled like device loss — the take ends right at the gap (no gap event, no live dropout
+    /// counter bump), not filled with 2+ seconds of silence.
+    #[test]
+    fn dropout_longer_than_the_fill_cap_ends_the_take_like_device_loss() {
+        let (mut s, mut cmds, mut cap, shared, mut gaps) = side(1000);
+        cmds.push(InputCmd::StartCapture { start_ns: 0 }).unwrap();
+        let block1: Vec<f32> = vec![1.0; 10];
+        no_alloc(|| s.process(&block1, ts(0))).unwrap();
+        assert!(!shared.capture_done.load(Ordering::Acquire));
+
+        // Block 1 ends at 10 ms; this one starts 2001 ms later — past the 2 s (2000 ms) cap.
+        let block2: Vec<f32> = vec![2.0; 10];
+        no_alloc(|| s.process(&block2, ts(2_011_000_000))).unwrap();
+
+        assert!(
+            gaps.pop().is_err(),
+            "too long to be a fillable dropout: no gap event"
+        );
+        assert_eq!(
+            shared.dropout_events.load(Ordering::Relaxed),
+            0,
+            "not counted as a (fillable) dropout"
+        );
+        assert!(shared.capture_done.load(Ordering::Acquire), "take ended");
+        assert_eq!(
+            shared.stop_reason.load(Ordering::Relaxed),
+            stop_code::INPUT_LOST,
+            "handled like device loss (SPEC-002 §2.4 second row)"
+        );
+        // Only block 1's samples are in the take: block 2 arrived after the gap ended it.
+        let mut got = Vec::new();
+        while let Ok(v) = cap.pop() {
+            got.push(v);
+        }
+        assert_eq!(got, block1);
+    }
+
+    /// A gap of exactly the 2 s fill cap is still a fillable dropout — only gaps *longer* than it
+    /// cut over to device loss (SPEC-002 §2.4: "at most 2 s" is filled).
+    #[test]
+    fn dropout_at_exactly_the_fill_cap_is_still_filled() {
+        let (mut s, mut cmds, _cap, shared, mut gaps) = side(1000);
+        cmds.push(InputCmd::StartCapture { start_ns: 0 }).unwrap();
+        let block1: Vec<f32> = vec![0.0; 10];
+        no_alloc(|| s.process(&block1, ts(0))).unwrap();
+        // Block 1 ends at 10 ms; this one starts exactly 2 s later.
+        let block2: Vec<f32> = vec![0.0; 10];
+        no_alloc(|| s.process(&block2, ts(2_010_000_000))).unwrap();
+
+        let ev = gaps.pop().expect("a 2 s gap is still filled, not cut over");
+        assert_eq!(ev.lost_frames, 2000);
+        assert_eq!(shared.dropout_events.load(Ordering::Relaxed), 1);
+        assert!(!shared.capture_done.load(Ordering::Acquire), "still going");
     }
 
     /// `reset_take` (called before every `StartCapture`) clears the live dropout counter, and a

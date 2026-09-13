@@ -8,17 +8,21 @@
     toggleArm,
     toggleRecord,
   } from "../state/record.svelte";
-  import { formatElapsed } from "./format";
+  import { DISK_WARN_MINUTES, formatElapsed, formatRemaining } from "./format";
 
   /**
    * Record panel controls (S1-04, SPEC-002 §2.1–§2.2, §2.7): Input (arm) toggle, Record/Stop
-   * button (Shift+R), elapsed time, clip lamp (click to clear), monitoring Off/Dry.
+   * button (Shift+R), elapsed time, clip lamp (click to clear), monitoring Off/Dry, and (H-11)
+   * the estimated remaining recording time on the session volume (amber below
+   * `DISK_WARN_MINUTES`).
    */
   const rec = recordState();
   const noInput = $derived(rec.state.input_device === null);
   const busy = $derived(rec.state.recording || rec.state.finishing);
   const elapsed = $derived(formatElapsed(rec.elapsedSamples, rec.state.input_rate_hz ?? 0));
   const monitor = $derived<MonitorMode>(rec.state.monitor === "off" ? "off" : "dry");
+  const diskRemaining = $derived(rec.state.disk_remaining_s);
+  const diskLow = $derived(diskRemaining !== null && diskRemaining < DISK_WARN_MINUTES * 60);
 </script>
 
 <div class="record" role="group" aria-label={t("record.group")} data-testid="record-controls">
@@ -45,6 +49,16 @@
     {rec.state.recording ? t("record.stop") : t("record.record")}
   </button>
   <span class="elapsed" data-testid="record-elapsed" title={t("record.elapsed_title")}>{elapsed}</span>
+  {#if diskRemaining !== null}
+    <span
+      class="disk-remaining"
+      class:low={diskLow}
+      data-testid="record-disk-remaining"
+      title={t("record.disk_remaining_title")}
+    >
+      {t("record.disk_remaining", { time: formatRemaining(diskRemaining) })}
+    </span>
+  {/if}
   {#if rec.state.dropout_count > 0}
     <span
       class="dropouts"
@@ -137,6 +151,18 @@
     padding: 0.2rem 0.5rem;
     border-radius: 4px;
     font-size: 0.75rem;
+    background: var(--meter-yellow);
+    color: var(--surface-panel);
+  }
+
+  .disk-remaining {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+  }
+
+  .disk-remaining.low {
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
     background: var(--meter-yellow);
     color: var(--surface-panel);
   }

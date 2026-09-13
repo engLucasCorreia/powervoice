@@ -225,6 +225,7 @@ describe("WaveformView (S1-03)", () => {
       monitor: "off",
       monitoring: true,
       dropout_count: 0,
+      disk_remaining_s: null,
     };
     mockIPC(
       (cmd, args) => {
@@ -303,6 +304,7 @@ describe("WaveformView (S1-03)", () => {
       monitor: "off",
       monitoring: true,
       dropout_count: 0,
+      disk_remaining_s: null,
     };
     const requests: Array<{ startBucket: number; count: number }> = [];
     mockIPC(

@@ -120,6 +120,8 @@
   "record.clip_title": "Input clipped — click to reset",
   "record.dropouts": "{count} dropouts",
   "record.dropouts_title": "Input dropouts this take — markers are added where they occurred",
+  "record.disk_remaining": "{time} left",
+  "record.disk_remaining_title": "Estimated remaining recording time on this disk",
   "record.monitor": "Monitoring",
   "record.monitor.off": "Off",
   "record.monitor.dry": "Dry",
@@ -143,6 +145,7 @@
   "notice.record.commit_failed": "The take couldn't be added to the document ({message}). Its audio is kept on disk for recovery, and a new empty document is now open.",
   "notice.record.resampled": "Input runs at {input} — resampled to {document}.",
   "notice.record.overflow": "Recording stopped: the disk could not keep up. {duration} recorded and kept.",
+  "notice.record.disk_full": "Disk almost full — recording stopped. {duration} recorded and kept.",
   "document.untitled": "Untitled",
   "error.document.untitled": "This recording hasn't been saved yet — use Save As…",
 
@@ -180,6 +183,10 @@
   "dialog.new_recording.bit_depth.32f": "WAV 32-bit float",
   "dialog.new_recording.cancel": "Cancel",
   "dialog.new_recording.record": "Record",
+  "dialog.low_disk.title": "Low disk space",
+  "dialog.low_disk.message": "Only {minutes} min of disk space left. Record anyway?",
+  "dialog.low_disk.cancel": "Cancel",
+  "dialog.low_disk.confirm": "Record anyway",
 
   "dialog.export.title": "Export",
   "dialog.export.format": "Format",

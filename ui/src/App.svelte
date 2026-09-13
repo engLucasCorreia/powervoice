@@ -20,6 +20,7 @@
   import { initNrCapture } from "./lib/rack/nrCapture.svelte";
   import NoticeHost from "./lib/notices/NoticeHost.svelte";
   import { initMarkers } from "./lib/markers/markers.svelte";
+  import LowDiskDialog from "./lib/record/LowDiskDialog.svelte";
   import NewRecordingDialog from "./lib/record/NewRecordingDialog.svelte";
   import { initEdit } from "./lib/state/edit.svelte";
   import { initNormalize } from "./lib/state/normalize.svelte";
@@ -163,6 +164,8 @@
 <UnsavedChangesDialog />
 <SaveAsDialog />
 <ExportDialog />
+<NewRecordingDialog />
+<LowDiskDialog />
 
 <style>
   .shell {

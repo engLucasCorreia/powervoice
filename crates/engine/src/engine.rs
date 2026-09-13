@@ -10,11 +10,12 @@
 //!   [`ManualEngine::tick`]); its capture-writer also runs inline.
 
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
-use vox_project::{ChunkStore, DocSnapshot, TakeCapture};
+use vox_project::{ChunkStore, DocSnapshot, FreeSpaceProvider, SystemFreeSpace, TakeCapture};
 use vox_rack::{ModuleDescriptor, RackModel, RackNotice, Registry};
 
 use crate::backend::{Backend, BufferRequest, DeviceSnapshot, HostId, app_now_ns};
@@ -120,6 +121,13 @@ pub struct EngineConfig {
     /// Preferred rate of new recordings (Settings → Default format, SPEC-002 §2.2): the input
     /// opens at it when the device supports it.
     pub record_rate_hz: u32,
+    /// Free-space query for the recording disk floor and the record panel's remaining-time
+    /// display (SPEC-002 §2.5, A-010): the real provider, or a fake one in tests.
+    pub disk_space: Arc<dyn FreeSpaceProvider>,
+    /// The volume recordings are written to (the sessions directory) — queried about once a
+    /// second while the record panel is relevant (armed or recording), never on the RT input
+    /// thread.
+    pub record_volume: PathBuf,
 }
 
 impl EngineConfig {
@@ -133,6 +141,8 @@ impl EngineConfig {
             events: Arc::new(|_| {}),
             clock: Arc::new(app_now_ns),
             record_rate_hz: 48_000,
+            disk_space: Arc::new(SystemFreeSpace),
+            record_volume: PathBuf::new(),
         }
     }
 }

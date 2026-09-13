@@ -6,6 +6,7 @@ import { VXTM_FLAGS, type TelemetryFrame } from "../ipc/telemetry";
 import { registerAction } from "../keymap";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { PeakBallistics } from "../record/ballistics";
+import { DISK_WARN_MINUTES } from "../record/format";
 import { pushNotice } from "./notices.svelte";
 import { settingsState } from "./settings.svelte";
 import { addTelemetryListener } from "./transport.svelte";
@@ -36,6 +37,7 @@ const IDLE: RecordStateDto = {
   monitor: "off",
   monitoring: false,
   dropout_count: 0,
+  disk_remaining_s: null,
 };
 
 export interface InputMeterView {
@@ -64,6 +66,9 @@ let elapsedSamples = $state(0);
 let starting = false;
 /** The New Recording dialog's prompt (H-06); `null` when closed. */
 let newRecordingPrompt = $state<DefaultFormatDto | null>(null);
+/** H-11 (SPEC-002 §2.5): the "Only N min of disk space left. Record anyway?" prompt, `null` when
+ * closed. `minutes` is floored for display. */
+let lowDiskPrompt = $state<{ minutes: number; resolve: (ok: boolean) => void } | null>(null);
 const ballistics = new PeakBallistics();
 
 /** Read-only accessor for components. */
@@ -73,6 +78,7 @@ export function recordState(): {
   readonly clipLatched: boolean;
   readonly elapsedSamples: number;
   readonly newRecordingPrompt: DefaultFormatDto | null;
+  readonly lowDiskPrompt: { readonly minutes: number } | null;
 } {
   return {
     get state() {
@@ -89,6 +95,9 @@ export function recordState(): {
     },
     get newRecordingPrompt() {
       return newRecordingPrompt;
+    },
+    get lowDiskPrompt() {
+      return lowDiskPrompt;
     },
   };
 }
@@ -161,6 +170,33 @@ export function resetMaxPeak(): void {
   meter = { ...meter, maxDbfs: Number.NEGATIVE_INFINITY };
 }
 
+/** Shows the low-disk confirm prompt and resolves once the user answers. */
+function askLowDisk(minutes: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    lowDiskPrompt = { minutes, resolve };
+  });
+}
+
+/** The `LowDiskDialog` component calls this with the user's choice. */
+export function resolveLowDiskPrompt(ok: boolean): void {
+  const prompt = lowDiskPrompt;
+  lowDiskPrompt = null;
+  prompt?.resolve(ok);
+}
+
+/**
+ * H-11 (SPEC-002 §2.5): below `DISK_WARN_MINUTES` remaining, Record confirms first ("Only N min
+ * of disk space left. Record anyway?"). Resolves `true` when it's fine to proceed (plenty of
+ * space, the query failed so there is nothing to warn about, or the user confirmed anyway).
+ */
+async function confirmLowDiskIfNeeded(): Promise<boolean> {
+  const remaining = state.disk_remaining_s;
+  if (remaining === null || remaining >= DISK_WARN_MINUTES * 60) {
+    return true;
+  }
+  return askLowDisk(Math.floor(remaining / 60));
+}
+
 async function startRecording(replace: boolean, format?: DefaultFormatDto): Promise<void> {
   await run(async () => {
     const next = await recordStart(replace, format);
@@ -195,7 +231,7 @@ export async function toggleRecord(): Promise<void> {
         openNewRecordingPrompt(settingsState().current?.default_format ?? FALLBACK_FORMAT);
         return Promise.resolve();
       });
-    } else {
+    } else if (await confirmLowDiskIfNeeded()) {
       await startRecording(false);
     }
   } finally {
@@ -228,7 +264,11 @@ export async function confirmNewRecordingPrompt(format: DefaultFormatDto): Promi
   }
   starting = true;
   try {
-    await withUnsavedChangesGuard(() => startRecording(true, format));
+    await withUnsavedChangesGuard(async () => {
+      if (await confirmLowDiskIfNeeded()) {
+        await startRecording(true, format);
+      }
+    });
   } finally {
     starting = false;
   }
@@ -277,6 +317,7 @@ export function resetRecordForTest(): void {
   elapsedSamples = 0;
   starting = false;
   newRecordingPrompt = null;
+  lowDiskPrompt = null;
   ballistics.reset();
 }
 

@@ -39,6 +39,8 @@ export interface KeyBinding {
  *   SPEC-009 §2.6/§2.7; Delete All is deferred, ticket "Out" list).
  * - Shift+P = Capture Noise Print (S3-06, SPEC-014 §2.3; **provisional**, per Audition's default
  *   confirmed by two secondary sources — final binding in SPEC-019).
+ * - Shift+D = show/hide the spectral pane (T-207, SPEC-007 §2.1; verified Audition binding, see
+ *   the spec's Adobe sources).
  */
 export const DEFAULT_KEYMAP: readonly KeyBinding[] = [
   { action: "transport.play_pause", code: "Space" },
@@ -64,4 +66,5 @@ export const DEFAULT_KEYMAP: readonly KeyBinding[] = [
   { action: "marker.next", code: "ArrowRight", mod: true, alt: true },
   { action: "marker.prev", code: "ArrowLeft", mod: true, alt: true },
   { action: "nr.capture_noise_print", code: "KeyP", shift: true },
+  { action: "spectral.toggle", code: "KeyD", shift: true },
 ];

@@ -27,6 +27,7 @@
   import { initNormalizeLufs } from "./lib/state/normalizeLufs.svelte";
   import { initNotices } from "./lib/state/notices.svelte";
   import { initRecord } from "./lib/state/record.svelte";
+  import { initSpectral } from "./lib/state/spectral.svelte";
   import { loadSettings } from "./lib/state/settings.svelte";
   import { initTransport } from "./lib/state/transport.svelte";
 
@@ -144,6 +145,9 @@
   });
   // S3-06: Capture Noise Print (Shift+P) and its job-progress listener.
   onMount(() => initNrCapture());
+
+  // T-207: the spectral pane's Shift+D toggle.
+  onMount(() => initSpectral());
 </script>
 
 <div class="shell">

@@ -60,12 +60,21 @@
   /** Same cap as `document_commands::peaks_get`'s `MAX_BUCKETS`. */
   const LIVE_MAX_BUCKETS = 65_536;
 
+  /**
+   * T-207: `startSample`/`samplesPerPixel` are bindable so `EditorView` can share one time axis
+   * between this view and the spectral pane (SPEC-007 §2.3 "one viewport") — a zoom or scroll
+   * gesture in either pane updates both instantly, since both bind the same parent variables.
+   * Unbound (no parent passes them), they behave exactly like the local state they replace.
+   */
+  let {
+    startSample = $bindable(0),
+    samplesPerPixel = $bindable(1),
+  }: { startSample?: number; samplesPerPixel?: number } = $props();
+
   let containerEl: HTMLDivElement | undefined = $state();
   let canvasEl: HTMLCanvasElement | undefined = $state();
   let viewportPx = $state(0);
   let heightPx = $state(200);
-  let startSample = $state(0);
-  let samplesPerPixel = $state(1);
   let fittedForAudio = $state<string | null>(null);
   let pointerDownClientX: number | null = null;
   /** The mousedown sample and modifier (S2-01, SPEC-006 §2.9): distinguishes click/drag/Shift+click

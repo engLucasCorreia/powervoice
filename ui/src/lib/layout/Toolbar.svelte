@@ -3,12 +3,14 @@
   import { t } from "../i18n";
   import NormalizeToolbarButtons from "../normalize/NormalizeToolbarButtons.svelte";
   import RecordControls from "../record/RecordControls.svelte";
+  import { spectralState } from "../state/spectral.svelte";
   import { playFromStart, playPause, returnToStart, stop, transportState } from "../state/transport.svelte";
   import { formatTime } from "../transport/playhead";
 
   let { version = "" }: { version?: string } = $props();
 
   const transport = transportState();
+  const spectral = spectralState();
   let devicesOpen = $state(false);
   const time = $derived(formatTime(transport.playheadSamples, transport.state.doc_rate_hz));
 </script>
@@ -49,6 +51,14 @@
   </div>
   <RecordControls />
   <NormalizeToolbarButtons />
+  <button
+    type="button"
+    data-testid="spectral-toggle"
+    class:active={spectral.visible}
+    onclick={() => spectral.toggle()}
+  >
+    {t("spectral.toggle")}
+  </button>
   <button type="button" data-testid="open-audio-devices" onclick={() => (devicesOpen = true)}>
     {t("devices.open")}
   </button>

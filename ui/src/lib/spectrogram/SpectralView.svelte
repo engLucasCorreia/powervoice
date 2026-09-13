@@ -1,0 +1,797 @@
+<script lang="ts">
+  import { onMount } from "svelte";
+  import { documentState, hasDocument } from "../document/document.svelte";
+  import { t } from "../i18n";
+  import { spectroDetach } from "../ipc/commands";
+  import { markersState } from "../markers/markers.svelte";
+  import { recordState } from "../state/record.svelte";
+  import {
+    beginDrag,
+    clearSelection,
+    dragTo,
+    endDrag,
+    selectAllOf,
+    selectionState,
+    shiftClickTo,
+  } from "../state/selection.svelte";
+  import { CEIL_RANGE_DB, FLOOR_RANGE_DB, spectralState } from "../state/spectral.svelte";
+  import { seek, transportState } from "../state/transport.svelte";
+  import { formatTime } from "../transport/playhead";
+  import {
+    clampFreqRange,
+    formatHoverFreqHz,
+    freqForU,
+    freqForY,
+    frequencyTicks,
+    fullFreqRange,
+    panFreqRange,
+    zoomFreqRange,
+  } from "../spectrum/freqAxis";
+  import {
+    clampSamplesPerPixel,
+    clampStartSample,
+    pixelAtSample,
+    sampleAtPixel,
+    zoomAroundSample,
+    ZOOM_STEP_FACTOR,
+  } from "../waveform/coords";
+  import { colorForT, type ColormapName, normalizeDb } from "./colormap";
+  import { detectMaxTextureSize, isFftSizeDisabled } from "./fftLimit";
+  import { autoFftSize, FFT_SIZES, hopForZoom, totalFrames } from "./geometry";
+  import { formatLevelDb } from "./hoverFormat";
+  import { nearestCode, pixelDb, type TileLookup } from "./sampler";
+  import { createSpectroRequester, type SpectroRequester } from "./spectroRequester";
+
+  /**
+   * The spectral pane (T-207, SPEC-007 essential subset): the STFT spectrogram, colored through a
+   * shader-equivalent CPU colormap pass (Canvas2D — see the report for why this ticket starts
+   * with Canvas2D rather than WebGL2), a log/linear frequency ruler, and a hover readout. Shares
+   * the waveform's time axis via the bindable `startSample`/`samplesPerPixel` props (SPEC-007
+   * §2.3 "one viewport") so `EditorView` can bind both views to the same variables.
+   *
+   * Deferred (see the ticket report): WebGL2 R8-texture rendering (ADR-009 hardening item); a
+   * distinct "importing" freeze message (SPEC-007 §2.1) — the app has no import-progress state
+   * yet, only "no document open", which this view already handles; persisted visibility/ratio/
+   * display settings (AC-12) — kept in memory only, like the waveform's own zoom; a native
+   * right-click menu for the frequency scale (a toolbar toggle button substitutes); the shared
+   * top time ruler / bottom scrollbar living in `EditorView` rather than inside `WaveformView`.
+   */
+
+  let {
+    startSample = $bindable(0),
+    samplesPerPixel = $bindable(1),
+  }: { startSample?: number; samplesPerPixel?: number } = $props();
+
+  /** One spectral pane exists in the app; a fixed id is enough for `spectro_attach`. */
+  const SPECTRAL_VIEW_ID = 1;
+
+  let containerEl: HTMLDivElement | undefined = $state();
+  let canvasEl: HTMLCanvasElement | undefined = $state();
+  let rulerEl: HTMLDivElement | undefined = $state();
+  let viewportPx = $state(0);
+  let heightPx = $state(160);
+  let maxTextureSize = $state(Infinity);
+  let requester: SpectroRequester | null = $state(null);
+
+  let freqLo = $state(20);
+  let freqHi = $state(24_000);
+  let fittedFreqKey: string | null = $state(null);
+
+  let hoverX: number | null = $state(null);
+  let hoverY: number | null = $state(null);
+
+  let pointerDownClientX: number | null = null;
+  let pointerDownSample: number | null = null;
+  let pointerDownShiftKey = false;
+  let dragging = false;
+  let rulerDragStartY: number | null = null;
+  let rulerDragStartRange: [number, number] | null = null;
+
+  const doc = documentState();
+  const transport = transportState();
+  const rec = recordState();
+  const selection = selectionState();
+  const markers = markersState();
+  const spectral = spectralState();
+
+  const lenSamples = $derived(doc.current.len_samples);
+  const rateHz = $derived(doc.current.sample_rate_hz);
+  const isOpen = $derived(hasDocument(doc.current));
+  const isRecording = $derived(rec.state.recording);
+
+  function nyquistHz(): number {
+    return rateHz > 0 ? rateHz / 2 : 24_000;
+  }
+
+  // Resets the visible frequency range to the full axis whenever the document's Nyquist rate or
+  // the log/linear scale changes (mirrors WaveformView's own `fittedForAudio` zoom-to-fit — the
+  // frequency range is "per document and not persisted", SPEC-007 §2.4).
+  $effect(() => {
+    const key = `${spectral.freqScale}:${nyquistHz()}`;
+    if (key !== fittedFreqKey) {
+      fittedFreqKey = key;
+      const [lo, hi] = fullFreqRange(spectral.freqScale, nyquistHz());
+      freqLo = lo;
+      freqHi = hi;
+    }
+  });
+
+  // Requests the tiles the current viewport needs (SPEC-007 §4.6), skipped entirely while
+  // recording (§2.1: "requests no tiles" — the last held tiles simply keep being redrawn, which
+  // is how the pane "keeps its last image").
+  $effect(() => {
+    requester?.setAudioRev(doc.current.audio_rev);
+    if (!requester || !isOpen || viewportPx <= 0 || lenSamples <= 0 || rateHz <= 0 || isRecording) {
+      return;
+    }
+    const dpr = window.devicePixelRatio || 1;
+    const fftSize = spectral.fftSize ?? autoFftSize(rateHz);
+    const sppDev = samplesPerPixel / dpr;
+    const endSample = startSample + samplesPerPixel * viewportPx;
+    void requester.request({
+      startSample,
+      endSample,
+      samplesPerDevicePixel: sppDev,
+      lenSamples,
+      fftSize,
+    });
+  });
+
+  const ticks = $derived.by(() => {
+    if (heightPx <= 0) {
+      return [];
+    }
+    return frequencyTicks(freqLo, freqHi, spectral.freqScale, heightPx, 24);
+  });
+
+  const hoverInfo = $derived.by(() => {
+    if (
+      hoverX === null ||
+      hoverY === null ||
+      !isOpen ||
+      lenSamples <= 0 ||
+      rateHz <= 0 ||
+      !requester
+    ) {
+      return null;
+    }
+    const dpr = window.devicePixelRatio || 1;
+    const fftSize = spectral.fftSize ?? autoFftSize(rateHz);
+    const bins = fftSize / 2 + 1;
+    const sppDev = samplesPerPixel / dpr;
+    const hop = hopForZoom(sppDev, fftSize);
+    const total = totalFrames(lenSamples, hop);
+    const sample = Math.max(0, Math.min(sampleAtPixel(hoverX, startSample, samplesPerPixel), lenSamples));
+    const frame = sample / hop;
+    const freqHz = freqForY(hoverY, heightPx, freqLo, freqHi, spectral.freqScale);
+    const bin = (freqHz * fftSize) / rateHz;
+    const getTile: TileLookup = (i) => requester?.tile(fftSize, hop, i);
+    const code = nearestCode(getTile, total, bins, frame, bin);
+    return {
+      timeText: formatTime(sample, rateHz),
+      freqText: formatHoverFreqHz(freqHz),
+      levelText: formatLevelDb(code) ?? t("spectral.hover.no_data"),
+    };
+  });
+
+  const hoverBoxStyle = $derived.by(() => {
+    if (hoverX === null || hoverY === null) {
+      return "display: none";
+    }
+    const offset = 12;
+    const boxW = 170;
+    const boxH = 60;
+    const flipX = hoverX + offset + boxW > viewportPx;
+    const flipY = hoverY + offset + boxH > heightPx;
+    const left = flipX ? hoverX - offset - boxW : hoverX + offset;
+    const top = flipY ? hoverY - offset - boxH : hoverY + offset;
+    return `left: ${Math.max(0, left)}px; top: ${Math.max(0, top)}px;`;
+  });
+
+  function colorToken(name: string, fallback: string): string {
+    if (!canvasEl) {
+      return fallback;
+    }
+    const value = getComputedStyle(canvasEl).getPropertyValue(name).trim();
+    return value || fallback;
+  }
+
+  /** `#rrggbb` -> `[r, g, b]`, or `null` if it isn't that shape (our own tokens always are). */
+  function hexToRgb(hex: string): [number, number, number] | null {
+    const m = /^#([0-9a-fA-F]{6})$/.exec(hex.trim());
+    if (!m) {
+      return null;
+    }
+    const n = parseInt(m[1]!, 16);
+    return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
+  }
+
+  function drawSpectrogram(ctx: CanvasRenderingContext2D, backingW: number, backingH: number, dpr: number): void {
+    if (!requester) {
+      return;
+    }
+    const fftSize = spectral.fftSize ?? autoFftSize(rateHz);
+    const bins = fftSize / 2 + 1;
+    const sppDev = samplesPerPixel / dpr;
+    const hop = hopForZoom(sppDev, fftSize);
+    const total = totalFrames(lenSamples, hop);
+    const getTile: TileLookup = (i) => requester?.tile(fftSize, hop, i);
+    const scale = spectral.freqScale;
+    const colormap = spectral.colormap;
+    const floorDb = spectral.floorDb;
+    const ceilDb = spectral.ceilDb;
+    const pendingRgb = hexToRgb(colorToken("--spec-pending", "#232630")) ?? [35, 38, 48];
+
+    const image = ctx.createImageData(backingW, backingH);
+    const data = image.data;
+
+    const frameLoArr = new Float64Array(backingW);
+    const frameHiArr = new Float64Array(backingW);
+    for (let px = 0; px < backingW; px++) {
+      const s0 = startSample + (px / dpr) * samplesPerPixel;
+      const s1 = s0 + samplesPerPixel / dpr;
+      frameLoArr[px] = s0 / hop;
+      frameHiArr[px] = s1 / hop;
+    }
+    const binLoArr = new Float64Array(backingH);
+    const binHiArr = new Float64Array(backingH);
+    for (let py = 0; py < backingH; py++) {
+      const uHi = 1 - py / backingH;
+      const uLo = 1 - (py + 1) / backingH;
+      const fLoPx = freqForU(uLo, freqLo, freqHi, scale);
+      const fHiPx = freqForU(uHi, freqLo, freqHi, scale);
+      binLoArr[py] = (fLoPx * fftSize) / rateHz;
+      binHiArr[py] = (fHiPx * fftSize) / rateHz;
+    }
+
+    for (let px = 0; px < backingW; px++) {
+      const frameLo = frameLoArr[px]!;
+      const frameHi = frameHiArr[px]!;
+      for (let py = 0; py < backingH; py++) {
+        const db = pixelDb(getTile, total, bins, frameLo, frameHi, binLoArr[py]!, binHiArr[py]!);
+        const idx = (py * backingW + px) * 4;
+        if (db === null) {
+          data[idx] = pendingRgb[0];
+          data[idx + 1] = pendingRgb[1];
+          data[idx + 2] = pendingRgb[2];
+        } else {
+          const value = normalizeDb(db, floorDb, ceilDb);
+          const [r, g, b] = colorForT(colormap, value);
+          data[idx] = r;
+          data[idx + 1] = g;
+          data[idx + 2] = b;
+        }
+        data[idx + 3] = 255;
+      }
+    }
+    ctx.putImageData(image, 0, 0);
+  }
+
+  function drawOverlays(ctx: CanvasRenderingContext2D): void {
+    const sel = selection.current;
+    if (sel) {
+      const x0 = Math.max(0, pixelAtSample(sel.startSample, startSample, samplesPerPixel));
+      const x1 = Math.min(viewportPx, pixelAtSample(sel.endSample, startSample, samplesPerPixel));
+      if (x1 > x0) {
+        ctx.fillStyle = colorToken("--wave-selection-fill", "rgba(77, 163, 255, 0.22)");
+        ctx.fillRect(x0, 0, x1 - x0, heightPx);
+      }
+    }
+    if (markers.list.length > 0) {
+      ctx.strokeStyle = colorToken("--wave-marker", "#35c46a");
+      ctx.lineWidth = 1;
+      for (const marker of markers.list) {
+        const px = pixelAtSample(marker.pos_samples, startSample, samplesPerPixel);
+        if (px >= -1 && px <= viewportPx + 1) {
+          ctx.beginPath();
+          ctx.moveTo(px + 0.5, 0);
+          ctx.lineTo(px + 0.5, heightPx);
+          ctx.stroke();
+        }
+      }
+    }
+    const playheadPx = pixelAtSample(transport.playheadSamples, startSample, samplesPerPixel);
+    if (playheadPx >= -1 && playheadPx <= viewportPx + 1) {
+      ctx.strokeStyle = colorToken("--wave-playhead", "#ffb454");
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(playheadPx + 0.5, 0);
+      ctx.lineTo(playheadPx + 0.5, heightPx);
+      ctx.stroke();
+    }
+  }
+
+  function draw(): void {
+    if (!canvasEl || viewportPx <= 0 || heightPx <= 0) {
+      return;
+    }
+    const ctx = canvasEl.getContext("2d");
+    if (!ctx) {
+      return; // jsdom in tests, or a browser with no 2D canvas support
+    }
+    const dpr = window.devicePixelRatio || 1;
+    const backingW = Math.max(1, Math.round(viewportPx * dpr));
+    const backingH = Math.max(1, Math.round(heightPx * dpr));
+    if (canvasEl.width !== backingW || canvasEl.height !== backingH) {
+      canvasEl.width = backingW;
+      canvasEl.height = backingH;
+    }
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = colorToken("--spec-bg", "#0d0e10");
+    ctx.fillRect(0, 0, backingW, backingH);
+    if (isOpen && lenSamples > 0 && rateHz > 0) {
+      drawSpectrogram(ctx, backingW, backingH, dpr);
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (isOpen) {
+      drawOverlays(ctx);
+    }
+    ctx.restore();
+  }
+
+  function zoomAt(anchorSample: number, anchorPx: number, nextSpp: number): void {
+    const clampedSpp = clampSamplesPerPixel(nextSpp, lenSamples, viewportPx);
+    samplesPerPixel = clampedSpp;
+    startSample = clampStartSample(
+      zoomAroundSample(anchorSample, anchorPx, clampedSpp),
+      clampedSpp,
+      lenSamples,
+      viewportPx,
+    );
+  }
+
+  /** Plain wheel scrolls, Ctrl+wheel zooms (SPEC-006 §2.6, shared with the waveform); Alt+wheel
+   * over the spectral pane's body does nothing (SPEC-007 §2.3). */
+  function onWheel(event: WheelEvent): void {
+    if (!isOpen || viewportPx <= 0 || !containerEl || event.altKey) {
+      return;
+    }
+    event.preventDefault();
+    if (event.ctrlKey) {
+      const rect = containerEl.getBoundingClientRect();
+      const anchorPx = event.clientX - rect.left;
+      const anchorSample = sampleAtPixel(anchorPx, startSample, samplesPerPixel);
+      const factor = event.deltaY > 0 ? ZOOM_STEP_FACTOR : 1 / ZOOM_STEP_FACTOR;
+      zoomAt(anchorSample, anchorPx, samplesPerPixel * factor);
+    } else {
+      const delta = event.deltaX !== 0 ? event.deltaX : event.deltaY;
+      startSample = clampStartSample(
+        startSample + delta * samplesPerPixel,
+        samplesPerPixel,
+        lenSamples,
+        viewportPx,
+      );
+    }
+  }
+
+  /** Wheel over the ruler zooms the visible frequency range around the pointer's frequency
+   * (SPEC-007 §2.4: √2 per notch, via the shared `ZOOM_STEP_FACTOR`). */
+  function onRulerWheel(event: WheelEvent): void {
+    if (!rulerEl || heightPx <= 0) {
+      return;
+    }
+    event.preventDefault();
+    const rect = rulerEl.getBoundingClientRect();
+    const y = event.clientY - rect.top;
+    const anchorHz = freqForY(y, heightPx, freqLo, freqHi, spectral.freqScale);
+    const factor = event.deltaY > 0 ? ZOOM_STEP_FACTOR : 1 / ZOOM_STEP_FACTOR;
+    const [lo, hi] = zoomFreqRange(freqLo, freqHi, spectral.freqScale, anchorHz, factor, nyquistHz());
+    freqLo = lo;
+    freqHi = hi;
+  }
+
+  function onRulerPointerDown(event: PointerEvent): void {
+    rulerDragStartY = event.clientY;
+    rulerDragStartRange = [freqLo, freqHi];
+    (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
+  }
+
+  /** Dragging the ruler pans the visible frequency range (SPEC-007 §2.4). */
+  function onRulerPointerMove(event: PointerEvent): void {
+    if (rulerDragStartY === null || !rulerDragStartRange || heightPx <= 0) {
+      return;
+    }
+    const deltaFrac = (event.clientY - rulerDragStartY) / heightPx;
+    const [lo, hi] = panFreqRange(
+      rulerDragStartRange[0],
+      rulerDragStartRange[1],
+      spectral.freqScale,
+      deltaFrac,
+      nyquistHz(),
+    );
+    freqLo = lo;
+    freqHi = hi;
+  }
+
+  function onRulerPointerUp(event: PointerEvent): void {
+    rulerDragStartY = null;
+    rulerDragStartRange = null;
+    (event.currentTarget as HTMLElement).releasePointerCapture?.(event.pointerId);
+  }
+
+  /** Double-clicking the ruler resets to the full range (SPEC-007 §2.4). */
+  function resetFreqRange(): void {
+    const [lo, hi] = fullFreqRange(spectral.freqScale, nyquistHz());
+    freqLo = lo;
+    freqHi = hi;
+  }
+
+  /** The document sample under `clientX` (SPEC-007 §2.2: clicks/drags act on time exactly as in
+   * the waveform pane). */
+  function sampleAtClientX(clientX: number): number | null {
+    if (!containerEl) {
+      return null;
+    }
+    const rect = containerEl.getBoundingClientRect();
+    const px = clientX - rect.left;
+    return Math.max(0, Math.min(sampleAtPixel(px, startSample, samplesPerPixel), lenSamples));
+  }
+
+  function onPointerDown(event: PointerEvent): void {
+    if (!isOpen) {
+      return;
+    }
+    pointerDownClientX = event.clientX;
+    pointerDownShiftKey = event.shiftKey;
+    pointerDownSample = sampleAtClientX(event.clientX);
+    dragging = false;
+    if (!event.shiftKey && pointerDownSample !== null) {
+      beginDrag(pointerDownSample);
+    }
+  }
+
+  function onPointerMove(event: PointerEvent): void {
+    if (containerEl) {
+      const rect = containerEl.getBoundingClientRect();
+      hoverX = event.clientX - rect.left;
+      hoverY = event.clientY - rect.top;
+    }
+    if (pointerDownShiftKey || pointerDownSample === null || pointerDownClientX === null) {
+      return;
+    }
+    if (!dragging && Math.abs(event.clientX - pointerDownClientX) >= 3) {
+      dragging = true;
+    }
+    if (dragging) {
+      const sample = sampleAtClientX(event.clientX);
+      if (sample !== null) {
+        dragTo(sample);
+      }
+    }
+  }
+
+  function onPointerLeave(): void {
+    hoverX = null;
+    hoverY = null;
+  }
+
+  function onPointerUp(event: PointerEvent): void {
+    const wasDragging = dragging;
+    const shiftKey = pointerDownShiftKey;
+    const downSample = pointerDownSample;
+    pointerDownClientX = null;
+    pointerDownSample = null;
+    pointerDownShiftKey = false;
+    dragging = false;
+    if (!isOpen || downSample === null) {
+      return;
+    }
+    const upSample = sampleAtClientX(event.clientX) ?? downSample;
+    if (shiftKey) {
+      shiftClickTo(upSample, transport.playheadSamples);
+      return;
+    }
+    if (wasDragging) {
+      dragTo(upSample);
+      endDrag();
+      return;
+    }
+    endDrag();
+    clearSelection();
+    void seek(upSample);
+  }
+
+  function onDoubleClick(): void {
+    if (isOpen) {
+      selectAllOf(lenSamples);
+    }
+  }
+
+  function onFftSizeChange(event: Event): void {
+    const value = (event.currentTarget as HTMLSelectElement).value;
+    spectral.setFftSize(value === "auto" ? null : Number(value));
+  }
+
+  function onColormapChange(event: Event): void {
+    spectral.setColormap((event.currentTarget as HTMLSelectElement).value as ColormapName);
+  }
+
+  function toggleScale(): void {
+    spectral.setFreqScale(spectral.freqScale === "log" ? "linear" : "log");
+  }
+
+  // The canvas container only exists once a document is open (`{#if isOpen}`), so the size
+  // observer must be (re)attached whenever the element appears, not once at mount (S1-03 gotcha:
+  // an element bound inside a closed `{#if}` branch is `undefined` in `onMount`).
+  $effect(() => {
+    const el = containerEl;
+    if (!el) {
+      viewportPx = 0;
+      return;
+    }
+    viewportPx = el.clientWidth;
+    heightPx = el.clientHeight || heightPx;
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        viewportPx = Math.max(0, Math.round(entry.contentRect.width));
+        heightPx = Math.max(1, Math.round(entry.contentRect.height));
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
+
+  onMount(() => {
+    maxTextureSize = detectMaxTextureSize();
+
+    let disposed = false;
+    let attached = false;
+    createSpectroRequester(SPECTRAL_VIEW_ID, {})
+      .then((r) => {
+        attached = true;
+        if (disposed) {
+          void spectroDetach(SPECTRAL_VIEW_ID).catch(() => {});
+          return;
+        }
+        requester = r;
+      })
+      .catch(() => {
+        // No spectral view without a working IPC channel — the pane just stays "pending".
+      });
+
+    const requestFrame: (cb: () => void) => number =
+      typeof requestAnimationFrame === "function"
+        ? (cb) => requestAnimationFrame(cb)
+        : (cb) => setTimeout(cb, 16) as unknown as number;
+    const cancelFrame: (id: number) => void =
+      typeof cancelAnimationFrame === "function"
+        ? (id) => cancelAnimationFrame(id)
+        : (id) => clearTimeout(id);
+    let frameId = 0;
+    const loop = () => {
+      if (disposed) {
+        return;
+      }
+      draw();
+      frameId = requestFrame(loop);
+    };
+    frameId = requestFrame(loop);
+
+    return () => {
+      disposed = true;
+      cancelFrame(frameId);
+      if (attached) {
+        void spectroDetach(SPECTRAL_VIEW_ID).catch(() => {});
+      }
+    };
+  });
+</script>
+
+<div class="spectral-view" data-testid="spectral-view">
+  {#if isOpen}
+    <div class="toolbar" data-testid="spectral-toolbar">
+      <button type="button" data-testid="spectral-scale-toggle" onclick={toggleScale}>
+        {spectral.freqScale === "log" ? t("spectral.scale_log") : t("spectral.scale_linear")}
+      </button>
+      <label>
+        {t("spectral.colormap_label")}
+        <select data-testid="spectral-colormap" value={spectral.colormap} onchange={onColormapChange}>
+          <option value="inferno">{t("spectral.colormap.inferno")}</option>
+          <option value="viridis">{t("spectral.colormap.viridis")}</option>
+          <option value="gray">{t("spectral.colormap.gray")}</option>
+        </select>
+      </label>
+      <label>
+        {t("spectral.fft_size_label")}
+        <select data-testid="spectral-fft-size" value={spectral.fftSize === null ? "auto" : String(spectral.fftSize)} onchange={onFftSizeChange}>
+          <option value="auto">{t("spectral.fft_auto")}</option>
+          {#each FFT_SIZES as size (size)}
+            <option
+              value={size}
+              disabled={isFftSizeDisabled(size, maxTextureSize)}
+              title={isFftSizeDisabled(size, maxTextureSize) ? t("spectral.fft_disabled_tooltip") : undefined}
+            >
+              {size}
+            </option>
+          {/each}
+        </select>
+      </label>
+      <label>
+        {t("spectral.floor_label")}
+        <input
+          type="number"
+          data-testid="spectral-floor"
+          min={FLOOR_RANGE_DB[0]}
+          max={FLOOR_RANGE_DB[1]}
+          value={spectral.floorDb}
+          oninput={(e) => spectral.setFloorDb(Number((e.currentTarget as HTMLInputElement).value))}
+        />
+      </label>
+      <label>
+        {t("spectral.ceiling_label")}
+        <input
+          type="number"
+          data-testid="spectral-ceiling"
+          min={CEIL_RANGE_DB[0]}
+          max={CEIL_RANGE_DB[1]}
+          value={spectral.ceilDb}
+          oninput={(e) => spectral.setCeilDb(Number((e.currentTarget as HTMLInputElement).value))}
+        />
+      </label>
+    </div>
+    <div class="body">
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="ruler"
+        data-testid="spectral-ruler"
+        bind:this={rulerEl}
+        onwheel={onRulerWheel}
+        onpointerdown={onRulerPointerDown}
+        onpointermove={onRulerPointerMove}
+        onpointerup={onRulerPointerUp}
+        ondblclick={resetFreqRange}
+      >
+        <span class="unit">{t("spectral.freq_unit")}</span>
+        {#each ticks as tick (tick.freqHz)}
+          <span class="tick" style={`top: ${tick.y}px`}>{tick.label}</span>
+        {/each}
+      </div>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="canvas-container"
+        bind:this={containerEl}
+        onwheel={onWheel}
+        onpointerdown={onPointerDown}
+        onpointermove={onPointerMove}
+        onpointerup={onPointerUp}
+        onpointerleave={onPointerLeave}
+        ondblclick={onDoubleClick}
+      >
+        <canvas bind:this={canvasEl} aria-label={t("spectral.canvas_label")} data-testid="spectral-canvas"></canvas>
+        {#if isRecording}
+          <div class="frozen-overlay" data-testid="spectral-recording-overlay">
+            {t("spectral.recording_frozen")}
+          </div>
+        {/if}
+        {#if hoverInfo}
+          <div class="hover-readout" data-testid="spectral-hover" style={hoverBoxStyle}>
+            <div>{hoverInfo.timeText}</div>
+            <div>{hoverInfo.freqText}</div>
+            <div>{hoverInfo.levelText}</div>
+          </div>
+        {/if}
+      </div>
+    </div>
+  {:else}
+    <p class="empty" data-testid="spectral-empty">{t("spectral.empty")}</p>
+  {/if}
+</div>
+
+<style>
+  .spectral-view {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    flex: 1;
+    background: var(--spec-bg);
+  }
+
+  .empty {
+    margin: auto;
+    color: var(--text-secondary);
+  }
+
+  .toolbar {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.15rem 0.5rem;
+    background: var(--surface-panel);
+    border-bottom: 1px solid var(--surface-border);
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+  }
+
+  .toolbar select,
+  .toolbar input,
+  .toolbar button {
+    background: var(--surface-panel-raised);
+    color: var(--text-primary);
+    border: 1px solid var(--surface-border);
+    border-radius: 3px;
+    padding: 0.1rem 0.3rem;
+    font-size: 0.7rem;
+  }
+
+  .toolbar input[type="number"] {
+    width: 3.5rem;
+  }
+
+  .body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .ruler {
+    position: relative;
+    width: 48px;
+    flex: none;
+    border-right: 1px solid var(--spec-ruler-grid);
+    background: var(--surface-panel);
+    overflow: hidden;
+    cursor: ns-resize;
+  }
+
+  .unit {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    color: var(--spec-ruler-text);
+    font-size: 0.6rem;
+  }
+
+  .tick {
+    position: absolute;
+    right: 2px;
+    color: var(--spec-ruler-text);
+    font-size: 0.65rem;
+    transform: translateY(-50%);
+    white-space: nowrap;
+  }
+
+  .canvas-container {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+  }
+
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .frozen-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.45);
+    color: var(--text-primary);
+    font-size: 0.8rem;
+    text-align: center;
+    padding: 0.5rem;
+    pointer-events: none;
+  }
+
+  .hover-readout {
+    position: absolute;
+    z-index: 1;
+    pointer-events: none;
+    background: var(--surface-panel-raised);
+    border: 1px solid var(--surface-border);
+    border-radius: 4px;
+    padding: 0.2rem 0.4rem;
+    font-size: 0.7rem;
+    color: var(--text-primary);
+    white-space: nowrap;
+  }
+</style>

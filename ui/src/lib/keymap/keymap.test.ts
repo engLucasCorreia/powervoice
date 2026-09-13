@@ -64,6 +64,12 @@ describe("default keymap bindings", () => {
     expect(matchBinding(key("KeyP"), false)).toBeNull();
   });
 
+  // T-207, SPEC-007 §2.1: Shift+D toggles the spectral pane (verified Audition binding).
+  it("resolves Shift+D to spectral.toggle, distinct from plain D", () => {
+    expect(matchBinding(key("KeyD", { shift: true }), false)).toBe("spectral.toggle");
+    expect(matchBinding(key("KeyD"), false)).toBeNull();
+  });
+
   it("Shift+Space is not the same action as plain Space", () => {
     const space = matchBinding(key("Space"), false);
     const shiftSpace = matchBinding(key("Space", { shift: true }), false);

@@ -57,6 +57,13 @@
   --wave-ruler-grid: #34373d;
   --wave-zero-line: #454850;
 
+  /* Spectral pane (SPEC-007 §4.7, T-207): overlays (playhead/selection/markers) reuse the
+   * `--wave-*` tokens above (SPEC-006 §2.12: "the same theme tokens"). */
+  --spec-bg: #0d0e10;
+  --spec-pending: #232630;
+  --spec-ruler-text: #9a9da4;
+  --spec-ruler-grid: #34373d;
+
   /* EQ graph (SPEC-015 §2.6.3, S3-07): band colors follow the HP…LP processing order. */
   --eq-curve: #e6e7ea;
   --eq-fill: rgba(230, 231, 234, 0.15);

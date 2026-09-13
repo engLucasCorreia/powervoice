@@ -27,4 +27,5 @@ export type ActionId =
   | "edit.trim"
   | "waveform.select_all"
   | "waveform.deselect"
-  | "nr.capture_noise_print";
+  | "nr.capture_noise_print"
+  | "spectral.toggle";

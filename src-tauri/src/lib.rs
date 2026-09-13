@@ -14,6 +14,8 @@ pub mod recording;
 pub mod settings;
 #[cfg(feature = "spike")]
 pub mod spike;
+#[cfg(test)]
+mod test_util;
 pub mod webkit;
 
 use tauri::Manager as _;

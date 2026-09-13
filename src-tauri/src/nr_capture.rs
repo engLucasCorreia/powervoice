@@ -390,17 +390,7 @@ mod tests {
     use super::*;
 
     fn tmp_dir(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "powervoice-app-nr-capture-{tag}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        crate::test_util::tmp_dir(&format!("nr-capture-{tag}"))
     }
 
     /// White noise in `[-amp, amp)`, seeded (xorshift64*, no extra test dependency).

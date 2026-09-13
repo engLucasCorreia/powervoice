@@ -1,0 +1,752 @@
+<title>__PROJECT__ Roadmap</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  /* The editor's own palette (PowerVoice ui/src/lib/theme/tokens.css): dark first, light variant. */
+  :root {
+    color-scheme: dark;
+    --bg: #15171a;
+    --panel: #1d1f23;
+    --raised: #26292e;
+    --inset: #111215;
+    --line: #33363c;
+    --grid: #25282d;
+    --band: rgba(154, 157, 164, 0.07);
+    --text: #e6e7ea;
+    --muted: #9a9da4;
+    --faint: #62666e;
+    --wave: #7fc8ff;
+    --wave-area: rgba(127, 200, 255, 0.12);
+    --tok: #b3a6ff;
+    --tok-area: rgba(179, 166, 255, 0.12);
+    --playhead: #ffb454;
+    --marker: #35c46a;
+    --rec: #e5484d;
+    --tip-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+    --display: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
+    --body: "Barlow", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      color-scheme: light;
+      --bg: #eef1f5;
+      --panel: #ffffff;
+      --raised: #e7ebf0;
+      --inset: #f6f8fa;
+      --line: #d3d8df;
+      --grid: #e6e9ee;
+      --band: rgba(91, 97, 107, 0.08);
+      --text: #1a1d22;
+      --muted: #5b616b;
+      --faint: #9aa1ab;
+      --wave: #1f7ae0;
+      --wave-area: rgba(31, 122, 224, 0.11);
+      --tok: #6a58d8;
+      --tok-area: rgba(106, 88, 216, 0.1);
+      --playhead: #c47510;
+      --marker: #1e9650;
+      --rec: #d33a40;
+      --tip-shadow: 0 8px 24px rgba(26, 29, 34, 0.14);
+    }
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #eef1f5;
+    --panel: #ffffff;
+    --raised: #e7ebf0;
+    --inset: #f6f8fa;
+    --line: #d3d8df;
+    --grid: #e6e9ee;
+    --band: rgba(91, 97, 107, 0.08);
+    --text: #1a1d22;
+    --muted: #5b616b;
+    --faint: #9aa1ab;
+    --wave: #1f7ae0;
+    --wave-area: rgba(31, 122, 224, 0.11);
+    --tok: #6a58d8;
+    --tok-area: rgba(106, 88, 216, 0.1);
+    --playhead: #c47510;
+    --marker: #1e9650;
+    --rec: #d33a40;
+    --tip-shadow: 0 8px 24px rgba(26, 29, 34, 0.14);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 400 15px/1.55 var(--body);
+    padding-inline: clamp(16px, 4vw, 44px);
+    padding-block: 28px 64px;
+  }
+  .page { max-width: 1180px; margin-inline: auto; display: grid; gap: 40px; }
+
+  /* Masthead */
+  .masthead { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 10px 24px; }
+  .brand { display: flex; align-items: center; gap: 10px; font: 600 13px/1 var(--display); letter-spacing: 0.24em; text-transform: uppercase; color: var(--wave); }
+  .brand svg { flex: none; }
+  h1 { font: 600 clamp(36px, 5.4vw, 56px)/0.95 var(--display); letter-spacing: 0.01em; margin: 10px 0 0; text-wrap: balance; }
+  .stamp { font: 12px/1.5 var(--mono); color: var(--muted); text-align: right; margin: 0; }
+  .stamp b { color: var(--text); font-weight: 500; }
+
+  /* Transport-style readout */
+  .readout { display: flex; flex-wrap: wrap; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .cell { flex: 1 1 190px; background: var(--inset); padding: 14px 18px 16px; display: grid; gap: 6px; align-content: start; }
+  .label { font: 600 11.5px/1 var(--display); letter-spacing: 0.15em; text-transform: uppercase; color: var(--muted); }
+  .value { font: 500 26px/1.1 var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+  .value small, .sub { font: 400 12.5px/1.35 var(--mono); color: var(--muted); letter-spacing: 0; }
+  .bar { height: 4px; background: var(--grid); border-radius: 2px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--wave); }
+
+  /* Sections */
+  section { display: grid; gap: 16px; }
+  .section-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 10px 20px; }
+  h2 { font: 600 21px/1.1 var(--display); letter-spacing: 0.07em; text-transform: uppercase; margin: 0; }
+  .note { color: var(--muted); font-size: 14px; max-width: 68ch; margin: 4px 0 0; }
+
+  /* Route: the phases as connected stops */
+  .route { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(var(--stops), minmax(0, 1fr)); }
+  .stop { display: grid; grid-template-rows: 22px auto; gap: 10px; }
+  .stop-track { position: relative; display: flex; align-items: center; }
+  .stop-track::after { content: ""; position: absolute; left: 20px; right: 0; top: 50%; height: 2px; margin-top: -1px; background: var(--line); }
+  .stop:last-child .stop-track::after { display: none; }
+  .stop[data-state="complete"] .stop-track::after { background: var(--wave); }
+  .stop-dot { position: relative; z-index: 1; width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--faint); background: var(--bg); }
+  .stop[data-state="complete"] .stop-dot { background: var(--wave); border-color: var(--wave); }
+  .stop[data-state="active"] .stop-dot { border-color: var(--rec); }
+  .stop[data-state="active"] .stop-dot::after { content: ""; position: absolute; inset: 3px; border-radius: 50%; background: var(--rec); animation: rec 1.6s ease-in-out infinite; }
+  .stop-body { display: grid; gap: 4px; padding-right: 14px; }
+  .stop-name { font: 600 17px/1.05 var(--display); letter-spacing: 0.05em; text-transform: uppercase; }
+  .stop[data-state="upcoming"] .stop-name { color: var(--muted); }
+  .stop-sub { font-size: 13px; line-height: 1.3; color: var(--muted); }
+  .stop-count { display: flex; align-items: center; gap: 8px; font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+  .stop-count .bar { flex: 1; max-width: 90px; }
+  .stop-state { font: 600 11px/1 var(--display); letter-spacing: 0.14em; text-transform: uppercase; color: var(--faint); }
+  .stop[data-state="active"] .stop-state { color: var(--rec); }
+  .stop[data-state="complete"] .stop-state { color: var(--wave); }
+
+  /* Now / Next / Finished */
+  .nnd { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 16px; }
+  .col { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px 6px; display: grid; gap: 6px; align-content: start; }
+  .col-head { display: flex; align-items: center; gap: 8px; }
+  .col-head .label { color: var(--text); }
+  .col-head .sub { margin-left: auto; }
+  .items { list-style: none; margin: 0; padding: 0; }
+  .item { display: grid; grid-template-columns: 50px 1fr; gap: 2px 10px; padding: 10px 0; border-top: 1px solid var(--grid); }
+  .item:first-child { border-top: 0; }
+  .item:focus-visible { outline: 2px solid var(--wave); outline-offset: 2px; border-radius: 2px; }
+  .item-id { font: 500 12.5px/1.45 var(--mono); color: var(--wave); }
+  .item-title { font-size: 14px; line-height: 1.35; }
+  .item-meta { grid-column: 2; display: flex; flex-wrap: wrap; gap: 4px 10px; font: 11.5px/1.4 var(--mono); color: var(--muted); }
+  .ready { color: var(--marker); }
+  .waits { color: var(--faint); }
+  .empty { color: var(--muted); font-size: 14px; padding: 10px 0 12px; margin: 0; }
+
+  /* Tracks */
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 16px 16px 12px; display: grid; gap: 6px; }
+  .track-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+  .track-name { font: 600 12px/1 var(--display); letter-spacing: 0.16em; text-transform: uppercase; }
+  .track-name.t-tickets { color: var(--wave); }
+  .track-name.t-tokens { color: var(--tok); }
+  .chart svg { display: block; width: 100%; height: auto; }
+  .ax { font: 11px var(--mono); fill: var(--muted); }
+  .ax-day { font: 600 10.5px var(--display); letter-spacing: 0.12em; text-transform: uppercase; fill: var(--faint); }
+  .grid-line { stroke: var(--grid); stroke-width: 1; }
+  .base-line { stroke: var(--line); stroke-width: 1; }
+  .band { fill: var(--band); }
+  .band-cut { stroke: var(--faint); stroke-width: 1.2; }
+  .band-label { font: 600 10px var(--display); letter-spacing: 0.12em; text-transform: uppercase; fill: var(--faint); }
+  .area { fill: var(--wave-area); }
+  .progress { fill: none; stroke: var(--wave); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .tok-area { fill: var(--tok-area); }
+  .tok-line { fill: none; stroke: var(--tok); stroke-width: 1.75; stroke-linejoin: round; }
+  .tok-projection { fill: none; stroke: var(--tok); stroke-width: 1.5; stroke-dasharray: 6 5; opacity: 0.75; }
+  .dot { fill: var(--wave); stroke: var(--panel); stroke-width: 2; cursor: pointer; }
+  .dot:hover, .dot:focus-visible { stroke: var(--text); outline: none; }
+  .start { fill: var(--panel); stroke: var(--wave); stroke-width: 2; }
+  .milestone { stroke: var(--marker); stroke-width: 1; stroke-dasharray: 3 3; }
+  .milestone-flag { fill: var(--marker); }
+  .milestone-label { font: 600 11.5px var(--display); letter-spacing: 0.08em; text-transform: uppercase; fill: var(--marker); }
+  .now-line { stroke: var(--playhead); stroke-width: 1.5; }
+  .now-cap { fill: var(--playhead); }
+  .now-label { font: 600 11.5px var(--display); letter-spacing: 0.12em; text-transform: uppercase; fill: var(--playhead); }
+  .finish-line { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 2 4; }
+  .finish-label { font: 600 11px var(--display); letter-spacing: 0.1em; text-transform: uppercase; fill: var(--muted); }
+  .projection { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 6 5; }
+  .finish-dot { fill: var(--panel); stroke: var(--text); stroke-width: 1.5; }
+  .fix { stroke: var(--rec); stroke-width: 2; }
+
+  .tip {
+    position: fixed; z-index: 10; pointer-events: none; max-width: 300px;
+    background: var(--inset); border: 1px solid var(--line); border-radius: 5px;
+    padding: 10px 12px; font-size: 13px; line-height: 1.45; color: var(--text); box-shadow: var(--tip-shadow);
+  }
+  .tip b { font: 500 12.5px var(--mono); color: var(--wave); margin-right: 6px; }
+  .tip dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 8px 0 0; font: 12px var(--mono); }
+  .tip dt { color: var(--muted); }
+  .tip dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+  .seg button {
+    font: 600 12px/1 var(--display); letter-spacing: 0.12em; text-transform: uppercase;
+    background: transparent; color: var(--muted); border: 0; padding: 9px 13px; cursor: pointer;
+  }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button[aria-pressed="true"] { background: var(--raised); color: var(--text); }
+  .seg button:focus-visible, .chip:focus-visible { outline: 2px solid var(--wave); outline-offset: 2px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 6px 0 0; padding: 0; list-style: none; font-size: 13px; color: var(--muted); }
+  .legend li { display: inline-flex; align-items: center; gap: 7px; }
+
+  /* Backlog lanes */
+  .group-title { font: 600 12px/1 var(--display); letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); margin: 14px 0 0; }
+  .lanes { border-top: 1px solid var(--line); }
+  .lane { display: grid; grid-template-columns: minmax(170px, 220px) 1fr; gap: 10px 24px; padding: 14px 0; border-bottom: 1px solid var(--line); align-items: start; }
+  .lane-head { display: grid; gap: 5px; }
+  .lane-name { font: 600 17px/1.05 var(--display); letter-spacing: 0.05em; text-transform: uppercase; }
+  .lane-sub { color: var(--muted); font-size: 13px; line-height: 1.3; }
+  .lane-count { display: flex; align-items: center; gap: 8px; font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+  .lane-count .bar { flex: 1; max-width: 120px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px 5px 7px;
+    font: 12px/1 var(--mono); white-space: nowrap; color: var(--text); cursor: default;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 3px;
+  }
+  .chip[data-s="todo"], .chip[data-s="gated"], .chip[data-s="partial"] { background: transparent; color: var(--muted); }
+  .chip[data-s="active"] { border-color: var(--rec); }
+  .glyph { flex: none; }
+  .gl-done { fill: var(--wave); }
+  .gl-rec { fill: var(--rec); animation: rec 1.6s ease-in-out infinite; }
+  .gl-ring { fill: none; stroke: var(--muted); stroke-width: 1.2; }
+  .gl-half { fill: var(--muted); }
+  .gl-todo { fill: none; stroke: var(--faint); stroke-width: 1.2; }
+  .gl-partial { fill: none; stroke: var(--wave); stroke-width: 1.2; stroke-dasharray: 2 1.6; }
+  .gl-gate { stroke: var(--faint); stroke-width: 1.2; }
+  @keyframes rec { 50% { opacity: 0.3; } }
+  @media (prefers-reduced-motion: reduce) { .gl-rec, .stop[data-state="active"] .stop-dot::after { animation: none; } }
+
+  /* Finished table */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; min-width: 820px; font-size: 14px; }
+  th {
+    font: 600 11.5px/1.2 var(--display); letter-spacing: 0.13em; text-transform: uppercase; color: var(--muted);
+    text-align: left; padding: 11px 12px; border-bottom: 1px solid var(--line); background: var(--inset); white-space: nowrap;
+  }
+  td { padding: 9px 12px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  tbody tr:last-child td { border-bottom-color: var(--line); }
+  .num { text-align: right; font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.id { font: 500 13px var(--mono); color: var(--wave); white-space: nowrap; }
+  td.title { min-width: 280px; }
+  td.when { font: 12.5px var(--mono); color: var(--muted); white-space: nowrap; }
+  tfoot td { background: var(--inset); color: var(--muted); }
+  tfoot tr.total td { color: var(--text); font-weight: 600; }
+  .pill { display: inline-block; font: 600 11px/1 var(--display); letter-spacing: 0.12em; text-transform: uppercase; padding: 4px 6px; border-radius: 3px; border: 1px solid var(--line); color: var(--muted); }
+  .pill[data-m="opus"] { color: var(--playhead); border-color: color-mix(in srgb, var(--playhead) 45%, var(--line)); }
+  .pill[data-m="sonnet"] { color: var(--wave); border-color: color-mix(in srgb, var(--wave) 45%, var(--line)); }
+  .pill[data-m="haiku"] { color: var(--marker); border-color: color-mix(in srgb, var(--marker) 45%, var(--line)); }
+
+  .foot { color: var(--muted); font-size: 12.5px; max-width: 86ch; line-height: 1.6; border-top: 1px solid var(--line); padding-top: 16px; margin: 0; }
+  .foot code { font: 12px var(--mono); color: var(--text); }
+
+  @media (max-width: 760px) {
+    .route { grid-template-columns: 1fr; }
+    .stop { grid-template-rows: none; grid-template-columns: 20px 1fr; gap: 12px; }
+    .stop-track { align-items: flex-start; }
+    .stop-track::after { left: 50%; right: auto; top: 20px; bottom: 0; width: 2px; height: auto; margin: 0 0 0 -1px; }
+    .stop-body { padding: 0 0 20px; }
+  }
+  @media (max-width: 640px) {
+    .lane { grid-template-columns: 1fr; }
+    .stamp { text-align: left; }
+    .value { font-size: 22px; }
+  }
+</style>
+
+<div class="page">
+  <header class="masthead">
+    <div>
+      <div class="brand">
+        <svg width="26" height="14" viewBox="0 0 26 14" aria-hidden="true"><path d="M1 7h2M5 4v6M8 1v12M11 5v4M14 3v8M17 6v2M20 2v10M23 5v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg>
+        __PROJECT__
+      </div>
+      <h1>Roadmap</h1>
+    </div>
+    <p class="stamp" id="stamp"></p>
+  </header>
+
+  <div class="readout" id="readout" aria-label="Project summary"></div>
+
+  <section aria-labelledby="route-title">
+    <div class="section-head">
+      <div>
+        <h2 id="route-title">Direction</h2>
+        <p class="note">The build runs as thin end-to-end slices, one working feature set at a time, then hardening, then the full-spec backlog.</p>
+      </div>
+    </div>
+    <ol class="route" id="route"></ol>
+  </section>
+
+  <section aria-labelledby="flow-title">
+    <h2 id="flow-title">Now and next</h2>
+    <div class="nnd" id="nnd"></div>
+  </section>
+
+  <section aria-labelledby="progress-title">
+    <div class="section-head">
+      <div>
+        <h2 id="progress-title">Progress and spend</h2>
+        <p class="note">Each dot is a finished ticket, sized by the tokens its agents used; hover one for details. Both tracks share one working-time axis; pauses longer than 45 minutes fold into the grey bands.</p>
+      </div>
+      <div class="seg" role="group" aria-label="Chart range">
+        <button type="button" id="range-whole" data-range="whole" aria-pressed="true">Start to finish</button>
+        <button type="button" id="range-sofar" data-range="sofar" aria-pressed="false">Progress so far</button>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="track-head"><span class="track-name t-tickets">Tickets finished</span><span class="sub" id="tickets-note"></span></div>
+      <div class="chart" id="chart"></div>
+      <div class="track-head"><span class="track-name t-tokens">Tokens used</span><span class="sub" id="tokens-note"></span></div>
+      <div class="chart" id="tokens"></div>
+      <ul class="legend" aria-label="Legend">
+        <li><svg width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="var(--wave)"/></svg>Finished ticket</li>
+        <li><svg width="12" height="14" aria-hidden="true"><path d="M1 1h10l-5 7z" fill="var(--marker)"/><path d="M6 8v6" stroke="var(--marker)"/></svg>Milestone</li>
+        <li><svg width="12" height="14" aria-hidden="true"><path d="M1 1h10l-5 7z" fill="var(--playhead)"/><path d="M6 8v6" stroke="var(--playhead)" stroke-width="1.5"/></svg>Now</li>
+        <li><svg width="8" height="14" aria-hidden="true"><path d="M4 3v10" stroke="var(--rec)" stroke-width="2"/></svg>Fix after merge</li>
+        <li><svg width="26" height="14" aria-hidden="true"><path d="M1 7h24" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="6 5"/></svg>Estimate at the pace so far</li>
+      </ul>
+    </div>
+  </section>
+
+  <section aria-labelledby="backlog-title">
+    <div class="section-head">
+      <div>
+        <h2 id="backlog-title">Backlog</h2>
+        <p class="note">Every ticket on the board. Hover or focus a ticket for its status, dependencies, time and tokens.</p>
+      </div>
+      <ul class="legend" aria-label="Status legend" id="status-legend"></ul>
+    </div>
+    <div id="lanes"></div>
+  </section>
+
+  <section aria-labelledby="done-title">
+    <div class="section-head">
+      <div>
+        <h2 id="done-title">Finished tickets</h2>
+        <p class="note">Newest first. Agent time is transcript activity with idle gaps over 10 minutes dropped; lead time runs from the first agent message to the merge.</p>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Ticket</th><th>Title</th><th>Model</th><th class="num">Agent time</th><th class="num">Lead time</th><th class="num">Tokens</th><th class="num">Written</th><th>Finished</th>
+          </tr>
+        </thead>
+        <tbody id="done-rows"></tbody>
+        <tfoot id="done-foot"></tfoot>
+      </table>
+    </div>
+  </section>
+
+  <p class="foot">
+    Built by <code>scripts/roadmap/build.py</code> (<code>just roadmap</code>) from the ticket board, the git history and the Claude Code transcripts, and republished after each merge.
+    <em>Tokens</em> counts everything the models processed: fresh input, cache writes, cache re-reads and output. <em>Written</em> is output only.
+    A ticket's tokens include its implementation and review agents. The orchestrator is the main session that plans, merges and reviews.
+    Estimates are straight-line: remaining tickets at the average pace and tokens per ticket so far.
+  </p>
+</div>
+<div class="tip" id="tip" role="tooltip" hidden></div>
+
+<script id="roadmap-data" type="application/json">__ROADMAP_DATA__</script>
+<script>
+(() => {
+  const D = JSON.parse(document.getElementById("roadmap-data").textContent);
+  const HOUR = 3600e3;
+  const ms = (t) => Date.parse(t);
+  const now = ms(D.generated_at);
+
+  const tickets = D.sections.flatMap((s) => s.tickets.map((t) => ({ ...t, section: s.name, kind: s.kind })));
+  const byId = new Map(tickets.map((t) => [t.id, t]));
+  const total = tickets.length;
+  const done = tickets.filter((t) => t.status === "done");
+  const finished = done.filter((t) => t.finished_at).sort((a, b) => ms(a.finished_at) - ms(b.finished_at));
+  const active = tickets.filter((t) => t.status === "active");
+  const spans = D.spans.map(([a, b]) => [ms(a), ms(b)]);
+  const workMs = spans.reduce((n, [a, b]) => n + (b - a), 0);
+  const rate = finished.length / Math.max(workMs / HOUR, 0.01);
+  const remaining = total - done.length;
+  const remainingMs = rate > 0 ? (remaining / rate) * HOUR : 0;
+
+  const tokensOf = (t) => (t && t.tokens ? t.tokens.input + t.tokens.cache_write + t.tokens.cache_read + t.tokens.output : 0);
+  const totalTokens = D.totals.input + D.totals.cache_write + D.totals.cache_read + D.totals.output;
+  const tokensPerTicket = done.length ? totalTokens / done.length : 0;
+  const projectedTokens = totalTokens + remaining * tokensPerTicket;
+
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  const fmtTok = (n) => (n >= 1e9 ? (n / 1e9).toFixed(2) + " B" : n >= 1e6 ? (n / 1e6).toFixed(1) + " M" : n >= 1e3 ? Math.round(n / 1e3) + " k" : String(Math.round(n)));
+  const fmtDur = (s) => {
+    const m = Math.round(s / 60);
+    if (m < 60) return m + " m";
+    return Math.floor(m / 60) + " h " + String(m % 60).padStart(2, "0") + " m";
+  };
+  const whenFmt = new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  const timeFmt = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
+  const dayFmt = new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short" });
+  const STATUS = {
+    done: "Done",
+    active: "In progress",
+    paused: "Paused",
+    todo: "To do",
+    partial: "Part done in a slice",
+    gated: "Needs owner sign-off",
+  };
+  const glyph = (s) => {
+    const shape = {
+      done: '<circle cx="5" cy="5" r="4" class="gl-done"/>',
+      active: '<circle cx="5" cy="5" r="4" class="gl-rec"/>',
+      paused: '<circle cx="5" cy="5" r="3.5" class="gl-ring"/><path d="M5 1.5a3.5 3.5 0 0 1 0 7z" class="gl-half"/>',
+      todo: '<circle cx="5" cy="5" r="3.5" class="gl-todo"/>',
+      partial: '<circle cx="5" cy="5" r="3.5" class="gl-partial"/>',
+      gated: '<circle cx="5" cy="5" r="3.5" class="gl-todo"/><path d="M2.5 7.5l5-5" class="gl-gate"/>',
+    }[s];
+    return `<svg class="glyph" viewBox="0 0 10 10" width="10" height="10" aria-hidden="true">${shape}</svg>`;
+  };
+  const isDone = (id) => { const t = byId.get(id); return !t || t.status === "done"; };
+  const openDeps = (t) => (t.deps || []).filter((d) => !isDone(d));
+
+  // ── Masthead + readout ───────────────────────────────────────────
+  document.getElementById("stamp").innerHTML =
+    `Updated <b>${esc(whenFmt.format(now))}</b><br>Started ${esc(whenFmt.format(spans[0][0]))}`;
+  const pct = Math.round((done.length / total) * 100);
+  const cells = [
+    ["Tickets done", `${done.length}<small> / ${total}</small>`, `<div class="bar" aria-hidden="true"><i style="width:${pct}%"></i></div><span class="sub">${pct}% of the board</span>`],
+    ["Working time", esc(fmtDur(workMs / 1000)), `<span class="sub">across ${spans.length} work sessions</span>`],
+    ["Tokens used", esc(fmtTok(totalTokens)), `<span class="sub">${esc(fmtTok(tokensPerTicket))} per finished ticket</span>`],
+    ["To finish", `~${Math.round(remainingMs / HOUR)}<small> h</small>`, `<span class="sub">${remaining} tickets · ~${esc(fmtTok(projectedTokens - totalTokens))} more tokens</span>`],
+    ["Running now", `${active.length}<small> ${active.length === 1 ? "ticket" : "tickets"}</small>`, `<span class="sub">${active.length ? esc(active.map((t) => t.id).join(", ")) : "nothing in progress"}</span>`],
+  ];
+  document.getElementById("readout").innerHTML = cells
+    .map(([label, value, extra]) => `<div class="cell"><span class="label">${label}</span><span class="value">${value}</span>${extra}</div>`)
+    .join("");
+
+  // ── Direction: phases as connected stops ─────────────────────────
+  const buildOrder = D.sections.filter((s) => s.kind !== "milestone");
+  const fullSpec = D.sections.filter((s) => s.kind === "milestone");
+  const stops = [
+    ...buildOrder.map((s) => ({ name: s.name, sub: s.subtitle || (s.kind === "hardening" ? "Fixes and gaps found while building" : ""), tickets: s.tickets })),
+    ...(fullSpec.length ? [{ name: "Full spec", sub: `${fullSpec[0].name}–${fullSpec[fullSpec.length - 1].name} backlog`, tickets: fullSpec.flatMap((s) => s.tickets) }] : []),
+  ].map((s) => {
+    const d = s.tickets.filter((t) => t.status === "done").length;
+    const running = s.tickets.filter((t) => t.status === "active").length;
+    const state = d === s.tickets.length ? "complete" : running ? "active" : "upcoming";
+    return { ...s, d, running, state };
+  });
+  const route = document.getElementById("route");
+  route.style.setProperty("--stops", stops.length);
+  route.innerHTML = stops.map((s) => {
+    const p = Math.round((s.d / s.tickets.length) * 100);
+    const stateText = s.state === "complete" ? "Complete" : s.state === "active" ? `${s.running} running` : s.d ? "Partly built" : "Not started";
+    return `<li class="stop" data-state="${s.state}"><span class="stop-track"><span class="stop-dot"></span></span><div class="stop-body">` +
+      `<span class="stop-state">${stateText}</span><span class="stop-name">${esc(s.name)}</span>` +
+      (s.sub ? `<span class="stop-sub">${esc(s.sub)}</span>` : "") +
+      `<span class="stop-count">${s.d}/${s.tickets.length}<span class="bar" aria-hidden="true"><i style="width:${p}%"></i></span></span></div></li>`;
+  }).join("");
+
+  // ── Now / Next / Finished ────────────────────────────────────────
+  const item = (t, meta) =>
+    `<li class="item" tabindex="0" data-ticket="${esc(t.id)}"><span class="item-id">${esc(t.id)}</span><span class="item-title">${esc(t.title)}</span><span class="item-meta">${meta}</span></li>`;
+  const upNext = [...tickets.filter((t) => t.kind !== "milestone"), ...tickets.filter((t) => t.kind === "milestone")]
+    .filter((t) => t.status === "todo" || t.status === "paused")
+    .slice(0, 5);
+  const recent = [...finished].reverse().slice(0, 5);
+  const col = (title, icon, count, body) =>
+    `<div class="col"><div class="col-head">${icon}<span class="label">${title}</span><span class="sub">${count}</span></div>${body}</div>`;
+  document.getElementById("nnd").innerHTML =
+    col("Running now", glyph("active"), active.length,
+      active.length ? `<ul class="items">${active.map((t) => item(t, `<span>${esc(t.section)}</span>${t.active_s ? `<span>${esc(fmtDur(t.active_s))} so far</span>` : ""}${t.tokens ? `<span>${esc(fmtTok(tokensOf(t)))} tokens</span>` : ""}`)).join("")}</ul>` : `<p class="empty">No ticket is running.</p>`) +
+    col("Up next", glyph("todo"), `${remaining - active.length} waiting`,
+      `<ul class="items">${upNext.map((t) => {
+        const open = openDeps(t);
+        const gate = t.status === "paused" ? `<span class="ready">Resume</span>` : open.length ? `<span class="waits">After ${esc(open.join(", "))}</span>` : `<span class="ready">Ready</span>`;
+        return item(t, `${gate}<span>${esc(t.section)}</span>`);
+      }).join("")}</ul>`) +
+    col("Recently finished", glyph("done"), `${done.length} total`,
+      `<ul class="items">${recent.map((t) => item(t, `<span>${esc(whenFmt.format(ms(t.finished_at)))}</span>${t.active_s ? `<span>${esc(fmtDur(t.active_s))}</span>` : ""}${t.tokens ? `<span>${esc(fmtTok(tokensOf(t)))} tokens</span>` : ""}`)).join("")}</ul>`);
+
+  // ── Tracks: progress line + tokens, one working-time axis ────────
+  const BREAK = 22 * 60e3; // a folded pause takes this much axis
+  const breaks = spans.slice(1).map(([a], i) => ({ from: spans[i][1], to: a }));
+  function toAxis(t) {
+    let x = 0;
+    for (let i = 0; i < spans.length; i++) {
+      const [a, b] = spans[i];
+      if (i > 0) {
+        const prevEnd = spans[i - 1][1];
+        if (t < a) return x + BREAK * Math.max(0, (t - prevEnd) / (a - prevEnd));
+        x += BREAK;
+      } else if (t < a) {
+        return 0;
+      }
+      if (t <= b) return x + (t - a);
+      x += b - a;
+    }
+    return x + (t - spans[spans.length - 1][1]);
+  }
+
+  const chartEl = document.getElementById("chart");
+  const tokensEl = document.getElementById("tokens");
+  let range = "whole";
+  try {
+    const saved = localStorage.getItem("roadmap.range");
+    if (saved === "whole" || saved === "sofar") range = saved;
+  } catch (_) { /* storage unavailable */ }
+
+  function bands(parts, X, top, height) {
+    for (const b of breaks) {
+      const x1 = X(toAxis(b.from));
+      const x2 = X(toAxis(b.to));
+      parts.push(`<rect class="band" x="${x1}" y="${top}" width="${Math.max(1, x2 - x1)}" height="${height}"><title>Paused ${esc(fmtDur((b.to - b.from) / 1000))}</title></rect>`);
+    }
+  }
+
+  function render() {
+    const W = Math.max(300, Math.round(chartEl.clientWidth));
+    const narrow = W < 600;
+    const H = narrow ? 280 : 340;
+    const m = { l: 44, r: narrow ? 14 : 22, t: 48, b: 44 };
+    const pw = W - m.l - m.r;
+    const ph = H - m.t - m.b;
+    const nowX = toAxis(now);
+    const endX = range === "whole" ? nowX + remainingMs : nowX * 1.035;
+    const X = (axis) => m.l + (axis / endX) * pw;
+    const Y = (v) => m.t + ph * (1 - v / total);
+    const pxPerHour = (pw / endX) * HOUR;
+    const xNow = X(nowX);
+    const xEnd = X(nowX + remainingMs);
+    const parts = [`<defs><clipPath id="plot"><rect x="${m.l}" y="0" width="${pw}" height="${H}"/></clipPath></defs>`];
+
+    const yStep = total > 60 ? 20 : 10;
+    for (let v = 0; v < total; v += yStep) {
+      parts.push(`<line class="grid-line" x1="${m.l}" x2="${W - m.r}" y1="${Y(v)}" y2="${Y(v)}"/>`);
+      parts.push(`<text class="ax" x="${m.l - 8}" y="${Y(v) + 4}" text-anchor="end">${v}</text>`);
+    }
+    parts.push(`<line class="finish-line" x1="${m.l}" x2="${W - m.r}" y1="${Y(total)}" y2="${Y(total)}"/>`);
+    parts.push(`<text class="ax" x="${m.l - 8}" y="${Y(total) + 4}" text-anchor="end">${total}</text>`);
+    parts.push(`<text class="finish-label" x="${m.l + 6}" y="${Y(total) - 7}">Finish line · ${total} tickets</text>`);
+
+    parts.push(`<g clip-path="url(#plot)">`);
+    bands(parts, X, m.t, ph);
+    for (const b of breaks) {
+      const x1 = X(toAxis(b.from));
+      const x2 = X(toAxis(b.to));
+      const mid = (x1 + x2) / 2;
+      const yb = m.t + ph;
+      parts.push(`<path class="band-cut" d="M${mid - 5} ${yb + 4}l4 -8M${mid + 1} ${yb + 4}l4 -8"/>`);
+      if (x2 - x1 > 46) {
+        const hours = (b.to - b.from) / HOUR;
+        parts.push(`<text class="band-label" x="${mid}" y="${m.t + 14}" text-anchor="middle">${hours >= 1 ? Math.round(hours) + " h" : Math.round(hours * 60) + " m"} off</text>`);
+      }
+    }
+    parts.push(`</g>`);
+
+    // Wall-clock ticks inside the work sessions, then "+N h" ticks across the estimate
+    const steps = [1, 2, 3, 4, 6, 12, 24];
+    const step = steps.find((s) => s * pxPerHour >= 64) || 24;
+    let lastDay = "";
+    let lastTickX = -Infinity;
+    for (const [a, b] of spans) {
+      const d = new Date(a);
+      d.setMinutes(0, 0, 0);
+      while (d.getTime() < a || d.getHours() % step !== 0) d.setTime(d.getTime() + HOUR);
+      for (; d.getTime() <= b; d.setTime(d.getTime() + step * HOUR)) {
+        const x = X(toAxis(d.getTime()));
+        if (x - lastTickX < 52 || x > W - m.r - 10) continue;
+        lastTickX = x;
+        parts.push(`<line class="base-line" x1="${x}" x2="${x}" y1="${m.t + ph}" y2="${m.t + ph + 5}"/>`);
+        parts.push(`<text class="ax" x="${x}" y="${m.t + ph + 18}" text-anchor="middle">${esc(timeFmt.format(d))}</text>`);
+        const day = dayFmt.format(d);
+        if (day !== lastDay) {
+          parts.push(`<text class="ax-day" x="${x}" y="${m.t + ph + 33}" text-anchor="middle">${esc(day)}</text>`);
+          lastDay = day;
+        }
+      }
+    }
+    if (range === "whole" && remainingMs > 0) {
+      for (let h = step; h * HOUR < remainingMs; h += step) {
+        const x = X(nowX + h * HOUR);
+        if (x - lastTickX < 52 || x > W - m.r - 24) continue;
+        lastTickX = x;
+        parts.push(`<line class="base-line" x1="${x}" x2="${x}" y1="${m.t + ph}" y2="${m.t + ph + 5}"/>`);
+        parts.push(`<text class="ax" x="${x}" y="${m.t + ph + 18}" text-anchor="middle">+${h} h</text>`);
+      }
+    }
+    parts.push(`<line class="base-line" x1="${m.l}" x2="${W - m.r}" y1="${m.t + ph}" y2="${m.t + ph}"/>`);
+
+    // Milestones: flag + dashed line; labels drop to a second row when they would collide
+    let lastLabelEnd = -Infinity;
+    for (const mark of D.milestones) {
+      const x = X(toAxis(ms(mark.t)));
+      const width = mark.label.length * 6.6 + 8;
+      const row = x < lastLabelEnd ? 26 : 13;
+      if (row === 13) lastLabelEnd = x + width;
+      const anchorEnd = x + width > W - m.r;
+      parts.push(`<line class="milestone" x1="${x}" x2="${x}" y1="${m.t - 12}" y2="${m.t + ph}"/>`);
+      parts.push(`<path class="milestone-flag" d="M${x - 5} ${m.t - 18}h10l-5 7z"/>`);
+      parts.push(`<text class="milestone-label" x="${anchorEnd ? x - 8 : x + 8}" y="${row}" text-anchor="${anchorEnd ? "end" : "start"}">${esc(mark.label)}</text>`);
+    }
+
+    // Area + connecting line + estimate
+    const pts = [[X(0), Y(0)], ...finished.map((t, i) => [X(toAxis(ms(t.finished_at))), Y(i + 1)])];
+    const yNow = Y(finished.length);
+    const line = [...pts, [xNow, yNow]];
+    parts.push(`<g clip-path="url(#plot)">`);
+    parts.push(`<path class="area" d="M${line.map((p) => p.join(" ")).join("L")}L${xNow} ${Y(0)}L${X(0)} ${Y(0)}Z"/>`);
+    parts.push(`<polyline class="progress" points="${line.map((p) => p.join(",")).join(" ")}"/>`);
+    if (remainingMs > 0) parts.push(`<line class="projection" x1="${xNow}" y1="${yNow}" x2="${xEnd}" y2="${Y(total)}"/>`);
+    parts.push(`</g>`);
+    if (range === "whole" && remainingMs > 0) {
+      parts.push(`<circle class="finish-dot" cx="${xEnd}" cy="${Y(total)}" r="6"/>`);
+      parts.push(`<text class="finish-label" x="${xEnd}" y="${Y(total) - 12}" text-anchor="end">Finish · estimate</text>`);
+    }
+
+    parts.push(`<line class="now-line" x1="${xNow}" x2="${xNow}" y1="${m.t - 12}" y2="${m.t + ph}"/>`);
+    parts.push(`<path class="now-cap" d="M${xNow - 6} ${m.t - 20}h12l-6 8z"/>`);
+    const nowRight = xNow + 60 > W - m.r;
+    parts.push(`<text class="now-label" x="${nowRight ? xNow - 7 : xNow + 7}" y="${m.t + 16}" text-anchor="${nowRight ? "end" : "start"}">Now</text>`);
+
+    for (const f of D.fixes) {
+      const x = X(toAxis(ms(f.t)));
+      parts.push(`<line class="fix" x1="${x}" x2="${x}" y1="${m.t + ph - 9}" y2="${m.t + ph}"><title>${esc(f.subject)}</title></line>`);
+    }
+
+    const maxTok = Math.max(1, ...finished.map(tokensOf));
+    parts.push(`<circle class="start" cx="${X(0)}" cy="${Y(0)}" r="4"/>`);
+    finished.forEach((t, i) => {
+      const [cx, cy] = pts[i + 1];
+      const r = 3.5 + 7 * Math.sqrt(tokensOf(t) / maxTok);
+      parts.push(`<circle class="dot" data-ticket="${esc(t.id)}" cx="${cx}" cy="${cy}" r="${r.toFixed(1)}" tabindex="0" aria-label="${esc(`${t.id}: ${t.title}`)}"/>`);
+    });
+    const label = `Tickets finished over working time: ${finished.length} of ${total}; about ${Math.round(remainingMs / HOUR)} working hours left at the pace so far.`;
+    chartEl.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${esc(label)}">${parts.join("")}</svg>`;
+
+    // Tokens track (same X)
+    const TH = narrow ? 110 : 130;
+    const tt = 10;
+    const tb = 18;
+    const tph = TH - tt - tb;
+    const yMax = range === "whole" ? Math.max(projectedTokens, totalTokens) : totalTokens;
+    const TY = (v) => tt + tph * (1 - v / Math.max(yMax, 1));
+    const tp = [`<defs><clipPath id="tplot"><rect x="${m.l}" y="0" width="${pw}" height="${TH}"/></clipPath></defs>`];
+    for (const v of [0, yMax / 2, yMax]) {
+      tp.push(`<line class="grid-line" x1="${m.l}" x2="${W - m.r}" y1="${TY(v)}" y2="${TY(v)}"/>`);
+      tp.push(`<text class="ax" x="${m.l - 8}" y="${TY(v) + 4}" text-anchor="end">${esc(fmtTok(v).replace(" ", ""))}</text>`);
+    }
+    tp.push(`<g clip-path="url(#tplot)">`);
+    bands(tp, X, tt, tph);
+    const series = [[X(0), TY(0)], ...D.token_series.map(([t, v]) => [X(toAxis(ms(t))), TY(v)]), [xNow, TY(totalTokens)]];
+    tp.push(`<path class="tok-area" d="M${series.map((p) => p.join(" ")).join("L")}L${xNow} ${TY(0)}Z"/>`);
+    tp.push(`<polyline class="tok-line" points="${series.map((p) => p.join(",")).join(" ")}"/>`);
+    if (remainingMs > 0) tp.push(`<line class="tok-projection" x1="${xNow}" y1="${TY(totalTokens)}" x2="${xEnd}" y2="${TY(projectedTokens)}"/>`);
+    tp.push(`</g>`);
+    for (const mark of D.milestones) {
+      const x = X(toAxis(ms(mark.t)));
+      tp.push(`<line class="milestone" x1="${x}" x2="${x}" y1="${tt}" y2="${tt + tph}"/>`);
+    }
+    tp.push(`<line class="now-line" x1="${xNow}" x2="${xNow}" y1="${tt - 4}" y2="${tt + tph}"/>`);
+    tp.push(`<line class="base-line" x1="${m.l}" x2="${W - m.r}" y1="${tt + tph}" y2="${tt + tph}"/>`);
+    const tokLabel = `Tokens used over the same working-time axis: ${fmtTok(totalTokens)} so far, about ${fmtTok(projectedTokens)} at the finish if the pace holds.`;
+    tokensEl.innerHTML = `<svg viewBox="0 0 ${W} ${TH}" width="${W}" height="${TH}" role="img" aria-label="${esc(tokLabel)}">${tp.join("")}</svg>`;
+
+    document.getElementById("tickets-note").textContent = `${finished.length} finished · ${rate.toFixed(1)} per working hour`;
+    document.getElementById("tokens-note").textContent = range === "whole"
+      ? `${fmtTok(totalTokens)} so far · ~${fmtTok(projectedTokens)} at the finish`
+      : `${fmtTok(totalTokens)} so far`;
+  }
+
+  function setRange(next) {
+    range = next;
+    for (const btn of document.querySelectorAll(".seg button")) btn.setAttribute("aria-pressed", String(btn.dataset.range === range));
+    try { localStorage.setItem("roadmap.range", range); } catch (_) { /* storage unavailable */ }
+    render();
+  }
+  for (const btn of document.querySelectorAll(".seg button")) btn.addEventListener("click", () => setRange(btn.dataset.range));
+  setRange(range);
+  if (typeof ResizeObserver !== "undefined") {
+    let last = chartEl.clientWidth;
+    new ResizeObserver(() => {
+      if (Math.abs(chartEl.clientWidth - last) > 2) { last = chartEl.clientWidth; render(); }
+    }).observe(chartEl);
+  }
+
+  // ── Backlog lanes ────────────────────────────────────────────────
+  document.getElementById("status-legend").innerHTML = ["done", "active", "paused", "todo", "partial", "gated"]
+    .map((s) => `<li>${glyph(s)}${STATUS[s]}</li>`).join("");
+  const lane = (s) => {
+    const d = s.tickets.filter((t) => t.status === "done").length;
+    const p = Math.round((d / s.tickets.length) * 100);
+    const chips = s.tickets.map((t) =>
+      `<span class="chip" data-s="${t.status}" data-ticket="${esc(t.id)}" tabindex="0" aria-label="${esc(`${t.id}, ${STATUS[t.status]}: ${t.title}`)}">${glyph(t.status)}${esc(t.id)}</span>`).join("");
+    return `<div class="lane"><div class="lane-head"><span class="lane-name">${esc(s.name)}</span>${s.subtitle ? `<span class="lane-sub">${esc(s.subtitle)}</span>` : ""}<span class="lane-count">${d}/${s.tickets.length}<span class="bar" aria-hidden="true"><i style="width:${p}%"></i></span></span></div><div class="chips">${chips}</div></div>`;
+  };
+  document.getElementById("lanes").innerHTML =
+    `<p class="group-title">Build order · vertical slices</p><div class="lanes">${buildOrder.map(lane).join("")}</div>` +
+    (fullSpec.length ? `<p class="group-title">Full-spec backlog</p><div class="lanes">${fullSpec.map(lane).join("")}</div>` : "");
+
+  // ── Finished table ───────────────────────────────────────────────
+  document.getElementById("done-rows").innerHTML = [...finished].reverse().map((t) => {
+    const lead = t.started_at ? fmtDur(Math.max(0, ms(t.finished_at) - ms(t.started_at)) / 1000) : "—";
+    const model = t.model ? `<span class="pill" data-m="${t.model}">${t.model}</span>` : `<span class="pill">orchestrator</span>`;
+    return `<tr><td class="id">${esc(t.id)}</td><td class="title">${esc(t.title)}</td><td>${model}</td>` +
+      `<td class="num">${t.active_s ? esc(fmtDur(t.active_s)) : "—"}</td><td class="num">${esc(lead)}</td>` +
+      `<td class="num">${t.tokens ? esc(fmtTok(tokensOf(t))) : "—"}</td><td class="num">${t.tokens ? esc(fmtTok(t.tokens.output)) : "—"}</td>` +
+      `<td class="when">${esc(whenFmt.format(ms(t.finished_at)))}</td></tr>`;
+  }).join("");
+  const footRow = (label, agg, cls = "") =>
+    `<tr class="${cls}"><td colspan="3">${label}</td><td class="num">${agg.active_s ? esc(fmtDur(agg.active_s)) : "—"}</td><td class="num"></td>` +
+    `<td class="num">${esc(fmtTok(tokensOf(agg)))}</td><td class="num">${esc(fmtTok(agg.tokens.output))}</td><td></td></tr>`;
+  const activeTok = active.reduce((n, t) => n + tokensOf(t), 0);
+  document.getElementById("done-foot").innerHTML =
+    footRow("Orchestrator: planning, specs, merges, reviews", D.orchestrator) +
+    (activeTok ? `<tr><td colspan="5">Tickets still running</td><td class="num">${esc(fmtTok(activeTok))}</td><td class="num"></td><td></td></tr>` : "") +
+    (D.other_agents.agents ? footRow(`Other agents (${D.other_agents.agents})`, D.other_agents) : "") +
+    `<tr class="total"><td colspan="5">Whole project</td><td class="num">${esc(fmtTok(totalTokens))}</td><td class="num">${esc(fmtTok(D.totals.output))}</td><td></td></tr>`;
+
+  // ── Ticket tooltips (chart dots, lists, backlog chips) ───────────
+  const tip = document.getElementById("tip");
+  function ticketTip(t) {
+    const rows = [["Status", STATUS[t.status]], ["Lane", t.section]];
+    if (t.status === "partial") rows.push(["Note", t.status_text]);
+    const open = openDeps(t);
+    if (t.deps && t.deps.length) rows.push(["Needs", t.deps.map((d) => (open.includes(d) ? d : d + " ✓")).join(", ")]);
+    if (t.finished_at) rows.push(["Finished", whenFmt.format(ms(t.finished_at))]);
+    if (t.active_s) rows.push(["Agent time", fmtDur(t.active_s) + (t.status === "active" ? " so far" : "")]);
+    if (t.tokens) rows.push(["Tokens", fmtTok(tokensOf(t))]);
+    if (t.model) rows.push(["Model", t.model]);
+    return `<b>${esc(t.id)}</b>${esc(t.title)}<dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join("")}</dl>`;
+  }
+  function show(el) {
+    const t = byId.get(el.dataset.ticket);
+    if (!t) return;
+    tip.innerHTML = ticketTip(t);
+    tip.hidden = false;
+    const r = el.getBoundingClientRect();
+    const tw = tip.offsetWidth;
+    const th = tip.offsetHeight;
+    let left = r.right + 10;
+    if (left + tw > innerWidth - 8) left = Math.max(8, r.left - 10 - tw);
+    let top = r.top + r.height / 2 - th / 2;
+    top = Math.min(Math.max(8, top), innerHeight - th - 8);
+    tip.style.left = left + "px";
+    tip.style.top = top + "px";
+  }
+  const hide = () => { tip.hidden = true; };
+  document.addEventListener("pointerover", (e) => { const el = e.target.closest("[data-ticket]"); if (el) show(el); });
+  document.addEventListener("pointerout", (e) => { if (e.target.closest("[data-ticket]")) hide(); });
+  document.addEventListener("focusin", (e) => { const el = e.target.closest("[data-ticket]"); if (el) show(el); else hide(); });
+  document.addEventListener("focusout", hide);
+  addEventListener("scroll", hide, { passive: true });
+})();
+</script>

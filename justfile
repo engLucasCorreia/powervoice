@@ -101,6 +101,10 @@ check-cross:
     cargo check -p vox-testkit --target x86_64-pc-windows-gnu
     cargo check -p powervoice-cli --target x86_64-pc-windows-gnu
 
+# Build the roadmap dashboard (target/roadmap/index.html) from the board, git log and agent transcripts
+roadmap:
+    python3 scripts/roadmap/build.py
+
 # Setup git hooks
 hooks:
     git config core.hooksPath .githooks

@@ -40,6 +40,8 @@
 - Types promising "no reallocation" (fixed-capacity lists/buffers) must implement `Clone` by hand preserving capacity — derived `Clone` on a `Vec` drops spare capacity.
 - T-103 handoff: (1) rack currently drops module output events — needs an RT drain to the control thread; (2) chain edits may move unchanged module instances from the retiring chain (pointer moves) instead of cold-restarting all slots; crossfade needs one extra `max_block` buffer; (3) module registry, same-offset/id event coalescing, dual-mono shim.
 
+- Subagents must run long checks in the foreground and never end a turn waiting on a background monitor (happened in T-007 and S3-02; the orchestrator had to nudge them). Now a CLAUDE.md hard rule.
+
 ## Gotchas / learnings
 - `cpal` 0.18: no per-channel input selection (open full device, deinterleave), no hot-plug events (poll ~1 s off-thread), input/output are separate streams (monitoring needs drift-corrected ring). Enable `pipewire`/`jack` features on Linux; ALSA headers still required.
 - `hound` has no `cue`/`LIST adtl` support → custom RIFF chunk code.

@@ -19,6 +19,7 @@ spec-driven and orchestrated: one orchestrator session dispatches tickets to sub
 - **No new dependencies** unless the ticket or an ADR names them. Propose others in your report.
 - **Worktrees**: commit freely on your branch; the orchestrator squash-merges into `main` as `T-NNN: <summary>`.
 - Don't install system packages, change global config, or touch files outside the repo.
+- **Run `just check` / tests / builds in the foreground** with a long timeout (e.g. 600000 ms). Never end your turn waiting for a background monitor or notification — nothing will wake you up. Stop any background processes (dev servers, app windows) before you report.
 
 ## Real-time rules (`engine`, `rack`, `modules`, `dsp`, `module-api`)
 - Audio callbacks and `process()`: **no allocation, no locks, no I/O, no logging, no syscalls, no panics on valid input, no unbounded loops.**

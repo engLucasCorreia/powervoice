@@ -820,18 +820,58 @@ mod tests {
         Engine::start(EngineConfig::new(Arc::new(fake), registry)).unwrap()
     }
 
+    /// A fresh per-test directory under this test run's `powervoice-app-doc-<pid>` parent. Each
+    /// one holds preallocated store segments (64 MB+) and nothing removes them when the test
+    /// process exits, so the first call sweeps the parents of finished runs — without it they
+    /// filled a tmpfs `/tmp` until the tests failed with "Disk quota exceeded".
     fn tmp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "powervoice-app-doc-{tag}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        static SWEEP: std::sync::Once = std::sync::Once::new();
+        SWEEP.call_once(sweep_finished_test_runs);
+        let dir = std::env::temp_dir()
+            .join(format!("powervoice-app-doc-{}", std::process::id()))
+            .join(format!(
+                "{tag}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// Removes `powervoice-app-doc-<pid>` parents (and the older flat
+    /// `powervoice-app-doc-<tag>-<pid>-<nanos>` dirs) whose test process is gone. Uses `/proc`,
+    /// so it is a no-op where that doesn't exist.
+    fn sweep_finished_test_runs() {
+        if !Path::new("/proc/self").exists() {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(rest) = name
+                .to_str()
+                .and_then(|n| n.strip_prefix("powervoice-app-doc-"))
+            else {
+                continue;
+            };
+            let fields: Vec<&str> = rest.split('-').collect();
+            let pid = match fields.len() {
+                1 => fields[0],
+                n if n >= 3 => fields[n - 2],
+                _ => continue,
+            };
+            let Ok(pid) = pid.parse::<u32>() else {
+                continue;
+            };
+            if pid != std::process::id() && !Path::new(&format!("/proc/{pid}")).exists() {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
     }
 
     fn write_fixture_wav(

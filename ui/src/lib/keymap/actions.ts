@@ -16,4 +16,11 @@ export type ActionId =
   | "file.save"
   | "file.save_as"
   | "waveform.zoom_in"
-  | "waveform.zoom_out";
+  | "waveform.zoom_out"
+  | "edit.cut"
+  | "edit.copy"
+  | "edit.paste"
+  | "edit.delete"
+  | "edit.trim"
+  | "waveform.select_all"
+  | "waveform.deselect";

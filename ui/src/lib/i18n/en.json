@@ -58,6 +58,9 @@
   "error.open.unsupported_format": "That file isn't a supported WAV (16/24-bit integer or 32-bit float).",
   "error.open.io": "Opening the file failed: {message}",
   "error.save.io": "Saving the file failed: {message}",
+  "error.no_selection": "Select some audio first.",
+  "error.invalid_range": "That range is outside the document.",
+  "error.clipboard_empty": "Nothing has been cut or copied yet.",
 
   "notice.dismiss": "Dismiss",
   "notice.device.rate_fallback": "{requested} Hz isn't supported by {device} — using {applied} Hz.",
@@ -130,6 +133,23 @@
 
   "waveform.empty": "Open a WAV file to see its waveform",
   "waveform.canvas_label": "Waveform",
+
+  "edit.cut": "Cut",
+  "edit.copy": "Copy",
+  "edit.paste": "Paste",
+  "edit.delete": "Delete",
+  "edit.trim": "Trim to Selection",
+  "edit.silence": "Silence",
+  "history.cut": "Cut",
+  "history.paste": "Paste",
+  "history.delete": "Delete",
+  "history.trim": "Trim to Selection",
+  "history.silence": "Silence",
+  "history.record": "Record",
+  "menu.edit.undo": "Undo {label}",
+  "menu.edit.redo": "Redo {label}",
+  "menu.edit.undo_none": "Undo",
+  "menu.edit.redo_none": "Redo",
 
   "spike.title": "T-007 Platform Spike",
   "spike.subtitle": "Dev-only renderer + IPC measurements for ADR-009. Not part of the production UI (only present when powervoice-app is built with --features spike).",

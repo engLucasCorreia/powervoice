@@ -7,6 +7,7 @@ import { clearActionHandlers } from "../keymap";
 import { initDocument, openDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import { clearNotices } from "../state/notices.svelte";
 import { initRecord, resetRecordForTest } from "../state/record.svelte";
+import { resetSelectionForTest, selectionState } from "../state/selection.svelte";
 import WaveformView from "./WaveformView.svelte";
 
 afterEach(() => {
@@ -15,6 +16,7 @@ afterEach(() => {
   clearNotices();
   resetDocumentStateForTest();
   resetRecordForTest();
+  resetSelectionForTest();
 });
 
 function headerOnlyVxpk(): ArrayBuffer {
@@ -227,5 +229,152 @@ describe("WaveformView (S1-03)", () => {
         Object.defineProperty(HTMLElement.prototype, "clientHeight", heightDescriptor);
       }
     }
+  });
+});
+
+// S2-01, SPEC-006 §2.9: click-drag creates a selection at exact document samples; a plain click
+// (no movement) clears it instead. The viewport is zoomed to fit exactly (8 000 samples over
+// 800 px = 10 samples/px, `startSample = 0`), so `sample = round(clientX * 10)` and jsdom's
+// zeroed `getBoundingClientRect` makes `clientX` itself the in-canvas pixel.
+describe("WaveformView selection (S2-01)", () => {
+  const widthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+
+  function stubWidth(px: number): void {
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get: () => px,
+    });
+  }
+
+  afterEach(() => {
+    if (widthDescriptor) {
+      Object.defineProperty(HTMLElement.prototype, "clientWidth", widthDescriptor);
+    }
+  });
+
+  async function openFixture(lenSamples: number): Promise<void> {
+    const fixture: DocumentDto = {
+      name: "take.wav",
+      path: "/home/user/take.wav",
+      sample_rate_hz: 48_000,
+      len_samples: lenSamples,
+      dirty: false,
+      audio_rev: 1,
+    };
+    mockIPC((cmd) => {
+      if (cmd === "document_open") {
+        return fixture;
+      }
+      if (cmd === "peaks_get") {
+        const buf = new ArrayBuffer(48);
+        const dv = new DataView(buf);
+        dv.setUint8(0, 0x56);
+        dv.setUint8(1, 0x58);
+        dv.setUint8(2, 0x50);
+        dv.setUint8(3, 0x4b);
+        dv.setUint16(4, 1, true);
+        dv.setUint16(6, 48, true);
+        return buf;
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    await openDocument("/home/user/take.wav");
+  }
+
+  it("a click-drag creates a selection at exact document samples", async () => {
+    stubWidth(800);
+    await openFixture(8_000);
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(WaveformView, { target });
+    flushSync();
+
+    const container = target.querySelector('[data-testid="waveform-canvas"]')!
+      .parentElement as HTMLElement;
+    container.dispatchEvent(
+      new PointerEvent("pointerdown", { clientX: 10, bubbles: true }),
+    );
+    container.dispatchEvent(
+      new PointerEvent("pointermove", { clientX: 50, bubbles: true }),
+    );
+    container.dispatchEvent(new PointerEvent("pointerup", { clientX: 50, bubbles: true }));
+    flushSync();
+
+    expect(selectionState().current).toEqual({ startSample: 100, endSample: 500 });
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("a plain click (no drag) clears the selection", async () => {
+    stubWidth(800);
+    await openFixture(8_000);
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(WaveformView, { target });
+    flushSync();
+
+    const container = target.querySelector('[data-testid="waveform-canvas"]')!
+      .parentElement as HTMLElement;
+    // First, an actual drag to have something to clear.
+    container.dispatchEvent(new PointerEvent("pointerdown", { clientX: 10, bubbles: true }));
+    container.dispatchEvent(new PointerEvent("pointermove", { clientX: 50, bubbles: true }));
+    container.dispatchEvent(new PointerEvent("pointerup", { clientX: 50, bubbles: true }));
+    flushSync();
+    expect(selectionState().current).not.toBeNull();
+
+    // Then a plain click (mousedown/up at the same point, no movement) clears it.
+    container.dispatchEvent(new PointerEvent("pointerdown", { clientX: 20, bubbles: true }));
+    container.dispatchEvent(new PointerEvent("pointerup", { clientX: 20, bubbles: true }));
+    flushSync();
+    expect(selectionState().current).toBeNull();
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Ctrl+A selects the entire document", async () => {
+    stubWidth(800);
+    await openFixture(8_000);
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(WaveformView, { target });
+    flushSync();
+
+    // Ctrl+A -> "waveform.select_all" is exercised in `keymap.test.ts`; here we only check
+    // `WaveformView`'s registered handler, so no `attachKeymap()` listener is needed.
+    const { dispatchAction } = await import("../keymap");
+    dispatchAction("waveform.select_all");
+    flushSync();
+
+    expect(selectionState().current).toEqual({ startSample: 0, endSample: 8_000 });
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Esc clears the selection", async () => {
+    stubWidth(800);
+    await openFixture(8_000);
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(WaveformView, { target });
+    flushSync();
+
+    const container = target.querySelector('[data-testid="waveform-canvas"]')!
+      .parentElement as HTMLElement;
+    container.dispatchEvent(new PointerEvent("pointerdown", { clientX: 10, bubbles: true }));
+    container.dispatchEvent(new PointerEvent("pointermove", { clientX: 50, bubbles: true }));
+    container.dispatchEvent(new PointerEvent("pointerup", { clientX: 50, bubbles: true }));
+    flushSync();
+    expect(selectionState().current).not.toBeNull();
+
+    const { dispatchAction } = await import("../keymap");
+    dispatchAction("waveform.deselect");
+    flushSync();
+    expect(selectionState().current).toBeNull();
+
+    unmount(app);
+    target.remove();
   });
 });

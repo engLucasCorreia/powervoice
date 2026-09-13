@@ -8,10 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use vox_engine::{EngineHandle, PlaybackDoc};
+use vox_engine::{EngineHandle, PlaybackDoc, TransportCommand};
 use vox_project::{
-    FinishedTake, ProjectError, Session, SessionConfig, SnapshotReader, TakeCapture, TakeId,
-    TakeMode, TakeWriterOptions,
+    EditTarget, FinishedTake, Piece, ProjectError, Range, RangeError, Session, SessionConfig,
+    SnapshotReader, TakeCapture, TakeId, TakeMode, TakeWriterOptions, edit, validate_range,
 };
 
 use crate::ipc::{IpcError, IpcErrorCode};
@@ -68,10 +68,57 @@ pub struct DocumentInfo {
     pub audio_rev: u64,
 }
 
+/// S2-01: the in-app clipboard (SPEC-008 §2.6), same-document only for now (cleared whenever a
+/// new session replaces the open one — its pieces reference the closed session's chunks).
+struct ClipboardData {
+    pieces: Vec<Piece>,
+    sample_rate_hz: u32,
+    len_samples: u64,
+}
+
+/// The clipboard's public shape (`clipboard_changed` event): `None` fields mean it's empty.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ClipboardInfo {
+    pub len_samples: Option<u64>,
+    pub sample_rate_hz: Option<u32>,
+}
+
+/// S2-01: the Edit menu's Undo/Redo state (`history_state` event). Labels are i18n keys
+/// (`history.cut`, …, CLAUDE.md), not rendered text.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HistoryState {
+    pub can_undo: bool,
+    pub can_redo: bool,
+    pub undo_label: Option<String>,
+    pub redo_label: Option<String>,
+}
+
+/// S2-01: where Paste inserts or replaces (SPEC-008 §2.1). Plain document samples — the caller
+/// (the waveform's selection store) resolves "no selection" to `Cursor` itself (SPEC-008 §2.2: an
+/// empty selection counts as the cursor).
+#[derive(Clone, Copy, Debug)]
+pub enum PasteTarget {
+    Cursor(u64),
+    Range(u64, u64),
+}
+
+/// The result of a cut/copy/paste/delete/trim/silence command, or an undo/redo (SPEC-008 §4.3's
+/// `EditResult`, minus `rev`/`base_rev` — revision-guarded commands are out of this ticket's
+/// scope). `changed = false` only for Copy and a whole-document Trim (both no-ops).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EditResult {
+    pub changed: bool,
+    pub audio_rev: u64,
+    pub len_samples: u64,
+    pub selection: Option<(u64, u64)>,
+    pub playhead_samples: u64,
+}
+
 struct Inner {
     sessions_dir: PathBuf,
     engine: EngineHandle,
     open: Mutex<Option<OpenDocument>>,
+    clipboard: Mutex<Option<ClipboardData>>,
 }
 
 /// Cheaply cloneable (an `Arc` inside), like [`EngineHandle`] — so command handlers can clone it
@@ -87,6 +134,21 @@ fn no_document() -> IpcError {
 /// Save of a never-saved document (S1-04 recording): the frontend routes it to Save As.
 fn untitled() -> IpcError {
     IpcError::new(IpcErrorCode::InvalidArgument, "error.document.untitled")
+}
+
+/// SPEC-008 §2.2/§4.3: no selection (or an empty one) where one is required.
+fn no_selection() -> IpcError {
+    IpcError::new(IpcErrorCode::InvalidArgument, "error.no_selection")
+}
+
+/// SPEC-008 §4.3: a range or cursor position past the end of the document.
+fn invalid_range() -> IpcError {
+    IpcError::new(IpcErrorCode::InvalidArgument, "error.invalid_range")
+}
+
+/// SPEC-008 §4.3: Paste with an empty clipboard.
+fn clipboard_empty() -> IpcError {
+    IpcError::new(IpcErrorCode::InvalidArgument, "error.clipboard_empty")
 }
 
 /// Maps a [`ProjectError`] to an [`IpcError`], reusing its i18n key (`ProjectError::i18n_key`).
@@ -208,6 +270,7 @@ impl DocumentService {
             sessions_dir,
             engine,
             open: Mutex::new(None),
+            clipboard: Mutex::new(None),
         }))
     }
 
@@ -237,6 +300,9 @@ impl DocumentService {
         self.0
             .engine
             .set_document(Some(PlaybackDoc { store, snapshot }));
+        // S2-01: a new document replaces the clipboard (same-document only, SPEC-008 §2.6) — its
+        // pieces reference the session that's about to close.
+        *self.0.clipboard.lock().unwrap() = None;
 
         let mut guard = self.0.open.lock().unwrap();
         let previous = guard.replace(OpenDocument {
@@ -337,6 +403,8 @@ impl DocumentService {
                 store: Arc::clone(session.store()),
                 snapshot: session.current(),
             }));
+            // S2-01: same as `open` — a new document invalidates the clipboard.
+            *self.0.clipboard.lock().unwrap() = None;
             previous = guard.replace(OpenDocument {
                 session,
                 path: None,
@@ -389,6 +457,230 @@ impl DocumentService {
         }));
         Ok(Some(info_of(guard.as_ref())))
     }
+
+    // --- S2-01: selection, cut/copy/paste/delete/trim/silence, undo/redo -------------------
+
+    /// The Edit menu's Undo/Redo state (`history_state` event).
+    pub fn history_state(&self) -> HistoryState {
+        let guard = self.0.open.lock().unwrap();
+        let Some(doc) = guard.as_ref() else {
+            return HistoryState::default();
+        };
+        let history = doc.session.history();
+        HistoryState {
+            can_undo: history.undo_depth() > 0,
+            can_redo: history.redo_depth() > 0,
+            undo_label: history.undo_label().map(str::to_owned),
+            redo_label: history.redo_label().map(str::to_owned),
+        }
+    }
+
+    /// The clipboard's length/rate (`clipboard_changed` event; `None`s: empty).
+    pub fn clipboard_info(&self) -> ClipboardInfo {
+        match self.0.clipboard.lock().unwrap().as_ref() {
+            Some(c) => ClipboardInfo {
+                len_samples: Some(c.len_samples),
+                sample_rate_hz: Some(c.sample_rate_hz),
+            },
+            None => ClipboardInfo::default(),
+        }
+    }
+
+    fn selected_range(doc: &OpenDocument, start: u64, end: u64) -> Result<Range, IpcError> {
+        validate_range(start, end, doc.session.current().len_samples).map_err(|e| match e {
+            RangeError::Empty => no_selection(),
+            RangeError::OutOfBounds => invalid_range(),
+        })
+    }
+
+    /// Common tail of every destructive op: hands the committed snapshot to the engine (which
+    /// stops playback first — Pause semantics at the heard position, ADR-004 §3, SPEC-008 §2.9 —
+    /// before the swap) and builds the result the command returns.
+    fn apply_committed(
+        &self,
+        doc: &OpenDocument,
+        step: vox_project::HistoryStep,
+        post: edit::PostEdit,
+    ) -> EditResult {
+        self.0.engine.set_document(Some(PlaybackDoc {
+            store: Arc::clone(doc.session.store()),
+            snapshot: Arc::clone(&step.snapshot),
+        }));
+        // SPEC-008 §2.3: the playhead moves to the op's table position, not wherever the
+        // engine-initiated stop happened to leave it (a plain no-op seek while stopped).
+        self.0
+            .engine
+            .transport(TransportCommand::Seek(post.playhead));
+        EditResult {
+            changed: true,
+            audio_rev: step.snapshot.audio_rev,
+            len_samples: step.snapshot.len_samples,
+            selection: post.selection,
+            playhead_samples: post.playhead,
+        }
+    }
+
+    /// Cuts `[start, end)`: the clipboard is replaced only after the commit succeeds (SPEC-008
+    /// §2.6). Refused with `error.no_selection`/`error.invalid_range` (bad range) or
+    /// `error.not_while_recording` (`Session::commit_edit`); changes nothing on any error.
+    pub fn edit_cut(&self, start: u64, end: u64) -> Result<EditResult, IpcError> {
+        let mut guard = self.0.open.lock().unwrap();
+        let doc = guard.as_mut().ok_or_else(no_document)?;
+        if doc.session.is_recording() {
+            return Err(IpcError::not_while_recording());
+        }
+        let range = Self::selected_range(doc, start, end)?;
+        let snapshot = doc.session.current();
+        let (built, clip) = edit::cut(&snapshot, range).map_err(document_error)?;
+        let step = doc.session.commit_edit(built).map_err(document_error)?;
+        let len_samples = edit::pieces_len_samples(&clip);
+        *self.0.clipboard.lock().unwrap() = Some(ClipboardData {
+            pieces: clip,
+            sample_rate_hz: doc.session.sample_rate_hz(),
+            len_samples,
+        });
+        Ok(self.apply_committed(doc, step, edit::post_cut_or_delete(range)))
+    }
+
+    /// Copies `[start, end)` into the clipboard. Not an edit: no commit, no transport stop, no
+    /// `rev`/`audio_rev` change — refused while recording all the same (SPEC-008 §2.2: the
+    /// selection can cover live, uncommitted audio during a take).
+    pub fn edit_copy(&self, start: u64, end: u64) -> Result<EditResult, IpcError> {
+        let guard = self.0.open.lock().unwrap();
+        let doc = guard.as_ref().ok_or_else(no_document)?;
+        if doc.session.is_recording() {
+            return Err(IpcError::not_while_recording());
+        }
+        let range = Self::selected_range(doc, start, end)?;
+        let snapshot = doc.session.current();
+        let clip = edit::copy(&snapshot, range).map_err(document_error)?;
+        let len_samples = edit::pieces_len_samples(&clip);
+        *self.0.clipboard.lock().unwrap() = Some(ClipboardData {
+            pieces: clip,
+            sample_rate_hz: doc.session.sample_rate_hz(),
+            len_samples,
+        });
+        Ok(EditResult {
+            changed: false,
+            audio_rev: snapshot.audio_rev,
+            len_samples: snapshot.len_samples,
+            selection: Some((range.start, range.end)),
+            playhead_samples: range.start,
+        })
+    }
+
+    /// Pastes the clipboard at `target` (SPEC-008 §2.1). `error.clipboard_empty` when nothing was
+    /// cut/copied yet.
+    pub fn edit_paste(&self, target: PasteTarget) -> Result<EditResult, IpcError> {
+        let mut guard = self.0.open.lock().unwrap();
+        let doc = guard.as_mut().ok_or_else(no_document)?;
+        if doc.session.is_recording() {
+            return Err(IpcError::not_while_recording());
+        }
+        let len_samples = doc.session.current().len_samples;
+        let resolved = match target {
+            PasteTarget::Cursor(c) if c <= len_samples => EditTarget::Cursor(c),
+            PasteTarget::Cursor(_) => return Err(invalid_range()),
+            PasteTarget::Range(s, e) => EditTarget::Range(Self::selected_range(doc, s, e)?),
+        };
+        let clipboard = self.0.clipboard.lock().unwrap();
+        let clip = clipboard.as_ref().ok_or_else(clipboard_empty)?;
+        let inserted_len_samples = edit::pieces_len_samples(&clip.pieces);
+        let built = edit::paste(&clip.pieces, resolved);
+        drop(clipboard);
+        let step = doc.session.commit_edit(built).map_err(document_error)?;
+        Ok(self.apply_committed(doc, step, edit::post_paste(resolved, inserted_len_samples)))
+    }
+
+    /// Deletes `[start, end)`, closing the gap.
+    pub fn edit_delete(&self, start: u64, end: u64) -> Result<EditResult, IpcError> {
+        let mut guard = self.0.open.lock().unwrap();
+        let doc = guard.as_mut().ok_or_else(no_document)?;
+        if doc.session.is_recording() {
+            return Err(IpcError::not_while_recording());
+        }
+        let range = Self::selected_range(doc, start, end)?;
+        let step = doc
+            .session
+            .commit_edit(edit::delete(range))
+            .map_err(document_error)?;
+        Ok(self.apply_committed(doc, step, edit::post_cut_or_delete(range)))
+    }
+
+    /// Trims the document to `[start, end)` (Audition: Crop). A whole-document trim is a no-op
+    /// (`changed = false`, no undo entry, playback not stopped — SPEC-008 §2.1).
+    pub fn edit_trim(&self, start: u64, end: u64) -> Result<EditResult, IpcError> {
+        let mut guard = self.0.open.lock().unwrap();
+        let doc = guard.as_mut().ok_or_else(no_document)?;
+        if doc.session.is_recording() {
+            return Err(IpcError::not_while_recording());
+        }
+        let range = Self::selected_range(doc, start, end)?;
+        let len_samples = doc.session.current().len_samples;
+        let Some(built) = edit::trim(range, len_samples) else {
+            let snapshot = doc.session.current();
+            return Ok(EditResult {
+                changed: false,
+                audio_rev: snapshot.audio_rev,
+                len_samples: snapshot.len_samples,
+                selection: None,
+                playhead_samples: 0,
+            });
+        };
+        let step = doc.session.commit_edit(built).map_err(document_error)?;
+        Ok(self.apply_committed(doc, step, edit::post_trim()))
+    }
+
+    /// Silences `[start, end)` with exact `+0.0` samples (length-preserving: no marker moves).
+    pub fn edit_silence(&self, start: u64, end: u64) -> Result<EditResult, IpcError> {
+        let mut guard = self.0.open.lock().unwrap();
+        let doc = guard.as_mut().ok_or_else(no_document)?;
+        if doc.session.is_recording() {
+            return Err(IpcError::not_while_recording());
+        }
+        let range = Self::selected_range(doc, start, end)?;
+        let step = doc
+            .session
+            .commit_edit(edit::silence(range))
+            .map_err(document_error)?;
+        Ok(self.apply_committed(doc, step, edit::post_silence(range)))
+    }
+
+    /// Undoes the top entry (`Ok` with `changed: false` at the undo floor).
+    pub fn history_undo(&self) -> Result<EditResult, IpcError> {
+        let mut guard = self.0.open.lock().unwrap();
+        let doc = guard.as_mut().ok_or_else(no_document)?;
+        let Some(step) = doc.session.undo().map_err(document_error)? else {
+            let snapshot = doc.session.current();
+            return Ok(EditResult {
+                changed: false,
+                audio_rev: snapshot.audio_rev,
+                len_samples: snapshot.len_samples,
+                selection: None,
+                playhead_samples: 0,
+            });
+        };
+        let post = edit::post_undo_redo(step.first_at, step.snapshot.len_samples);
+        Ok(self.apply_committed(doc, step, post))
+    }
+
+    /// Redoes the top entry (`Ok` with `changed: false` when there's nothing to redo).
+    pub fn history_redo(&self) -> Result<EditResult, IpcError> {
+        let mut guard = self.0.open.lock().unwrap();
+        let doc = guard.as_mut().ok_or_else(no_document)?;
+        let Some(step) = doc.session.redo().map_err(document_error)? else {
+            let snapshot = doc.session.current();
+            return Ok(EditResult {
+                changed: false,
+                audio_rev: snapshot.audio_rev,
+                len_samples: snapshot.len_samples,
+                selection: None,
+                playhead_samples: 0,
+            });
+        };
+        let post = edit::post_undo_redo(step.first_at, step.snapshot.len_samples);
+        Ok(self.apply_committed(doc, step, post))
+    }
 }
 
 fn save_to(doc: &mut OpenDocument, path: &Path, bits: BitDepth) -> Result<(), IpcError> {
@@ -408,7 +700,7 @@ fn save_to(doc: &mut OpenDocument, path: &Path, bits: BitDepth) -> Result<(), Ip
 mod tests {
     use std::sync::Arc;
 
-    use vox_engine::backend::fake::FakeBackend;
+    use vox_engine::backend::fake::{FakeBackend, FakeDevice, FakeDirection};
     use vox_engine::{Engine, EngineConfig};
     use vox_rack::Registry;
 
@@ -711,6 +1003,244 @@ mod tests {
         assert_eq!(
             service.open(&saved).unwrap().name.as_deref(),
             Some("take.wav")
+        );
+    }
+
+    // --- S2-01: selection, cut/copy/paste/delete/trim/silence, undo/redo -------------------
+
+    fn open_test_doc(service: &DocumentService, dir: &Path, samples: &[f32]) {
+        let path = dir.join("in.wav");
+        write_fixture_wav(&path, samples, vox_testkit::wav::BitDepth::Float32, 48_000);
+        service.open(&path).unwrap();
+    }
+
+    #[test]
+    fn cut_then_paste_round_trips_and_undo_redo_restore_state() {
+        let (service, _engine, dir) = service("cut-paste");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.2, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let len = samples.len() as u64;
+
+        let cut = service.edit_cut(1_000, 5_000).unwrap();
+        assert!(cut.changed);
+        assert_eq!(cut.selection, None);
+        assert_eq!(cut.playhead_samples, 1_000);
+        assert_eq!(cut.len_samples, len - 4_000);
+        assert_eq!(
+            service.clipboard_info().len_samples,
+            Some(4_000),
+            "cut replaces the clipboard"
+        );
+
+        let paste = service.edit_paste(PasteTarget::Cursor(1_000)).unwrap();
+        assert!(paste.changed);
+        assert_eq!(
+            paste.selection,
+            Some((1_000, 5_000)),
+            "pasted audio is selected"
+        );
+        assert_eq!(paste.len_samples, len);
+
+        let history = service.history_state();
+        assert!(history.can_undo);
+        assert!(!history.can_redo);
+        assert_eq!(history.undo_label.as_deref(), Some("history.paste"));
+
+        let undo = service.history_undo().unwrap();
+        assert!(undo.changed);
+        assert_eq!(undo.selection, None, "undo clears the selection");
+        assert_eq!(undo.len_samples, len - 4_000);
+
+        let undo2 = service.history_undo().unwrap();
+        assert_eq!(
+            undo2.len_samples, len,
+            "back to the original, unedited document"
+        );
+        assert!(!service.history_state().can_undo);
+
+        let redo = service.history_redo().unwrap();
+        assert_eq!(redo.len_samples, len - 4_000);
+        assert!(service.history_state().can_redo);
+    }
+
+    #[test]
+    fn copy_is_not_an_edit_and_delete_trim_silence_are_exact() {
+        let (service, _engine, dir) = service("copy-delete-trim-silence");
+        let samples = vox_testkit::signal::sine(220.0, -6.0, 0.2, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let before = service.info();
+
+        let copy = service.edit_copy(0, 100).unwrap();
+        assert!(!copy.changed, "Copy is not an edit");
+        assert_eq!(service.clipboard_info().len_samples, Some(100));
+        let after_copy = service.info();
+        assert_eq!(before.audio_rev, after_copy.audio_rev, "no rev bump");
+        assert!(
+            !after_copy.dirty || before.dirty,
+            "Copy alone never dirties a clean document"
+        );
+        assert!(!service.history_state().can_undo, "Copy adds no undo entry");
+
+        let len = samples.len() as u64;
+        let delete = service.edit_delete(1_000, 2_000).unwrap();
+        assert_eq!(delete.len_samples, len - 1_000);
+        assert_eq!(delete.playhead_samples, 1_000);
+        assert_eq!(delete.selection, None);
+
+        // Trim off the last 1 000 samples of the post-delete document (a partial trim, not the
+        // whole-document no-op case, which `whole_trim` below exercises separately).
+        let trim = service.edit_trim(0, delete.len_samples - 1_000).unwrap();
+        assert!(trim.changed);
+        assert_eq!(trim.len_samples, delete.len_samples - 1_000);
+        assert_eq!(trim.playhead_samples, 0);
+
+        let whole_trim = service.edit_trim(0, trim.len_samples).unwrap();
+        assert!(!whole_trim.changed, "trimming [0, L) is a no-op");
+        assert_eq!(
+            service.history_state().undo_label.as_deref(),
+            Some("history.trim")
+        );
+
+        let silence = service.edit_silence(0, 500).unwrap();
+        assert!(silence.changed);
+        assert_eq!(silence.selection, Some((0, 500)));
+        assert_eq!(silence.len_samples, trim.len_samples, "length preserved");
+    }
+
+    #[test]
+    fn commands_reject_bad_selections_and_an_empty_clipboard() {
+        let (service, _engine, dir) = service("bad-selection");
+        let samples = vox_testkit::signal::silence(0.05, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let len = samples.len() as u64;
+
+        assert_eq!(
+            service.edit_cut(10, 10).unwrap_err().key,
+            "error.no_selection"
+        );
+        assert_eq!(
+            service.edit_cut(0, len + 1).unwrap_err().key,
+            "error.invalid_range"
+        );
+        assert_eq!(
+            service.edit_paste(PasteTarget::Cursor(0)).unwrap_err().key,
+            "error.clipboard_empty"
+        );
+        assert_eq!(
+            service
+                .edit_paste(PasteTarget::Cursor(len + 1))
+                .unwrap_err()
+                .key,
+            "error.invalid_range"
+        );
+        // Nothing changed.
+        assert_eq!(service.info().audio_rev, service.info().audio_rev);
+        assert!(!service.history_state().can_undo);
+    }
+
+    #[test]
+    fn edits_and_history_are_refused_while_recording() {
+        let (service, _engine, dir) = service("refused-recording");
+        open_test_doc(
+            &service,
+            &dir,
+            &vox_testkit::signal::silence(0.05, 48_000).unwrap(),
+        );
+        service.edit_copy(0, 100).unwrap(); // give the clipboard something, for the paste check
+
+        let (mut capture, _info) = service
+            .begin_recording(48_000, BitDepth::Bit24, true)
+            .unwrap();
+        capture.append(&[0.0; 100]).unwrap();
+
+        for result in [
+            service.edit_cut(0, 10).map(|_| ()),
+            service.edit_copy(0, 10).map(|_| ()),
+            service.edit_paste(PasteTarget::Cursor(0)).map(|_| ()),
+            service.edit_delete(0, 10).map(|_| ()),
+            service.edit_trim(0, 10).map(|_| ()),
+            service.edit_silence(0, 10).map(|_| ()),
+            service.history_undo().map(|_| ()),
+            service.history_redo().map(|_| ()),
+        ] {
+            let err = result.unwrap_err();
+            assert_eq!(err.code, IpcErrorCode::NotWhileRecording);
+        }
+
+        service.discard_take(capture.id());
+    }
+
+    fn dac() -> FakeDevice {
+        FakeDevice::new("DAC").with_output(FakeDirection::new(1, &[48_000], 48_000))
+    }
+
+    /// A threaded engine with one plugged, preferred output device (S1-01 pattern, `crates/engine`
+    /// tests): the poll thread's immediate first pass discovers and opens it without a running
+    /// fake-time driver (no callbacks need to fire for `open_output` to succeed).
+    fn service_with_output(tag: &str) -> (DocumentService, Engine, PathBuf) {
+        let dir = tmp_dir(tag);
+        let fake = FakeBackend::new(7);
+        fake.plug(vox_engine::HostId::Alsa, dac());
+        let registry =
+            Arc::new(Registry::with_factories(vox_modules::builtin_factories()).unwrap());
+        let mut cfg = EngineConfig::new(Arc::new(fake), registry);
+        cfg.prefs = vox_engine::DevicePrefs {
+            output_device: Some("DAC".into()),
+            ..vox_engine::DevicePrefs::default()
+        };
+        let engine = Engine::start(cfg).unwrap();
+        let service = DocumentService::new(dir.join("sessions"), engine.handle());
+        (service, engine, dir)
+    }
+
+    /// SPEC-008 §2.9 / MEMORY.md S1-01 handoff ("destructive-edit stop→ack→commit"): a destructive
+    /// edit's `EngineHandle::set_document` call stops the transport (Pause semantics) as part of
+    /// the very same control-thread round trip that swaps in the new snapshot, so by the time the
+    /// command returns, the transport already reports stopped — no output sample after the commit
+    /// can come from the old revision.
+    #[test]
+    fn destructive_edit_stops_playback_as_part_of_the_commit() {
+        let (service, engine, dir) = service_with_output("stops-playback");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 1.0, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+
+        let mut opened = false;
+        for _ in 0..300 {
+            if engine
+                .handle()
+                .devices()
+                .is_some_and(|d| d.output_status == vox_engine::device_state::DeviceStatus::Healthy)
+            {
+                opened = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(opened, "the fake output device opened");
+
+        let played = engine
+            .handle()
+            .transport(vox_engine::TransportCommand::Play);
+        assert!(
+            played.playing,
+            "playback started on the freshly opened document"
+        );
+
+        service.edit_delete(0, 1_000).unwrap();
+
+        assert!(
+            !engine.handle().transport_state().playing,
+            "the destructive edit's set_document call stopped playback"
+        );
+
+        // Copy, not being an edit, must never stop playback.
+        engine
+            .handle()
+            .transport(vox_engine::TransportCommand::Play);
+        service.edit_copy(0, 1_000).unwrap();
+        assert!(
+            engine.handle().transport_state().playing,
+            "Copy doesn't touch the transport"
         );
     }
 }

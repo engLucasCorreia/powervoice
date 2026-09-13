@@ -6,8 +6,11 @@ use tauri::ipc::Response;
 use tauri::{AppHandle, Emitter, Runtime, State};
 use vox_project::{PEAKS_RAW_SPP, VxpkHeader, encode_vxpk};
 
-use crate::document::DocumentService;
-use crate::ipc::document_dto::{DocumentDto, PeaksRequestDto};
+use crate::document::{DocumentService, PasteTarget};
+use crate::ipc::document_dto::{
+    ClipboardChangedDto, DocumentDto, EditResultDto, EditTargetDto, HistoryStateDto,
+    PeaksRequestDto,
+};
 use crate::ipc::error::IpcError;
 use crate::ipc::events::EventName;
 use crate::settings::BitDepth;
@@ -20,6 +23,30 @@ fn emit_document_changed<R: Runtime>(app: &AppHandle<R>, info: &DocumentDto) {
     if let Err(error) = app.emit(EventName::document_changed.as_str(), info.clone()) {
         tracing::warn!(%error, "emitting document_changed failed");
     }
+}
+
+/// S2-01: the Edit menu's Undo/Redo state, after every edit_*/history_undo/history_redo command.
+fn emit_history_state<R: Runtime>(app: &AppHandle<R>, doc: &DocumentService) {
+    let state: HistoryStateDto = doc.history_state().into();
+    if let Err(error) = app.emit(EventName::history_state.as_str(), state) {
+        tracing::warn!(%error, "emitting history_state failed");
+    }
+}
+
+/// S2-01: the clipboard's length/rate, after `edit_cut`/`edit_copy` (SPEC-008 §4.3).
+fn emit_clipboard_changed<R: Runtime>(app: &AppHandle<R>, doc: &DocumentService) {
+    let state: ClipboardChangedDto = doc.clipboard_info().into();
+    if let Err(error) = app.emit(EventName::clipboard_changed.as_str(), state) {
+        tracing::warn!(%error, "emitting clipboard_changed failed");
+    }
+}
+
+/// Common tail of every S2-01 command: `document_changed` (`audio_rev`/`len_samples`/dirty for
+/// the waveform and title bar) and `history_state` (the Edit menu).
+fn after_edit<R: Runtime>(app: &AppHandle<R>, doc: &DocumentService) {
+    let info: DocumentDto = doc.info().into();
+    emit_document_changed(app, &info);
+    emit_history_state(app, doc);
 }
 
 async fn run_blocking<T: Send + 'static>(
@@ -102,4 +129,132 @@ pub async fn peaks_get(
         partial: false,
     };
     Ok(Response::new(encode_vxpk(&header, &result.buckets)))
+}
+
+// --- S2-01: selection, cut/copy/paste/delete/trim/silence, undo/redo -----------------------
+
+/// Cuts `[start_samples, end_samples)` (SPEC-008 §2.1). `error.no_selection`/`error.invalid_range`
+/// for a bad range, `error.not_while_recording` while a take is open.
+#[tauri::command]
+pub async fn edit_cut<R: Runtime>(
+    app: AppHandle<R>,
+    doc: State<'_, DocumentService>,
+    start_samples: u64,
+    end_samples: u64,
+) -> Result<EditResultDto, IpcError> {
+    let service = (*doc).clone();
+    let result: EditResultDto = run_blocking(move || service.edit_cut(start_samples, end_samples))
+        .await?
+        .into();
+    after_edit(&app, &doc);
+    emit_clipboard_changed(&app, &doc);
+    Ok(result)
+}
+
+/// Copies `[start_samples, end_samples)` into the clipboard. Not an edit (no undo entry, no
+/// transport stop).
+#[tauri::command]
+pub async fn edit_copy<R: Runtime>(
+    app: AppHandle<R>,
+    doc: State<'_, DocumentService>,
+    start_samples: u64,
+    end_samples: u64,
+) -> Result<EditResultDto, IpcError> {
+    let service = (*doc).clone();
+    let result: EditResultDto = run_blocking(move || service.edit_copy(start_samples, end_samples))
+        .await?
+        .into();
+    emit_clipboard_changed(&app, &doc);
+    Ok(result)
+}
+
+/// Pastes the clipboard at `target` (SPEC-008 §2.1). `error.clipboard_empty` when nothing was
+/// cut/copied yet.
+#[tauri::command]
+pub async fn edit_paste<R: Runtime>(
+    app: AppHandle<R>,
+    doc: State<'_, DocumentService>,
+    target: EditTargetDto,
+) -> Result<EditResultDto, IpcError> {
+    let service = (*doc).clone();
+    let target: PasteTarget = target.into();
+    let result: EditResultDto = run_blocking(move || service.edit_paste(target))
+        .await?
+        .into();
+    after_edit(&app, &doc);
+    Ok(result)
+}
+
+/// Deletes `[start_samples, end_samples)`, closing the gap.
+#[tauri::command]
+pub async fn edit_delete<R: Runtime>(
+    app: AppHandle<R>,
+    doc: State<'_, DocumentService>,
+    start_samples: u64,
+    end_samples: u64,
+) -> Result<EditResultDto, IpcError> {
+    let service = (*doc).clone();
+    let result: EditResultDto =
+        run_blocking(move || service.edit_delete(start_samples, end_samples))
+            .await?
+            .into();
+    after_edit(&app, &doc);
+    Ok(result)
+}
+
+/// Trims the document to `[start_samples, end_samples)` (Audition: Crop).
+#[tauri::command]
+pub async fn edit_trim<R: Runtime>(
+    app: AppHandle<R>,
+    doc: State<'_, DocumentService>,
+    start_samples: u64,
+    end_samples: u64,
+) -> Result<EditResultDto, IpcError> {
+    let service = (*doc).clone();
+    let result: EditResultDto = run_blocking(move || service.edit_trim(start_samples, end_samples))
+        .await?
+        .into();
+    after_edit(&app, &doc);
+    Ok(result)
+}
+
+/// Silences `[start_samples, end_samples)` with exact `+0.0` samples.
+#[tauri::command]
+pub async fn edit_silence<R: Runtime>(
+    app: AppHandle<R>,
+    doc: State<'_, DocumentService>,
+    start_samples: u64,
+    end_samples: u64,
+) -> Result<EditResultDto, IpcError> {
+    let service = (*doc).clone();
+    let result: EditResultDto =
+        run_blocking(move || service.edit_silence(start_samples, end_samples))
+            .await?
+            .into();
+    after_edit(&app, &doc);
+    Ok(result)
+}
+
+/// Undoes the top history entry.
+#[tauri::command]
+pub async fn history_undo<R: Runtime>(
+    app: AppHandle<R>,
+    doc: State<'_, DocumentService>,
+) -> Result<EditResultDto, IpcError> {
+    let service = (*doc).clone();
+    let result: EditResultDto = run_blocking(move || service.history_undo()).await?.into();
+    after_edit(&app, &doc);
+    Ok(result)
+}
+
+/// Redoes the top history entry.
+#[tauri::command]
+pub async fn history_redo<R: Runtime>(
+    app: AppHandle<R>,
+    doc: State<'_, DocumentService>,
+) -> Result<EditResultDto, IpcError> {
+    let service = (*doc).clone();
+    let result: EditResultDto = run_blocking(move || service.history_redo()).await?.into();
+    after_edit(&app, &doc);
+    Ok(result)
 }

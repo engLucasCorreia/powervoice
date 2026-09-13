@@ -6,6 +6,8 @@ import type {
   DevicePrefsDto,
   DevicesDto,
   DocumentDto,
+  EditResultDto,
+  EditTargetDto,
   PeaksRequestDto,
   Settings,
   TransportStateDto,
@@ -101,4 +103,44 @@ export async function documentSaveAs(path: string, bits: BitDepth): Promise<Docu
  */
 export async function peaksGet(request: PeaksRequestDto): Promise<ArrayBuffer> {
   return invoke<ArrayBuffer>("peaks_get" satisfies CommandName, { request });
+}
+
+/** S2-01: cuts `[startSamples, endSamples)` (SPEC-008 §2.1). */
+export async function editCut(startSamples: number, endSamples: number): Promise<EditResultDto> {
+  return invoke<EditResultDto>("edit_cut" satisfies CommandName, { startSamples, endSamples });
+}
+
+/** S2-01: copies `[startSamples, endSamples)` into the clipboard. Not an edit. */
+export async function editCopy(startSamples: number, endSamples: number): Promise<EditResultDto> {
+  return invoke<EditResultDto>("edit_copy" satisfies CommandName, { startSamples, endSamples });
+}
+
+/** S2-01: pastes the clipboard at `target` (a cursor or a selection to replace). */
+export async function editPaste(target: EditTargetDto): Promise<EditResultDto> {
+  return invoke<EditResultDto>("edit_paste" satisfies CommandName, { target });
+}
+
+/** S2-01: deletes `[startSamples, endSamples)`, closing the gap. */
+export async function editDelete(startSamples: number, endSamples: number): Promise<EditResultDto> {
+  return invoke<EditResultDto>("edit_delete" satisfies CommandName, { startSamples, endSamples });
+}
+
+/** S2-01: trims the document to `[startSamples, endSamples)` (Audition: Crop). */
+export async function editTrim(startSamples: number, endSamples: number): Promise<EditResultDto> {
+  return invoke<EditResultDto>("edit_trim" satisfies CommandName, { startSamples, endSamples });
+}
+
+/** S2-01: silences `[startSamples, endSamples)` with exact `+0.0` samples. */
+export async function editSilence(startSamples: number, endSamples: number): Promise<EditResultDto> {
+  return invoke<EditResultDto>("edit_silence" satisfies CommandName, { startSamples, endSamples });
+}
+
+/** S2-01: undoes the top history entry. */
+export async function historyUndo(): Promise<EditResultDto> {
+  return invoke<EditResultDto>("history_undo" satisfies CommandName);
+}
+
+/** S2-01: redoes the top history entry. */
+export async function historyRedo(): Promise<EditResultDto> {
+  return invoke<EditResultDto>("history_redo" satisfies CommandName);
 }

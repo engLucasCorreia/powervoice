@@ -38,6 +38,11 @@ impl EditOp {
         } = self;
         *remove_len > 0 || pieces.iter().any(|p| p.len > 0)
     }
+
+    fn at(&self) -> u64 {
+        let EditOp::Replace { at, .. } = self;
+        *at
+    }
 }
 
 /// A marker change. Marker ops apply after all [`EditOp`]s, in post-edit document time.
@@ -114,6 +119,12 @@ impl Edit {
     pub fn changes_audio(&self) -> bool {
         self.ops.iter().any(EditOp::changes_audio)
     }
+
+    /// The earliest `at` over this edit's `Replace` ops (SPEC-008 §2.3's post-undo/redo cursor
+    /// rule); `None` for a marker-only edit (no `Replace` ops).
+    pub fn first_at(&self) -> Option<u64> {
+        self.ops.iter().map(EditOp::at).min()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -124,6 +135,7 @@ pub(crate) struct Entry {
     pub(crate) label_key: Arc<str>,
     pub(crate) attachment: Option<Arc<[u8]>>,
     pub(crate) audio: bool,
+    pub(crate) first_at: Option<u64>,
 }
 
 /// The result of a commit, undo or redo.
@@ -139,6 +151,10 @@ pub struct HistoryStep {
     pub attachment: Option<Arc<[u8]>>,
     /// `true` if samples changed: the engine must stop playback first (ADR-004 §3).
     pub audio_changed: bool,
+    /// The edit's [`Edit::first_at`] (SPEC-008 §2.3's post-undo/redo cursor rule). Undoing and
+    /// redoing the same edit report the same value: the document round-trips to the same shape
+    /// at that position either way.
+    pub first_at: Option<u64>,
 }
 
 pub(crate) struct PreparedEdit {
@@ -147,6 +163,7 @@ pub(crate) struct PreparedEdit {
     label_key: Arc<str>,
     attachment: Option<Arc<[u8]>>,
     audio: bool,
+    first_at: Option<u64>,
     next_marker_id: u64,
     base_rev: u64,
 }
@@ -339,6 +356,7 @@ impl History {
             label_key: Arc::clone(&entry.label_key),
             attachment: entry.attachment.clone(),
             audio_changed: entry.audio,
+            first_at: entry.first_at,
         }
     }
 
@@ -471,6 +489,7 @@ impl History {
             label_key: edit.label_key.as_str().into(),
             attachment: edit.attachment.as_deref().map(Arc::from),
             audio,
+            first_at: edit.first_at(),
             next_marker_id,
             base_rev: cur.rev,
         })
@@ -489,6 +508,7 @@ impl History {
             label_key: Arc::clone(&prepared.label_key),
             attachment: prepared.attachment.clone(),
             audio: prepared.audio,
+            first_at: prepared.first_at,
         });
         self.redo.clear();
         self.next_rev += 1;
@@ -503,6 +523,7 @@ impl History {
             label_key: prepared.label_key,
             attachment: prepared.attachment,
             audio_changed: prepared.audio,
+            first_at: prepared.first_at,
         }
     }
 }

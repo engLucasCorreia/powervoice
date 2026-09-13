@@ -7,6 +7,15 @@
   import { registerAction } from "../keymap";
   import { formatTime } from "../transport/playhead";
   import { recordState } from "../state/record.svelte";
+  import {
+    beginDrag,
+    clearSelection,
+    dragTo,
+    endDrag,
+    selectAllOf,
+    selectionState,
+    shiftClickTo,
+  } from "../state/selection.svelte";
   import { seek, transportState } from "../state/transport.svelte";
   import {
     clampSamplesPerPixel,
@@ -58,6 +67,11 @@
   let samplesPerPixel = $state(1);
   let fittedForAudio = $state<string | null>(null);
   let pointerDownClientX: number | null = null;
+  /** The mousedown sample and modifier (S2-01, SPEC-006 §2.9): distinguishes click/drag/Shift+click
+   * on pointerup, without re-deriving the down position from a possibly-stale pixel. */
+  let pointerDownSample: number | null = null;
+  let pointerDownShiftKey = false;
+  let dragging = false;
   /** H-07: the last `record_peaks_get` response applied (`null`: none polled yet). */
   let liveBuckets = $state<Array<[number, number]>>([]);
   let liveStartSample = $state(0);
@@ -65,6 +79,7 @@
   const doc = documentState();
   const transport = transportState();
   const rec = recordState();
+  const selection = selectionState();
   const requester = new PeaksRequester(peaksGet);
 
   const lenSamples = $derived(doc.current.len_samples);
@@ -223,8 +238,24 @@
       ctx.fillStyle = colorToken("--wave-pending", "#3a3d44");
       ctx.fillRect(0, 0, viewportPx, heightPx);
     }
+    drawSelection(ctx);
     drawPlayhead(ctx, centerY);
     ctx.restore();
+  }
+
+  /** The time selection (S2-01, SPEC-006 §2.1/§2.9), clipped to the visible viewport. */
+  function drawSelection(ctx: CanvasRenderingContext2D): void {
+    const sel = selection.current;
+    if (!sel) {
+      return;
+    }
+    const x0 = Math.max(0, pixelAtSample(sel.startSample, startSample, samplesPerPixel));
+    const x1 = Math.min(viewportPx, pixelAtSample(sel.endSample, startSample, samplesPerPixel));
+    if (x1 <= x0) {
+      return;
+    }
+    ctx.fillStyle = colorToken("--wave-selection-fill", "rgba(77, 163, 255, 0.22)");
+    ctx.fillRect(x0, 0, x1 - x0, heightPx);
   }
 
   function drawColumns(
@@ -365,21 +396,80 @@
     }
   }
 
-  function onPointerDown(event: PointerEvent): void {
-    pointerDownClientX = event.clientX;
-  }
-
-  /** Click (not drag) seeks (SPEC-006 §2.9); drag-selection is Slice 2 (deferred). */
-  function onPointerUp(event: PointerEvent): void {
-    const downX = pointerDownClientX;
-    pointerDownClientX = null;
-    if (downX === null || !isOpen || !containerEl || Math.abs(event.clientX - downX) >= 3) {
-      return;
+  /** The document sample under `clientX`, clamped to the document (SPEC-006 §4.1). */
+  function sampleAtClientX(clientX: number): number | null {
+    if (!containerEl) {
+      return null;
     }
     const rect = containerEl.getBoundingClientRect();
-    const px = event.clientX - rect.left;
-    const sample = Math.max(0, Math.min(sampleAtPixel(px, startSample, samplesPerPixel), lenSamples));
-    void seek(sample);
+    const px = clientX - rect.left;
+    return Math.max(0, Math.min(sampleAtPixel(px, startSample, samplesPerPixel), lenSamples));
+  }
+
+  /** Mousedown (SPEC-006 §2.9): Shift+click extends the far selection edge on pointerup; a plain
+   * mousedown starts a live-updating drag (`state/selection.svelte.ts`), which a plain click
+   * (no movement) undoes on pointerup by clearing the selection and seeking instead. */
+  function onPointerDown(event: PointerEvent): void {
+    if (!isOpen) {
+      return;
+    }
+    pointerDownClientX = event.clientX;
+    pointerDownShiftKey = event.shiftKey;
+    pointerDownSample = sampleAtClientX(event.clientX);
+    dragging = false;
+    if (!event.shiftKey && pointerDownSample !== null) {
+      beginDrag(pointerDownSample);
+    }
+  }
+
+  /** Live-updates the drag selection (SPEC-006 §2.9: "live-updating" while dragging). */
+  function onPointerMove(event: PointerEvent): void {
+    if (pointerDownShiftKey || pointerDownSample === null || pointerDownClientX === null) {
+      return;
+    }
+    if (!dragging && Math.abs(event.clientX - pointerDownClientX) >= 3) {
+      dragging = true;
+    }
+    if (dragging) {
+      const sample = sampleAtClientX(event.clientX);
+      if (sample !== null) {
+        dragTo(sample);
+      }
+    }
+  }
+
+  function onPointerUp(event: PointerEvent): void {
+    const wasDragging = dragging;
+    const shiftKey = pointerDownShiftKey;
+    const downSample = pointerDownSample;
+    pointerDownClientX = null;
+    pointerDownSample = null;
+    pointerDownShiftKey = false;
+    dragging = false;
+    if (!isOpen || downSample === null) {
+      return;
+    }
+    const upSample = sampleAtClientX(event.clientX) ?? downSample;
+    if (shiftKey) {
+      shiftClickTo(upSample, transport.playheadSamples);
+      return;
+    }
+    if (wasDragging) {
+      dragTo(upSample);
+      endDrag();
+      return;
+    }
+    // A plain click (no drag): clears the selection and moves the cursor (SPEC-006 §2.9).
+    endDrag();
+    clearSelection();
+    void seek(upSample);
+  }
+
+  /** Double-click selects the entire document (SPEC-006 §2.9, same as Ctrl+A). */
+  function onDoubleClick(): void {
+    if (isOpen) {
+      selectAllOf(lenSamples);
+    }
   }
 
   function onScrollbarInput(event: Event): void {
@@ -417,6 +507,12 @@
     const cleanups: Array<() => void> = [
       registerAction("waveform.zoom_in", () => zoomKeyboard(1)),
       registerAction("waveform.zoom_out", () => zoomKeyboard(-1)),
+      registerAction("waveform.select_all", () => {
+        if (isOpen) {
+          selectAllOf(lenSamples);
+        }
+      }),
+      registerAction("waveform.deselect", () => clearSelection()),
     ];
 
     const requestFrame: (cb: () => void) => number =
@@ -463,7 +559,9 @@
       bind:this={containerEl}
       onwheel={onWheel}
       onpointerdown={onPointerDown}
+      onpointermove={onPointerMove}
       onpointerup={onPointerUp}
+      ondblclick={onDoubleClick}
     >
       <canvas
         bind:this={canvasEl}

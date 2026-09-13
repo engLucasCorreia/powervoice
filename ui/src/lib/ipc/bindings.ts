@@ -7,7 +7,13 @@ export type AppInfo = { name: string, version: string, };
 
 export type BitDepth = "16" | "24" | "32f";
 
-export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_save" | "document_save_as" | "peaks_get";
+/**
+ * S2-01: the clipboard's length/rate (`clipboard_changed` event); `null` fields mean it's empty
+ * (SPEC-008 §4.3).
+ */
+export type ClipboardChangedDto = { len_samples: number | null, sample_rate_hz: number | null, };
+
+export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_save" | "document_save_as" | "peaks_get" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "history_undo" | "history_redo";
 
 export type DefaultFormatDto = { sample_rate_hz: number, bit_depth: BitDepth, };
 
@@ -110,7 +116,30 @@ input_device: string | null, input_status: DeviceStatusDto, };
  */
 export type DocumentDto = { name: string | null, path: string | null, sample_rate_hz: number, len_samples: number, dirty: boolean, audio_rev: number, };
 
-export type EventName = "notice" | "transport_state" | "devices_changed" | "record_state" | "document_changed";
+/**
+ * S2-01: the result of a cut/copy/paste/delete/trim/silence command or an undo/redo (SPEC-008
+ * §4.3's `EditResult`, minus `rev`/`base_rev` — revision-guarded commands are deferred).
+ * `changed: false` only for Copy, a whole-document Trim, and undo/redo at the history's edge.
+ */
+export type EditResultDto = { changed: boolean, audio_rev: number, len_samples: number, 
+/**
+ * `[start, end)` document samples, or `null` (no selection).
+ */
+selection: [number, number] | null, playhead_samples: number, };
+
+/**
+ * S2-01: where `edit_paste` inserts or replaces (SPEC-008 §2.1). The UI resolves "no selection"
+ * to `Cursor` itself (SPEC-008 §2.2: an empty selection counts as the cursor).
+ */
+export type EditTargetDto = { "kind": "cursor", at_samples: number, } | { "kind": "range", start_samples: number, end_samples: number, };
+
+export type EventName = "notice" | "transport_state" | "devices_changed" | "record_state" | "document_changed" | "history_state" | "clipboard_changed";
+
+/**
+ * S2-01: the Edit menu's Undo/Redo state (`history_state` event). Labels are i18n keys
+ * (`history.cut`, …, CLAUDE.md), `null` when there's nothing to undo/redo.
+ */
+export type HistoryStateDto = { can_undo: boolean, can_redo: boolean, undo_label: string | null, redo_label: string | null, };
 
 /**
  * Error shape returned by every command (ADR-003). `key` is an i18n key, `params` fills its

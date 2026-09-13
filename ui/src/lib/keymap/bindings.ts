@@ -30,6 +30,9 @@ export interface KeyBinding {
  * - Ctrl/⌘+O = open, Ctrl/⌘+S = save, Ctrl/⌘+Shift+S = save as (S1-03, SPEC-005 §2.1)
  * - `=`/`-` = waveform zoom in/out (S1-03, SPEC-006 §2.6; `Alt+=`/`Alt+-` vertical zoom and
  *   Ctrl/Shift+wheel zoom are deferred, out of this ticket's scope)
+ * - Ctrl/⌘+X/C/V = cut/copy/paste, Delete = delete, Ctrl/⌘+T = trim to selection (Crop); Ctrl/⌘+A
+ *   selects all, Esc clears the selection (S2-01, SPEC-006 §2.9, SPEC-008 §2.11). Silence and
+ *   Insert Silence have no default binding (menu only, SPEC-008 §2.11).
  */
 export const DEFAULT_KEYMAP: readonly KeyBinding[] = [
   { action: "transport.play_pause", code: "Space" },
@@ -44,4 +47,11 @@ export const DEFAULT_KEYMAP: readonly KeyBinding[] = [
   { action: "file.save_as", code: "KeyS", mod: true, shift: true },
   { action: "waveform.zoom_in", code: "Equal" },
   { action: "waveform.zoom_out", code: "Minus" },
+  { action: "edit.cut", code: "KeyX", mod: true },
+  { action: "edit.copy", code: "KeyC", mod: true },
+  { action: "edit.paste", code: "KeyV", mod: true },
+  { action: "edit.delete", code: "Delete" },
+  { action: "edit.trim", code: "KeyT", mod: true },
+  { action: "waveform.select_all", code: "KeyA", mod: true },
+  { action: "waveform.deselect", code: "Escape" },
 ];

@@ -10,7 +10,9 @@ crate::ipc_events!(
     transport_state,
     devices_changed,
     record_state,
-    document_changed
+    document_changed,
+    history_state,
+    clipboard_changed
 );
 
 /// A user-facing notice (ADR-003 `notice` event). Two shapes, distinguished by `persistent`:

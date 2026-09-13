@@ -27,7 +27,10 @@ pub use audio_dto::{
 };
 pub use commands::*;
 pub use document_commands::*;
-pub use document_dto::{DocumentDto, PeaksRequestDto};
+pub use document_dto::{
+    ClipboardChangedDto, DocumentDto, EditResultDto, EditTargetDto, HistoryStateDto,
+    PeaksRequestDto,
+};
 pub use dto::AppInfo;
 pub use error::{IpcError, IpcErrorCode};
 pub use events::{EVENT_NAME_VARIANTS, EVENT_NAMES, EventName, Notice, NoticeLevel, emit_notice};
@@ -67,6 +70,14 @@ crate::ipc_commands!(
     document_save,
     document_save_as,
     peaks_get,
+    edit_cut,
+    edit_copy,
+    edit_paste,
+    edit_delete,
+    edit_trim,
+    edit_silence,
+    history_undo,
+    history_redo,
 );
 
 #[cfg(feature = "spike")]
@@ -95,6 +106,14 @@ crate::ipc_commands!(
     document_save,
     document_save_as,
     peaks_get,
+    edit_cut,
+    edit_copy,
+    edit_paste,
+    edit_delete,
+    edit_trim,
+    edit_silence,
+    history_undo,
+    history_redo,
     spike_env,
     spike_waveform_peaks,
     spike_spectrogram_texture,

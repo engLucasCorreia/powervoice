@@ -33,6 +33,31 @@ describe("default keymap bindings", () => {
     expect(matchBinding(key("KeyZ", { ctrl: true, shift: true }), false)).toBe("history.redo");
   });
 
+  // S2-01, SPEC-008 §2.11: Ctrl/⌘+X/C/V, Delete, Ctrl/⌘+T; SPEC-006 §2.9: Ctrl/⌘+A, Esc.
+  it("resolves the S2-01 edit bindings (non-mac: Ctrl as the primary modifier)", () => {
+    expect(matchBinding(key("KeyX", { ctrl: true }), false)).toBe("edit.cut");
+    expect(matchBinding(key("KeyC", { ctrl: true }), false)).toBe("edit.copy");
+    expect(matchBinding(key("KeyV", { ctrl: true }), false)).toBe("edit.paste");
+    expect(matchBinding(key("Delete"), false)).toBe("edit.delete");
+    expect(matchBinding(key("KeyT", { ctrl: true }), false)).toBe("edit.trim");
+    expect(matchBinding(key("KeyA", { ctrl: true }), false)).toBe("waveform.select_all");
+    expect(matchBinding(key("Escape"), false)).toBe("waveform.deselect");
+  });
+
+  it("resolves the S2-01 edit bindings on mac (⌘ as the primary modifier)", () => {
+    expect(matchBinding(key("KeyX", { meta: true }), true)).toBe("edit.cut");
+    expect(matchBinding(key("KeyC", { meta: true }), true)).toBe("edit.copy");
+    expect(matchBinding(key("KeyV", { meta: true }), true)).toBe("edit.paste");
+    expect(matchBinding(key("KeyT", { meta: true }), true)).toBe("edit.trim");
+    expect(matchBinding(key("KeyA", { meta: true }), true)).toBe("waveform.select_all");
+    // The "other" platform's modifier must not satisfy a mod binding on mac either.
+    expect(matchBinding(key("KeyX", { ctrl: true }), true)).toBeNull();
+  });
+
+  it("Silence has no default binding (SPEC-008 §2.11: menu only)", () => {
+    expect(DEFAULT_KEYMAP.some((b) => (b.action as string) === "edit.silence")).toBe(false);
+  });
+
   it("Shift+Space is not the same action as plain Space", () => {
     const space = matchBinding(key("Space"), false);
     const shiftSpace = matchBinding(key("Space", { shift: true }), false);
@@ -173,5 +198,60 @@ describe("attachKeymap + dispatch", () => {
     unregister();
     detach();
     button.remove();
+  });
+
+  // S2-01, AC-19-style: Ctrl+X/C/V/T and Delete dispatch, and none of them fire with a text
+  // input focused (native cut/copy/paste/delete keep their text meaning there).
+  it("dispatches Ctrl+X/C/V, Delete and Ctrl+T to their registered handlers", () => {
+    const detach = attachKeymap(window, { isMac: false });
+    const handlers = {
+      cut: vi.fn(),
+      copy: vi.fn(),
+      paste: vi.fn(),
+      del: vi.fn(),
+      trim: vi.fn(),
+    };
+    const unregisters = [
+      registerAction("edit.cut", handlers.cut),
+      registerAction("edit.copy", handlers.copy),
+      registerAction("edit.paste", handlers.paste),
+      registerAction("edit.delete", handlers.del),
+      registerAction("edit.trim", handlers.trim),
+    ];
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyX", ctrlKey: true, bubbles: true }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyC", ctrlKey: true, bubbles: true }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyV", ctrlKey: true, bubbles: true }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "Delete", bubbles: true }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyT", ctrlKey: true, bubbles: true }));
+
+    expect(handlers.cut).toHaveBeenCalledTimes(1);
+    expect(handlers.copy).toHaveBeenCalledTimes(1);
+    expect(handlers.paste).toHaveBeenCalledTimes(1);
+    expect(handlers.del).toHaveBeenCalledTimes(1);
+    expect(handlers.trim).toHaveBeenCalledTimes(1);
+
+    for (const unregister of unregisters) {
+      unregister();
+    }
+    detach();
+  });
+
+  it("ignores Ctrl+X/C/V/Delete while a text input has focus (native text editing)", () => {
+    const input = document.createElement("input");
+    input.type = "text";
+    document.body.appendChild(input);
+    input.focus();
+
+    const detach = attachKeymap(window, { isMac: false });
+    const handler = vi.fn();
+    const unregister = registerAction("edit.cut", handler);
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyX", ctrlKey: true, bubbles: true }));
+    expect(handler).not.toHaveBeenCalled();
+
+    unregister();
+    detach();
+    input.remove();
   });
 });

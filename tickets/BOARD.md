@@ -21,7 +21,7 @@ Tickets for M1+ are stubs; full ticket files are written in each milestone's W0.
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
 | T-101 | Document model: chunk store, snapshots, piece table, markers, take writer | W1 | O | M0 | review |
-| T-102 | Devices: enumeration, channel deinterleave, hot-plug polling, device lost | W1 | O | M0 | in-progress |
+| T-102 | Devices: enumeration, channel deinterleave, hot-plug polling, device lost | W1 | O | M0 | review |
 | T-103 | Rack core: module registry, chain swap/retire, host bypass/crossfade, dual-mono shim, param routing + same-offset/id event coalescing, latency sum, Gain, offline render, `cli render --rack` | W1 | O | M0 | in-progress |
 | T-104 | App infra: tracing log, typed errors→toasts/banners, panic hook, settings, stores, keymap registry, WebKit DMA-BUF default | W1 | S | M0 | done |
 | T-105 | Engine core: control thread, RT callbacks, transport (Stop→play start), reader/prefetch, resampling, heard clock, 60 Hz telemetry | W2 | O | T-101, T-102, T-103 | todo |

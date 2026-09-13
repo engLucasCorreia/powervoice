@@ -18,8 +18,8 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 ### Slice 2 — Edit
 | ID | Title | Tier | Deps | Status |
 |---|---|---|---|---|
-| S2-01 | Selection + cut/copy/paste/delete/trim/silence + undo/redo end-to-end | S | S1-01, S1-03 | in progress |
-| S2-02 | Peak normalize favorites (−1/−0.1/−3 dB + custom) end-to-end | S | S2-01 | todo |
+| S2-01 | Selection + cut/copy/paste/delete/trim/silence + undo/redo end-to-end | S | S1-01, S1-03 | done |
+| S2-02 | Peak normalize favorites (−1/−0.1/−3 dB + custom) end-to-end | S | S2-01 | in progress |
 | S2-03 | Markers basic: add (M), panel, rename, delete, jump, WAV cue round-trip | S | S1-03, S2-01 | todo |
 
 ### Slice 3 — Clean & shape

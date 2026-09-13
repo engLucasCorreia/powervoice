@@ -4852,6 +4852,7 @@ dependencies = [
  "vox-modules",
  "vox-project",
  "vox-rack",
+ "vox-testkit",
 ]
 
 [[package]]

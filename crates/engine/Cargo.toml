@@ -30,6 +30,8 @@ cpal = { workspace = true, optional = true, features = ["pipewire", "jack"] }
 vox-module-api = { path = "../module-api", features = ["test-util"] }
 vox-modules = { path = "../modules" }
 serde_json.workspace = true
+# T-204: seeded noise for the spectrogram tile tests.
+vox-testkit = { path = "../testkit" }
 
 [[example]]
 name = "list_devices"

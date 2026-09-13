@@ -72,6 +72,13 @@ pub fn run() {
             // H-09: the normalize job service (peak + LUFS) — no engine handle needed, unlike
             // export/nr_capture/loudness (SPEC-010 never touches the rack).
             let normalize = normalize::start(app.handle().clone(), documents.clone())?;
+            // T-204: the spectrogram tile service (its own worker threads + content-keyed tile
+            // cache; ADR-001 §4, SPEC-007 §4.1). Shared as an `Arc` so commands can hand it to
+            // `spawn_blocking`.
+            let spectro = std::sync::Arc::new(vox_engine::spectro::SpectroService::new(
+                vox_engine::spectro::SpectroConfig::default(),
+            ));
+            app.manage(spectro);
             app.manage(documents);
             app.manage(recording);
             app.manage(engine);

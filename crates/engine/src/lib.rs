@@ -19,6 +19,10 @@
 //! - [`record`]: arm, record start/stop, the take hand-off ([`record::RecordDone`]), monitoring.
 //! - Internals: `input` (the RT input callback: meter, clip, capture + monitor rings),
 //!   `capture` (the capture-writer and take-sync threads).
+//!
+//! Spectral display (T-204, SPEC-007):
+//! - [`spectro`]: the spectrogram tile service (worker threads, content-keyed tile cache,
+//!   `VXST` frames).
 
 pub mod backend;
 mod capture;
@@ -33,6 +37,7 @@ mod rack_api;
 mod reader;
 pub mod record;
 mod rt;
+pub mod spectro;
 pub mod telemetry;
 pub mod transport;
 

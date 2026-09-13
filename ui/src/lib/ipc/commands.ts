@@ -24,6 +24,7 @@ import type {
   RackStateDto,
   ResponseCurveDto,
   Settings,
+  SpectroRequestDto,
   TransportStateDto,
 } from "./bindings";
 
@@ -199,6 +200,24 @@ export async function documentSaveAs(path: string, bits: BitDepth): Promise<Docu
  */
 export async function peaksGet(request: PeaksRequestDto): Promise<ArrayBuffer> {
   return invoke<ArrayBuffer>("peaks_get" satisfies CommandName, { request });
+}
+
+/**
+ * T-204: binds spectral view `viewId` to `channel`; its tiles stream back as binary `VXST`
+ * frames (ADR-003 §2), one message per tile.
+ */
+export async function spectroAttach(viewId: number, channel: Channel<ArrayBuffer>): Promise<void> {
+  return invoke<void>("spectro_attach" satisfies CommandName, { viewId, channel });
+}
+
+/** T-204: detaches spectral view `viewId` (its pending tiles are cancelled). */
+export async function spectroDetach(viewId: number): Promise<void> {
+  return invoke<void>("spectro_detach" satisfies CommandName, { viewId });
+}
+
+/** T-204: requests tiles for spectral view `viewId`; a newer request cancels the older one. */
+export async function spectroRequest(viewId: number, request: SpectroRequestDto): Promise<void> {
+  return invoke<void>("spectro_request" satisfies CommandName, { viewId, request });
 }
 
 /** S2-01: cuts `[startSamples, endSamples)` (SPEC-008 §2.1). */

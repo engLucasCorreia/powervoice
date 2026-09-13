@@ -547,6 +547,18 @@ impl DocumentService {
         })
     }
 
+    /// T-204: the current document's store and snapshot for the spectrogram tile service
+    /// (`ipc::spectro_commands::spectro_request`). The service holds only a weak reference to
+    /// the store between tiles, so this never keeps a session from closing.
+    pub fn spectro_source(&self) -> Result<vox_engine::spectro::TileSource, IpcError> {
+        let guard = self.0.open.lock().unwrap();
+        let doc = guard.as_ref().ok_or_else(no_document)?;
+        Ok(vox_engine::spectro::TileSource {
+            store: Arc::clone(doc.session.store()),
+            snapshot: doc.session.current(),
+        })
+    }
+
     /// S4-04: a read-only snapshot of the current document for the export job.
     pub fn export_source(&self) -> Result<ExportSource, IpcError> {
         let guard = self.0.open.lock().unwrap();
@@ -1502,6 +1514,61 @@ mod tests {
         for (a, b) in decoded32.iter().zip(original.iter()) {
             assert!((a - b).abs() < 1e-6);
         }
+    }
+
+    /// T-204: `spectro_source` hands the open document to the tile service, whose tiles carry
+    /// the document's `audio_rev`.
+    #[test]
+    fn spectro_source_feeds_the_tile_service() {
+        use vox_engine::spectro::{
+            SpectroConfig, SpectroRequest, SpectroService, decode_vxst, vxst_flags,
+        };
+        let (service, _engine, dir) = service("spectro");
+        assert_eq!(
+            service.spectro_source().err().unwrap().key,
+            "error.document.none"
+        );
+        let wav_path = dir.join("in.wav");
+        let samples: Vec<f32> = (0..96_000)
+            .map(|i| ((i as f32) * 0.13).sin() * 0.5)
+            .collect();
+        write_fixture_wav(
+            &wav_path,
+            &samples,
+            vox_testkit::wav::BitDepth::Float32,
+            48_000,
+        );
+        let info = service.open(&wav_path).unwrap();
+        let spectro = SpectroService::new(SpectroConfig {
+            workers: 1,
+            cache_cap_bytes: None,
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+        spectro.attach(
+            1,
+            Box::new(move |bytes| {
+                let _ = tx.send(bytes);
+            }),
+        );
+        let request = SpectroRequest {
+            request_id: 5,
+            audio_rev: info.audio_rev,
+            fft_size: 2048,
+            hop: 512,
+            window: 0,
+            tiles: vec![0],
+        };
+        spectro
+            .request(1, service.spectro_source().unwrap(), request)
+            .unwrap();
+        let bytes = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        let (header, codes) = decode_vxst(&bytes).unwrap();
+        assert_eq!(
+            (header.request_id, header.audio_rev, header.frames),
+            (5, info.audio_rev, 188)
+        );
+        assert_eq!(header.flags & vxst_flags::LAST, vxst_flags::LAST);
+        assert!(codes.iter().any(|&c| c > 0));
     }
 
     #[test]

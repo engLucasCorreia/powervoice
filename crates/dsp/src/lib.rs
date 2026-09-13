@@ -11,6 +11,8 @@
 //!   off the audio thread only, over a whole (source or rack-processed) buffer.
 //! - [`dither`]: deterministic TPDF dither/quantizer for 16/24-bit save and export (ADR-001 §4;
 //!   H-02 moved this from `vox-io`) — off the audio thread only.
+//! - [`spectro`]: spectrogram STFT frames, overview mean power, u8 quantization and the zoom → hop
+//!   rule (T-204, SPEC-007 §4.2–§4.4) — off the audio thread only (engine tile workers).
 
 pub mod acx;
 pub mod capture_resample;
@@ -21,4 +23,5 @@ pub mod fp;
 pub mod loudness;
 pub mod nr;
 pub mod resample;
+pub mod spectro;
 pub mod true_peak;

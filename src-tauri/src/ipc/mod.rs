@@ -29,6 +29,8 @@ mod rack_commands;
 mod rack_dto;
 mod record_commands;
 mod record_dto;
+mod spectro_commands;
+mod spectro_dto;
 
 // A glob import, not a named one: `#[tauri::command]` also generates a hidden macro alongside
 // each command function (in the macro namespace), and `tauri::generate_handler!` below needs
@@ -70,6 +72,8 @@ pub use rack_dto::{
 };
 pub use record_commands::*;
 pub use record_dto::{RecordStateDto, engine_monitor_mode};
+pub use spectro_commands::*;
+pub use spectro_dto::SpectroRequestDto;
 
 // T-007 / ADR-009: the dev-only platform spike registers its commands here too (rather than
 // duplicating `ipc_commands!`/`invoke_handler` machinery) only when built with `--features
@@ -117,6 +121,9 @@ crate::ipc_commands!(
     document_save,
     document_save_as,
     peaks_get,
+    spectro_attach,
+    spectro_detach,
+    spectro_request,
     edit_cut,
     edit_copy,
     edit_paste,
@@ -183,6 +190,9 @@ crate::ipc_commands!(
     document_save,
     document_save_as,
     peaks_get,
+    spectro_attach,
+    spectro_detach,
+    spectro_request,
     edit_cut,
     edit_copy,
     edit_paste,

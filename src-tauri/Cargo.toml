@@ -37,11 +37,15 @@ vox-modules = { path = "../crates/modules" }
 # S1-03: the document service (open/save WAV, peaks) wraps these directly (thin command layer).
 vox-project = { path = "../crates/project" }
 vox-io = { path = "../crates/io" }
+# S4-04: export resampling (`vox_dsp::resample::resample_offline`) and the FTZ/DAZ render guard.
+vox-dsp = { path = "../crates/dsp" }
 
 [dev-dependencies]
 # S1-03: WAV fixtures for the `document` module's tests (dev-only, PROMPT §4).
 vox-testkit = { path = "../crates/testkit" }
 hound = { workspace = true }
+# S4-04: builds a test `RackModel` slot directly (`ModuleRef`/`ModuleState`) in `export`'s tests.
+vox-module-api = { path = "../crates/module-api" }
 
 [features]
 # Dev-only platform spike (T-007 / ADR-009): renderer + IPC throughput measurements. Off by

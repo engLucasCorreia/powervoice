@@ -5,6 +5,7 @@
 
 pub mod audio;
 pub mod document;
+pub mod export;
 pub mod ipc;
 pub mod logging;
 pub mod recording;
@@ -42,9 +43,13 @@ pub fn run() {
                 documents.clone(),
                 &settings,
             );
+            // S4-04: the export job service (its own registry instance — modules are stateless
+            // per-instance, so sharing the engine's would only save one small allocation).
+            let export = export::start(app.handle().clone(), documents.clone())?;
             app.manage(documents);
             app.manage(recording);
             app.manage(engine);
+            app.manage(export);
             Ok(())
         })
         .invoke_handler(ipc::invoke_handler())

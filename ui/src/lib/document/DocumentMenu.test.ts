@@ -28,6 +28,9 @@ describe("DocumentMenu (S1-03)", () => {
     expect(
       target.querySelector<HTMLButtonElement>('[data-testid="menu-save-as"]')?.disabled,
     ).toBe(true);
+    expect(
+      target.querySelector<HTMLButtonElement>('[data-testid="menu-export"]')?.disabled,
+    ).toBe(true);
 
     unmount(app);
     target.remove();
@@ -60,6 +63,9 @@ describe("DocumentMenu (S1-03)", () => {
     );
     expect(
       target.querySelector<HTMLButtonElement>('[data-testid="menu-save"]')?.disabled,
+    ).toBe(false);
+    expect(
+      target.querySelector<HTMLButtonElement>('[data-testid="menu-export"]')?.disabled,
     ).toBe(false);
 
     unmount(app);

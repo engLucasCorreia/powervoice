@@ -12,7 +12,8 @@ crate::ipc_events!(
     record_state,
     document_changed,
     history_state,
-    clipboard_changed
+    clipboard_changed,
+    job_progress
 );
 
 /// A user-facing notice (ADR-003 `notice` event). Two shapes, distinguished by `persistent`:
@@ -83,6 +84,50 @@ pub fn emit_notice<R: tauri::Runtime>(
 ) -> tauri::Result<()> {
     use tauri::Emitter as _;
     app.emit(EventName::notice.as_str(), notice)
+}
+
+/// A long-running, cancellable job's kind (ADR-003 `job_progress`; S4-04 is the first job). New
+/// job kinds add a variant here rather than a new event, so the frontend has one progress/cancel
+/// pattern for every job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum JobKind {
+    Export,
+}
+
+/// `job_progress`'s lifecycle. `Running` fractions are monotonically non-decreasing in `[0, 1]`;
+/// exactly one of `Done`/`Cancelled`/`Failed` follows the last `Running` event for a `job_id`
+/// (SPEC-010 §2.8's normalize-job convention, generalized here for S4-04's export job).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum JobState {
+    Running,
+    Done,
+    Cancelled,
+    Failed,
+}
+
+/// `job_progress` event payload (ADR-003; ≤ 10 Hz per job). `job_id` distinguishes overlapping or
+/// stale jobs of the same `kind`; a failure's message goes out separately as a `notice` (the same
+/// convention `error.*`/`notice.*` i18n keys use everywhere else), not inline here.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct JobProgressDto {
+    pub job_id: u32,
+    pub kind: JobKind,
+    pub state: JobState,
+    pub fraction: f32,
+}
+
+/// Emits a `job_progress` event (ADR-003).
+pub fn emit_job_progress<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    progress: JobProgressDto,
+) -> tauri::Result<()> {
+    use tauri::Emitter as _;
+    app.emit(EventName::job_progress.as_str(), progress)
 }
 
 #[cfg(test)]

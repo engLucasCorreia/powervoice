@@ -8,6 +8,9 @@ import type {
   DocumentDto,
   EditResultDto,
   EditTargetDto,
+  ExportFormatsDto,
+  ExportRequestDto,
+  ExportStartedDto,
   PeaksRequestDto,
   Settings,
   TransportStateDto,
@@ -143,4 +146,19 @@ export async function historyUndo(): Promise<EditResultDto> {
 /** S2-01: redoes the top history entry. */
 export async function historyRedo(): Promise<EditResultDto> {
   return invoke<EditResultDto>("history_redo" satisfies CommandName);
+}
+
+/** S4-04: MP3 availability (WAV/FLAC are always available) for the export dialog. */
+export async function exportFormats(): Promise<ExportFormatsDto> {
+  return invoke<ExportFormatsDto>("export_formats" satisfies CommandName);
+}
+
+/** S4-04: starts an export job; progress/completion arrive as `job_progress` events. */
+export async function exportStart(request: ExportRequestDto): Promise<ExportStartedDto> {
+  return invoke<ExportStartedDto>("export_start" satisfies CommandName, { request });
+}
+
+/** S4-04: cancels a running export job (best-effort). */
+export async function exportCancel(jobId: number): Promise<void> {
+  return invoke<void>("export_cancel" satisfies CommandName, { jobId });
 }

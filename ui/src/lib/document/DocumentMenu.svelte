@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { openExportDialog } from "../export/export.svelte";
   import { t } from "../i18n";
   import {
     displayName,
@@ -10,13 +11,18 @@
   } from "./document.svelte";
 
   /**
-   * File menu / toolbar (S1-03: Open, Save, Save As with bit-depth choice) plus the current
-   * document's name with a `*` while modified (SPEC-004 §2.6; the window title carries the same
-   * information, `document.svelte.ts`'s `titleFor`).
+   * File menu / toolbar (S1-03: Open, Save, Save As with bit-depth choice; S4-04: Export…) plus
+   * the current document's name with a `*` while modified (SPEC-004 §2.6; the window title
+   * carries the same information, `document.svelte.ts`'s `titleFor`).
    */
   const doc = documentState();
   const name = $derived(displayName(doc.current));
   const label = $derived(name ? `${name}${doc.current.dirty ? " *" : ""}` : t("menu.file.no_document"));
+
+  function openExport(): void {
+    const base = doc.current.name?.replace(/\.[^./\\]+$/, "") ?? "untitled";
+    openExportDialog(base);
+  }
 </script>
 
 <div class="document-menu" data-testid="document-menu">
@@ -38,6 +44,14 @@
     onclick={requestSaveAs}
   >
     {t("menu.file.save_as")}
+  </button>
+  <button
+    type="button"
+    data-testid="menu-export"
+    disabled={!hasDocument(doc.current)}
+    onclick={openExport}
+  >
+    {t("menu.file.export")}
   </button>
   <span class="document-name" data-testid="document-name">{label}</span>
 </div>

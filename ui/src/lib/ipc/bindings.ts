@@ -13,7 +13,7 @@ export type BitDepth = "16" | "24" | "32f";
  */
 export type ClipboardChangedDto = { len_samples: number | null, sample_rate_hz: number | null, };
 
-export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_save" | "document_save_as" | "peaks_get" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "history_undo" | "history_redo";
+export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_save" | "document_save_as" | "peaks_get" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "history_undo" | "history_redo" | "export_formats" | "export_start" | "export_cancel";
 
 export type DefaultFormatDto = { sample_rate_hz: number, bit_depth: BitDepth, };
 
@@ -133,7 +133,35 @@ selection: [number, number] | null, playhead_samples: number, };
  */
 export type EditTargetDto = { "kind": "cursor", at_samples: number, } | { "kind": "range", start_samples: number, end_samples: number, };
 
-export type EventName = "notice" | "transport_state" | "devices_changed" | "record_state" | "document_changed" | "history_state" | "clipboard_changed";
+export type EventName = "notice" | "transport_state" | "devices_changed" | "record_state" | "document_changed" | "history_state" | "clipboard_changed" | "job_progress";
+
+/**
+ * Export output format and its per-format settings. FLAC's `bits` rejects `"32f"` (FLAC has no
+ * float sample format, SPEC-005 §2.11) with `error.export.flac_no_float`.
+ */
+export type ExportFormatDto = { "kind": "wav", bits: BitDepth, } | { "kind": "flac", bits: BitDepth, } | { "kind": "mp3", settings: Mp3SettingsDto, };
+
+/**
+ * `export_formats`' result: whether MP3 is available on this system (ADR-007 §4, D-013). WAV and
+ * FLAC are always available.
+ */
+export type ExportFormatsDto = { mp3_available: boolean, };
+
+/**
+ * `[start_sample, end_sample)` of the export (a selection); omitted in the request = whole file.
+ */
+export type ExportRangeDto = { start_sample: number, end_sample: number, };
+
+/**
+ * `export_start`'s argument.
+ */
+export type ExportRequestDto = { path: string, format: ExportFormatDto, sample_rate_hz: number, range: ExportRangeDto | null, };
+
+/**
+ * `export_start`'s result: the export runs in the background, reporting `job_progress` events
+ * tagged with this `job_id` (`export_cancel(job_id)` stops it).
+ */
+export type ExportStartedDto = { job_id: number, };
 
 /**
  * S2-01: the Edit menu's Undo/Redo state (`history_state` event). Labels are i18n keys
@@ -156,7 +184,34 @@ export type IpcError = { code: IpcErrorCode, key: string, params: { [key in stri
  */
 export type IpcErrorCode = "internal" | "invalid_argument" | "not_found" | "not_while_recording" | "device_not_found" | "device_lost" | "io" | "cancelled";
 
+/**
+ * A long-running, cancellable job's kind (ADR-003 `job_progress`; S4-04 is the first job). New
+ * job kinds add a variant here rather than a new event, so the frontend has one progress/cancel
+ * pattern for every job.
+ */
+export type JobKind = "export";
+
+/**
+ * `job_progress` event payload (ADR-003; ≤ 10 Hz per job). `job_id` distinguishes overlapping or
+ * stale jobs of the same `kind`; a failure's message goes out separately as a `notice` (the same
+ * convention `error.*`/`notice.*` i18n keys use everywhere else), not inline here.
+ */
+export type JobProgressDto = { job_id: number, kind: JobKind, state: JobState, fraction: number, };
+
+/**
+ * `job_progress`'s lifecycle. `Running` fractions are monotonically non-decreasing in `[0, 1]`;
+ * exactly one of `Done`/`Cancelled`/`Failed` follows the last `Running` event for a `job_id`
+ * (SPEC-010 §2.8's normalize-job convention, generalized here for S4-04's export job).
+ */
+export type JobState = "running" | "done" | "cancelled" | "failed";
+
 export type MonitorMode = "off" | "dry" | "through_rack";
+
+/**
+ * MP3 encoder settings (mirrors [`vox_io::Mp3Settings`]; ticket S4-02: CBR 128-320 kbps or VBR
+ * V0-V4). The ACX preset (PROMPT §3.5) is `Cbr { kbps: 192 }` at 44.1 kHz.
+ */
+export type Mp3SettingsDto = { "kind": "cbr", kbps: number, } | { "kind": "vbr", quality: number, };
 
 /**
  * A user-facing notice (ADR-003 `notice` event). Two shapes, distinguished by `persistent`:

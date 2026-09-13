@@ -14,6 +14,8 @@ pub mod document_dto;
 mod dto;
 mod error;
 mod events;
+pub mod export_commands;
+pub mod export_dto;
 mod macros;
 mod record_commands;
 mod record_dto;
@@ -33,7 +35,15 @@ pub use document_dto::{
 };
 pub use dto::AppInfo;
 pub use error::{IpcError, IpcErrorCode};
-pub use events::{EVENT_NAME_VARIANTS, EVENT_NAMES, EventName, Notice, NoticeLevel, emit_notice};
+pub use events::{
+    EVENT_NAME_VARIANTS, EVENT_NAMES, EventName, JobKind, JobProgressDto, JobState, Notice,
+    NoticeLevel, emit_job_progress, emit_notice,
+};
+pub use export_commands::*;
+pub use export_dto::{
+    ExportFormatDto, ExportFormatsDto, ExportRangeDto, ExportRequestDto, ExportStartedDto,
+    Mp3SettingsDto,
+};
 pub use record_commands::*;
 pub use record_dto::{RecordStateDto, engine_monitor_mode};
 
@@ -78,6 +88,9 @@ crate::ipc_commands!(
     edit_silence,
     history_undo,
     history_redo,
+    export_formats,
+    export_start,
+    export_cancel,
 );
 
 #[cfg(feature = "spike")]
@@ -114,6 +127,9 @@ crate::ipc_commands!(
     edit_silence,
     history_undo,
     history_redo,
+    export_formats,
+    export_start,
+    export_cancel,
     spike_env,
     spike_waveform_peaks,
     spike_spectrogram_texture,

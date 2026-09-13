@@ -121,6 +121,19 @@ struct Inner {
     clipboard: Mutex<Option<ClipboardData>>,
 }
 
+/// S4-04: the read-only facts and handles an export job needs. Exports never touch the document
+/// (D-019: only Save/Save As write it) — this is a snapshot the job reads from independently, on
+/// its own thread, while editing and playback continue.
+pub struct ExportSource {
+    pub store: Arc<vox_project::ChunkStore>,
+    pub snapshot: Arc<vox_project::DocSnapshot>,
+    pub sample_rate_hz: u32,
+    pub len_samples: u64,
+    /// The document's current file stem (no extension), for the export dialog's suggested output
+    /// name; `None` for a never-saved recording.
+    pub suggested_name: Option<String>,
+}
+
 /// Cheaply cloneable (an `Arc` inside), like [`EngineHandle`] — so command handlers can clone it
 /// out of Tauri's `State` and run the blocking session/file work with `spawn_blocking` (the same
 /// pattern `ipc::audio_commands` uses for `EngineHandle`).
@@ -353,6 +366,24 @@ impl DocumentService {
             audio_rev: snapshot.audio_rev,
             sample_rate_hz: snapshot.sample_rate_hz,
             buckets,
+        })
+    }
+
+    /// S4-04: a read-only snapshot of the current document for the export job.
+    pub fn export_source(&self) -> Result<ExportSource, IpcError> {
+        let guard = self.0.open.lock().unwrap();
+        let doc = guard.as_ref().ok_or_else(no_document)?;
+        let snapshot = doc.session.current();
+        Ok(ExportSource {
+            store: Arc::clone(doc.session.store()),
+            len_samples: snapshot.len_samples,
+            sample_rate_hz: doc.session.sample_rate_hz(),
+            snapshot,
+            suggested_name: doc
+                .path
+                .as_ref()
+                .and_then(|p| p.file_stem())
+                .map(|s| s.to_string_lossy().into_owned()),
         })
     }
 

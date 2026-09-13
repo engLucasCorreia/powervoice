@@ -5,6 +5,7 @@
   import UnsavedChangesDialog from "./lib/document/UnsavedChangesDialog.svelte";
   import { initDocument } from "./lib/document/document.svelte";
   import EditMenu from "./lib/edit/EditMenu.svelte";
+  import ExportDialog from "./lib/export/ExportDialog.svelte";
   import { getAppInfo } from "./lib/ipc/commands";
   import { attachKeymap } from "./lib/keymap";
   import EditorView from "./lib/layout/EditorView.svelte";
@@ -102,6 +103,7 @@
 <NoticeHost />
 <UnsavedChangesDialog />
 <SaveAsDialog />
+<ExportDialog />
 
 <style>
   .shell {

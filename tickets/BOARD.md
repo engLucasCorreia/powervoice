@@ -18,7 +18,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 ### Slice 2 — Edit
 | ID | Title | Tier | Deps | Status |
 |---|---|---|---|---|
-| S2-01 | Selection + cut/copy/paste/delete/trim/silence + undo/redo end-to-end | S | S1-01, S1-03 | todo |
+| S2-01 | Selection + cut/copy/paste/delete/trim/silence + undo/redo end-to-end | S | S1-01, S1-03 | in progress |
 | S2-02 | Peak normalize favorites (−1/−0.1/−3 dB + custom) end-to-end | S | S2-01 | todo |
 | S2-03 | Markers basic: add (M), panel, rename, delete, jump, WAV cue round-trip | S | S1-03, S2-01 | todo |
 
@@ -50,7 +50,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-04 | Playback engine fixes from the S1-01 post-merge review (fade state machine, host switch, rack-latency drain) | O | done |
 | H-05 | Post-merge Opus review of S1-04 (RT input callback, capture writer, take durability) — deferred for session budget | O | todo |
 | H-06 | UX: Save in the unsaved-changes prompt opens Save As for untitled recordings; New Recording dialog (rate/bit depth); capture-writer resampling | S | todo |
-| H-07 | Live waveform while recording (writer-thread peaks → `record_peaks_get` → 10 Hz UI poll); owner-reported S1-04 gap | S | in progress |
+| H-07 | Live waveform while recording (writer-thread peaks → `record_peaks_get` → 10 Hz UI poll); owner-reported S1-04 gap | S | done |
 
 ## M0 — Foundations
 | ID | Title | Wave | Tier | Deps | Status |

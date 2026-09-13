@@ -37,8 +37,8 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | ID | Title | Tier | Deps | Status |
 |---|---|---|---|---|
 | S4-01 | Loudness analysis + LUFS normalize | S | S2-02, S1-01 | todo |
-| S4-02 | Export encoders (FLAC, LAME via libloading, offline resampler) — library part | S | S1-01, S1-02 | in progress |
-| S4-04 | Export job + dialog (ACX preset) | S | S1-03, S4-02 | todo |
+| S4-02 | Export encoders (FLAC, LAME via libloading, offline resampler) — library part | S | S1-01, S1-02 | done |
+| S4-04 | Export job + dialog (ACX preset) | S | S1-03, S4-02 | in progress |
 | S4-03 | ACX check report | S | S4-01 | todo |
 
 ### Hardening & backlog
@@ -49,7 +49,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-03 | TP limiter: exact interval-endpoint coverage (+1 sample latency) instead of the measured +0.011 dB bound; test 1 ms look-ahead; full SPEC-017 AC matrix (44.1/96 kHz, all ceilings/gains), CPU bench, GR meter UI | O | todo |
 | H-04 | Playback engine fixes from the S1-01 post-merge review (fade state machine, host switch, rack-latency drain) | O | done |
 | H-05 | Post-merge Opus review of S1-04 (RT input callback, capture writer, take durability) — deferred for session budget | O | todo |
-| H-06 | UX: Save in the unsaved-changes prompt opens Save As for untitled recordings; New Recording dialog (rate/bit depth); capture-writer resampling | S | todo |
+| H-06 | UX: New Recording dialog (rate/bit depth); capture-writer resampling (Save-in-prompt → Save As for untitled recordings: done in the window-close hotfix) | S | todo |
 | H-07 | Live waveform while recording (writer-thread peaks → `record_peaks_get` → 10 Hz UI poll); owner-reported S1-04 gap | S | done |
 
 ## M0 — Foundations

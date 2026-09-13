@@ -36,10 +36,10 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 ### Slice 4 — Deliver
 | ID | Title | Tier | Deps | Status |
 |---|---|---|---|---|
-| S4-01 | Loudness analysis + LUFS normalize | S | S2-02, S1-01 | in progress |
+| S4-01 | Loudness analysis + LUFS normalize | S | S2-02, S1-01 | done |
 | S4-02 | Export encoders (FLAC, LAME via libloading, offline resampler) — library part | S | S1-01, S1-02 | done |
 | S4-04 | Export job + dialog (ACX preset) | S | S1-03, S4-02 | done |
-| S4-03 | ACX check report | S | S4-01 | todo |
+| S4-03 | ACX check report | S | S4-01 | in progress |
 
 ### Hardening & backlog
 | ID | Title | Tier | Status |

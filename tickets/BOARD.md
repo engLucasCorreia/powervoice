@@ -10,10 +10,10 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 ### Slice 1 — Record & play (open WAV, see waveform, play, record, save)
 | ID | Title | Tier | Deps | Status |
 |---|---|---|---|---|
-| S1-01 | Playback end-to-end: engine core, output device, rack in path, transport, VXTM telemetry, transport + device UI | O | T-101, T-102, T-103 | in-progress |
+| S1-01 | Playback end-to-end: engine core, output device, rack in path, transport, VXTM telemetry, transport + device UI | O | T-101, T-102, T-103 | done |
 | S1-02 | WAV read/write (`vox-io`) + document peaks query (`vox-project`) — libraries only | S | T-101 | done |
-| S1-03 | Open/Save WAV in the app + Canvas2D waveform view (zoom/scroll/playhead/click-to-seek) | S | S1-01, S1-02 | todo |
-| S1-04 | Recording end-to-end: input device, arm, input meter, record → take → document, live waveform | O | S1-01 | todo |
+| S1-03 | Open/Save WAV in the app + Canvas2D waveform view (zoom/scroll/playhead/click-to-seek) | S | S1-01, S1-02 | in-progress |
+| S1-04 | Recording end-to-end: input device, arm, input meter, record → take → document, live waveform | O | S1-01 | in-progress |
 
 ### Slice 2 — Edit
 | ID | Title | Tier | Deps | Status |

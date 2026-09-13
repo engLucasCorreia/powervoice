@@ -73,6 +73,9 @@ pub enum ProjectError {
     /// JSON (de)serialization of a journal record or `meta.json` failed.
     #[error("serialization failed: {0}")]
     Json(#[from] serde_json::Error),
+    /// Reading or writing a WAV file failed ([`vox_io`], S1-02 `import_wav`/`save_snapshot_wav`).
+    #[error("WAV I/O failed: {0}")]
+    Wav(#[from] vox_io::IoError),
 }
 
 impl ProjectError {
@@ -109,6 +112,7 @@ impl ProjectError {
             | ProjectError::TakeAlreadyOpen
             | ProjectError::InvalidTakeFile(_)
             | ProjectError::Json(_) => "error.internal",
+            ProjectError::Wav(_) => "error.io",
         }
     }
 

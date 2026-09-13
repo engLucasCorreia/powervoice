@@ -4540,6 +4540,11 @@ dependencies = [
 [[package]]
 name = "vox-io"
 version = "0.1.0"
+dependencies = [
+ "hound",
+ "thiserror 2.0.20",
+ "vox-testkit",
+]
 
 [[package]]
 name = "vox-module-api"
@@ -4569,6 +4574,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "vox-io",
  "vox-testkit",
 ]
 

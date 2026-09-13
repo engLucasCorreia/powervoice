@@ -11,6 +11,8 @@ crc32fast.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# ADR-001 §2 allows `project -> io` (S1-02: WAV import/save through vox-io's reader/writer).
+vox-io = { path = "../io" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

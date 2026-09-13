@@ -34,16 +34,23 @@ pub mod error;
 mod fs_util;
 pub mod gc;
 pub mod history;
+pub mod import;
 pub mod journal;
+pub mod peaks_query;
 pub mod reader;
+pub mod save;
 pub mod session;
 pub mod snapshot;
 pub mod store;
 pub mod take;
+pub mod vxpk;
 
 pub use error::{ProjectError, Result};
 pub use history::{Edit, EditOp, History, HistoryStep, MarkerMapping, MarkerOp};
+pub use import::import_wav;
+pub use peaks_query::{PEAKS_RAW_SPP, peaks};
 pub use reader::SnapshotReader;
+pub use save::save_snapshot_wav;
 pub use session::{
     CloseError, FinishedTake, Session, SessionConfig, SourceInfo, TAKE_LABEL_KEY, TakeCapture,
     TakeId, TakeMode,
@@ -54,6 +61,7 @@ pub use store::{
     StoreOptions, WriterProgress, WrittenAudio,
 };
 pub use take::{TakeWriter, TakeWriterOptions};
+pub use vxpk::{VXPK_HEADER_LEN, VXPK_MAGIC, VXPK_VERSION, VxpkHeader, encode_vxpk};
 
 /// Samples per chunk (ADR-004 §2, SPEC-000 `CHUNK_SAMPLES`).
 pub const CHUNK_SAMPLES: usize = 65_536;

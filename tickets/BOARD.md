@@ -41,7 +41,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 ### Hardening & backlog
 | ID | Title | Tier | Status |
 |---|---|---|---|
-| H-01 | Rack: bypass toggle during a new instance's warm-up hold re-introduces the cold-output click (T-103 re-review #1) + restart of load-failed slots, stuck held-back restart, count dropped moved events | O | todo (before Slice 3) |
+| H-01 | Rack: bypass toggle during a new instance's warm-up hold re-introduces the cold-output click (T-103 re-review #1) + restart of load-failed slots, stuck held-back restart, count dropped moved events | O | in-progress |
 
 ## M0 — Foundations
 | ID | Title | Wave | Tier | Deps | Status |

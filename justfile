@@ -14,6 +14,13 @@ check:
 test:
     cargo test --workspace
 
+# T-101 big-document tests (60-min fixture, SPEC-004 AC-5; real 4 GiB take rollover). Release build,
+# ~5 GB scratch under target/big-tests. Uses fixtures/generated/long-60min-48k-mono.wav if present.
+test-big:
+    mkdir -p target/big-tests
+    POWERVOICE_TEST_TMP="{{justfile_directory()}}/target/big-tests" \
+        cargo test --release -p vox-project --test big -- --ignored --nocapture --test-threads=1
+
 # Regenerate Rust -> TS shared types (ADR-003) into ui/src/lib/ipc/bindings.ts
 gen-types:
     TS_RS_EXPORT_DIR="{{justfile_directory()}}/ui/src/lib/ipc" TS_RS_LARGE_INT=number \

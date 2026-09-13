@@ -9,6 +9,7 @@ pub mod export;
 pub mod ipc;
 pub mod logging;
 pub mod loudness;
+pub mod normalize;
 pub mod nr_capture;
 pub mod recording;
 pub mod settings;
@@ -68,12 +69,16 @@ pub fn run() {
                 documents.clone(),
                 engine.handle().clone(),
             )?;
+            // H-09: the normalize job service (peak + LUFS) — no engine handle needed, unlike
+            // export/nr_capture/loudness (SPEC-010 never touches the rack).
+            let normalize = normalize::start(app.handle().clone(), documents.clone())?;
             app.manage(documents);
             app.manage(recording);
             app.manage(engine);
             app.manage(export);
             app.manage(nr_capture);
             app.manage(loudness);
+            app.manage(normalize);
             Ok(())
         })
         .invoke_handler(ipc::invoke_handler())

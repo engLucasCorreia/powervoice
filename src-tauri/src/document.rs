@@ -10,10 +10,10 @@ use std::time::Duration;
 
 use vox_engine::{EngineHandle, PlaybackDoc, TransportCommand};
 use vox_project::{
-    Edit, EditTarget, FinishedTake, LufsNormalizeOutcome, LufsNormalizeResult, Marker, MarkerId,
-    MarkerOp, NormalizeOutcome, NormalizeResult, Piece, ProjectError, Range, RangeError, Session,
-    SessionConfig, SnapshotReader, TakeCapture, TakeId, TakeMode, TakeWriterOptions, edit,
-    normalize_applied_post_edit, normalize_lufs, normalize_peak, validate_range,
+    Edit, EditTarget, FinishedTake, LufsNormalizeOutcome, Marker, MarkerId, MarkerOp,
+    NormalizeLufsPlan, NormalizeOutcome, NormalizePeakPlan, Piece, ProjectError, Range, RangeError,
+    Session, SessionConfig, SnapshotReader, TakeCapture, TakeId, TakeMode, TakeWriterOptions, edit,
+    normalize_applied_post_edit, validate_range,
 };
 
 use crate::ipc::{IpcError, IpcErrorCode};
@@ -245,6 +245,12 @@ struct Inner {
     engine: EngineHandle,
     open: Mutex<Option<OpenDocument>>,
     clipboard: Mutex<Option<ClipboardData>>,
+    /// H-09: `true` while a normalize job (peak or LUFS) is scanning/writing on its own thread —
+    /// SPEC-010 §2.1's "disabled ... while another document job runs" (`error.document_busy`).
+    /// Only one normalize job runs at a time; other audio-mutating commands also check this so a
+    /// concurrent edit can't race the job's eventual commit (which re-checks the snapshot anyway,
+    /// [`DocumentService::finish_normalize_peak`]/[`Self::finish_normalize_lufs`]).
+    normalize_busy: Mutex<bool>,
 }
 
 /// S4-04: the read-only facts and handles an export job needs. Exports never touch the document
@@ -258,6 +264,19 @@ pub struct ExportSource {
     /// The document's current file stem (no extension), for the export dialog's suggested output
     /// name; `None` for a never-saved recording.
     pub suggested_name: Option<String>,
+}
+
+/// H-09: the read-only facts + scope [`DocumentService::begin_normalize_job`] hands to a
+/// normalize job (mirrors [`ExportSource`]; unlike it, this job *does* eventually write back
+/// through [`DocumentService::finish_normalize_peak`]/[`DocumentService::finish_normalize_lufs`],
+/// so it also carries the session id those use to detect the document having moved on
+/// meanwhile).
+pub struct NormalizeJobSource {
+    pub store: Arc<vox_project::ChunkStore>,
+    pub snapshot: Arc<vox_project::DocSnapshot>,
+    pub sample_rate_hz: u32,
+    pub range: Range,
+    session_id: String,
 }
 
 /// Cheaply cloneable (an `Arc` inside), like [`EngineHandle`] — so command handlers can clone it
@@ -290,6 +309,11 @@ fn clipboard_empty() -> IpcError {
     IpcError::new(IpcErrorCode::InvalidArgument, "error.clipboard_empty")
 }
 
+/// SPEC-010 §2.1: a normalize job (H-09) is already running.
+fn document_busy() -> IpcError {
+    IpcError::document_busy()
+}
+
 /// SPEC-009 §4.2: a marker command named an id that doesn't exist (any more).
 fn marker_not_found() -> IpcError {
     IpcError::new(IpcErrorCode::InvalidArgument, "error.marker_not_found")
@@ -301,7 +325,10 @@ fn marker_name_empty() -> IpcError {
 }
 
 /// Maps a [`ProjectError`] to an [`IpcError`], reusing its i18n key (`ProjectError::i18n_key`).
-fn document_error(err: ProjectError) -> IpcError {
+/// `pub(crate)`: also used by `crate::normalize::NormalizeService` (H-09) to map a cancelled/
+/// failed job's `ProjectError` (from `plan_normalize_peak`/`plan_normalize_lufs`) the same way
+/// every other document error is mapped.
+pub(crate) fn document_error(err: ProjectError) -> IpcError {
     let code = match &err {
         ProjectError::NotWhileRecording => IpcErrorCode::NotWhileRecording,
         ProjectError::InvalidArgument(_)
@@ -420,6 +447,7 @@ impl DocumentService {
             engine,
             open: Mutex::new(None),
             clipboard: Mutex::new(None),
+            normalize_busy: Mutex::new(false),
         }))
     }
 
@@ -536,6 +564,12 @@ impl DocumentService {
             .unwrap()
             .as_ref()
             .is_some_and(|d| d.session.is_recording())
+    }
+
+    /// H-09: `true` while a normalize job is running (SPEC-010 §2.1's "another document job
+    /// runs" — `error.document_busy`).
+    pub fn is_normalize_busy(&self) -> bool {
+        *self.0.normalize_busy.lock().unwrap()
     }
 
     /// S1-04: prepares a new recording at `rate_hz` (the input stream's rate, SPEC-002 §2.2). An
@@ -697,6 +731,9 @@ impl DocumentService {
     /// §2.6). Refused with `error.no_selection`/`error.invalid_range` (bad range) or
     /// `error.not_while_recording` (`Session::commit_edit`); changes nothing on any error.
     pub fn edit_cut(&self, start: u64, end: u64) -> Result<EditResult, IpcError> {
+        if self.is_normalize_busy() {
+            return Err(document_busy());
+        }
         let mut guard = self.0.open.lock().unwrap();
         let doc = guard.as_mut().ok_or_else(no_document)?;
         if doc.session.is_recording() {
@@ -745,6 +782,9 @@ impl DocumentService {
     /// Pastes the clipboard at `target` (SPEC-008 §2.1). `error.clipboard_empty` when nothing was
     /// cut/copied yet.
     pub fn edit_paste(&self, target: PasteTarget) -> Result<EditResult, IpcError> {
+        if self.is_normalize_busy() {
+            return Err(document_busy());
+        }
         let mut guard = self.0.open.lock().unwrap();
         let doc = guard.as_mut().ok_or_else(no_document)?;
         if doc.session.is_recording() {
@@ -767,6 +807,9 @@ impl DocumentService {
 
     /// Deletes `[start, end)`, closing the gap.
     pub fn edit_delete(&self, start: u64, end: u64) -> Result<EditResult, IpcError> {
+        if self.is_normalize_busy() {
+            return Err(document_busy());
+        }
         let mut guard = self.0.open.lock().unwrap();
         let doc = guard.as_mut().ok_or_else(no_document)?;
         if doc.session.is_recording() {
@@ -783,6 +826,9 @@ impl DocumentService {
     /// Trims the document to `[start, end)` (Audition: Crop). A whole-document trim is a no-op
     /// (`changed = false`, no undo entry, playback not stopped — SPEC-008 §2.1).
     pub fn edit_trim(&self, start: u64, end: u64) -> Result<EditResult, IpcError> {
+        if self.is_normalize_busy() {
+            return Err(document_busy());
+        }
         let mut guard = self.0.open.lock().unwrap();
         let doc = guard.as_mut().ok_or_else(no_document)?;
         if doc.session.is_recording() {
@@ -806,6 +852,9 @@ impl DocumentService {
 
     /// Silences `[start, end)` with exact `+0.0` samples (length-preserving: no marker moves).
     pub fn edit_silence(&self, start: u64, end: u64) -> Result<EditResult, IpcError> {
+        if self.is_normalize_busy() {
+            return Err(document_busy());
+        }
         let mut guard = self.0.open.lock().unwrap();
         let doc = guard.as_mut().ok_or_else(no_document)?;
         if doc.session.is_recording() {
@@ -819,18 +868,9 @@ impl DocumentService {
         Ok(self.apply_committed(doc, step, edit::post_silence(range)))
     }
 
-    /// S2-02: peak-normalizes `[start, end)` (the frontend resolves "no selection" to the whole
-    /// file before calling, SPEC-010 §2.1) to `target_db` dBFS sample peak. One undo entry
-    /// `history.normalize`; a no-op (silent/near-silent scope, or already at the target within the
-    /// 0.001 dB tolerance) changes nothing and reports which — the caller (`edit_normalize_peak`,
-    /// `ipc::document_commands`) turns that into a `notice` event.
-    /// `error.normalize_non_finite` refuses a scope containing a non-finite sample.
-    pub fn edit_normalize_peak(
-        &self,
-        start: u64,
-        end: u64,
-        target_db: f64,
-    ) -> Result<NormalizeEditResult, IpcError> {
+    /// S2-02/S4-01, superseded by H-09's job path below: `target_db` range check shared by
+    /// [`crate::normalize::NormalizeService`] before it starts a peak-normalize job.
+    pub fn validate_normalize_peak_target(target_db: f64) -> Result<(), IpcError> {
         if !target_db.is_finite()
             || !(NORMALIZE_TARGET_MIN_DB..=NORMALIZE_TARGET_MAX_DB).contains(&target_db)
         {
@@ -839,50 +879,12 @@ impl DocumentService {
                 "error.invalid_argument",
             ));
         }
-        let mut guard = self.0.open.lock().unwrap();
-        let doc = guard.as_mut().ok_or_else(no_document)?;
-        if doc.session.is_recording() {
-            return Err(IpcError::not_while_recording());
-        }
-        let range = Self::selected_range(doc, start, end)?;
-        match normalize_peak(&mut doc.session, range, target_db).map_err(document_error)? {
-            NormalizeResult::NoOp(outcome) => {
-                let snapshot = doc.session.current();
-                Ok(NormalizeEditResult {
-                    result: EditResult {
-                        changed: false,
-                        audio_rev: snapshot.audio_rev,
-                        len_samples: snapshot.len_samples,
-                        selection: Some((range.start, range.end)),
-                        playhead_samples: range.start,
-                    },
-                    notice: Some(match outcome {
-                        NormalizeOutcome::Silent => NormalizeNotice::Silent,
-                        NormalizeOutcome::AlreadyNormalized => NormalizeNotice::AlreadyNormalized,
-                    }),
-                })
-            }
-            NormalizeResult::Applied(step) => Ok(NormalizeEditResult {
-                result: self.apply_committed(doc, step, normalize_applied_post_edit(range)),
-                notice: None,
-            }),
-        }
+        Ok(())
     }
 
-    /// S4-01: LUFS-normalizes `[start, end)` (the frontend resolves "no selection" to the whole
-    /// file, same convention as [`Self::edit_normalize_peak`]) to `target_lufs` integrated
-    /// loudness (BS.1770/EBU R128 of the raw document samples). One undo entry
-    /// `history.normalize_lufs`; a no-op (silent/near-silent scope, or already at the target
-    /// within the 0.001 dB tolerance) reports which, like peak normalize. An applied gain whose
-    /// predicted true peak exceeds −1 dBTP still applies — the caller turns that into a notice
-    /// suggesting the true-peak limiter rather than silently limiting.
-    /// `error.normalize_non_finite` refuses a scope containing a non-finite sample.
-    pub fn edit_normalize_lufs(
-        &self,
-        start: u64,
-        end: u64,
-        target_lufs: f64,
-    ) -> Result<NormalizeLufsEditResult, IpcError> {
+    /// `target_lufs` range check shared by [`crate::normalize::NormalizeService`] before it
+    /// starts a LUFS-normalize job.
+    pub fn validate_normalize_lufs_target(target_lufs: f64) -> Result<(), IpcError> {
         if !target_lufs.is_finite()
             || !(NORMALIZE_LUFS_TARGET_MIN_LUFS..=NORMALIZE_LUFS_TARGET_MAX_LUFS)
                 .contains(&target_lufs)
@@ -892,46 +894,159 @@ impl DocumentService {
                 "error.invalid_argument",
             ));
         }
-        let mut guard = self.0.open.lock().unwrap();
-        let doc = guard.as_mut().ok_or_else(no_document)?;
+        Ok(())
+    }
+
+    /// H-09: begins a normalize job (peak or LUFS) — validates the document/scope/recording/busy
+    /// state, marks the document busy (`error.document_busy` for any other normalize job, or an
+    /// audio-mutating command, until [`Self::finish_normalize_peak`]/[`Self::finish_normalize_lufs`]
+    /// clears it), and hands back the read-only source the job's own thread scans/writes against
+    /// — no `&mut Session` needed until the final commit (mirrors [`ExportSource`], which never
+    /// commits at all). The frontend resolves "no selection" to the whole file before calling
+    /// (SPEC-010 §2.1), same as the old synchronous commands.
+    pub fn begin_normalize_job(
+        &self,
+        start: u64,
+        end: u64,
+    ) -> Result<NormalizeJobSource, IpcError> {
+        let mut busy = self.0.normalize_busy.lock().unwrap();
+        if *busy {
+            return Err(document_busy());
+        }
+        let guard = self.0.open.lock().unwrap();
+        let doc = guard.as_ref().ok_or_else(no_document)?;
         if doc.session.is_recording() {
             return Err(IpcError::not_while_recording());
         }
         let range = Self::selected_range(doc, start, end)?;
-        match normalize_lufs(&mut doc.session, range, target_lufs).map_err(document_error)? {
-            LufsNormalizeResult::NoOp(outcome) => {
-                let snapshot = doc.session.current();
-                Ok(NormalizeLufsEditResult {
-                    result: EditResult {
-                        changed: false,
-                        audio_rev: snapshot.audio_rev,
-                        len_samples: snapshot.len_samples,
-                        selection: Some((range.start, range.end)),
-                        playhead_samples: range.start,
-                    },
-                    notice: Some(match outcome {
-                        LufsNormalizeOutcome::Silent => NormalizeLufsNotice::Silent,
-                        LufsNormalizeOutcome::AlreadyNormalized => {
-                            NormalizeLufsNotice::AlreadyNormalized
-                        }
-                    }),
-                })
+        *busy = true;
+        Ok(NormalizeJobSource {
+            store: Arc::clone(doc.session.store()),
+            snapshot: doc.session.current(),
+            sample_rate_hz: doc.session.sample_rate_hz(),
+            range,
+            session_id: doc.session.id().to_string(),
+        })
+    }
+
+    /// Releases the busy flag without committing anything (H-09: the job never produced a plan —
+    /// it was cancelled, or failed before pass 2 finished).
+    pub fn abandon_normalize_job(&self) {
+        *self.0.normalize_busy.lock().unwrap() = false;
+    }
+
+    /// H-09: commits a finished peak-normalize job's plan (SPEC-010 §2.1/§2.8), always releasing
+    /// the busy flag. If the session was replaced (a new `document_open`) or edited while the job
+    /// ran (its current snapshot no longer matches `source.snapshot`) a `Gain` plan is discarded
+    /// — `error.document_busy`, nothing committed, exactly like a cancellation (SPEC-010 §2.8:
+    /// chunks already written become unreachable store data, reclaimed by compaction). A `NoOp`
+    /// plan never touched the store, so it always "commits" (as a no-op) even across that race.
+    pub fn finish_normalize_peak(
+        &self,
+        source: &NormalizeJobSource,
+        plan: NormalizePeakPlan,
+    ) -> Result<NormalizeEditResult, IpcError> {
+        let mut guard = self.0.open.lock().unwrap();
+        let result = (|| {
+            let doc = guard.as_mut().ok_or_else(no_document)?;
+            if doc.session.id() != source.session_id {
+                return Err(document_busy());
             }
-            LufsNormalizeResult::Applied {
-                step,
-                exceeds_true_peak_ceiling,
-                predicted_true_peak_dbtp,
-                ..
-            } => {
-                let result = self.apply_committed(doc, step, normalize_applied_post_edit(range));
-                let notice = exceeds_true_peak_ceiling.then_some(
-                    NormalizeLufsNotice::TruePeakCeilingExceeded {
-                        predicted_true_peak_dbtp,
-                    },
-                );
-                Ok(NormalizeLufsEditResult { result, notice })
+            match plan {
+                NormalizePeakPlan::NoOp(outcome) => {
+                    let snapshot = doc.session.current();
+                    Ok(NormalizeEditResult {
+                        result: EditResult {
+                            changed: false,
+                            audio_rev: snapshot.audio_rev,
+                            len_samples: snapshot.len_samples,
+                            selection: Some((source.range.start, source.range.end)),
+                            playhead_samples: source.range.start,
+                        },
+                        notice: Some(match outcome {
+                            NormalizeOutcome::Silent => NormalizeNotice::Silent,
+                            NormalizeOutcome::AlreadyNormalized => {
+                                NormalizeNotice::AlreadyNormalized
+                            }
+                        }),
+                    })
+                }
+                NormalizePeakPlan::Gain(edit) => {
+                    if !Arc::ptr_eq(&doc.session.current(), &source.snapshot) {
+                        return Err(document_busy());
+                    }
+                    let step = doc.session.commit_edit(edit).map_err(document_error)?;
+                    Ok(NormalizeEditResult {
+                        result: self.apply_committed(
+                            doc,
+                            step,
+                            normalize_applied_post_edit(source.range),
+                        ),
+                        notice: None,
+                    })
+                }
             }
-        }
+        })();
+        drop(guard);
+        *self.0.normalize_busy.lock().unwrap() = false;
+        result
+    }
+
+    /// H-09: commits a finished LUFS-normalize job's plan (mirrors [`Self::finish_normalize_peak`]).
+    pub fn finish_normalize_lufs(
+        &self,
+        source: &NormalizeJobSource,
+        plan: NormalizeLufsPlan,
+    ) -> Result<NormalizeLufsEditResult, IpcError> {
+        let mut guard = self.0.open.lock().unwrap();
+        let result = (|| {
+            let doc = guard.as_mut().ok_or_else(no_document)?;
+            if doc.session.id() != source.session_id {
+                return Err(document_busy());
+            }
+            match plan {
+                NormalizeLufsPlan::NoOp(outcome) => {
+                    let snapshot = doc.session.current();
+                    Ok(NormalizeLufsEditResult {
+                        result: EditResult {
+                            changed: false,
+                            audio_rev: snapshot.audio_rev,
+                            len_samples: snapshot.len_samples,
+                            selection: Some((source.range.start, source.range.end)),
+                            playhead_samples: source.range.start,
+                        },
+                        notice: Some(match outcome {
+                            LufsNormalizeOutcome::Silent => NormalizeLufsNotice::Silent,
+                            LufsNormalizeOutcome::AlreadyNormalized => {
+                                NormalizeLufsNotice::AlreadyNormalized
+                            }
+                        }),
+                    })
+                }
+                NormalizeLufsPlan::Gain {
+                    edit,
+                    predicted_true_peak_dbtp,
+                    exceeds_true_peak_ceiling,
+                    ..
+                } => {
+                    if !Arc::ptr_eq(&doc.session.current(), &source.snapshot) {
+                        return Err(document_busy());
+                    }
+                    let step = doc.session.commit_edit(edit).map_err(document_error)?;
+                    let result =
+                        self.apply_committed(doc, step, normalize_applied_post_edit(source.range));
+                    let notice = exceeds_true_peak_ceiling.then_some(
+                        NormalizeLufsNotice::TruePeakCeilingExceeded {
+                            predicted_true_peak_dbtp,
+                        },
+                    );
+                    Ok(NormalizeLufsEditResult { result, notice })
+                }
+            }
+        })();
+        drop(guard);
+        *self.0.normalize_busy.lock().unwrap() = false;
+        result
     }
 
     // --- S2-03: markers (add, rename, move/resize, delete) -----------------------------------
@@ -1069,6 +1184,9 @@ impl DocumentService {
 
     /// Undoes the top entry (`Ok` with `changed: false` at the undo floor).
     pub fn history_undo(&self) -> Result<EditResult, IpcError> {
+        if self.is_normalize_busy() {
+            return Err(document_busy());
+        }
         let mut guard = self.0.open.lock().unwrap();
         let doc = guard.as_mut().ok_or_else(no_document)?;
         let Some(step) = doc.session.undo().map_err(document_error)? else {
@@ -1087,6 +1205,9 @@ impl DocumentService {
 
     /// Redoes the top entry (`Ok` with `changed: false` when there's nothing to redo).
     pub fn history_redo(&self) -> Result<EditResult, IpcError> {
+        if self.is_normalize_busy() {
+            return Err(document_busy());
+        }
         let mut guard = self.0.open.lock().unwrap();
         let doc = guard.as_mut().ok_or_else(no_document)?;
         let Some(step) = doc.session.redo().map_err(document_error)? else {
@@ -1708,6 +1829,62 @@ mod tests {
         );
     }
 
+    // --- H-09: normalize job path (peak + LUFS) -----------------------------------------------
+    //
+    // The job service (`crate::normalize::NormalizeService`) drives these three calls from its
+    // own thread; these tests drive them synchronously (no thread, `CancelToken::new()` unless a
+    // test wants to cancel) to exercise `DocumentService`'s own contract in isolation.
+
+    fn run_normalize_peak(
+        service: &DocumentService,
+        start: u64,
+        end: u64,
+        target_db: f64,
+    ) -> Result<NormalizeEditResult, IpcError> {
+        DocumentService::validate_normalize_peak_target(target_db)?;
+        let source = service.begin_normalize_job(start, end)?;
+        match vox_project::plan_normalize_peak(
+            &source.store,
+            &source.snapshot,
+            source.sample_rate_hz,
+            source.range,
+            target_db,
+            &vox_project::CancelToken::new(),
+            |_| {},
+        ) {
+            Ok(plan) => service.finish_normalize_peak(&source, plan),
+            Err(err) => {
+                service.abandon_normalize_job();
+                Err(document_error(err))
+            }
+        }
+    }
+
+    fn run_normalize_lufs(
+        service: &DocumentService,
+        start: u64,
+        end: u64,
+        target_lufs: f64,
+    ) -> Result<NormalizeLufsEditResult, IpcError> {
+        DocumentService::validate_normalize_lufs_target(target_lufs)?;
+        let source = service.begin_normalize_job(start, end)?;
+        match vox_project::plan_normalize_lufs(
+            &source.store,
+            &source.snapshot,
+            source.sample_rate_hz,
+            source.range,
+            target_lufs,
+            &vox_project::CancelToken::new(),
+            |_| {},
+        ) {
+            Ok(plan) => service.finish_normalize_lufs(&source, plan),
+            Err(err) => {
+                service.abandon_normalize_job();
+                Err(document_error(err))
+            }
+        }
+    }
+
     // --- S2-02: peak normalize favorites -----------------------------------------------------
 
     #[test]
@@ -1718,13 +1895,17 @@ mod tests {
         for target_db in [-1.0, -0.1, -3.0] {
             let (service, _engine, dir) = service("normalize-favorite-loop");
             open_test_doc(&service, &dir, &samples);
-            let result = service.edit_normalize_peak(0, len, target_db).unwrap();
+            let result = run_normalize_peak(&service, 0, len, target_db).unwrap();
             assert!(result.notice.is_none());
             assert!(result.result.changed);
             assert_eq!(
                 result.result.selection,
                 Some((0, len)),
                 "selection unchanged"
+            );
+            assert!(
+                !service.is_normalize_busy(),
+                "the busy flag clears once the job finishes"
             );
 
             let snapshot = {
@@ -1768,7 +1949,7 @@ mod tests {
         let len = samples.len() as u64;
 
         // Selection-only: [1000, 5000) is normalized, the rest is untouched (length preserved).
-        let result = service.edit_normalize_peak(1_000, 5_000, -1.0).unwrap();
+        let result = run_normalize_peak(&service, 1_000, 5_000, -1.0).unwrap();
         assert!(result.result.changed);
         assert_eq!(result.result.selection, Some((1_000, 5_000)));
         assert_eq!(result.result.len_samples, len, "length preserved");
@@ -1781,7 +1962,7 @@ mod tests {
         open_test_doc(&service, &dir, &samples);
         let len = samples.len() as u64;
 
-        let result = service.edit_normalize_peak(0, len, -1.0).unwrap();
+        let result = run_normalize_peak(&service, 0, len, -1.0).unwrap();
         assert!(!result.result.changed);
         assert_eq!(result.notice, Some(NormalizeNotice::Silent));
         assert!(
@@ -1797,12 +1978,12 @@ mod tests {
         open_test_doc(&service, &dir, &samples);
         let len = samples.len() as u64;
 
-        let first = service.edit_normalize_peak(0, len, -1.0).unwrap();
+        let first = run_normalize_peak(&service, 0, len, -1.0).unwrap();
         assert!(
             first.result.changed,
             "the first normalize still applies (exactness)"
         );
-        let second = service.edit_normalize_peak(0, len, -1.0).unwrap();
+        let second = run_normalize_peak(&service, 0, len, -1.0).unwrap();
         assert!(!second.result.changed);
         assert_eq!(second.notice, Some(NormalizeNotice::AlreadyNormalized));
     }
@@ -1815,8 +1996,12 @@ mod tests {
         let len = samples.len() as u64;
 
         for bad in [-60.01, 0.01, f64::NAN, f64::INFINITY] {
-            let err = service.edit_normalize_peak(0, len, bad).unwrap_err();
+            let err = run_normalize_peak(&service, 0, len, bad).unwrap_err();
             assert_eq!(err.code, IpcErrorCode::InvalidArgument);
+            assert!(
+                !service.is_normalize_busy(),
+                "rejected before the busy flag is set"
+            );
         }
     }
 
@@ -1833,10 +2018,96 @@ mod tests {
             .unwrap();
         capture.append(&[0.0; 100]).unwrap();
 
-        let err = service.edit_normalize_peak(0, 10, -1.0).unwrap_err();
+        let err = run_normalize_peak(&service, 0, 10, -1.0).unwrap_err();
         assert_eq!(err.code, IpcErrorCode::NotWhileRecording);
+        assert!(!service.is_normalize_busy());
 
         service.discard_take(capture.id());
+    }
+
+    /// H-09 ticket AC: "cancel mid-job leaves hash unchanged" — cancelling partway through pass 2
+    /// (the write) leaves `rev`, `audio_rev`, the audio hash and the undo depth exactly as before
+    /// (SPEC-010 §2.8), and clears the busy flag so a later normalize can run.
+    #[test]
+    fn normalize_peak_cancel_mid_job_leaves_the_document_untouched() {
+        let (service, _engine, dir) = service("normalize-cancel");
+        let samples = vox_testkit::signal::sine(440.0, -12.0, 0.5, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let len = samples.len() as u64;
+
+        let before_hash = {
+            let guard = service.0.open.lock().unwrap();
+            let doc = guard.as_ref().unwrap();
+            let snapshot = doc.session.current();
+            let mut out = vec![0.0f32; snapshot.len_samples as usize];
+            doc.session.store().read(&snapshot, 0, &mut out).unwrap();
+            (snapshot.audio_rev, vox_testkit::golden::fnv1a_hash(&out))
+        };
+        assert!(!service.history_state().can_undo);
+
+        let source = service.begin_normalize_job(0, len).unwrap();
+        assert!(service.is_normalize_busy());
+        let cancel = vox_project::CancelToken::new();
+        let err = vox_project::plan_normalize_peak(
+            &source.store,
+            &source.snapshot,
+            source.sample_rate_hz,
+            source.range,
+            -1.0,
+            &cancel,
+            |fraction| {
+                if fraction > 0.5 {
+                    cancel.cancel();
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, ProjectError::Cancelled));
+        service.abandon_normalize_job();
+
+        assert!(!service.is_normalize_busy(), "cancel clears the busy flag");
+        assert!(!service.history_state().can_undo, "no undo entry");
+        let after = {
+            let guard = service.0.open.lock().unwrap();
+            let doc = guard.as_ref().unwrap();
+            let snapshot = doc.session.current();
+            let mut out = vec![0.0f32; snapshot.len_samples as usize];
+            doc.session.store().read(&snapshot, 0, &mut out).unwrap();
+            (snapshot.audio_rev, vox_testkit::golden::fnv1a_hash(&out))
+        };
+        assert_eq!(after, before_hash, "rev and audio hash unchanged");
+
+        // The busy flag being clear again means a normal normalize still works afterwards.
+        let result = run_normalize_peak(&service, 0, len, -1.0).unwrap();
+        assert!(result.result.changed);
+    }
+
+    /// SPEC-010 §2.1: while a normalize job is running, other audio-mutating commands are
+    /// refused with `error.document_busy` rather than racing the job's eventual commit.
+    #[test]
+    fn a_second_normalize_and_other_edits_are_refused_while_one_is_busy() {
+        let (service, _engine, dir) = service("normalize-busy");
+        let samples = vox_testkit::signal::sine(440.0, -12.0, 0.5, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let len = samples.len() as u64;
+
+        let source = service.begin_normalize_job(0, len).unwrap();
+        assert!(service.is_normalize_busy());
+
+        let err = match service.begin_normalize_job(0, len) {
+            Err(err) => err,
+            Ok(_) => panic!("expected a second normalize job to be refused as busy"),
+        };
+        assert_eq!(err.code, IpcErrorCode::Busy);
+        let err = service.edit_delete(0, 10).unwrap_err();
+        assert_eq!(err.code, IpcErrorCode::Busy);
+        let err = service.history_undo().unwrap_err();
+        assert_eq!(err.code, IpcErrorCode::Busy);
+
+        service.abandon_normalize_job();
+        assert!(!service.is_normalize_busy());
+        assert!(service.edit_delete(0, 10).is_ok());
+        let _ = source;
     }
 
     // --- S4-01: LUFS normalize favorites -------------------------------------------------------
@@ -1858,7 +2129,7 @@ mod tests {
         for target_lufs in [-16.0, -19.0, -23.0] {
             let (service, _engine, dir) = service("normalize-lufs-favorite-loop");
             open_test_doc(&service, &dir, &samples);
-            let result = service.edit_normalize_lufs(0, len, target_lufs).unwrap();
+            let result = run_normalize_lufs(&service, 0, len, target_lufs).unwrap();
             assert!(result.notice.is_none());
             assert!(result.result.changed);
             assert_eq!(
@@ -1896,7 +2167,7 @@ mod tests {
         open_test_doc(&service, &dir, &samples);
         let len = samples.len() as u64;
 
-        let result = service.edit_normalize_lufs(48_000, 96_000, -19.0).unwrap();
+        let result = run_normalize_lufs(&service, 48_000, 96_000, -19.0).unwrap();
         assert!(result.result.changed);
         assert_eq!(result.result.selection, Some((48_000, 96_000)));
         assert_eq!(result.result.len_samples, len, "length preserved");
@@ -1909,7 +2180,7 @@ mod tests {
         open_test_doc(&service, &dir, &samples);
         let len = samples.len() as u64;
 
-        let result = service.edit_normalize_lufs(0, len, -19.0).unwrap();
+        let result = run_normalize_lufs(&service, 0, len, -19.0).unwrap();
         assert!(!result.result.changed);
         assert_eq!(result.notice, Some(NormalizeLufsNotice::Silent));
         assert!(
@@ -1925,12 +2196,12 @@ mod tests {
         open_test_doc(&service, &dir, &samples);
         let len = samples.len() as u64;
 
-        let first = service.edit_normalize_lufs(0, len, -19.0).unwrap();
+        let first = run_normalize_lufs(&service, 0, len, -19.0).unwrap();
         assert!(
             first.result.changed,
             "the first normalize still applies (exactness)"
         );
-        let second = service.edit_normalize_lufs(0, len, -19.0).unwrap();
+        let second = run_normalize_lufs(&service, 0, len, -19.0).unwrap();
         assert!(!second.result.changed);
         assert_eq!(second.notice, Some(NormalizeLufsNotice::AlreadyNormalized));
     }
@@ -1943,7 +2214,7 @@ mod tests {
         let len = samples.len() as u64;
 
         for bad in [-60.01, 0.01, f64::NAN, f64::INFINITY] {
-            let err = service.edit_normalize_lufs(0, len, bad).unwrap_err();
+            let err = run_normalize_lufs(&service, 0, len, bad).unwrap_err();
             assert_eq!(err.code, IpcErrorCode::InvalidArgument);
         }
     }
@@ -1961,7 +2232,7 @@ mod tests {
             .unwrap();
         capture.append(&[0.0; 100]).unwrap();
 
-        let err = service.edit_normalize_lufs(0, 10, -19.0).unwrap_err();
+        let err = run_normalize_lufs(&service, 0, 10, -19.0).unwrap_err();
         assert_eq!(err.code, IpcErrorCode::NotWhileRecording);
 
         service.discard_take(capture.id());
@@ -1976,7 +2247,7 @@ mod tests {
         open_test_doc(&service, &dir, &samples);
         let len = samples.len() as u64;
 
-        let result = service.edit_normalize_lufs(0, len, 0.0).unwrap();
+        let result = run_normalize_lufs(&service, 0, len, 0.0).unwrap();
         assert!(result.result.changed, "the gain is applied regardless");
         match result.notice {
             Some(NormalizeLufsNotice::TruePeakCeilingExceeded {
@@ -1984,6 +2255,24 @@ mod tests {
             }) => assert!(predicted_true_peak_dbtp > -1.0),
             other => panic!("expected a true-peak ceiling notice, got {other:?}"),
         }
+    }
+
+    /// H-09: `target_pct` (SPEC-010 §2.4) resolves to `target_db` via `vox_project::
+    /// target_pct_to_db` before reaching `run_normalize_peak` — exercised end to end here rather
+    /// than only at the pure-function level (`crates/project`'s own tests).
+    #[test]
+    fn normalize_peak_accepts_a_percent_target_resolved_to_db() {
+        let (service, _engine, dir) = service("normalize-pct");
+        let samples = vox_testkit::signal::sine(440.0, -12.0, 0.2, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let len = samples.len() as u64;
+
+        let target_db = vox_project::target_pct_to_db(50.0); // ~ -6.02 dB
+        let result = run_normalize_peak(&service, 0, len, target_db).unwrap();
+        assert!(result.result.changed);
+        let out = read_out(&service);
+        let peak_dbfs = vox_testkit::measure::peak_dbfs(&out);
+        assert!((peak_dbfs - (-6.02)).abs() <= 0.01, "got {peak_dbfs}");
     }
 
     // --- S2-03: markers -----------------------------------------------------------------------

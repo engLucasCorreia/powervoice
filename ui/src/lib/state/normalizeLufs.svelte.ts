@@ -1,5 +1,6 @@
-import type { IpcError } from "../ipc/bindings";
-import { editNormalizeLufs } from "../ipc/commands";
+import { listen } from "@tauri-apps/api/event";
+import type { EventName, IpcError, JobProgressDto, NormalizeResultDto } from "../ipc/bindings";
+import { editNormalizeLufsCancel, editNormalizeLufsStart } from "../ipc/commands";
 import { documentState } from "../document/document.svelte";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { pushNotice } from "./notices.svelte";
@@ -11,6 +12,10 @@ import { hasSelection, selectionState, setSelectionFromResult } from "./selectio
  * current non-empty selection, or the whole file when there is none. A no-op (silent scope,
  * already at the target) or an applied gain whose predicted true peak exceeds −1 dBTP is reported
  * by the backend as a `notice` event (`notices.svelte.ts`'s `initNotices`), not by this module.
+ *
+ * H-09: runs as a job (`edit_normalize_lufs_start`/`_cancel`), mirroring `normalize.svelte.ts`
+ * (progress via `job_progress` kind `normalize_lufs`, the finished edit via `normalize_result`).
+ * No % mode (SPEC-010 §2.4 is peak-only; LUFS has no percent-of-full-scale reading).
  */
 
 /** The three favorite targets, PROMPT §3.3 order. */
@@ -27,14 +32,24 @@ interface DialogState {
   valid: boolean;
 }
 
+export interface NormalizeLufsJobState {
+  jobId: number;
+  fraction: number;
+  state: "running" | "done" | "cancelled" | "failed";
+}
+
 let dialogOpen = $state(false);
 let dialog = $state<DialogState>({ text: formatTarget(DEFAULT_TARGET_LUFS), valid: true });
+let job = $state<NormalizeLufsJobState | null>(null);
+let unlistenProgress: (() => void) | null = null;
+let unlistenResult: (() => void) | null = null;
 
 /** Read-only accessor for components. */
 export function normalizeLufsState(): {
   readonly dialogOpen: boolean;
   readonly dialogText: string;
   readonly dialogValid: boolean;
+  readonly job: NormalizeLufsJobState | null;
 } {
   return {
     get dialogOpen() {
@@ -46,6 +61,9 @@ export function normalizeLufsState(): {
     get dialogValid() {
       return dialog.valid;
     },
+    get job() {
+      return job;
+    },
   };
 }
 
@@ -55,6 +73,12 @@ function formatTarget(lufs: number): string {
 
 function isIpcError(value: unknown): value is IpcError {
   return typeof value === "object" && value !== null && "code" in value && "key" in value;
+}
+
+function report(err: unknown): void {
+  if (isIpcError(err)) {
+    pushNotice(noticeFromIpcError(err));
+  }
 }
 
 /** `[start, end)` of the current selection, or the whole open document with none; `null` with no
@@ -68,9 +92,10 @@ function scope(): [number, number] | null {
   return doc.sample_rate_hz > 0 && doc.len_samples > 0 ? [0, doc.len_samples] : null;
 }
 
-/** `true` when a LUFS normalize command can run right now (a document with audio is open). */
+/** `true` when a LUFS normalize command can run right now (a document with audio is open, and no
+ * job is already running). */
 export function canNormalizeLufs(): boolean {
-  return scope() !== null;
+  return scope() !== null && (!job || job.state !== "running");
 }
 
 async function run(targetLufs: number): Promise<void> {
@@ -79,12 +104,11 @@ async function run(targetLufs: number): Promise<void> {
     return;
   }
   try {
-    const result = await editNormalizeLufs(range[0], range[1], targetLufs);
-    setSelectionFromResult(result.selection);
+    const started = await editNormalizeLufsStart(range[0], range[1], targetLufs);
+    job = { jobId: started.job_id, fraction: 0, state: "running" };
+    await ensureListening();
   } catch (err) {
-    if (isIpcError(err)) {
-      pushNotice(noticeFromIpcError(err));
-    }
+    report(err);
   }
 }
 
@@ -132,17 +156,79 @@ export async function applyNormalizeLufsDialog(): Promise<void> {
   await run(value);
 }
 
+/** Applies one `job_progress` event to the store (kind `normalize_lufs` only). */
+export function applyNormalizeLufsJobProgress(payload: JobProgressDto): void {
+  if (payload.kind !== "normalize_lufs" || !job || payload.job_id !== job.jobId) {
+    return;
+  }
+  job = { jobId: payload.job_id, fraction: payload.fraction, state: payload.state };
+}
+
+/** Applies a finished `normalize_result` event (kind `normalize_lufs` only). */
+export function applyNormalizeLufsResult(payload: NormalizeResultDto): void {
+  if (payload.kind !== "normalize_lufs" || !job || payload.job_id !== job.jobId) {
+    return;
+  }
+  setSelectionFromResult(payload.result.selection);
+}
+
+async function ensureListening(): Promise<void> {
+  if (!unlistenProgress) {
+    try {
+      unlistenProgress = await listen<JobProgressDto>(
+        "job_progress" satisfies EventName,
+        (event) => applyNormalizeLufsJobProgress(event.payload),
+      );
+    } catch {
+      // Not running inside a real Tauri window (e.g. Vitest) — tests drive the store functions
+      // directly instead.
+    }
+  }
+  if (!unlistenResult) {
+    try {
+      unlistenResult = await listen<NormalizeResultDto>(
+        "normalize_result" satisfies EventName,
+        (event) => applyNormalizeLufsResult(event.payload),
+      );
+    } catch {
+      // See above.
+    }
+  }
+}
+
+/** Dismisses a finished job's progress panel (Done/Cancelled/Failed). */
+export function dismissNormalizeLufsJob(): void {
+  job = null;
+}
+
+/** Cancels the running job (`edit_normalize_lufs_cancel`, best-effort). */
+export function cancelNormalizeLufsJob(): void {
+  if (job && job.state === "running") {
+    void editNormalizeLufsCancel(job.jobId).catch(report);
+  }
+}
+
 /** Test/teardown helper. */
 export function resetNormalizeLufsForTest(): void {
   dialogOpen = false;
   dialog = { text: formatTarget(DEFAULT_TARGET_LUFS), valid: true };
+  job = null;
+  unlistenProgress?.();
+  unlistenProgress = null;
+  unlistenResult?.();
+  unlistenResult = null;
 }
 
 /**
- * Wires the store. LUFS normalize has no keymap actions and no events of its own — its notices
- * arrive through the shared `notice` event. Returns a no-op teardown, for symmetry with the other
- * `init*` feature modules `App.svelte` mounts.
+ * Wires the store. LUFS normalize has no keymap actions and no one-off events of its own beyond
+ * the shared job/result events — its notices arrive through the shared `notice` event. Returns a
+ * teardown that stops listening for job events.
  */
 export function initNormalizeLufs(): () => void {
-  return () => {};
+  return () => {
+    unlistenProgress?.();
+    unlistenProgress = null;
+    unlistenResult?.();
+    unlistenResult = null;
+  };
 }

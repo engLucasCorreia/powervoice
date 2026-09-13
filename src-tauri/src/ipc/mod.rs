@@ -21,6 +21,8 @@ pub mod export_dto;
 pub mod loudness_commands;
 pub mod loudness_dto;
 mod macros;
+mod normalize_commands;
+mod normalize_dto;
 mod nr_capture_commands;
 mod nr_capture_dto;
 mod rack_commands;
@@ -47,7 +49,7 @@ pub use dto::AppInfo;
 pub use error::{IpcError, IpcErrorCode};
 pub use events::{
     EVENT_NAME_VARIANTS, EVENT_NAMES, EventName, JobKind, JobProgressDto, JobState, Notice,
-    NoticeLevel, emit_job_progress, emit_loudness_report, emit_notice,
+    NoticeLevel, emit_job_progress, emit_loudness_report, emit_normalize_result, emit_notice,
 };
 pub use export_commands::*;
 pub use export_dto::{
@@ -58,6 +60,8 @@ pub use loudness_commands::*;
 pub use loudness_dto::{
     LoudnessAnalyzeRequestDto, LoudnessAnalyzeStartedDto, LoudnessReportDto, LoudnessSourceDto,
 };
+pub use normalize_commands::*;
+pub use normalize_dto::{NormalizeJobStartedDto, NormalizeResultDto};
 pub use nr_capture_commands::*;
 pub use nr_capture_dto::NrCaptureStartedDto;
 pub use rack_commands::*;
@@ -118,8 +122,10 @@ crate::ipc_commands!(
     edit_delete,
     edit_trim,
     edit_silence,
-    edit_normalize_peak,
-    edit_normalize_lufs,
+    edit_normalize_peak_start,
+    edit_normalize_peak_cancel,
+    edit_normalize_lufs_start,
+    edit_normalize_lufs_cancel,
     history_undo,
     history_redo,
     markers_get,
@@ -181,8 +187,10 @@ crate::ipc_commands!(
     edit_delete,
     edit_trim,
     edit_silence,
-    edit_normalize_peak,
-    edit_normalize_lufs,
+    edit_normalize_peak_start,
+    edit_normalize_peak_cancel,
+    edit_normalize_lufs_start,
+    edit_normalize_lufs_cancel,
     history_undo,
     history_redo,
     markers_get,

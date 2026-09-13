@@ -1,13 +1,15 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
-import type { DocumentDto, EditResultDto } from "../ipc/bindings";
+import type { DocumentDto } from "../ipc/bindings";
 import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import { DEFAULT_KEYMAP } from "../keymap";
 import { clearNotices } from "../state/notices.svelte";
 import { resetNormalizeForTest } from "../state/normalize.svelte";
+import { resetNormalizeLufsForTest } from "../state/normalizeLufs.svelte";
 import { resetRecordForTest } from "../state/record.svelte";
 import { resetSelectionForTest } from "../state/selection.svelte";
+import { resetSettingsStateForTest } from "../state/settings.svelte";
 import FavoritesMenu from "./FavoritesMenu.svelte";
 
 function doc(overrides: Partial<DocumentDto> = {}): DocumentDto {
@@ -39,7 +41,9 @@ afterEach(() => {
   resetDocumentStateForTest();
   resetSelectionForTest();
   resetNormalizeForTest();
+  resetNormalizeLufsForTest();
   resetRecordForTest();
+  resetSettingsStateForTest();
 });
 
 function mountMenu(): { target: HTMLElement; app: object } {
@@ -80,19 +84,13 @@ describe("FavoritesMenu (S2-02, SPEC-010 §2.1/§2.5/AC-14)", () => {
     target.remove();
   });
 
-  it("each favorite button sends exactly one edit_normalize_peak with its target and no dialog", async () => {
+  it("each favorite button sends exactly one edit_normalize_peak_start with its target and no dialog", async () => {
     await openFixture();
     const calls: unknown[] = [];
     mockIPC((cmd, args) => {
-      if (cmd === "edit_normalize_peak") {
+      if (cmd === "edit_normalize_peak_start") {
         calls.push(args);
-        return {
-          changed: true,
-          audio_rev: 2,
-          len_samples: 480_000,
-          selection: null,
-          playhead_samples: 0,
-        } satisfies EditResultDto;
+        return { job_id: 1 };
       }
       throw new Error(`unmocked command: ${cmd}`);
     });
@@ -102,7 +100,9 @@ describe("FavoritesMenu (S2-02, SPEC-010 §2.1/§2.5/AC-14)", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(calls).toEqual([{ startSamples: 0, endSamples: 480_000, targetDb: -1 }]);
+    expect(calls).toEqual([
+      { startSamples: 0, endSamples: 480_000, targetDb: -1, targetPct: null },
+    ]);
     expect(target.querySelector('[data-testid="normalize-dialog"]')).toBeNull();
 
     unmount(app);

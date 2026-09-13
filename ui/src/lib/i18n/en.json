@@ -245,8 +245,10 @@
   "dialog.normalize.title": "Normalize",
   "dialog.normalize.target_label": "Normalize peak to",
   "dialog.normalize.unit_db": "dB",
+  "dialog.normalize.unit_pct": "%",
   "dialog.normalize.apply": "Apply",
   "dialog.normalize.cancel": "Cancel",
+  "dialog.progress.cancel": "Cancel",
   "job.normalize": "Normalizing…",
   "notice.normalize_silent": "Nothing to normalize: the audio is silent.",
   "notice.normalize_already": "Already at that level.",
@@ -255,6 +257,7 @@
   "notice.nr_capture.loud": "This selection is loud for room tone — make sure it contains no speech.",
   "notice.nr_capture.capped_60s": "Using the first 60 s of the selection.",
   "error.normalize_non_finite": "The selection contains invalid samples.",
+  "error.document_busy": "Another operation is already running on this document.",
 
   "history.normalize_lufs": "Normalize (LUFS)",
   "favorites.normalize_lufs": "Normalize to {target} LUFS",

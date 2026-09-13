@@ -1,12 +1,16 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it } from "vitest";
-import type { DocumentDto, EditResultDto } from "../ipc/bindings";
+import type { DocumentDto, NormalizeResultDto } from "../ipc/bindings";
 import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import { clearNotices } from "./notices.svelte";
 import {
   applyNormalizeLufsDialog,
+  applyNormalizeLufsJobProgress,
+  applyNormalizeLufsResult,
   canNormalizeLufs,
+  cancelNormalizeLufsJob,
   closeNormalizeLufsDialog,
+  dismissNormalizeLufsJob,
   normalizeLufsFavorite,
   normalizeLufsState,
   openNormalizeLufsDialog,
@@ -14,7 +18,7 @@ import {
   resetNormalizeLufsForTest,
   setNormalizeLufsDialogText,
 } from "./normalizeLufs.svelte";
-import { resetSelectionForTest, setSelectionFromResult } from "./selection.svelte";
+import { resetSelectionForTest, selectionState, setSelectionFromResult } from "./selection.svelte";
 
 function doc(overrides: Partial<DocumentDto> = {}): DocumentDto {
   return {
@@ -78,28 +82,35 @@ describe("canNormalizeLufs (same scope convention as peak normalize)", () => {
     await openFixture();
     expect(canNormalizeLufs()).toBe(true);
   });
+
+  it("is false while a job is running", async () => {
+    await openFixture();
+    mockIPC((cmd) => {
+      if (cmd === "edit_normalize_lufs_start") {
+        return { job_id: 1 };
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    await normalizeLufsFavorite(-19);
+    expect(canNormalizeLufs()).toBe(false);
+  });
 });
 
-describe("normalizeLufsFavorite", () => {
+describe("normalizeLufsFavorite (H-09: starts a job)", () => {
   it("sends the whole file with no selection, and the selection when one exists", async () => {
     await openFixture({ len_samples: 480_000 });
     const calls: unknown[] = [];
     mockIPC((cmd, args) => {
-      if (cmd === "edit_normalize_lufs") {
+      if (cmd === "edit_normalize_lufs_start") {
         calls.push(args);
-        return {
-          changed: true,
-          audio_rev: 2,
-          len_samples: 480_000,
-          selection: null,
-          playhead_samples: 0,
-        } satisfies EditResultDto;
+        return { job_id: 1 };
       }
       throw new Error(`unmocked command: ${cmd}`);
     });
 
     await normalizeLufsFavorite(-16);
     expect(calls).toEqual([{ startSamples: 0, endSamples: 480_000, targetLufs: -16 }]);
+    expect(normalizeLufsState().job).toEqual({ jobId: 1, fraction: 0, state: "running" });
 
     setSelectionFromResult([1_000, 5_000]);
     await normalizeLufsFavorite(-19);
@@ -117,13 +128,94 @@ describe("normalizeLufsFavorite", () => {
   });
 });
 
+describe("applyNormalizeLufsJobProgress / applyNormalizeLufsResult", () => {
+  it("ignores events for a different job, id, or kind", async () => {
+    await openFixture();
+    mockIPC((cmd) => {
+      if (cmd === "edit_normalize_lufs_start") {
+        return { job_id: 3 };
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    await normalizeLufsFavorite(-19);
+
+    applyNormalizeLufsJobProgress({ job_id: 3, kind: "normalize_peak", state: "done", fraction: 1 });
+    expect(normalizeLufsState().job?.state).toBe("running");
+
+    applyNormalizeLufsJobProgress({ job_id: 999, kind: "normalize_lufs", state: "done", fraction: 1 });
+    expect(normalizeLufsState().job?.state).toBe("running");
+
+    applyNormalizeLufsJobProgress({ job_id: 3, kind: "normalize_lufs", state: "running", fraction: 0.5 });
+    expect(normalizeLufsState().job).toEqual({ jobId: 3, fraction: 0.5, state: "running" });
+  });
+
+  it("a normalize_result event for the running job updates the selection", async () => {
+    await openFixture();
+    mockIPC((cmd) => {
+      if (cmd === "edit_normalize_lufs_start") {
+        return { job_id: 7 };
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    await normalizeLufsFavorite(-19);
+
+    const result: NormalizeResultDto = {
+      job_id: 7,
+      kind: "normalize_lufs",
+      result: {
+        changed: true,
+        audio_rev: 2,
+        len_samples: 480_000,
+        selection: [10, 20],
+        playhead_samples: 10,
+      },
+    };
+    applyNormalizeLufsResult(result);
+    expect(selectionState().current).toEqual({ startSample: 10, endSample: 20 });
+  });
+});
+
+describe("cancelNormalizeLufsJob / dismissNormalizeLufsJob", () => {
+  it("cancelNormalizeLufsJob calls edit_normalize_lufs_cancel with the running job's id", async () => {
+    await openFixture();
+    let cancelledId: unknown;
+    mockIPC((cmd, args) => {
+      if (cmd === "edit_normalize_lufs_start") {
+        return { job_id: 5 };
+      }
+      if (cmd === "edit_normalize_lufs_cancel") {
+        cancelledId = (args as { jobId: number }).jobId;
+        return null;
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    await normalizeLufsFavorite(-19);
+    cancelNormalizeLufsJob();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(cancelledId).toBe(5);
+  });
+
+  it("dismissNormalizeLufsJob clears the job", async () => {
+    await openFixture();
+    mockIPC((cmd) => {
+      if (cmd === "edit_normalize_lufs_start") {
+        return { job_id: 1 };
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    await normalizeLufsFavorite(-19);
+    dismissNormalizeLufsJob();
+    expect(normalizeLufsState().job).toBeNull();
+  });
+});
+
 describe("Normalize (LUFS)… dialog", () => {
   it("does not open with no document", () => {
     openNormalizeLufsDialog();
     expect(normalizeLufsState().dialogOpen).toBe(false);
   });
 
-  it("opens with a document, tracks field validity, and Apply sends the parsed value", async () => {
+  it("opens with a document, tracks field validity, and Apply starts a job with the parsed value", async () => {
     await openFixture();
     openNormalizeLufsDialog();
     expect(normalizeLufsState().dialogOpen).toBe(true);
@@ -136,15 +228,9 @@ describe("Normalize (LUFS)… dialog", () => {
 
     const calls: unknown[] = [];
     mockIPC((cmd, args) => {
-      if (cmd === "edit_normalize_lufs") {
+      if (cmd === "edit_normalize_lufs_start") {
         calls.push(args);
-        return {
-          changed: true,
-          audio_rev: 2,
-          len_samples: 480_000,
-          selection: null,
-          playhead_samples: 0,
-        } satisfies EditResultDto;
+        return { job_id: 1 };
       }
       throw new Error(`unmocked command: ${cmd}`);
     });

@@ -17,7 +17,8 @@ crate::ipc_events!(
     history_state,
     clipboard_changed,
     job_progress,
-    loudness_report
+    loudness_report,
+    normalize_result
 );
 
 /// A user-facing notice (ADR-003 `notice` event). Two shapes, distinguished by `persistent`:
@@ -104,6 +105,11 @@ pub enum JobKind {
     /// separately as a `loudness_report` event (`job_progress`'s `fraction`/`state` alone can't
     /// carry it).
     LoudnessAnalyze,
+    /// H-09: peak normalize (`edit_normalize_peak_start`, SPEC-010) — its finished edit result
+    /// arrives separately as a `normalize_result` event.
+    NormalizePeak,
+    /// H-09: LUFS normalize (`edit_normalize_lufs_start`) — mirrors `NormalizePeak`.
+    NormalizeLufs,
 }
 
 /// `job_progress`'s lifecycle. `Running` fractions are monotonically non-decreasing in `[0, 1]`;
@@ -148,6 +154,16 @@ pub fn emit_loudness_report<R: tauri::Runtime>(
 ) -> tauri::Result<()> {
     use tauri::Emitter as _;
     app.emit(EventName::loudness_report.as_str(), report)
+}
+
+/// Emits a `normalize_result` event (H-09): a finished normalize job's edit result, once its
+/// `job_progress` reports `JobState::Done`.
+pub fn emit_normalize_result<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    result: crate::ipc::normalize_dto::NormalizeResultDto,
+) -> tauri::Result<()> {
+    use tauri::Emitter as _;
+    app.emit(EventName::normalize_result.as_str(), result)
 }
 
 #[cfg(test)]

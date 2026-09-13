@@ -2,15 +2,20 @@
   import { t } from "../i18n";
   import {
     applyNormalizeDialog,
+    cancelNormalizeJob,
     closeNormalizeDialog,
+    dismissNormalizeJob,
     normalizeState,
     setNormalizeDialogText,
+    setNormalizeDialogUnit,
   } from "../state/normalize.svelte";
+  import NormalizeProgressDialog from "./NormalizeProgressDialog.svelte";
 
   /**
-   * Effects → Normalize… dialog (S2-02, SPEC-010 §2.4). dB mode only (−60.00…0.00, ticket scope —
-   * the % toggle is deferred). Enter applies, Esc cancels; Apply is disabled while the field is
-   * invalid.
+   * Effects → Normalize… dialog (S2-02/H-09, SPEC-010 §2.4). dB or % mode (a two-way toggle);
+   * Enter applies, Esc cancels; Apply is disabled while the field is invalid. Runs as a job
+   * (`NormalizeProgressDialog`): the dialog itself closes immediately on Apply, per SPEC-010's
+   * "one click, no confirmation" — the progress modal is a separate concern for long files.
    */
   const state = normalizeState();
 
@@ -47,7 +52,24 @@
           value={state.dialogText}
           oninput={(e) => setNormalizeDialogText(e.currentTarget.value)}
         />
-        <span class="unit">{t("dialog.normalize.unit_db")}</span>
+        <div class="unit-toggle" role="group" aria-label={t("dialog.normalize.target_label")}>
+          <button
+            type="button"
+            data-testid="normalize-dialog-unit-db"
+            class:active={state.dialogUnit === "db"}
+            onclick={() => setNormalizeDialogUnit("db")}
+          >
+            {t("dialog.normalize.unit_db")}
+          </button>
+          <button
+            type="button"
+            data-testid="normalize-dialog-unit-pct"
+            class:active={state.dialogUnit === "pct"}
+            onclick={() => setNormalizeDialogUnit("pct")}
+          >
+            {t("dialog.normalize.unit_pct")}
+          </button>
+        </div>
       </label>
       <div class="actions">
         <button type="button" data-testid="normalize-dialog-cancel" onclick={closeNormalizeDialog}>
@@ -66,6 +88,13 @@
     </div>
   </div>
 {/if}
+
+<NormalizeProgressDialog
+  job={state.job}
+  titleKey="job.normalize"
+  onCancel={cancelNormalizeJob}
+  onDismiss={dismissNormalizeJob}
+/>
 
 <style>
   .backdrop {
@@ -116,8 +145,29 @@
     border-color: var(--error, #c0392b);
   }
 
-  .unit {
+  .unit-toggle {
+    display: flex;
+  }
+
+  .unit-toggle button {
+    padding: 0.2rem 0.5rem;
     color: var(--text-secondary);
+  }
+
+  .unit-toggle button:first-child {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+
+  .unit-toggle button:last-child {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    border-left: none;
+  }
+
+  .unit-toggle button.active {
+    color: var(--accent);
+    border-color: var(--accent);
   }
 
   .actions {

@@ -1,16 +1,22 @@
 <script lang="ts">
   import { t } from "../i18n";
+  import { canNormalize, openNormalizeDialog } from "../state/normalize.svelte";
+  import { canNormalizeLufs, openNormalizeLufsDialog } from "../state/normalizeLufs.svelte";
   import { canCapture, startCapture } from "./nrCapture.svelte";
 
   /**
-   * Effects menu/toolbar (S3-06, SPEC-014 §2.3): "Effects → Noise Reduction / Restoration →
-   * Capture Noise Print", flattened to one toolbar button (no other Effects command exists yet).
-   * Targets the last-focused rack slot, like the Shift+P keymap action — clicking a specific
-   * slot's own Capture button (`NoiseReductionSection.svelte`) is unambiguous and doesn't go
-   * through here.
+   * Effects menu/toolbar (S3-06 Capture Noise Print, SPEC-014 §2.3; H-09 adds Normalize…/
+   * Normalize (LUFS)…, SPEC-010 §2.5: "Effects → Normalize…", mirroring Audition's Effects →
+   * Amplitude → Normalize). The dialogs themselves are mounted once, in `FavoritesMenu.svelte`,
+   * which also has these same two entries at the bottom of its own menu — both just open the
+   * shared dialog state. Capture Noise Print targets the last-focused rack slot, like the
+   * Shift+P keymap action — clicking a specific slot's own Capture button
+   * (`NoiseReductionSection.svelte`) is unambiguous and doesn't go through here.
    */
 
   const enabled = $derived(canCapture());
+  const normalizeEnabled = $derived(canNormalize());
+  const normalizeLufsEnabled = $derived(canNormalizeLufs());
 </script>
 
 <div class="effects-menu" data-testid="effects-menu">
@@ -23,6 +29,23 @@
   >
     {t("module.noise_reduction.capture")}
   </button>
+  <span class="divider" aria-hidden="true"></span>
+  <button
+    type="button"
+    data-testid="menu-normalize-dialog"
+    disabled={!normalizeEnabled}
+    onclick={openNormalizeDialog}
+  >
+    {t("effects.normalize_dialog")}
+  </button>
+  <button
+    type="button"
+    data-testid="menu-normalize-lufs-dialog"
+    disabled={!normalizeLufsEnabled}
+    onclick={openNormalizeLufsDialog}
+  >
+    {t("effects.normalize_lufs_dialog")}
+  </button>
 </div>
 
 <style>
@@ -34,6 +57,13 @@
     background: var(--surface-panel);
     border-bottom: 1px solid var(--surface-border);
     font-size: 0.85em;
+  }
+
+  .divider {
+    width: 1px;
+    align-self: stretch;
+    background: var(--surface-border);
+    margin: 0 0.15rem;
   }
 
   button {

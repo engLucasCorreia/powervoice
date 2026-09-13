@@ -2,14 +2,18 @@
   import { t } from "../i18n";
   import {
     applyNormalizeLufsDialog,
+    cancelNormalizeLufsJob,
     closeNormalizeLufsDialog,
+    dismissNormalizeLufsJob,
     normalizeLufsState,
     setNormalizeLufsDialogText,
   } from "../state/normalizeLufs.svelte";
+  import NormalizeProgressDialog from "./NormalizeProgressDialog.svelte";
 
   /**
-   * Effects → Normalize (LUFS)… dialog (S4-01). Custom integrated-loudness target
+   * Effects → Normalize (LUFS)… dialog (S4-01/H-09). Custom integrated-loudness target
    * (−60.0…0.0 LUFS). Enter applies, Esc cancels; Apply is disabled while the field is invalid.
+   * Runs as a job (`NormalizeProgressDialog`), mirroring `NormalizeDialog.svelte`.
    */
   const state = normalizeLufsState();
 
@@ -69,6 +73,13 @@
     </div>
   </div>
 {/if}
+
+<NormalizeProgressDialog
+  job={state.job}
+  titleKey="job.normalize_lufs"
+  onCancel={cancelNormalizeLufsJob}
+  onDismiss={dismissNormalizeLufsJob}
+/>
 
 <style>
   .backdrop {

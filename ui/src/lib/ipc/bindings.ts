@@ -35,7 +35,7 @@ export type BitDepth = "16" | "24" | "32f";
  */
 export type ClipboardChangedDto = { len_samples: number | null, sample_rate_hz: number | null, };
 
-export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_save" | "document_save_as" | "peaks_get" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak" | "edit_normalize_lufs" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check";
+export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_save" | "document_save_as" | "peaks_get" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check";
 
 /**
  * One draggable EQ-graph node (S3-07, SPEC-015 §3 "ResponseCurve components"): the band's
@@ -162,7 +162,7 @@ selection: [number, number] | null, playhead_samples: number, };
  */
 export type EditTargetDto = { "kind": "cursor", at_samples: number, } | { "kind": "range", start_samples: number, end_samples: number, };
 
-export type EventName = "notice" | "transport_state" | "devices_changed" | "rack_changed" | "param_changed" | "rack_latency" | "record_state" | "document_changed" | "history_state" | "clipboard_changed" | "job_progress" | "loudness_report";
+export type EventName = "notice" | "transport_state" | "devices_changed" | "rack_changed" | "param_changed" | "rack_latency" | "record_state" | "document_changed" | "history_state" | "clipboard_changed" | "job_progress" | "loudness_report" | "normalize_result";
 
 /**
  * Export output format and its per-format settings. FLAC's `bits` rejects `"32f"` (FLAC has no
@@ -211,14 +211,14 @@ export type IpcError = { code: IpcErrorCode, key: string, params: { [key in stri
  * ticket adds a new variant here only when its own spec names a distinct error condition, to
  * keep this a small, meaningful set rather than one variant per command.
  */
-export type IpcErrorCode = "internal" | "invalid_argument" | "not_found" | "not_while_recording" | "device_not_found" | "device_lost" | "io" | "cancelled";
+export type IpcErrorCode = "internal" | "invalid_argument" | "not_found" | "not_while_recording" | "device_not_found" | "device_lost" | "io" | "cancelled" | "busy";
 
 /**
  * A long-running, cancellable job's kind (ADR-003 `job_progress`; S4-04 is the first job). New
  * job kinds add a variant here rather than a new event, so the frontend has one progress/cancel
  * pattern for every job.
  */
-export type JobKind = "export" | "nr_capture" | "loudness_analyze";
+export type JobKind = "export" | "nr_capture" | "loudness_analyze" | "normalize_peak" | "normalize_lufs";
 
 /**
  * `job_progress` event payload (ADR-003; ≤ 10 Hz per job). `job_id` distinguishes overlapping or
@@ -295,6 +295,33 @@ export type Mp3SettingsDto = { "kind": "cbr", kbps: number, } | { "kind": "vbr",
  * section only renders when this DTO is present.
  */
 export type NoiseProfileStatusDto = "none" | "loaded" | "unreadable" | "too_new";
+
+/**
+ * "The last applied value and unit are remembered in settings across restarts" (SPEC-010 §2.4).
+ * `value` is in whichever unit it was last applied in — switching units in the dialog itself
+ * converts the *shown* value without touching this until Apply.
+ */
+export type NormalizeDialogPrefsDto = { value: number, unit: NormalizeTargetUnit, };
+
+/**
+ * `edit_normalize_peak_start`/`edit_normalize_lufs_start`'s immediate result: the job id, echoed
+ * on every `job_progress`/`normalize_result` event for it (`edit_normalize_peak_cancel`/
+ * `edit_normalize_lufs_cancel` stop it).
+ */
+export type NormalizeJobStartedDto = { job_id: number, };
+
+/**
+ * `normalize_result` event payload: the finished job's edit result (SPEC-010 §2.1's selection/
+ * `audio_rev`, unchanged for a no-op). Emitted only once the job's `job_progress` reports `Done`
+ * — a `Cancelled`/`Failed` job never touched the document, so there is nothing to report here
+ * (its failure reason, if any, arrives as a `notice`).
+ */
+export type NormalizeResultDto = { job_id: number, kind: JobKind, result: EditResultDto, };
+
+/**
+ * The Normalize… dialog's unit toggle (SPEC-010 §2.4).
+ */
+export type NormalizeTargetUnit = "db" | "pct";
 
 /**
  * A user-facing notice (ADR-003 `notice` event). Two shapes, distinguished by `persistent`:
@@ -457,7 +484,11 @@ export type Settings = { version: number, device: DevicePrefsDto, default_format
 /**
  * SPEC-003 §3: {30, 60} Hz, default 60 (measured free on WebKitGTK, ADR-009 §3).
  */
-telemetry_rate_hz: number, memory_budget_mib: number, };
+telemetry_rate_hz: number, memory_budget_mib: number, 
+/**
+ * H-09/SPEC-010 §2.4: the Normalize… dialog's last applied value and unit.
+ */
+normalize_dialog: NormalizeDialogPrefsDto, };
 
 /**
  * Slot status (SPEC-012 §2.2, §2.9). `message` is pre-rendered English text shown verbatim (see

@@ -48,6 +48,9 @@ pub enum IpcErrorCode {
     Io,
     /// A long-running, cancellable operation was cancelled by the user (SPEC-004 §2.1).
     Cancelled,
+    /// SPEC-010 §2.1: a command that changes the document is refused because another document
+    /// job is already running (H-09: a normalize job). i18n key: `error.document_busy`.
+    Busy,
 }
 
 impl IpcError {
@@ -74,6 +77,11 @@ impl IpcError {
     /// SPEC-004 AC-15's refusal error, with its fixed i18n key.
     pub fn not_while_recording() -> Self {
         Self::new(IpcErrorCode::NotWhileRecording, "error.not_while_recording")
+    }
+
+    /// SPEC-010 §2.1's refusal error (H-09: another normalize job is already running).
+    pub fn document_busy() -> Self {
+        Self::new(IpcErrorCode::Busy, "error.document_busy")
     }
 }
 

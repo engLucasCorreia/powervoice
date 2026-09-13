@@ -130,6 +130,38 @@ pub enum MonitorMode {
     ThroughRack,
 }
 
+// --- Normalize dialog memory (SPEC-010 §2.4, H-09) ----------------------------------------------
+
+/// The Normalize… dialog's unit toggle (SPEC-010 §2.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum NormalizeTargetUnit {
+    #[default]
+    Db,
+    Pct,
+}
+
+/// "The last applied value and unit are remembered in settings across restarts" (SPEC-010 §2.4).
+/// `value` is in whichever unit it was last applied in — switching units in the dialog itself
+/// converts the *shown* value without touching this until Apply.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct NormalizeDialogPrefsDto {
+    pub value: f64,
+    pub unit: NormalizeTargetUnit,
+}
+
+impl Default for NormalizeDialogPrefsDto {
+    fn default() -> Self {
+        // SPEC-010 §2.4: "the default is −1.00 dB".
+        Self {
+            value: -1.0,
+            unit: NormalizeTargetUnit::Db,
+        }
+    }
+}
+
 // --- RAM detection for the memory budget default (SPEC-004 §2.4, §3) ---------------------------
 
 /// Parses `MemTotal:` (kiB) out of `/proc/meminfo` text. Pure function so it's unit-testable
@@ -188,6 +220,8 @@ pub struct Settings {
     /// SPEC-003 §3: {30, 60} Hz, default 60 (measured free on WebKitGTK, ADR-009 §3).
     pub telemetry_rate_hz: u32,
     pub memory_budget_mib: u32,
+    /// H-09/SPEC-010 §2.4: the Normalize… dialog's last applied value and unit.
+    pub normalize_dialog: NormalizeDialogPrefsDto,
     #[serde(flatten)]
     #[ts(skip)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -202,6 +236,7 @@ impl Default for Settings {
             monitor_mode: MonitorMode::default(),
             telemetry_rate_hz: 60,
             memory_budget_mib: default_memory_budget_mib(total_ram_bytes()),
+            normalize_dialog: NormalizeDialogPrefsDto::default(),
             extra: serde_json::Map::new(),
         }
     }
@@ -376,6 +411,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)] // exact default value
     fn defaults_on_first_run() {
         let dir = temp_dir("first-run");
         let path = dir.join("settings.json");
@@ -392,6 +428,31 @@ mod tests {
         assert_eq!(settings.device.sample_rate_hz, None);
         assert_eq!(settings.device.buffer_size_frames, None);
         assert!((512..=4096).contains(&settings.memory_budget_mib));
+        assert_eq!(settings.normalize_dialog.value, -1.0);
+        assert_eq!(settings.normalize_dialog.unit, NormalizeTargetUnit::Db);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// H-09/SPEC-010 §2.4: "the last applied value and unit are remembered ... across restarts".
+    #[test]
+    #[allow(clippy::float_cmp)] // exact round-tripped value
+    fn normalize_dialog_prefs_round_trip_through_save_and_load() {
+        let dir = temp_dir("normalize-dialog");
+        let path = dir.join("settings.json");
+
+        let settings = Settings {
+            normalize_dialog: NormalizeDialogPrefsDto {
+                value: 89.1,
+                unit: NormalizeTargetUnit::Pct,
+            },
+            ..Settings::default()
+        };
+        save(&path, &settings).unwrap();
+        let loaded = load_or_default(&path);
+
+        assert_eq!(loaded.normalize_dialog.value, 89.1);
+        assert_eq!(loaded.normalize_dialog.unit, NormalizeTargetUnit::Pct);
 
         std::fs::remove_dir_all(&dir).ok();
     }

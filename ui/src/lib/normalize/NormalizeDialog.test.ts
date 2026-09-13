@@ -1,11 +1,12 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
-import type { DocumentDto, EditResultDto } from "../ipc/bindings";
+import type { DocumentDto } from "../ipc/bindings";
 import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import { clearNotices } from "../state/notices.svelte";
 import { openNormalizeDialog, resetNormalizeForTest } from "../state/normalize.svelte";
 import { resetSelectionForTest } from "../state/selection.svelte";
+import { resetSettingsStateForTest } from "../state/settings.svelte";
 import NormalizeDialog from "./NormalizeDialog.svelte";
 
 function doc(overrides: Partial<DocumentDto> = {}): DocumentDto {
@@ -37,6 +38,7 @@ afterEach(() => {
   resetDocumentStateForTest();
   resetSelectionForTest();
   resetNormalizeForTest();
+  resetSettingsStateForTest();
 });
 
 function mountDialog(): { target: HTMLElement; app: object } {
@@ -89,15 +91,9 @@ describe("NormalizeDialog (S2-02, SPEC-010 §2.4/AC-14)", () => {
 
     const calls: unknown[] = [];
     mockIPC((cmd, args) => {
-      if (cmd === "edit_normalize_peak") {
+      if (cmd === "edit_normalize_peak_start") {
         calls.push(args);
-        return {
-          changed: true,
-          audio_rev: 2,
-          len_samples: 480_000,
-          selection: null,
-          playhead_samples: 0,
-        } satisfies EditResultDto;
+        return { job_id: 1 };
       }
       throw new Error(`unmocked command: ${cmd}`);
     });
@@ -106,8 +102,37 @@ describe("NormalizeDialog (S2-02, SPEC-010 §2.4/AC-14)", () => {
     await Promise.resolve();
     flushSync();
 
-    expect(calls).toEqual([{ startSamples: 0, endSamples: 480_000, targetDb: -6.02 }]);
+    expect(calls).toEqual([
+      { startSamples: 0, endSamples: 480_000, targetDb: -6.02, targetPct: null },
+    ]);
     expect(target.querySelector('[data-testid="normalize-dialog"]')).toBeNull();
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("the % unit toggle switches the field and converts the value", async () => {
+    await openFixture();
+    openNormalizeDialog();
+    const { target, app } = mountDialog();
+
+    const input = target.querySelector<HTMLInputElement>(
+      '[data-testid="normalize-dialog-target"]',
+    )!;
+    input.value = "-1.00";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+
+    target.querySelector<HTMLButtonElement>('[data-testid="normalize-dialog-unit-pct"]')!.click();
+    flushSync();
+
+    const afterToggle = target.querySelector<HTMLInputElement>(
+      '[data-testid="normalize-dialog-target"]',
+    )!;
+    expect(Number(afterToggle.value)).toBeCloseTo(89.1, 1);
+    expect(
+      target.querySelector<HTMLButtonElement>('[data-testid="normalize-dialog-apply"]')?.disabled,
+    ).toBe(false);
 
     unmount(app);
     target.remove();

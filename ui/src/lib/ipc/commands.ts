@@ -18,6 +18,7 @@ import type {
   MarkerDto,
   MarkerRangeKindDto,
   ModuleDescriptorDto,
+  NormalizeJobStartedDto,
   NrCaptureStartedDto,
   PeaksRequestDto,
   RackStateDto,
@@ -226,19 +227,29 @@ export async function editSilence(startSamples: number, endSamples: number): Pro
 }
 
 /**
- * S2-02: peak-normalizes `[startSamples, endSamples)` to `targetDb` dBFS sample peak (SPEC-010).
- * Callers resolve "no selection" to the whole file before calling.
+ * S2-02/H-09: starts a peak-normalize job for `[startSamples, endSamples)` (SPEC-010), targeting
+ * either `targetDb` dBFS sample peak or `targetPct` % of full scale (exactly one non-null).
+ * Callers resolve "no selection" to the whole file before calling. Progress arrives as
+ * `job_progress` events (kind `normalize_peak`); the finished edit result as `normalize_result`.
  */
-export async function editNormalizePeak(
+export async function editNormalizePeakStart(
   startSamples: number,
   endSamples: number,
-  targetDb: number,
-): Promise<EditResultDto> {
-  return invoke<EditResultDto>("edit_normalize_peak" satisfies CommandName, {
+  targetDb: number | null,
+  targetPct: number | null,
+): Promise<NormalizeJobStartedDto> {
+  return invoke<NormalizeJobStartedDto>("edit_normalize_peak_start" satisfies CommandName, {
     startSamples,
     endSamples,
     targetDb,
+    targetPct,
   });
+}
+
+/** S2-02/H-09: cancels a running peak-normalize job (best-effort; leaves the document untouched,
+ * SPEC-010 §2.8). */
+export async function editNormalizePeakCancel(jobId: number): Promise<void> {
+  return invoke<void>("edit_normalize_peak_cancel" satisfies CommandName, { jobId });
 }
 
 /** S2-01: undoes the top history entry. */
@@ -328,20 +339,25 @@ export async function nrCaptureCancel(jobId: number): Promise<void> {
 }
 
 /**
- * S4-01: LUFS-normalizes `[startSamples, endSamples)` to `targetLufs` integrated loudness
- * (BS.1770/EBU R128). Callers resolve "no selection" to the whole file before calling, same
- * convention as `editNormalizePeak`.
+ * S4-01/H-09: starts a LUFS-normalize job for `[startSamples, endSamples)` targeting `targetLufs`
+ * integrated loudness (BS.1770/EBU R128). Callers resolve "no selection" to the whole file before
+ * calling, same convention as `editNormalizePeakStart` (mirrors it; no % mode).
  */
-export async function editNormalizeLufs(
+export async function editNormalizeLufsStart(
   startSamples: number,
   endSamples: number,
   targetLufs: number,
-): Promise<EditResultDto> {
-  return invoke<EditResultDto>("edit_normalize_lufs" satisfies CommandName, {
+): Promise<NormalizeJobStartedDto> {
+  return invoke<NormalizeJobStartedDto>("edit_normalize_lufs_start" satisfies CommandName, {
     startSamples,
     endSamples,
     targetLufs,
   });
+}
+
+/** S4-01/H-09: cancels a running LUFS-normalize job (mirrors `editNormalizePeakCancel`). */
+export async function editNormalizeLufsCancel(jobId: number): Promise<void> {
+  return invoke<void>("edit_normalize_lufs_cancel" satisfies CommandName, { jobId });
 }
 
 /**

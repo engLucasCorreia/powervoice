@@ -36,7 +36,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 |---|---|---|---|---|
 | S4-01 | Loudness analysis + LUFS normalize | S | S2-02, S1-01 | todo |
 | S4-02 | Export WAV / FLAC / MP3 (LAME via libloading) + ACX preset | S | S1-03, S1-02 | todo |
-| S4-03 | ACX check report | S | S4-01 | todo (ticket later) |
+| S4-03 | ACX check report | S | S4-01 | todo |
 
 ### Hardening & backlog
 | ID | Title | Tier | Status |

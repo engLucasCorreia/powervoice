@@ -15,6 +15,8 @@ mod dto;
 mod error;
 mod events;
 mod macros;
+mod record_commands;
+mod record_dto;
 
 // A glob import, not a named one: `#[tauri::command]` also generates a hidden macro alongside
 // each command function (in the macro namespace), and `tauri::generate_handler!` below needs
@@ -29,6 +31,8 @@ pub use document_dto::{DocumentDto, PeaksRequestDto};
 pub use dto::AppInfo;
 pub use error::{IpcError, IpcErrorCode};
 pub use events::{EVENT_NAME_VARIANTS, EVENT_NAMES, EventName, Notice, NoticeLevel, emit_notice};
+pub use record_commands::*;
+pub use record_dto::{RecordStateDto, engine_monitor_mode};
 
 // T-007 / ADR-009: the dev-only platform spike registers its commands here too (rather than
 // duplicating `ipc_commands!`/`invoke_handler` machinery) only when built with `--features
@@ -53,6 +57,11 @@ crate::ipc_commands!(
     transport_seek,
     telemetry_subscribe,
     clock_now_ns,
+    record_get,
+    record_arm,
+    record_start,
+    record_stop,
+    record_set_monitor,
     document_open,
     document_save,
     document_save_as,
@@ -75,6 +84,11 @@ crate::ipc_commands!(
     transport_seek,
     telemetry_subscribe,
     clock_now_ns,
+    record_get,
+    record_arm,
+    record_start,
+    record_stop,
+    record_set_monitor,
     document_open,
     document_save,
     document_save_as,

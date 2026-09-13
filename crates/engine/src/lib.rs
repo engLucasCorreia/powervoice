@@ -13,15 +13,23 @@
 //! - [`telemetry`]: `VXTM` frames (playhead anchor + output meter) at 60 Hz.
 //! - Internals: `control` (16.7 ms tick, device handling), `output` (the RT output callback),
 //!   `reader` (prefetch + resampling), `rt` (ring element types).
+//!
+//! Recording (S1-04, SPEC-002 §2.1–§2.3, §2.7 Off/Dry):
+//! - [`record`]: arm, record start/stop, the take hand-off ([`record::RecordDone`]), monitoring.
+//! - Internals: `input` (the RT input callback: meter, clip, capture + monitor rings),
+//!   `capture` (the capture-writer and take-sync threads).
 
 pub mod backend;
+mod capture;
 mod control;
 pub mod device_state;
 pub mod devices;
 mod engine;
+mod input;
 mod output;
 pub mod prefs;
 mod reader;
+pub mod record;
 mod rt;
 pub mod telemetry;
 pub mod transport;
@@ -36,6 +44,7 @@ pub use engine::{
     PlaybackDoc,
 };
 pub use prefs::DevicePrefs;
+pub use record::{MonitorMode, RecordDone, RecordError, RecordState, RecordingResult, StopReason};
 pub use telemetry::{TelemetryFrame, TelemetrySink};
 pub use transport::{TransportCommand, TransportState};
 

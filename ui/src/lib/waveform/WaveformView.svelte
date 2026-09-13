@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { documentState } from "../document/document.svelte";
+  import { documentState, hasDocument } from "../document/document.svelte";
   import { t } from "../i18n";
   import { peaksGet } from "../ipc/commands";
   import { registerAction } from "../keymap";
@@ -47,7 +47,7 @@
 
   const lenSamples = $derived(doc.current.len_samples);
   const rateHz = $derived(doc.current.sample_rate_hz);
-  const isOpen = $derived(doc.current.name !== null);
+  const isOpen = $derived(hasDocument(doc.current));
 
   // Zoom-full the first time a newly opened document's audio (rate + length — not just its path,
   // so Save As to a new path/format doesn't re-fit the still-unchanged audio) gets a known

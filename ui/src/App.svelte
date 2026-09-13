@@ -12,6 +12,7 @@
   import RackPanel from "./lib/layout/RackPanel.svelte";
   import Toolbar from "./lib/layout/Toolbar.svelte";
   import NoticeHost from "./lib/notices/NoticeHost.svelte";
+  import { initRecord } from "./lib/state/record.svelte";
   import { loadSettings } from "./lib/state/settings.svelte";
   import { initTransport } from "./lib/state/transport.svelte";
 
@@ -30,6 +31,9 @@
   onMount(() => {
     void loadSettings();
   });
+
+  // S1-04: record panel (arm, Record + Shift+R, input meter).
+  onMount(() => initRecord());
 
   onMount(() => {
     let disposed = false;

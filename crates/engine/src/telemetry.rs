@@ -113,9 +113,108 @@ impl Meter {
     }
 }
 
+/// RMS window of the input meter (SPEC-002 §3 `meter_rms_window_ms`).
+pub(crate) const INPUT_RMS_WINDOW_MS: u64 = 300;
+
+/// Input meter (SPEC-002 §2.1): peak max-hold since the previous frame, unweighted RMS over a
+/// sliding rectangular window of ≥ 300 ms (block granularity), and the clip flag.
+#[derive(Debug, Default)]
+pub(crate) struct InputMeter {
+    peak: f32,
+    /// A block arrived since the last frame (otherwise the last frame's peak is held: input
+    /// blocks can be longer than a telemetry period).
+    fresh: bool,
+    last_peak: f32,
+    clip: bool,
+    window: std::collections::VecDeque<(u32, f64)>,
+    frames: u64,
+    sum_sq: f64,
+    window_frames: u64,
+}
+
+impl InputMeter {
+    /// Clears the meter for a stream at `rate_hz`.
+    pub(crate) fn reset(&mut self, rate_hz: u32) {
+        *self = Self {
+            window_frames: u64::from(rate_hz) * INPUT_RMS_WINDOW_MS / 1000,
+            ..Self::default()
+        };
+    }
+
+    pub(crate) fn add(&mut self, frames: u32, peak: f32, sum_sq: f64, clipped: bool) {
+        self.peak = self.peak.max(peak);
+        self.fresh = true;
+        self.clip |= clipped;
+        self.window.push_back((frames, sum_sq));
+        self.frames += u64::from(frames);
+        self.sum_sq += sum_sq;
+        while let Some(&(f, s)) = self.window.front() {
+            if self.frames - u64::from(f) < self.window_frames {
+                break;
+            }
+            self.window.pop_front();
+            self.frames -= u64::from(f);
+            self.sum_sq = (self.sum_sq - s).max(0.0);
+        }
+    }
+
+    /// `(peak dBFS since the last call — held when no block arrived —, window RMS dBFS, clipped
+    /// since the last call)`.
+    pub(crate) fn take(&mut self) -> (f32, f32, bool) {
+        let rms = if self.frames > 0 {
+            (self.sum_sq / self.frames as f64).sqrt()
+        } else {
+            0.0
+        };
+        if self.fresh {
+            self.last_peak = self.peak;
+        }
+        let out = (to_dbfs(f64::from(self.last_peak)), to_dbfs(rms), self.clip);
+        self.peak = 0.0;
+        self.fresh = false;
+        self.clip = false;
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sine with peak −20 dBFS reads −23.0 dB RMS (SPEC-002 §2.1); the window slides.
+    #[test]
+    fn input_meter_rms_window_and_peak_hold() {
+        let rate = 48_000u32;
+        let mut m = InputMeter::default();
+        m.reset(rate);
+        let amp = 0.1f64;
+        let block: Vec<f64> = (0..480)
+            .map(|i| amp * (std::f64::consts::TAU * 1000.0 * f64::from(i) / f64::from(rate)).sin())
+            .collect();
+        let sum: f64 = block.iter().map(|x| x * x).sum();
+        for _ in 0..100 {
+            m.add(480, amp as f32, sum, false);
+        }
+        let (peak_db, rms_db, clip) = m.take();
+        assert!((peak_db + 20.0).abs() < 1e-3);
+        assert!((rms_db + 23.0103).abs() < 0.01, "{rms_db}");
+        assert!(!clip);
+        // Silence for > 300 ms empties the window; peak resets per frame.
+        for _ in 0..31 {
+            m.add(480, 0.0, 0.0, false);
+        }
+        let (peak_db, rms_db, _) = m.take();
+        assert!(peak_db.is_infinite() && rms_db.is_infinite(), "{rms_db}");
+        m.add(480, 0.5, 0.0, false);
+        let _ = m.take();
+        assert!(
+            (m.take().0 + 6.0206).abs() < 1e-3,
+            "a frame without a new block holds the peak"
+        );
+        m.add(10, 1.0, 1.0, true);
+        assert!(m.take().2, "clip flag");
+        assert!(!m.take().2, "clip flag resets");
+    }
 
     #[test]
     fn vxtm_layout() {

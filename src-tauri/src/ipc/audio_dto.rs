@@ -70,6 +70,8 @@ pub struct DeviceDto {
     pub base_name: String,
     pub input: bool,
     pub output: bool,
+    /// Input channels (S1-04 channel dropdown; 0 while unknown).
+    pub input_channels: u16,
     /// A "follow the system default" pseudo-device.
     pub system_default: bool,
     /// Its capture side monitors an output (hidden from the input list).
@@ -88,6 +90,7 @@ impl From<&DeviceInfo> for DeviceDto {
             base_name: d.base_name.clone(),
             input: d.supports(Direction::Input),
             output: d.supports(Direction::Output),
+            input_channels: d.caps(Direction::Input).map_or(0, |c| c.max_channels),
             system_default: d.system_default,
             input_is_monitor: d.input_is_monitor,
             output_rates_hz: caps.map(offered_sample_rates).unwrap_or_default(),
@@ -112,6 +115,9 @@ pub struct DevicesDto {
     pub output_rate_hz: Option<u32>,
     pub output_buffer_frames: Option<u32>,
     pub output_status: DeviceStatusDto,
+    /// The configured input device and its status dot (S1-04).
+    pub input_device: Option<String>,
+    pub input_status: DeviceStatusDto,
 }
 
 impl From<&DevicesView> for DevicesDto {
@@ -130,6 +136,8 @@ impl From<&DevicesView> for DevicesDto {
                 _ => None,
             },
             output_status: v.output_status.into(),
+            input_device: v.input_device.clone(),
+            input_status: v.input_status.into(),
         }
     }
 }

@@ -26,6 +26,22 @@
     const name = view.output_device ?? view.prefs.output_device;
     return view.devices.find((d) => d.name === name) ?? null;
   });
+  const selectedInput = $derived.by(() => {
+    if (!view) {
+      return null;
+    }
+    const name = view.input_device ?? view.prefs.input_device;
+    return view.devices.find((d) => d.name === name) ?? null;
+  });
+  const inputChannels = $derived(
+    Array.from(
+      { length: Math.max(selectedInput?.input_channels ?? 0, view?.prefs.input_channel ?? 1, 1) },
+      (_, i) => i + 1,
+    ),
+  );
+  const inputStatus = $derived(
+    view ? tDynamic(`devices.input_status.${view.input_status}`, { device: view.input_device ?? "" }) : "",
+  );
   const rates = $derived(selectedOutput?.output_rates_hz ?? []);
   const buffers = $derived(selectedOutput?.output_buffer_sizes ?? []);
   const status = $derived(
@@ -153,6 +169,19 @@
         </select>
       </label>
       <label>
+        <span>{t("devices.input_channel")}</span>
+        <select
+          data-testid="devices-input-channel"
+          value={String(view.prefs.input_channel)}
+          disabled={busy || view.prefs.input_device === null}
+          onchange={(e) => void apply({ input_channel: Number(e.currentTarget.value) })}
+        >
+          {#each inputChannels as channel (channel)}
+            <option value={String(channel)}>{t("devices.channel", { n: channel })}</option>
+          {/each}
+        </select>
+      </label>
+      <label>
         <span>{t("devices.sample_rate")}</span>
         <select
           data-testid="devices-rate"
@@ -181,6 +210,7 @@
         </select>
       </label>
       <p class="status" data-testid="devices-status" data-status={view.output_status}>{status}</p>
+      <p class="status" data-testid="devices-input-status" data-status={view.input_status}>{inputStatus}</p>
     {:else}
       <p>{t("devices.loading")}</p>
     {/if}

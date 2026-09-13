@@ -59,6 +59,9 @@ pub(crate) enum AudioCmd {
     Seek { epoch: u32, pos: u64 },
     /// Fade out and go idle (reports [`RtEvent::Stopped`]).
     Stop,
+    /// Dry monitoring on/off (≤ 10 ms fade, SPEC-002 §2.7); `prefill_frames` = the monitor-ring
+    /// fill F* to reach before the input is heard (ADR-002 §6).
+    Monitor { on: bool, prefill_frames: u32 },
 }
 
 /// Output callback → control (ADR-002 §4 step 5, §7).

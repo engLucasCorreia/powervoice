@@ -1,5 +1,6 @@
 <script lang="ts">
   import { t } from "../i18n";
+  import InputMeter from "../record/InputMeter.svelte";
   import { transportState } from "../state/transport.svelte";
 
   /** Meter scale floor (dBFS); the top is 0 dBFS. */
@@ -21,6 +22,7 @@
 
 <footer class="meter-bridge" data-testid="meter-bridge">
   <span>{t("panel.meters.title")}</span>
+  <InputMeter />
   <div
     class="meter"
     role="meter"

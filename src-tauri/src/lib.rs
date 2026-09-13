@@ -7,6 +7,7 @@ pub mod audio;
 pub mod document;
 pub mod ipc;
 pub mod logging;
+pub mod recording;
 pub mod settings;
 #[cfg(feature = "spike")]
 pub mod spike;
@@ -26,14 +27,23 @@ pub fn run() {
         .manage(settings::SettingsStore::load_default())
         .setup(|app| {
             // S1-01: the audio engine starts with the saved device prefs (SPEC-001 §2.5).
-            let prefs = app.state::<settings::SettingsStore>().get().device;
-            let engine = audio::start(app.handle(), &prefs)?;
+            let settings = app.state::<settings::SettingsStore>().get();
+            let engine = audio::start(app.handle(), &settings.device)?;
             // S1-03: the document service shares the engine handle (`set_document` after
             // open/save-as) and owns the one open session under the OS data dir.
-            app.manage(document::DocumentService::new(
+            let documents = document::DocumentService::new(
                 document::default_sessions_dir(),
                 engine.handle().clone(),
-            ));
+            );
+            // S1-04: recording into the document service (default format, saved monitoring).
+            let recording = recording::start(
+                app.handle(),
+                engine.handle().clone(),
+                documents.clone(),
+                &settings,
+            );
+            app.manage(documents);
+            app.manage(recording);
             app.manage(engine);
             Ok(())
         })

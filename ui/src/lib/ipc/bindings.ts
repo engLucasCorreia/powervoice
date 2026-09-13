@@ -7,7 +7,7 @@ export type AppInfo = { name: string, version: string, };
 
 export type BitDepth = "16" | "24" | "32f";
 
-export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "document_open" | "document_save" | "document_save_as" | "peaks_get";
+export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "document_open" | "document_save" | "document_save_as" | "peaks_get";
 
 export type DefaultFormatDto = { sample_rate_hz: number, bit_depth: BitDepth, };
 
@@ -23,6 +23,10 @@ name: string,
  * Display name.
  */
 base_name: string, input: boolean, output: boolean, 
+/**
+ * Input channels (S1-04 channel dropdown; 0 while unknown).
+ */
+input_channels: number, 
 /**
  * A "follow the system default" pseudo-device.
  */
@@ -94,7 +98,11 @@ prefs: DevicePrefsDto,
 /**
  * Applied output device, rate and buffer (`None` = Auto / not open).
  */
-output_device: string | null, output_rate_hz: number | null, output_buffer_frames: number | null, output_status: DeviceStatusDto, };
+output_device: string | null, output_rate_hz: number | null, output_buffer_frames: number | null, output_status: DeviceStatusDto, 
+/**
+ * The configured input device and its status dot (S1-04).
+ */
+input_device: string | null, input_status: DeviceStatusDto, };
 
 /**
  * `document_changed` event payload, and the result of `document_open`/`document_save`/
@@ -102,7 +110,7 @@ output_device: string | null, output_rate_hz: number | null, output_buffer_frame
  */
 export type DocumentDto = { name: string | null, path: string | null, sample_rate_hz: number, len_samples: number, dirty: boolean, audio_rev: number, };
 
-export type EventName = "notice" | "transport_state" | "devices_changed" | "document_changed";
+export type EventName = "notice" | "transport_state" | "devices_changed" | "record_state" | "document_changed";
 
 /**
  * Error shape returned by every command (ADR-003). `key` is an i18n key, `params` fills its
@@ -148,6 +156,39 @@ export type NoticeLevel = "info" | "warning" | "error";
  * any response whose `audio_rev` is not current"), not something this command refuses.
  */
 export type PeaksRequestDto = { request_id: number, audio_rev: number, spp: number, start_sample: number, count: number, };
+
+/**
+ * The record panel state (SPEC-002 §2.1–§2.2, §2.7).
+ */
+export type RecordStateDto = { 
+/**
+ * Configured input device (`None`: Arm and Record are unavailable).
+ */
+input_device: string | null, 
+/**
+ * Applied 1-based input channel.
+ */
+input_channel: number, input_status: DeviceStatusDto, 
+/**
+ * Input armed (never persisted).
+ */
+armed: boolean, 
+/**
+ * The input stream is open (meter running).
+ */
+input_open: boolean, 
+/**
+ * The open input's rate = the rate of a new recording.
+ */
+input_rate_hz: number | null, recording: boolean, 
+/**
+ * Stop was requested; the take is being finished and committed.
+ */
+finishing: boolean, monitor: MonitorMode, 
+/**
+ * Monitoring is audible now.
+ */
+monitoring: boolean, };
 
 /**
  * The whole settings file. `#[serde(default)]` at the container level means any field missing

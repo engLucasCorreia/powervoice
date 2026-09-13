@@ -7,14 +7,14 @@
 //!   thread and the call would wait for itself.
 //! - [`ManualEngine`] runs the same control logic inline, without threads, for deterministic
 //!   tests with the fake backend (the caller advances fake time and calls
-//!   [`ManualEngine::tick`]).
+//!   [`ManualEngine::tick`]); its capture-writer also runs inline.
 
 use std::fmt;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
-use vox_project::{ChunkStore, DocSnapshot};
+use vox_project::{ChunkStore, DocSnapshot, TakeCapture};
 use vox_rack::{RackModel, Registry};
 
 use crate::backend::{Backend, BufferRequest, DeviceSnapshot, HostId, app_now_ns};
@@ -22,6 +22,7 @@ use crate::control::{self, Control, ControlMsg};
 use crate::device_state::DeviceStatus;
 use crate::devices::DeviceNotice;
 use crate::prefs::DevicePrefs;
+use crate::record::{MonitorMode, RecordDone, RecordError, RecordState};
 use crate::telemetry::TelemetrySink;
 use crate::transport::{TransportCommand, TransportState};
 
@@ -61,6 +62,8 @@ pub enum EngineEvent {
     Devices(DevicesView),
     /// A device notice (fallback, not found, lost, reconnected, …).
     Notice(DeviceNotice),
+    /// The record panel state changed (S1-04).
+    Record(RecordState),
 }
 
 /// Devices as the Settings dialog shows them.
@@ -82,6 +85,10 @@ pub struct DevicesView {
     pub output_buffer: Option<BufferRequest>,
     /// Output status dot.
     pub output_status: DeviceStatus,
+    /// The configured input device (S1-04).
+    pub input_device: Option<String>,
+    /// Input status dot.
+    pub input_status: DeviceStatus,
 }
 
 /// Everything the engine needs at start.
@@ -98,6 +105,9 @@ pub struct EngineConfig {
     pub events: EventSink,
     /// App clock.
     pub clock: Clock,
+    /// Preferred rate of new recordings (Settings → Default format, SPEC-002 §2.2): the input
+    /// opens at it when the device supports it.
+    pub record_rate_hz: u32,
 }
 
 impl EngineConfig {
@@ -110,6 +120,7 @@ impl EngineConfig {
             prefs: DevicePrefs::default(),
             events: Arc::new(|_| {}),
             clock: Arc::new(app_now_ns),
+            record_rate_hz: 48_000,
         }
     }
 }
@@ -131,6 +142,9 @@ impl Engine {
             .spawn(move || {
                 let mut control = Control::new(config, Some(inbox));
                 control::run(&mut control, &rx);
+                // Handle calls made while shutting down (e.g. from a take's done callback on the
+                // writer thread) now fail fast instead of waiting for this thread.
+                drop(rx);
                 control.shutdown();
             })?;
         Ok(Self {
@@ -217,6 +231,45 @@ impl EngineHandle {
     pub fn set_telemetry_sink(&self, sink: Option<TelemetrySink>) {
         let _ = self.call(move |c| c.set_telemetry_sink(sink));
     }
+
+    /// Arms (opens the input stream, starts the input meter) or disarms. Locked on while
+    /// recording (S1-04, SPEC-002 §2.1).
+    pub fn set_armed(&self, armed: bool) -> Option<RecordState> {
+        self.call(move |c| c.set_armed(armed))
+    }
+
+    /// Sets the monitoring mode (Off / Dry).
+    pub fn set_monitor_mode(&self, mode: MonitorMode) -> Option<RecordState> {
+        self.call(move |c| c.set_monitor_mode(mode))
+    }
+
+    /// Preferred rate of new recordings; applies the next time the input opens.
+    pub fn set_record_rate(&self, rate_hz: u32) {
+        let _ = self.call(move |c| c.set_record_rate(rate_hz));
+    }
+
+    /// Starts recording into `capture` (from `Session::begin_take` at `doc_rate_hz`, which must
+    /// equal the input rate); `done` runs on the capture-writer thread when the take is finished
+    /// (see [`crate::record`]). On `Err` the take was not used: discard it.
+    pub fn record_start(
+        &self,
+        doc_rate_hz: u32,
+        capture: TakeCapture,
+        done: RecordDone,
+    ) -> Result<RecordState, RecordError> {
+        self.call(move |c| c.record_start(doc_rate_hz, capture, done))
+            .unwrap_or(Err(RecordError::EngineStopped))
+    }
+
+    /// Stops the recording (the take is finished and handed to its done callback).
+    pub fn record_stop(&self) -> Option<RecordState> {
+        self.call(|c| c.record_stop())
+    }
+
+    /// The record panel state.
+    pub fn record_state(&self) -> Option<RecordState> {
+        self.call(|c| c.record_state())
+    }
 }
 
 /// The engine without threads (deterministic tests, benches): the reader runs inline, devices are
@@ -276,6 +329,42 @@ impl ManualEngine {
     /// See [`EngineHandle::set_telemetry_sink`].
     pub fn set_telemetry_sink(&mut self, sink: Option<TelemetrySink>) {
         self.control.set_telemetry_sink(sink);
+    }
+
+    /// See [`EngineHandle::set_armed`].
+    pub fn set_armed(&mut self, armed: bool) -> RecordState {
+        self.control.set_armed(armed)
+    }
+
+    /// See [`EngineHandle::set_monitor_mode`].
+    pub fn set_monitor_mode(&mut self, mode: MonitorMode) -> RecordState {
+        self.control.set_monitor_mode(mode)
+    }
+
+    /// See [`EngineHandle::set_record_rate`].
+    pub fn set_record_rate(&mut self, rate_hz: u32) {
+        self.control.set_record_rate(rate_hz);
+    }
+
+    /// See [`EngineHandle::record_start`]. The capture-writer runs inline in [`Self::tick`]
+    /// and calls `done` from there.
+    pub fn record_start(
+        &mut self,
+        doc_rate_hz: u32,
+        capture: TakeCapture,
+        done: RecordDone,
+    ) -> Result<RecordState, RecordError> {
+        self.control.record_start(doc_rate_hz, capture, done)
+    }
+
+    /// See [`EngineHandle::record_stop`].
+    pub fn record_stop(&mut self) -> RecordState {
+        self.control.record_stop()
+    }
+
+    /// See [`EngineHandle::record_state`].
+    pub fn record_state(&self) -> RecordState {
+        self.control.record_state()
     }
 }
 

@@ -5,6 +5,7 @@ import type { BitDepth, DocumentDto, EventName, IpcError } from "../ipc/bindings
 import { documentOpen, documentSave, documentSaveAs } from "../ipc/commands";
 import { registerAction } from "../keymap";
 import { noticeFromIpcError } from "../notices/fromIpcError";
+import { t } from "../i18n";
 import { pushNotice } from "../state/notices.svelte";
 
 /**
@@ -73,10 +74,22 @@ function report(err: unknown): void {
 /** "name — PowerVoice", "name * — PowerVoice" when modified, or just "PowerVoice" with none
  * open (ticket: title "‹name› — PowerVoice" with `*` when modified). */
 export function titleFor(info: DocumentDto): string {
-  if (!info.name) {
+  const name = displayName(info);
+  if (!name) {
     return "PowerVoice";
   }
-  return `${info.name}${info.dirty ? " *" : ""} — PowerVoice`;
+  return `${name}${info.dirty ? " *" : ""} — PowerVoice`;
+}
+
+/** A document is open (S1-04: a never-saved recording has no name or path, but a rate). */
+export function hasDocument(info: DocumentDto): boolean {
+  return info.sample_rate_hz > 0;
+}
+
+/** The document's display name: its file name, "Untitled" for a never-saved recording, `null`
+ * when none is open. */
+export function displayName(info: DocumentDto): string | null {
+  return info.name ?? (hasDocument(info) ? t("document.untitled") : null);
 }
 
 function updateWindowTitle(info: DocumentDto): void {
@@ -125,11 +138,11 @@ export function resolveUnsavedPrompt(decision: UnsavedDecision): void {
 /**
  * Runs the unsaved-changes prompt first if the current document is dirty (SPEC-004 §2.8, simple
  * version), then `action` — unless the user cancels, or chose Save and it failed, in which case
- * `action` never runs. Returns whether `action` ran.
+ * `action` never runs. Returns whether `action` ran. S1-04's New Recording uses it too.
  */
-async function withUnsavedChangesGuard(action: () => Promise<void>): Promise<boolean> {
+export async function withUnsavedChangesGuard(action: () => Promise<void>): Promise<boolean> {
   if (doc.dirty) {
-    const decision = await askUnsavedChanges(doc.name ?? "");
+    const decision = await askUnsavedChanges(displayName(doc) ?? "");
     if (decision === "cancel") {
       return false;
     }
@@ -216,7 +229,7 @@ export async function initDocument(): Promise<() => void> {
         return;
       }
       event.preventDefault();
-      const decision = await askUnsavedChanges(doc.name ?? "");
+      const decision = await askUnsavedChanges(displayName(doc) ?? "");
       if (decision === "cancel") {
         return;
       }

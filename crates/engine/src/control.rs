@@ -1,8 +1,10 @@
 //! The control thread (ADR-002 §1): the only consumer of the engine inbox and the only producer
-//! of every queue into the audio thread. Owns the device configuration and the device-lost state
-//! machine, the output stream (with its rack host), the transport, the playback document and the
-//! telemetry sink. Ticks every ~16.7 ms (60 Hz telemetry): drains the RT events, ticks the rack
-//! host, checks stream flags and the stall detector, sends a telemetry frame.
+//! of every queue into the audio threads. Owns the device configuration and the device-lost state
+//! machine, the output stream (with its rack host), the input stream (S1-04: armed or
+//! recording), the recording and its capture-writer, the transport, the playback document and the
+//! telemetry sink. Ticks every ~16.7 ms (60 Hz telemetry): drains the RT events, services the
+//! capture-writer, ticks the rack host, checks stream flags and the stall detectors, sends a
+//! telemetry frame.
 
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -11,6 +13,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use rtrb::{Consumer, Producer, RingBuffer};
+use vox_project::TakeCapture;
 use vox_rack::{
     ActivateConfig, ChannelLayout, MAX_BLOCK, ProcessMode, RackHost, RackModel, RackOptions,
     Registry,
@@ -20,23 +23,37 @@ use crate::backend::{
     Backend, BackendError, BufferRequest, Direction, Enumerate, HostId, StallDetector,
     StreamHandle, StreamRequest, choose_default_host, flags,
 };
+use crate::capture::{self, CaptureHome, CaptureWriter, take_home};
 use crate::device_state::{Activity, DeviceAction, DeviceEvent, DeviceStateMachine, LinkState};
 use crate::devices::{
-    DEVICE_POLL_INTERVAL, DeviceList, DeviceNotice, DevicePollThread, DeviceWatcher, PollEvent,
-    resolve_devices, resolve_host,
+    DEVICE_POLL_INTERVAL, DeviceList, DeviceNotice, DevicePollThread, DeviceWatcher, InputChannel,
+    PollEvent, resolve_devices, resolve_host,
 };
 use crate::engine::{Clock, DevicesView, EngineConfig, EngineEvent, EventSink, PlaybackDoc};
+use crate::input::{
+    CAPTURE_RING_SECONDS, INPUT_CMD_CAPACITY, INPUT_EVENT_CAPACITY, InputCmd, InputEvent,
+    InputShared, InputSide, InputSideParts, MONITOR_RING_FRAMES, MonitorSlot, MonitorTx,
+    input_callback, stop_code, take_monitor,
+};
 use crate::output::{OutputCb, OutputParts, PartsSlot, take_parts};
 use crate::prefs::DevicePrefs;
 use crate::reader::{self, Reader, ReaderCmd};
+use crate::record::{MonitorMode, RecordDone, RecordError, RecordState, StopReason};
 use crate::rt::{
     AUDIO_CMD_CAPACITY, AudioCmd, PLAYBACK_RING_PACKETS, RT_EVENT_CAPACITY, RtCounters, RtEvent,
 };
-use crate::telemetry::{Meter, TelemetryFrame, TelemetrySink, vxtm_flags};
+use crate::telemetry::{InputMeter, Meter, TelemetryFrame, TelemetrySink, vxtm_flags};
 use crate::transport::{Action, Transport, TransportCommand, TransportState};
 
 /// Control tick = telemetry period (60 Hz, ADR-009).
 pub(crate) const TICK: Duration = Duration::from_nanos(16_666_667);
+
+/// A stop the input callback doesn't complete within this (stalled stream) is forced.
+const FORCE_FINISH_NS: u64 = 1_000_000_000;
+/// Inline (manual) writer: sync the take WAV every this many ticks (~1 s).
+const INLINE_SYNC_TICKS: u32 = 60;
+/// Callback period assumed for the monitor fill target when a stream doesn't report one.
+const UNKNOWN_PERIOD_FRAMES: u32 = 1024;
 
 /// Messages to the control thread.
 pub(crate) enum ControlMsg {
@@ -60,8 +77,52 @@ struct OutputStream {
     rate_hz: u32,
     doc_rate_hz: u32,
     buffer: BufferRequest,
+    nominal_frames: Option<u32>,
+    /// Generation of this stream's monitor ring.
+    monitor_gen: u32,
     /// The document rate converts to the stream rate (else the reader streams nothing).
     playable: bool,
+}
+
+/// The open input stream (S1-04).
+struct InputStream {
+    handle: StreamHandle,
+    cmds: Producer<InputCmd>,
+    events: Consumer<InputEvent>,
+    shared: Arc<InputShared>,
+    /// Where the dropped callback leaves its monitor producer.
+    slot: MonitorSlot,
+    /// The capture-ring consumer while no take uses it.
+    capture_rx: Option<Consumer<f32>>,
+    /// Where a finished capture-writer returns it.
+    capture_home: CaptureHome,
+    stall: StallDetector,
+    rate_hz: u32,
+    nominal_frames: Option<u32>,
+    /// Generation of the output monitor ring this input feeds (`None`: none).
+    monitor_gen: Option<u32>,
+}
+
+enum WriterLink {
+    /// The capture-writer thread (engine).
+    Thread(JoinHandle<()>),
+    /// Drained from the tick (manual engine).
+    Inline {
+        writer: Option<Box<CaptureWriter>>,
+        ticks: u32,
+    },
+}
+
+/// A take being captured or finished.
+struct Recording {
+    link: WriterLink,
+    shared: Arc<InputShared>,
+    rate_hz: u32,
+    /// Take samples captured so far, reached at app time `anchor_ns`.
+    captured: u64,
+    anchor_ns: u64,
+    /// App time Stop was requested (`Some`: finishing).
+    stop_at: Option<u64>,
 }
 
 /// Latest heard position reported by the output callback.
@@ -84,6 +145,17 @@ enum ReaderLink {
         join: Option<JoinHandle<()>>,
     },
     Inline(Box<Reader>),
+}
+
+fn is_input_notice(n: &DeviceNotice) -> bool {
+    matches!(
+        n,
+        DeviceNotice::ChannelFallback { .. }
+            | DeviceNotice::DeviceNotFound {
+                direction: Direction::Input,
+                ..
+            }
+    )
 }
 
 pub(crate) struct Control {
@@ -114,11 +186,32 @@ pub(crate) struct Control {
     telemetry: Option<TelemetrySink>,
     seq: u32,
     last_state: Option<TransportState>,
+    // --- Input / recording (S1-04) ---
+    /// Capture-writer on its own thread (`Engine`) or inline in the tick (`ManualEngine`).
+    threaded: bool,
+    /// Backend id of the configured input device (twins: lookup prefers it).
+    in_device_id: Option<String>,
+    input: Option<InputStream>,
+    /// The input's capabilities are still pending: resolve again on the next device diff.
+    input_pending: bool,
+    /// Selected input channel (shared with the input callback: switches without reopening).
+    in_channel: InputChannel,
+    armed: bool,
+    record_rate_hz: u32,
+    monitor_mode: MonitorMode,
+    monitor_active: bool,
+    /// Producer of the current output's monitor ring while no input stream holds it.
+    monitor_tx: Option<MonitorTx>,
+    monitor_gen: u32,
+    recording: Option<Recording>,
+    in_meter: InputMeter,
+    last_record: Option<RecordState>,
 }
 
 impl Control {
-    /// `inbox`: `Some` = threaded (reader and device-poll threads, poll events arrive through the
-    /// inbox); `None` = manual (reader inline, devices polled by [`Self::poll_devices`]).
+    /// `inbox`: `Some` = threaded (reader, device-poll and capture-writer threads, poll events
+    /// arrive through the inbox); `None` = manual (reader and writer inline, devices polled by
+    /// [`Self::poll_devices`]).
     pub(crate) fn new(config: EngineConfig, inbox: Option<mpsc::Sender<ControlMsg>>) -> Self {
         let EngineConfig {
             backend,
@@ -127,7 +220,9 @@ impl Control {
             prefs,
             events,
             clock,
+            record_rate_hz,
         } = config;
+        let threaded = inbox.is_some();
         let (reader, poll) = match inbox {
             Some(tx) => {
                 let (rtx, rrx) = mpsc::channel();
@@ -160,6 +255,7 @@ impl Control {
                 PollLink::Manual(None),
             ),
         };
+        let in_channel = InputChannel::new(prefs.input_channel);
         Self {
             backend,
             registry,
@@ -187,11 +283,43 @@ impl Control {
             telemetry: None,
             seq: 0,
             last_state: None,
+            threaded,
+            in_device_id: None,
+            input: None,
+            input_pending: false,
+            in_channel,
+            armed: false,
+            record_rate_hz: record_rate_hz.max(1),
+            monitor_mode: MonitorMode::Off,
+            monitor_active: false,
+            monitor_tx: None,
+            monitor_gen: 0,
+            recording: None,
+            in_meter: InputMeter::default(),
+            last_record: None,
         }
     }
 
-    /// Closes the stream and stops the helper threads.
+    /// Finishes a running take (kept), closes the streams and stops the helper threads.
     pub(crate) fn shutdown(&mut self) {
+        self.stop_recording(StopReason::Shutdown);
+        if let Some(rec) = self.recording.take() {
+            match rec.link {
+                WriterLink::Thread(join) => {
+                    let _ = join.join();
+                }
+                WriterLink::Inline {
+                    writer: Some(mut w),
+                    ..
+                } => {
+                    // Forced: the first drain completes.
+                    w.drain();
+                    (*w).finish();
+                }
+                WriterLink::Inline { writer: None, .. } => {}
+            }
+        }
+        self.close_input(false);
         self.close_output();
         self.poll = PollLink::None;
         if let ReaderLink::Thread { tx, join } = &mut self.reader {
@@ -237,6 +365,11 @@ impl Control {
         self.transport.len() > 0 && self.output.as_ref().is_some_and(|o| o.playable)
     }
 
+    /// A take is being captured (not yet stopping).
+    fn capturing(&self) -> bool {
+        self.recording.as_ref().is_some_and(|r| r.stop_at.is_none())
+    }
+
     // --- Transport -------------------------------------------------------------------------
 
     pub(crate) fn transport_state(&self) -> TransportState {
@@ -280,7 +413,26 @@ impl Control {
         }
     }
 
+    /// While recording, Stop / Pause / Play / Play-pause stop the take (SPEC-002 §2.2: the Stop
+    /// control and the Space key; the UI sends Play or Pause for Space) and every other transport
+    /// command is ignored (seeking is disabled while recording).
     pub(crate) fn transport_command(&mut self, cmd: TransportCommand) -> TransportState {
+        if self.recording.is_some() {
+            if self.capturing()
+                && matches!(
+                    cmd,
+                    TransportCommand::Stop
+                        | TransportCommand::Pause
+                        | TransportCommand::Play
+                        | TransportCommand::PlayPause
+                )
+            {
+                self.stop_recording(StopReason::User);
+                self.update_monitor();
+                self.emit_record_if_changed();
+            }
+            return self.transport_state();
+        }
         let heard = self.heard_now(self.now());
         let can_play = self.can_play();
         let alive = self.output.is_some();
@@ -371,18 +523,24 @@ impl Control {
             output_rate_hz: self.output.as_ref().map(|o| o.rate_hz),
             output_buffer: self.output.as_ref().map(|o| o.buffer),
             output_status: self.devices.status(Direction::Output),
+            input_device: self.devices.device(Direction::Input).map(str::to_owned),
+            input_status: self.devices.status(Direction::Input),
         }
     }
 
-    /// Applies new device preferences (Settings → Audio Devices). The input choice is only
-    /// stored until recording exists (S1-04).
+    /// Applies new device preferences (Settings → Audio Devices). Refused while recording
+    /// (device settings are disabled then, SPEC-002 §2.2): the current view is returned.
     pub(crate) fn select_devices(&mut self, prefs: DevicePrefs) -> DevicesView {
+        if self.recording.is_some() {
+            return self.devices_view();
+        }
         self.engine_stop();
         let new_host = if self.hosts.is_empty() {
             prefs.host.or(self.host)
         } else {
             resolve_host(prefs.host, &self.hosts, choose_default_host(&self.hosts)).map(|(h, _)| h)
         };
+        let input_changed = prefs.input_device != self.prefs.input_device;
         self.prefs = prefs;
         self.out_device_id = None;
         if new_host.is_some() && new_host != self.host {
@@ -390,17 +548,38 @@ impl Control {
             self.force_configure = true;
         } else {
             self.open_output(true);
+            if input_changed {
+                self.close_input(true);
+                self.in_device_id = None;
+                self.configure_input(true);
+                if self.armed {
+                    self.open_input();
+                }
+            } else {
+                // Same device: a new channel applies without reopening.
+                self.configure_input(false);
+            }
         }
         let view = self.devices_view();
         (self.events)(EngineEvent::Devices(view.clone()));
         self.emit_state_if_changed();
+        self.update_monitor();
+        self.emit_record_if_changed();
         view
     }
 
     fn switch_host(&mut self, host: Option<HostId>) {
+        if self.recording.is_some() {
+            self.stop_recording(StopReason::InputLost);
+        }
         self.close_output();
+        self.close_input(false);
         self.device_event(DeviceEvent::Configured {
             dir: Direction::Output,
+            device: None,
+        });
+        self.device_event(DeviceEvent::Configured {
+            dir: Direction::Input,
             device: None,
         });
         self.host = host;
@@ -472,40 +651,75 @@ impl Control {
                 {
                     self.open_output(false);
                 }
+                self.poll_input();
                 (self.events)(EngineEvent::Devices(self.devices_view()));
                 self.emit_state_if_changed();
+                self.update_monitor();
+                self.emit_record_if_changed();
             }
             PollEvent::Error { .. } => {}
         }
     }
 
+    /// Input side of a device diff: presence (loss/recovery), first configuration, deferred open.
+    fn poll_input(&mut self) {
+        if let Some(present) = self.input_present() {
+            self.device_event(DeviceEvent::Poll {
+                dir: Direction::Input,
+                present,
+            });
+        }
+        let state = self.devices.state(Direction::Input);
+        if self.input_pending
+            || (state == LinkState::NotSelected && self.prefs.input_device.is_some())
+        {
+            self.configure_input(false);
+        }
+        if self.armed
+            && self.input.is_none()
+            && matches!(
+                self.devices.state(Direction::Input),
+                LinkState::Idle | LinkState::NotSelected
+            )
+        {
+            self.open_input();
+        }
+    }
+
     /// Is the configured output device listed? Prefers its backend id (twin devices).
     fn output_present(&self) -> Option<bool> {
-        let name = self.devices.device(Direction::Output)?;
-        Some(match &self.out_device_id {
-            Some(id) => self
-                .list
-                .snapshot
-                .devices_for(Direction::Output)
-                .any(|d| &d.id == id),
-            None => self.list.is_present(name, Direction::Output),
+        self.present(Direction::Output, self.out_device_id.as_ref())
+    }
+
+    /// Is the configured input device listed? Prefers its backend id (twin devices).
+    fn input_present(&self) -> Option<bool> {
+        self.present(Direction::Input, self.in_device_id.as_ref())
+    }
+
+    fn present(&self, dir: Direction, id: Option<&String>) -> Option<bool> {
+        let name = self.devices.device(dir)?;
+        Some(match id {
+            Some(id) => self.list.snapshot.devices_for(dir).any(|d| &d.id == id),
+            None => self.list.is_present(name, dir),
         })
     }
 
     fn device_event(&mut self, ev: DeviceEvent) {
         let act = Activity {
             playing: self.transport.playing(),
-            recording: false,
-            monitoring: false,
+            recording: self.capturing(),
+            monitoring: self.monitor_active,
         };
         for action in self.devices.handle(ev, act) {
             match action {
                 DeviceAction::StopPlayback => self.engine_stop(),
+                DeviceAction::StopRecording => self.stop_recording(StopReason::InputLost),
+                DeviceAction::StopMonitoring => self.monitor_reset(),
                 DeviceAction::CloseStream(Direction::Output) => self.close_output(),
+                DeviceAction::CloseStream(Direction::Input) => self.close_input(false),
                 DeviceAction::ReopenStream(Direction::Output) => self.open_output(false),
+                DeviceAction::ReopenStream(Direction::Input) => self.open_input(),
                 DeviceAction::Notice(n) => self.notify(n),
-                // No input stream, recording or monitoring yet (S1-04).
-                _ => {}
             }
         }
     }
@@ -527,7 +741,7 @@ impl Control {
         let force = force || std::mem::take(&mut self.force_configure);
         self.pending_open = false;
         if force || self.devices.state(Direction::Output) == LinkState::NotSelected {
-            for n in &res.notices {
+            for n in res.notices.iter().filter(|n| !is_input_notice(n)) {
                 self.notify(n.clone());
             }
         }
@@ -576,6 +790,7 @@ impl Control {
         match self.build_output(&req, doc_rate) {
             Ok(out) => {
                 self.output = Some(out);
+                self.monitor_reset();
                 self.device_event(DeviceEvent::Opened {
                     dir: Direction::Output,
                     fallback,
@@ -585,6 +800,7 @@ impl Control {
                 dir: Direction::Output,
             }),
         }
+        self.update_monitor();
     }
 
     fn build_output(
@@ -612,6 +828,7 @@ impl Control {
         let (pkt_tx, pkt_rx) = RingBuffer::new(PLAYBACK_RING_PACKETS);
         let (cmd_tx, cmd_rx) = RingBuffer::new(AUDIO_CMD_CAPACITY);
         let (ev_tx, ev_rx) = RingBuffer::new(RT_EVENT_CAPACITY);
+        let (mon_tx, mon_rx) = RingBuffer::new(MONITOR_RING_FRAMES);
         let counters = Arc::new(RtCounters::default());
         let slot: PartsSlot = Arc::new(Mutex::new(None));
         let parts = OutputParts {
@@ -620,12 +837,14 @@ impl Control {
             cmds: cmd_rx,
             events: ev_tx,
             counters: counters.clone(),
+            monitor: mon_rx,
         };
         let cb = OutputCb::new(parts, slot.clone(), rate, doc_rate);
         match self.backend.open_output(req, Box::new(cb)) {
             Ok(handle) => {
                 let stall = StallDetector::new(handle.info(), self.now());
                 let buffer = handle.info().buffer;
+                let nominal_frames = handle.info().nominal_frames;
                 let playable = reader::resampler_for(doc_rate, rate).is_ok();
                 if !playable {
                     self.notify(DeviceNotice::ResampleUnavailable {
@@ -639,6 +858,8 @@ impl Control {
                     dev_rate_hz: rate,
                 });
                 self.last_underruns = 0;
+                self.monitor_gen = self.monitor_gen.wrapping_add(1);
+                self.monitor_tx = Some((self.monitor_gen, mon_tx));
                 Ok(OutputStream {
                     handle,
                     slot,
@@ -651,6 +872,8 @@ impl Control {
                     rate_hz: rate,
                     doc_rate_hz: doc_rate,
                     buffer,
+                    nominal_frames,
+                    monitor_gen: self.monitor_gen,
                     playable,
                 })
             }
@@ -686,6 +909,504 @@ impl Control {
         }
         self.reader_send(ReaderCmd::Detach);
         self.transport.stream_closed();
+        self.monitor_reset();
+    }
+
+    // --- Input (S1-04) ---------------------------------------------------------------------
+
+    /// Resolves the input device from the prefs without opening it (status, channel, notices).
+    fn configure_input(&mut self, force: bool) {
+        let Some(host) = self.host else { return };
+        let res = resolve_devices(&self.prefs, host, &self.list.snapshot);
+        if res.caps_pending {
+            self.input_pending = true;
+            return;
+        }
+        self.input_pending = false;
+        if force {
+            for n in res.notices.iter().filter(|n| is_input_notice(n)) {
+                self.notify(n.clone());
+            }
+        }
+        if let Some(i) = &res.input {
+            self.in_channel.set(i.channel);
+        }
+        let name = res.input.map(|i| i.device.name);
+        if force || name.as_deref() != self.devices.device(Direction::Input) {
+            if self.input.is_some() {
+                self.close_input(true);
+            }
+            self.in_device_id = name
+                .as_ref()
+                .and_then(|n| self.list.snapshot.get(n))
+                .map(|d| d.id.clone());
+            self.device_event(DeviceEvent::Configured {
+                dir: Direction::Input,
+                device: name,
+            });
+        }
+    }
+
+    /// Opens the input stream on the configured device (all channels, deinterleaved), at the
+    /// preferred record rate when the device supports it, else at its default rate.
+    fn open_input(&mut self) {
+        if self.input.is_some() {
+            return;
+        }
+        let Some(host) = self.host else { return };
+        let res = resolve_devices(&self.prefs, host, &self.list.snapshot);
+        if res.caps_pending {
+            self.input_pending = true;
+            return;
+        }
+        self.input_pending = false;
+        let Some(applied) = res.input.clone() else {
+            if self.devices.device(Direction::Input).is_some() {
+                self.device_event(DeviceEvent::Configured {
+                    dir: Direction::Input,
+                    device: None,
+                });
+            }
+            return;
+        };
+        let mut name = applied.device.name.clone();
+        if let Some(id) = &self.in_device_id
+            && let Some(d) = self
+                .list
+                .snapshot
+                .devices_for(Direction::Input)
+                .find(|d| &d.id == id)
+        {
+            name = d.name.clone();
+        }
+        let info = self.list.snapshot.get(&name).cloned();
+        self.in_device_id = info.as_ref().map(|d| d.id.clone());
+        let rate = match info.as_ref().and_then(|d| d.caps(Direction::Input)) {
+            Some(c) if !c.supports_rate(self.record_rate_hz) => c.default_rate_hz,
+            _ => self.record_rate_hz,
+        };
+        let Some(mut req) = res.input_request(rate) else {
+            return;
+        };
+        req.device.name = name.clone();
+        self.in_channel.set(applied.channel);
+        if self.devices.device(Direction::Input) != Some(name.as_str()) {
+            self.device_event(DeviceEvent::Configured {
+                dir: Direction::Input,
+                device: Some(name),
+            });
+        }
+        match self.build_input(&req) {
+            Ok(inp) => {
+                self.in_meter.reset(inp.rate_hz);
+                self.input = Some(inp);
+                self.device_event(DeviceEvent::Opened {
+                    dir: Direction::Input,
+                    fallback: false,
+                });
+            }
+            Err(_) => self.device_event(DeviceEvent::OpenFailed {
+                dir: Direction::Input,
+            }),
+        }
+        self.monitor_reset();
+        self.update_monitor();
+    }
+
+    fn build_input(&mut self, req: &StreamRequest) -> Result<InputStream, BackendError> {
+        let rate = req.sample_rate_hz;
+        let (cmd_tx, cmd_rx) = RingBuffer::new(INPUT_CMD_CAPACITY);
+        let (ev_tx, ev_rx) = RingBuffer::new(INPUT_EVENT_CAPACITY);
+        let (cap_tx, cap_rx) = RingBuffer::new(rate as usize * CAPTURE_RING_SECONDS);
+        let shared = Arc::new(InputShared::default());
+        let slot: MonitorSlot = Arc::new(Mutex::new(None));
+        let monitor = self.monitor_tx.take();
+        let monitor_gen = monitor.as_ref().map(|m| m.0);
+        let side = InputSide::new(InputSideParts {
+            cmds: cmd_rx,
+            events: ev_tx,
+            capture: cap_tx,
+            monitor,
+            shared: shared.clone(),
+            slot: slot.clone(),
+            rate_hz: rate,
+        });
+        let cb = input_callback(self.in_channel.clone(), side);
+        match self.backend.open_input(req, Box::new(cb)) {
+            Ok(handle) => Ok(InputStream {
+                stall: StallDetector::new(handle.info(), self.now()),
+                nominal_frames: handle.info().nominal_frames,
+                handle,
+                cmds: cmd_tx,
+                events: ev_rx,
+                shared,
+                slot,
+                capture_rx: Some(cap_rx),
+                capture_home: Arc::new(Mutex::new(None)),
+                rate_hz: rate,
+                monitor_gen,
+            }),
+            Err(e) => {
+                // The backend dropped the callback: its monitor producer is in the slot.
+                self.repark_monitor(&slot);
+                Err(e)
+            }
+        }
+    }
+
+    /// Takes a dropped input callback's monitor producer back if it still feeds the current
+    /// output's ring.
+    fn repark_monitor(&mut self, slot: &MonitorSlot) {
+        if let Some((gen_id, p)) = take_monitor(slot)
+            && self
+                .output
+                .as_ref()
+                .is_some_and(|o| o.monitor_gen == gen_id)
+        {
+            self.monitor_tx = Some((gen_id, p));
+        }
+    }
+
+    /// Drops the input stream. `deliberate`: a healthy stream closed on purpose (disarm, other
+    /// device) — not a loss.
+    fn close_input(&mut self, deliberate: bool) {
+        let Some(inp) = self.input.take() else {
+            return;
+        };
+        let InputStream { handle, slot, .. } = inp;
+        drop(handle);
+        self.repark_monitor(&slot);
+        if deliberate {
+            self.device_event(DeviceEvent::Closed {
+                dir: Direction::Input,
+            });
+        }
+        self.in_meter.reset(0);
+        self.monitor_reset();
+    }
+
+    fn drain_input(&mut self) {
+        let events: Vec<InputEvent> = {
+            let Some(inp) = self.input.as_mut() else {
+                return;
+            };
+            std::iter::from_fn(|| inp.events.pop().ok()).collect()
+        };
+        for e in events {
+            match e {
+                InputEvent::Block {
+                    frames,
+                    peak,
+                    sum_sq,
+                    clipped,
+                    capturing,
+                    captured,
+                    end_ns,
+                } => {
+                    self.in_meter.add(frames, peak, sum_sq, clipped);
+                    if capturing && let Some(rec) = self.recording.as_mut() {
+                        rec.captured = captured;
+                        rec.anchor_ns = end_ns;
+                    }
+                }
+                InputEvent::CaptureEnded { samples } => {
+                    if let Some(rec) = self.recording.as_mut() {
+                        rec.captured = samples;
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Recording (S1-04) -----------------------------------------------------------------
+
+    pub(crate) fn record_state(&self) -> RecordState {
+        RecordState {
+            input_device: self.devices.device(Direction::Input).map(str::to_owned),
+            input_channel: self.in_channel.get(),
+            input_status: self.devices.status(Direction::Input),
+            armed: self.armed,
+            input_open: self.input.is_some(),
+            input_rate_hz: self.input.as_ref().map(|i| i.rate_hz),
+            recording: self.capturing(),
+            finishing: self.recording.as_ref().is_some_and(|r| r.stop_at.is_some()),
+            monitor: self.monitor_mode,
+            monitoring: self.monitor_active,
+        }
+    }
+
+    fn emit_record_if_changed(&mut self) {
+        let state = self.record_state();
+        if self.last_record.as_ref() != Some(&state) {
+            self.last_record = Some(state.clone());
+            (self.events)(EngineEvent::Record(state));
+        }
+    }
+
+    /// Arms/disarms the input (opens/closes the input stream). Locked on while recording.
+    pub(crate) fn set_armed(&mut self, armed: bool) -> RecordState {
+        if armed || self.recording.is_none() {
+            self.armed = armed;
+            if armed {
+                self.open_input();
+            } else {
+                self.close_input(true);
+            }
+            self.update_monitor();
+            self.emit_record_if_changed();
+        }
+        self.record_state()
+    }
+
+    pub(crate) fn set_monitor_mode(&mut self, mode: MonitorMode) -> RecordState {
+        self.monitor_mode = mode;
+        self.relink_monitor();
+        self.update_monitor();
+        self.emit_record_if_changed();
+        self.record_state()
+    }
+
+    /// The rate the input opens at next time (the default recording format, SPEC-002 §2.2).
+    pub(crate) fn set_record_rate(&mut self, rate_hz: u32) {
+        self.record_rate_hz = rate_hz.max(1);
+    }
+
+    /// Starts capturing a take into `capture` (see [`crate::record`]). Opens (arms) the input if
+    /// needed; the take then begins with its first captured sample, otherwise with the first
+    /// sample captured at or after now (SPEC-002 §2.2 "Start").
+    pub(crate) fn record_start(
+        &mut self,
+        doc_rate_hz: u32,
+        capture: TakeCapture,
+        done: RecordDone,
+    ) -> Result<RecordState, RecordError> {
+        if self.recording.is_some() {
+            return Err(RecordError::AlreadyRecording);
+        }
+        if self.prefs.input_device.is_none() {
+            return Err(RecordError::NoInputDevice);
+        }
+        let was_open = self.input.is_some();
+        if !was_open {
+            self.armed = true;
+            self.open_input();
+        }
+        let now = self.now();
+        let Some(inp) = self.input.as_mut() else {
+            self.emit_record_if_changed();
+            return Err(RecordError::InputNotOpen);
+        };
+        if inp.rate_hz != doc_rate_hz {
+            return Err(RecordError::RateMismatch {
+                input_hz: inp.rate_hz,
+                doc_hz: doc_rate_hz,
+            });
+        }
+        let Some(mut rx) = inp
+            .capture_rx
+            .take()
+            .or_else(|| take_home(&inp.capture_home))
+        else {
+            return Err(RecordError::AlreadyRecording);
+        };
+        // Drop anything a previous (forced) take left behind.
+        let stale = rx.slots();
+        if stale > 0
+            && let Ok(chunk) = rx.read_chunk(stale)
+        {
+            chunk.commit_all();
+        }
+        inp.shared.reset_take();
+        let rate_hz = inp.rate_hz;
+        let shared = inp.shared.clone();
+        let writer = CaptureWriter::new(
+            rx,
+            capture,
+            shared.clone(),
+            inp.capture_home.clone(),
+            rate_hz,
+            done,
+        );
+        let link = if self.threaded {
+            match capture::spawn(writer) {
+                Ok(join) => WriterLink::Thread(join),
+                Err(e) => {
+                    // The capture ring went down with the writer: rebuild the input stream.
+                    self.close_input(false);
+                    self.open_input();
+                    return Err(RecordError::Writer(e.to_string()));
+                }
+            }
+        } else {
+            WriterLink::Inline {
+                writer: Some(Box::new(writer)),
+                ticks: 0,
+            }
+        };
+        let start_ns = if was_open { now } else { 0 };
+        if let Some(inp) = self.input.as_mut()
+            && inp.cmds.push(InputCmd::StartCapture { start_ns }).is_err()
+        {
+            shared.force_finish.store(true, Ordering::Release);
+        }
+        self.recording = Some(Recording {
+            link,
+            shared,
+            rate_hz,
+            captured: 0,
+            anchor_ns: now,
+            stop_at: None,
+        });
+        self.engine_stop();
+        self.update_monitor();
+        self.emit_record_if_changed();
+        Ok(self.record_state())
+    }
+
+    /// Stops the take (User): the input callback ends it at the capture time of now.
+    pub(crate) fn record_stop(&mut self) -> RecordState {
+        self.stop_recording(StopReason::User);
+        self.update_monitor();
+        self.emit_record_if_changed();
+        self.record_state()
+    }
+
+    fn stop_recording(&mut self, reason: StopReason) {
+        let now = self.now();
+        let Some(rec) = self.recording.as_mut() else {
+            return;
+        };
+        if rec.stop_at.is_some() && reason == StopReason::User {
+            return;
+        }
+        rec.stop_at.get_or_insert(now);
+        let code = match reason {
+            StopReason::User => stop_code::USER,
+            StopReason::InputLost => stop_code::INPUT_LOST,
+            StopReason::Shutdown => stop_code::SHUTDOWN,
+        };
+        rec.shared.stop_reason.store(code, Ordering::Relaxed);
+        let sent = reason == StopReason::User
+            && self.input.as_mut().is_some_and(|i| {
+                Arc::ptr_eq(&i.shared, &rec.shared)
+                    && i.cmds.push(InputCmd::StopCapture { stop_ns: now }).is_ok()
+            });
+        if !sent {
+            // No input to end the take at its stop time: finish with what was captured.
+            rec.shared.force_finish.store(true, Ordering::Release);
+        }
+    }
+
+    /// Drains an inline writer, forces a stop the input never completes, and reaps a finished
+    /// writer.
+    fn service_recording(&mut self, now: u64) {
+        let Some(rec) = self.recording.as_mut() else {
+            return;
+        };
+        if let Some(t) = rec.stop_at
+            && now.saturating_sub(t) >= FORCE_FINISH_NS
+        {
+            rec.shared.force_finish.store(true, Ordering::Release);
+        }
+        let finished = match &mut rec.link {
+            WriterLink::Thread(join) => join.is_finished(),
+            WriterLink::Inline { writer, ticks } => {
+                *ticks = ticks.wrapping_add(1);
+                let complete = match writer.as_mut() {
+                    Some(w) => {
+                        let complete = w.drain();
+                        if !complete && (*ticks).is_multiple_of(INLINE_SYNC_TICKS) {
+                            w.sync();
+                        }
+                        complete
+                    }
+                    None => true,
+                };
+                if complete && let Some(w) = writer.take() {
+                    (*w).finish();
+                }
+                complete
+            }
+        };
+        if finished {
+            if let Some(Recording {
+                link: WriterLink::Thread(join),
+                ..
+            }) = self.recording.take()
+            {
+                let _ = join.join();
+            }
+            self.update_monitor();
+        }
+    }
+
+    // --- Monitoring (S1-04: Off / Dry) -----------------------------------------------------
+
+    /// Monitoring off on both streams (the next [`Self::update_monitor`] recomputes it).
+    fn monitor_reset(&mut self) {
+        self.monitor_active = false;
+        if let Some(i) = self.input.as_mut() {
+            let _ = i.cmds.push(InputCmd::Monitor(false));
+        }
+        self.audio_cmd(AudioCmd::Monitor {
+            on: false,
+            prefill_frames: 0,
+        });
+    }
+
+    /// Dry monitoring is audible while armed or recording, with both streams open at one rate
+    /// and linked through the current monitor ring (no drift servo / rate conversion yet: T-107).
+    fn update_monitor(&mut self) {
+        let linked = match (&self.input, &self.output) {
+            (Some(i), Some(o)) => i.rate_hz == o.rate_hz && i.monitor_gen == Some(o.monitor_gen),
+            _ => false,
+        };
+        let want = linked
+            && (self.armed || self.recording.is_some())
+            && self.monitor_mode == MonitorMode::Dry;
+        if want == self.monitor_active {
+            return;
+        }
+        self.monitor_active = want;
+        let prefill = match (&self.input, &self.output) {
+            (Some(i), Some(o)) => {
+                // F* = input period + output period + 1 ms (ADR-002 §6).
+                i.nominal_frames.unwrap_or(UNKNOWN_PERIOD_FRAMES)
+                    + o.nominal_frames.unwrap_or(UNKNOWN_PERIOD_FRAMES)
+                    + o.rate_hz / 1000
+            }
+            _ => 0,
+        };
+        if let Some(i) = self.input.as_mut() {
+            let _ = i.cmds.push(InputCmd::Monitor(want));
+        }
+        self.audio_cmd(AudioCmd::Monitor {
+            on: want,
+            prefill_frames: prefill,
+        });
+    }
+
+    /// After the output was rebuilt, an armed (not recording) input feeds a stale monitor ring:
+    /// reopen it so it takes the new ring's producer.
+    fn relink_monitor(&mut self) {
+        if self.monitor_mode != MonitorMode::Dry || self.recording.is_some() || !self.armed {
+            return;
+        }
+        let stale = match (&self.input, &self.output) {
+            (Some(i), Some(o)) => {
+                i.rate_hz == o.rate_hz
+                    && i.monitor_gen != Some(o.monitor_gen)
+                    && self
+                        .monitor_tx
+                        .as_ref()
+                        .is_some_and(|m| m.0 == o.monitor_gen)
+            }
+            _ => false,
+        };
+        if stale {
+            self.close_input(false);
+            self.open_input();
+        }
     }
 
     // --- Tick ------------------------------------------------------------------------------
@@ -696,12 +1417,16 @@ impl Control {
             r.fill();
         }
         self.drain_rt();
+        self.drain_input();
+        self.service_recording(now);
         if let Some(out) = self.output.as_mut() {
             let _ = out.rack.tick();
         }
         self.check_stream(now);
+        self.relink_monitor();
         self.emit_telemetry(now);
         self.emit_state_if_changed();
+        self.emit_record_if_changed();
     }
 
     fn drain_rt(&mut self) {
@@ -748,28 +1473,48 @@ impl Control {
         }
     }
 
-    /// Stream flags and the stall detector (T-102 handoff): a stall counts as device loss.
+    /// Stream flags and the stall detectors (T-102 handoff): a stall counts as device loss.
     fn check_stream(&mut self, now: u64) {
-        let bits = {
-            let Some(out) = self.output.as_mut() else {
-                return;
-            };
+        let out_bits = self.output.as_mut().map_or(0, |out| {
             let status = out.handle.status().clone();
             let mut bits = status.take();
             if out.stall.check(status.callback_count(), now) {
                 bits |= flags::DEVICE_LOST;
             }
             bits
-        };
-        if bits != 0 {
+        });
+        if out_bits != 0 {
             self.device_event(DeviceEvent::Flags {
                 dir: Direction::Output,
-                bits,
+                bits: out_bits,
+            });
+        }
+        let in_bits = self.input.as_mut().map_or(0, |inp| {
+            let status = inp.handle.status().clone();
+            let mut bits = status.take();
+            if inp.stall.check(status.callback_count(), now) {
+                bits |= flags::DEVICE_LOST;
+            }
+            bits
+        });
+        if in_bits != 0 {
+            self.device_event(DeviceEvent::Flags {
+                dir: Direction::Input,
+                bits: in_bits,
             });
         }
     }
 
+    /// Telemetry anchor: the heard position while playing, the take position while recording.
     fn anchor_now(&self, now: u64) -> (u64, u64, f64) {
+        if let Some(rec) = self.recording.as_ref() {
+            let rate = if rec.stop_at.is_none() {
+                f64::from(rec.rate_hz)
+            } else {
+                0.0
+            };
+            return (rec.captured, rec.anchor_ns, rate);
+        }
         if !self.transport.playing() {
             return (self.transport.playhead(), now, 0.0);
         }
@@ -783,6 +1528,11 @@ impl Control {
 
     fn emit_telemetry(&mut self, now: u64) {
         let (peak, peak_db, rms_db) = self.meter.take();
+        let (in_peak_db, in_rms_db, in_clip) = if self.input.is_some() {
+            self.in_meter.take()
+        } else {
+            (f32::NEG_INFINITY, f32::NEG_INFINITY, false)
+        };
         if self.telemetry.is_none() {
             self.xrun = false;
             return;
@@ -792,11 +1542,20 @@ impl Control {
         if self.transport.playing() {
             bits |= vxtm_flags::PLAYING;
         }
+        if self.capturing() {
+            bits |= vxtm_flags::RECORDING;
+        }
+        if self.monitor_active {
+            bits |= vxtm_flags::MONITORING;
+        }
         if self.xrun {
             bits |= vxtm_flags::XRUN;
         }
         if peak >= 1.0 {
             bits |= vxtm_flags::OUT_CLIP;
+        }
+        if in_clip {
+            bits |= vxtm_flags::IN_CLIP;
         }
         let dropped = self.output.as_ref().map_or(0, |o| {
             let rack = u32::try_from(o.rack.dropped_rt_events()).unwrap_or(u32::MAX);
@@ -805,6 +1564,11 @@ impl Control {
                 .load(Ordering::Relaxed)
                 .saturating_add(rack)
         });
+        let dropped = dropped.saturating_add(
+            self.input
+                .as_ref()
+                .map_or(0, |i| i.shared.dropped_events.load(Ordering::Relaxed)),
+        );
         let frame = TelemetryFrame {
             seq: self.seq,
             flags: bits,
@@ -813,8 +1577,8 @@ impl Control {
             rate,
             out_peak_dbfs: peak_db,
             out_rms_dbfs: rms_db,
-            in_peak_dbfs: f32::NEG_INFINITY,
-            in_rms_dbfs: f32::NEG_INFINITY,
+            in_peak_dbfs: in_peak_db,
+            in_rms_dbfs: in_rms_db,
             audio_rev: self.doc.as_ref().map_or(0, |d| d.snapshot.audio_rev),
             dropped_rt_events: dropped,
         };

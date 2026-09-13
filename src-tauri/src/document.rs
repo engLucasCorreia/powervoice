@@ -9,7 +9,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use vox_engine::{EngineHandle, PlaybackDoc};
-use vox_project::{ProjectError, Session, SessionConfig, SnapshotReader};
+use vox_project::{
+    FinishedTake, ProjectError, Session, SessionConfig, SnapshotReader, TakeCapture, TakeId,
+    TakeMode, TakeWriterOptions,
+};
 
 use crate::ipc::{IpcError, IpcErrorCode};
 use crate::settings::BitDepth;
@@ -22,6 +25,9 @@ const CLOSE_RETRY_DELAY: Duration = Duration::from_millis(5);
 /// Give up after this many retries (200 ms total) and leave the directory for a future GC pass
 /// (session recovery/GC at start-up is out of this ticket's scope, MEMORY.md follow-up).
 const CLOSE_RETRY_ATTEMPTS: u32 = 40;
+/// S1-04: `commit_take` attempts before giving up (the take then stays open for recovery).
+const COMMIT_ATTEMPTS: u32 = 3;
+const COMMIT_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 /// The OS data dir's `sessions` subfolder (mirrors `settings::project_dirs`'s convention; no
 /// state dir on macOS/Windows, so those fall back to the data dir like `logging.rs` does).
@@ -32,12 +38,11 @@ pub fn default_sessions_dir() -> PathBuf {
     }
 }
 
-/// One open document: its session plus the path/format it's bound to (`None` path = never saved
-/// — doesn't arise in this ticket, every document is opened from an existing WAV, SPEC-005 §2.6
-/// "new recording" row is S1-04/M3 scope).
+/// One open document: its session plus the path/format it's bound to (`None` path = never saved:
+/// a new recording, S1-04).
 struct OpenDocument {
     session: Session,
-    path: PathBuf,
+    path: Option<PathBuf>,
     save_bits: BitDepth,
 }
 
@@ -51,7 +56,8 @@ pub struct PeaksResult {
 }
 
 /// Everything a `document_changed` event / `document_open`/`document_save`/`document_save_as`
-/// result needs. `name: None` means no document is open.
+/// result needs. `sample_rate_hz == 0` means no document is open; an untitled document (a new
+/// recording, S1-04) has `name` and `path` `None`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DocumentInfo {
     pub name: Option<String>,
@@ -76,6 +82,11 @@ pub struct DocumentService(Arc<Inner>);
 
 fn no_document() -> IpcError {
     IpcError::new(IpcErrorCode::NotFound, "error.document.none")
+}
+
+/// Save of a never-saved document (S1-04 recording): the frontend routes it to Save As.
+fn untitled() -> IpcError {
+    IpcError::new(IpcErrorCode::InvalidArgument, "error.document.untitled")
 }
 
 /// Maps a [`ProjectError`] to an [`IpcError`], reusing its i18n key (`ProjectError::i18n_key`).
@@ -151,9 +162,10 @@ fn info_of(doc: Option<&OpenDocument>) -> DocumentInfo {
     DocumentInfo {
         name: doc
             .path
-            .file_name()
+            .as_ref()
+            .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned()),
-        path: Some(doc.path.to_string_lossy().into_owned()),
+        path: doc.path.as_ref().map(|p| p.to_string_lossy().into_owned()),
         sample_rate_hz: doc.session.sample_rate_hz(),
         len_samples: snapshot.len_samples,
         dirty: doc.session.is_dirty(),
@@ -209,6 +221,9 @@ impl DocumentService {
     /// responsible for the unsaved-changes prompt — SPEC-004 §2.8 "simple version", ticket scope
     /// — before calling this).
     pub fn open(&self, path: &Path) -> Result<DocumentInfo, IpcError> {
+        if self.is_recording() {
+            return Err(IpcError::not_while_recording());
+        }
         let (rate, _channels, mut source) = vox_io::read_wav(path).map_err(io_open_error)?;
         let save_bits = save_bits_for(source.format());
         let mut session = Session::create(&self.0.sessions_dir, SessionConfig::new(rate))
@@ -226,7 +241,7 @@ impl DocumentService {
         let mut guard = self.0.open.lock().unwrap();
         let previous = guard.replace(OpenDocument {
             session,
-            path: path.to_path_buf(),
+            path: Some(path.to_path_buf()),
             save_bits,
         });
         let info = info_of(guard.as_ref());
@@ -238,12 +253,12 @@ impl DocumentService {
     }
 
     /// Writes the current revision back to its bound path at its bound format (SPEC-005 §2.7).
-    /// The frontend routes "Save" with no bound path (never arises in this ticket: every
-    /// document is opened from a file) through `document_save_as` instead.
+    /// The frontend routes "Save" with no bound path (an untitled recording, S1-04) through
+    /// `document_save_as` instead; here it is refused (`error.document.untitled`).
     pub fn save(&self) -> Result<DocumentInfo, IpcError> {
         let mut guard = self.0.open.lock().unwrap();
         let doc = guard.as_mut().ok_or_else(no_document)?;
-        let path = doc.path.clone();
+        let path = doc.path.clone().ok_or_else(untitled)?;
         let bits = doc.save_bits;
         save_to(doc, &path, bits)?;
         Ok(info_of(guard.as_ref()))
@@ -254,7 +269,7 @@ impl DocumentService {
         let mut guard = self.0.open.lock().unwrap();
         let doc = guard.as_mut().ok_or_else(no_document)?;
         save_to(doc, path, bits)?;
-        doc.path = path.to_path_buf();
+        doc.path = Some(path.to_path_buf());
         doc.save_bits = bits;
         Ok(info_of(guard.as_ref()))
     }
@@ -273,6 +288,106 @@ impl DocumentService {
             sample_rate_hz: snapshot.sample_rate_hz,
             buckets,
         })
+    }
+
+    fn is_recording(&self) -> bool {
+        self.0
+            .open
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|d| d.session.is_recording())
+    }
+
+    /// S1-04: prepares a new recording at `rate_hz` (the input stream's rate, SPEC-002 §2.2). An
+    /// open, empty document at that rate records into itself; otherwise a new untitled document
+    /// (default save format `save_bits`) replaces the current one — for a document with audio
+    /// only with `replace` (the frontend ran the unsaved-changes prompt first). Returns the take
+    /// to hand to `EngineHandle::record_start` and the document's facts.
+    pub fn begin_recording(
+        &self,
+        rate_hz: u32,
+        save_bits: BitDepth,
+        replace: bool,
+    ) -> Result<(TakeCapture, DocumentInfo), IpcError> {
+        let mut guard = self.0.open.lock().unwrap();
+        if guard.as_ref().is_some_and(|d| d.session.is_recording()) {
+            return Err(IpcError::not_while_recording());
+        }
+        let reusable = guard.as_ref().is_some_and(|d| {
+            d.session.current().len_samples == 0 && d.session.sample_rate_hz() == rate_hz
+        });
+        let mut previous = None;
+        if !reusable {
+            if !replace
+                && guard
+                    .as_ref()
+                    .is_some_and(|d| d.session.current().len_samples > 0)
+            {
+                return Err(IpcError::new(
+                    IpcErrorCode::InvalidArgument,
+                    "error.record.needs_replace",
+                ));
+            }
+            let session = Session::create(&self.0.sessions_dir, SessionConfig::new(rate_hz))
+                .map_err(document_error)?;
+            // The empty document also sets the output to the recording's rate (Dry monitoring
+            // needs one rate on both streams).
+            self.0.engine.set_document(Some(PlaybackDoc {
+                store: Arc::clone(session.store()),
+                snapshot: session.current(),
+            }));
+            previous = guard.replace(OpenDocument {
+                session,
+                path: None,
+                save_bits,
+            });
+        }
+        let doc = guard.as_mut().ok_or_else(no_document)?;
+        let capture = doc
+            .session
+            .begin_take(TakeMode::New, TakeWriterOptions::default())
+            .map_err(document_error)?;
+        let info = info_of(guard.as_ref());
+        drop(guard);
+        if let Some(previous) = previous {
+            close_with_retry(previous.session);
+        }
+        Ok((capture, info))
+    }
+
+    /// S1-04: closes a take the engine refused to record (no undo entry).
+    pub fn discard_take(&self, take: TakeId) {
+        let mut guard = self.0.open.lock().unwrap();
+        if let Some(doc) = guard.as_mut()
+            && let Err(error) = doc.session.discard_take(take)
+        {
+            tracing::warn!(%error, "discarding an unused take failed");
+        }
+    }
+
+    /// S1-04: commits a finished take as one undoable "Record" edit (`Session::commit_take`;
+    /// T-101 rules: retried, and on failure the take stays open for recovery) and makes the new
+    /// revision the engine's playback document. `Ok(None)`: an empty take, discarded.
+    pub fn commit_take(&self, finished: &FinishedTake) -> Result<Option<DocumentInfo>, IpcError> {
+        let mut guard = self.0.open.lock().unwrap();
+        let doc = guard.as_mut().ok_or_else(no_document)?;
+        let mut outcome = doc.session.commit_take(finished, &[]);
+        for _ in 1..COMMIT_ATTEMPTS {
+            if outcome.is_ok() {
+                break;
+            }
+            std::thread::sleep(COMMIT_RETRY_DELAY);
+            outcome = doc.session.commit_take(finished, &[]);
+        }
+        let Some(step) = outcome.map_err(document_error)? else {
+            return Ok(None);
+        };
+        self.0.engine.set_document(Some(PlaybackDoc {
+            store: Arc::clone(doc.session.store()),
+            snapshot: step.snapshot,
+        }));
+        Ok(Some(info_of(guard.as_ref())))
     }
 }
 
@@ -546,6 +661,56 @@ mod tests {
             transport.doc_len_samples,
             (0.1 * 48_000.0) as u64,
             "the engine now plays b.wav, not a.wav"
+        );
+    }
+
+    /// S1-04: a new recording is an untitled document; its take is committed as one undoable
+    /// edit the engine plays; Save refuses an untitled document, Save As binds it; Open is
+    /// refused while recording; a document with audio is replaced only with `replace`.
+    #[test]
+    fn recordings_become_untitled_documents() {
+        let (service, _engine, dir) = service("record");
+        let (mut capture, info) = service
+            .begin_recording(48_000, BitDepth::Bit24, false)
+            .unwrap();
+        assert_eq!(info.name, None);
+        assert_eq!(info.path, None);
+        assert_eq!((info.sample_rate_hz, info.len_samples), (48_000, 0));
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.05, 48_000).unwrap();
+        capture.append(&samples).unwrap();
+        let info = service
+            .commit_take(&capture.finish())
+            .unwrap()
+            .expect("one undoable edit");
+        assert_eq!(info.len_samples, samples.len() as u64);
+        assert!(info.dirty);
+        let transport = service.0.engine.transport_state();
+        assert_eq!(transport.doc_len_samples, samples.len() as u64);
+
+        assert_eq!(service.save().unwrap_err().key, "error.document.untitled");
+        let saved = dir.join("take.wav");
+        let info = service.save_as(&saved, BitDepth::Bit24).unwrap();
+        assert_eq!(info.name.as_deref(), Some("take.wav"));
+        assert!(!info.dirty);
+
+        let err = service
+            .begin_recording(48_000, BitDepth::Bit24, false)
+            .err()
+            .expect("a document with audio needs `replace`");
+        assert_eq!(err.key, "error.record.needs_replace");
+        let (capture, info) = service
+            .begin_recording(48_000, BitDepth::Bit24, true)
+            .unwrap();
+        assert_eq!((info.name, info.len_samples), (None, 0));
+        assert_eq!(
+            service.open(&saved).unwrap_err().code,
+            IpcErrorCode::NotWhileRecording
+        );
+        service.discard_take(capture.id());
+        drop(capture);
+        assert_eq!(
+            service.open(&saved).unwrap().name.as_deref(),
+            Some("take.wav")
         );
     }
 }

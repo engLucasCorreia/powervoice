@@ -8,7 +8,9 @@ use vox_engine::backend::cpal::CpalBackend;
 use vox_engine::{Engine, EngineConfig, EngineEvent, EngineHandle};
 use vox_rack::Registry;
 
-use crate::ipc::{DevicesDto, EventName, TransportStateDto, emit_notice, notice_from_device};
+use crate::ipc::{
+    DevicesDto, EventName, RecordStateDto, TransportStateDto, emit_notice, notice_from_device,
+};
 use crate::settings::DevicePrefsDto;
 
 /// The running engine, managed as Tauri state.
@@ -64,6 +66,10 @@ fn forward<R: Runtime>(app: &AppHandle<R>, event: EngineEvent) {
             tracing::info!(?notice, "audio device notice");
             emit_notice(app, notice_from_device(&notice))
         }
+        EngineEvent::Record(state) => app.emit(
+            EventName::record_state.as_str(),
+            RecordStateDto::from(&state),
+        ),
     };
     if let Err(e) = result {
         tracing::warn!(error = %e, "emitting an engine event failed");

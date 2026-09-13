@@ -12,7 +12,7 @@ import {
   transportSeek,
   transportStop,
 } from "../ipc/commands";
-import { VXTM_FLAGS, decodeVxtm, toArrayBuffer } from "../ipc/telemetry";
+import { VXTM_FLAGS, decodeVxtm, toArrayBuffer, type TelemetryFrame } from "../ipc/telemetry";
 import { registerAction } from "../keymap";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { ClockSync, PlayheadExtrapolator } from "../transport/playhead";
@@ -50,6 +50,16 @@ let playheadSamples = $state(0);
 let meter = $state<OutputMeter>({ ...SILENT });
 
 const extrapolator = new PlayheadExtrapolator();
+/** S1-04: other stores (the record panel) see every decoded telemetry frame. */
+const telemetryListeners = new Set<(frame: TelemetryFrame) => void>();
+
+/** Adds a telemetry frame listener; returns its removal. */
+export function addTelemetryListener(listener: (frame: TelemetryFrame) => void): () => void {
+  telemetryListeners.add(listener);
+  return () => {
+    telemetryListeners.delete(listener);
+  };
+}
 const clock = new ClockSync();
 
 /** Read-only accessor for components. */
@@ -116,6 +126,9 @@ export function onTelemetry(message: unknown): void {
   const frame = buf ? decodeVxtm(buf) : null;
   if (!frame) {
     return;
+  }
+  for (const listener of telemetryListeners) {
+    listener(frame);
   }
   meter = {
     peakDbfs: frame.outPeakDbfs,

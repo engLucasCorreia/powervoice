@@ -36,7 +36,11 @@ afterEach(() => {
 
 describe("titleFor (ticket: title '‹name› — PowerVoice' with * when modified)", () => {
   it("is just the app name with no document open", () => {
-    expect(titleFor(doc({ name: null }))).toBe("PowerVoice");
+    expect(titleFor(doc({ name: null, path: null, sample_rate_hz: 0 }))).toBe("PowerVoice");
+  });
+
+  it("calls a never-saved recording Untitled (S1-04)", () => {
+    expect(titleFor(doc({ name: null, path: null, dirty: true }))).toBe("Untitled * — PowerVoice");
   });
 
   it("shows the name, and a modified marker when dirty", () => {

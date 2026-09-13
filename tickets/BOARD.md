@@ -10,8 +10,8 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 ### Slice 1 — Record & play (open WAV, see waveform, play, record, save)
 | ID | Title | Tier | Deps | Status |
 |---|---|---|---|---|
-| S1-01 | Playback end-to-end: engine core, output device, rack in path, transport, VXTM telemetry, transport + device UI | O | T-101, T-102, T-103 | ready |
-| S1-02 | WAV read/write (`vox-io`) + document peaks query (`vox-project`) — libraries only | S | T-101 | ready |
+| S1-01 | Playback end-to-end: engine core, output device, rack in path, transport, VXTM telemetry, transport + device UI | O | T-101, T-102, T-103 | in-progress |
+| S1-02 | WAV read/write (`vox-io`) + document peaks query (`vox-project`) — libraries only | S | T-101 | in-progress |
 | S1-03 | Open/Save WAV in the app + Canvas2D waveform view (zoom/scroll/playhead/click-to-seek) | S | S1-01, S1-02 | todo |
 | S1-04 | Recording end-to-end: input device, arm, input meter, record → take → document, live waveform | O | S1-01 | todo |
 
@@ -45,30 +45,30 @@ LUFS normalize, ACX check, export WAV/FLAC/MP3 — subsets of M6.
 ## M1 — Core engine, recording & playback
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
-| T-101 | Document model: chunk store, snapshots, piece table, markers, take writer | W1 | O | M0 | review |
+| T-101 | Document model: chunk store, snapshots, piece table, markers, take writer | W1 | O | M0 | done |
 | T-102 | Devices: enumeration, channel deinterleave, hot-plug polling, device lost | W1 | O | M0 | done |
-| T-103 | Rack core: module registry, chain swap/retire, host bypass/crossfade, dual-mono shim, param routing + same-offset/id event coalescing, latency sum, Gain, offline render, `cli render --rack` | W1 | O | M0 | review |
+| T-103 | Rack core: module registry, chain swap/retire, host bypass/crossfade, dual-mono shim, param routing + same-offset/id event coalescing, latency sum, Gain, offline render, `cli render --rack` | W1 | O | M0 | done |
 | T-104 | App infra: tracing log, typed errors→toasts/banners, panic hook, settings, stores, keymap registry, WebKit DMA-BUF default | W1 | S | M0 | done |
-| T-105 | Engine core: control thread, RT callbacks, transport (Stop→play start), reader/prefetch, resampling, heard clock, 60 Hz telemetry | W2 | O | T-101, T-102, T-103 | todo |
-| T-106 | Recording: crash-safe WAV, peaks stream, take → undoable edit | W3 | O | T-105 | todo |
+| T-105 | Engine core: control thread, RT callbacks, transport (Stop→play start), reader/prefetch, resampling, heard clock, 60 Hz telemetry | W2 | O | T-101, T-102, T-103 | → S1-01 (subset), rest hardening |
+| T-106 | Recording: crash-safe WAV, peaks stream, take → undoable edit | W3 | O | T-105 | → S1-04 (subset), rest hardening |
 | T-107 | Monitoring off/dry/through-rack, drift-corrected in→out ring | W3 | O | T-105 | todo |
-| T-108 | IPC layer: M1 commands/events, VXTM/VXRP channels, binary decoders + golden fixtures, clock sync | W3 | S | T-104, T-105 | todo |
+| T-108 | IPC layer: M1 commands/events, VXTM/VXRP channels, binary decoders + golden fixtures, clock sync | W3 | S | T-104, T-105 | → S1-01/S1-03 (subset), rest hardening |
 | T-110 | Bench harness (divan, callback-time histogram) | W3 | S | T-105 | todo |
-| T-109 | UI: device settings, transport bar, meter bridge, live recording waveform | W4 | S | T-106, T-107, T-108 | todo |
+| T-109 | UI: device settings, transport bar, meter bridge, live recording waveform | W4 | S | T-106, T-107, T-108 | → S1-01/S1-04 (subset), rest hardening |
 
 ## M2 — Editor view
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
 | T-200 | M2 spec wave: SPEC-005 formats, SPEC-006 waveform view, SPEC-007 spectral & analyzer | W0 | O/S | M0 | done |
-| T-201 | Save pipeline: WAV writer 16/24/32f, TPDF dither, clip policy, cue/adtl markers, atomic save job, FLAC encode | W1 | S+OR | M1 | todo |
+| T-201 | Save pipeline: WAV writer 16/24/32f, TPDF dither, clip policy, cue/adtl markers, atomic save job, FLAC encode | W1 | S+OR | M1 | → S1-02/S1-03 (WAV subset), rest hardening |
 | T-202 | Import pipeline: symphonia decode (WAV variants, FLAC, MP3, M4A, Ogg), downmix, session import job, CLI convert/markers | W1 | S+OR | M1 | todo |
-| T-203 | Per-chunk peak pyramid + binary IPC | W1 | S+OR | M1 | todo |
+| T-203 | Per-chunk peak pyramid + binary IPC | W1 | S+OR | M1 | → S1-02/S1-03 (subset), rest hardening |
 | T-204 | STFT spectrogram tile service | W1 | O | M1 | todo |
-| T-205 | Waveform renderer: zoom/scroll, amplitude zoom, rulers, extrapolated playhead | W2 | S | T-203 | todo |
+| T-205 | Waveform renderer: zoom/scroll, amplitude zoom, rulers, extrapolated playhead | W2 | S | T-203 | → S1-03 (Canvas2D subset), rest hardening |
 | T-206 | Selection model, time formats, zero-crossing snap | W3 | S | T-205 | todo |
 | T-207 | Spectrogram renderer, log/linear, split view | W3 | S | T-204, T-205 | todo |
 | T-208 | Live output analyzer: post-rack tap, FFT worker, 1/24-oct bands, VXSA, bottom-dock UI | W3 | S+OR | T-205 | todo |
-| T-209 | File menu & dialogs: Open, Save, Save As, downmix dialog, save format, clip prompt, unsaved-changes prompt, import progress | W3 | S | T-201, T-202, T-205 | todo |
+| T-209 | File menu & dialogs: Open, Save, Save As, downmix dialog, save format, clip prompt, unsaved-changes prompt, import progress | W3 | S | T-201, T-202, T-205 | → S1-03 (subset), rest hardening |
 
 ## M3 — Editing & history
 | ID | Title | Wave | Tier | Deps | Status |

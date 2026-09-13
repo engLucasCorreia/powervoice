@@ -12,10 +12,12 @@ mod dynamics;
 mod gain;
 mod noise_gate;
 mod schema;
+mod true_peak_limiter;
 
 pub use dynamics::{Dynamics, DynamicsFactory};
 pub use gain::{Gain, GainFactory};
 pub use noise_gate::{NoiseGate, NoiseGateFactory};
+pub use true_peak_limiter::{TruePeakLimiter, TruePeakLimiterFactory};
 
 /// Factories of every built-in module, for the composition roots to register.
 pub fn builtin_factories() -> Vec<Arc<dyn ModuleFactory>> {
@@ -23,5 +25,6 @@ pub fn builtin_factories() -> Vec<Arc<dyn ModuleFactory>> {
         Arc::new(GainFactory::new()),
         Arc::new(DynamicsFactory::new()),
         Arc::new(NoiseGateFactory::new()),
+        Arc::new(TruePeakLimiterFactory::new()),
     ]
 }

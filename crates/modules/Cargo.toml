@@ -11,6 +11,7 @@ vox-dsp = { path = "../dsp" }
 
 [dev-dependencies]
 vox-module-api = { path = "../module-api", features = ["test-util"] }
+vox-testkit = { path = "../testkit" }
 
 [lints]
 workspace = true

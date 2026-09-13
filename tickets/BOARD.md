@@ -30,7 +30,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | S3-03 | Parametric EQ module + EQ graph (lean SPEC-015) | O | S3-01 | todo |
 | S3-04 | Noise reduction module + noise-print profile (library part, lean SPEC-014) | O | T-103, H-01 | in-progress |
 | S3-06 | Capture Noise Print command + NR slot panel | S | S3-01, S3-04, S2-01 | todo |
-| S3-05 | True-peak limiter (lean SPEC-017) | O | T-103 | in-progress |
+| S3-05 | True-peak limiter (lean SPEC-017) | O | T-103 | done |
 
 ### Slice 4 — Deliver
 | ID | Title | Tier | Deps | Status |
@@ -44,6 +44,8 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 |---|---|---|---|
 | H-01 | Rack: bypass toggle during a new instance's warm-up hold re-introduces the cold-output click (T-103 re-review #1) + restart of load-failed slots, stuck held-back restart, count dropped moved events | O | done |
 | H-02 | Save: stream `save_snapshot_wav` (today holds the whole document in RAM, ~691 MB for 60 min); move TPDF dither from `vox-io` into `vox-dsp::dither` (ADR-001 §4) | S | todo |
+| H-03 | TP limiter: exact interval-endpoint coverage (+1 sample latency) instead of the measured +0.011 dB bound; test 1 ms look-ahead; full SPEC-017 AC matrix (44.1/96 kHz, all ceilings/gains), CPU bench, GR meter UI | O | todo |
+| H-04 | Playback engine fixes from the S1-01 post-merge review (fade state machine, host switch, rack-latency drain) | O | in-progress |
 
 ## M0 — Foundations
 | ID | Title | Wave | Tier | Deps | Status |

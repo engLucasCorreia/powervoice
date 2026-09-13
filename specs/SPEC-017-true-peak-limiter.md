@@ -393,3 +393,13 @@ gain-reduction history graph.
    measured justification (§4.4).
 6. **Look-ahead** as a parameter relies on T-401's Restart handling (ADR-005 §8/§12), like NR's FFT
    size.
+
+## Amendment 1 — S3-05 implementation (2026-09-13, orchestrator, autonomous)
+- **Input-gain timing:** input gain changes apply at input sample **k + L + D** (look-ahead L plus the
+  detector's D = 16-sample read-ahead), not k + L — otherwise the output gain would change before
+  k + latency, breaking this spec's own "no output change before event + latency" rule. Ceiling stays
+  at k + L; release at k + L + D.
+- **Interval endpoint coverage:** with hold L+1 and averaging over L+1, the second endpoint of an
+  interval misses only the last averaging tap (weight 1/(L/2+1)²). The sample-peak bound is exact; the
+  true-peak bound is measured at ceiling + 0.011 dB worst (limit + 0.10 dB). Accepted for v1; an exact
+  construction costs one more sample of latency — tracked as backlog H-03.

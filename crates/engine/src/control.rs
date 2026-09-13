@@ -1471,9 +1471,22 @@ impl Control {
             StopReason::User => stop_code::USER,
             StopReason::InputLost => stop_code::INPUT_LOST,
             StopReason::Shutdown => stop_code::SHUTDOWN,
+            StopReason::Overflow => stop_code::OVERFLOW,
+            StopReason::WriteError => stop_code::WRITE_ERROR,
         };
-        rec.shared.stop_reason.store(code, Ordering::Relaxed);
-        let sent = reason == StopReason::User
+        // The first reason sticks: a take the input callback already ended (its Stop time was
+        // reached, or the capture ring overflowed) or that a write error stopped keeps it.
+        if !rec.shared.capture_done.load(Ordering::Acquire) {
+            let _ = rec.shared.stop_reason.compare_exchange(
+                stop_code::USER,
+                code,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
+        }
+        // User and write-error stops end the take in the input callback, so it stops pushing
+        // (nothing stale reaches the next take); the others have no live input to ask.
+        let sent = matches!(reason, StopReason::User | StopReason::WriteError)
             && self.input.as_mut().is_some_and(|i| {
                 Arc::ptr_eq(&i.shared, &rec.shared)
                     && i.cmds.push(InputCmd::StopCapture { stop_ns: now }).is_ok()
@@ -1484,9 +1497,22 @@ impl Control {
         }
     }
 
-    /// Drains an inline writer, forces a stop the input never completes, and reaps a finished
-    /// writer.
+    /// Stops a take that ended on its own (capture-ring overflow) or whose writer failed, drains
+    /// an inline writer, forces a stop the input never completes, and reaps a finished writer.
     fn service_recording(&mut self, now: u64) {
+        let Some(rec) = self.recording.as_mut() else {
+            return;
+        };
+        if rec.stop_at.is_none() {
+            if rec.shared.capture_done.load(Ordering::Acquire) {
+                // H-05: the input callback ended the take (overflow, SPEC-002 §2.4): finishing.
+                rec.stop_at = Some(now);
+            } else if rec.shared.writer_failed.load(Ordering::Acquire) {
+                // H-05: nothing more reaches the take — stop now instead of recording into the
+                // void until the user presses Stop (SPEC-002 §2.5, ADR-004 §7.4).
+                self.stop_recording(StopReason::WriteError);
+            }
+        }
         let Some(rec) = self.recording.as_mut() else {
             return;
         };

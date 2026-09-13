@@ -138,6 +138,7 @@
   "notice.record.take_error": "A problem occurred while writing the take: {message}",
   "notice.record.commit_failed": "The take couldn't be added to the document ({message}). It is kept for recovery.",
   "notice.record.rate_changed": "The input doesn't support {preferred} Hz — recording at {rate} Hz.",
+  "notice.record.overflow": "Recording stopped: the disk could not keep up. {duration} recorded and kept.",
   "document.untitled": "Untitled",
   "error.document.untitled": "This recording hasn't been saved yet — use Save As…",
 

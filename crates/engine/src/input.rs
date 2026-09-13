@@ -75,6 +75,10 @@ pub(crate) mod stop_code {
     pub(crate) const USER: u8 = 0;
     pub(crate) const INPUT_LOST: u8 = 1;
     pub(crate) const SHUTDOWN: u8 = 2;
+    /// H-05: the capture ring overflowed; the callback ended the take (SPEC-002 §2.4).
+    pub(crate) const OVERFLOW: u8 = 3;
+    /// H-05: appending to the take failed; the control thread stopped it (SPEC-002 §2.5).
+    pub(crate) const WRITE_ERROR: u8 = 4;
 }
 
 /// Shared by the input callback, the control thread and the capture-writer (atomics only).
@@ -89,10 +93,13 @@ pub(crate) struct InputShared {
     pub(crate) stop_reason: AtomicU8,
     /// Clip events of the current take.
     pub(crate) clip_events: AtomicU32,
-    /// Samples lost to a full capture ring in the current take.
+    /// Samples that didn't fit in the full capture ring: the take ended just before them.
     pub(crate) overflow_samples: AtomicU64,
     /// Events dropped because the event ring was full.
     pub(crate) dropped_events: AtomicU32,
+    /// H-05: set by the capture-writer when appending to the take failed; the control thread
+    /// then stops the take (the writer drops the rest of it).
+    pub(crate) writer_failed: AtomicBool,
 }
 
 impl InputShared {
@@ -100,6 +107,7 @@ impl InputShared {
     pub(crate) fn reset_take(&self) {
         self.capture_done.store(false, Ordering::Release);
         self.force_finish.store(false, Ordering::Release);
+        self.writer_failed.store(false, Ordering::Release);
         self.stop_reason.store(stop_code::USER, Ordering::Relaxed);
         self.clip_events.store(0, Ordering::Relaxed);
         self.overflow_samples.store(0, Ordering::Relaxed);
@@ -230,24 +238,37 @@ impl InputSide {
             // Started: from now on the take continues with every sample.
             self.start_ns = 0;
             let seg = &x[a as usize..b as usize];
-            self.count_clips(seg);
-            let (_, rest) = self.capture.push_partial_slice(seg);
+            let (pushed, rest) = self.capture.push_partial_slice(seg);
+            self.count_clips(pushed);
+            self.captured += pushed.len() as u64;
             if !rest.is_empty() {
+                // H-05, SPEC-002 §2.4: the writer fell a whole ring (10 s) behind. Never splice
+                // around the lost samples: the take ends at the last sample that fit.
                 self.shared
                     .overflow_samples
                     .fetch_add(rest.len() as u64, Ordering::Relaxed);
+                self.shared
+                    .stop_reason
+                    .store(stop_code::OVERFLOW, Ordering::Relaxed);
+                self.end_capture();
+                return;
             }
-            self.captured += seg.len() as u64;
         }
         if let Some(stop) = self.stop_ns
             && t0.saturating_add(frames_to_ns(n, self.rate_hz)) >= stop
         {
-            self.capturing = false;
-            self.stop_ns = None;
-            self.shared.capture_done.store(true, Ordering::Release);
-            let samples = self.captured;
-            self.emit(InputEvent::CaptureEnded { samples });
+            self.end_capture();
         }
+    }
+
+    /// The take's last sample is in the capture ring: tell the writer (Release after the push)
+    /// and the control thread.
+    fn end_capture(&mut self) {
+        self.capturing = false;
+        self.stop_ns = None;
+        self.shared.capture_done.store(true, Ordering::Release);
+        let samples = self.captured;
+        self.emit(InputEvent::CaptureEnded { samples });
     }
 
     /// One mono block captured from app time `ts.to_app_ns(ts.capture_ns)`. RT-safe.
@@ -372,6 +393,37 @@ mod tests {
         let want: Vec<f32> = (4..16).map(|i| i as f32).collect();
         assert_eq!(got, want, "samples at t ∈ [3.5 ms, 16 ms)");
         assert!(shared.capture_done.load(Ordering::Acquire));
+    }
+
+    /// H-05 (SPEC-002 §2.4, AC-8): a full capture ring ends the take at the last sample that
+    /// fit — it never drops samples from the middle and carries on (a silent splice). Later
+    /// blocks push nothing; the reason and the lost count are reported; no allocation.
+    #[test]
+    fn capture_ring_overflow_ends_the_take_at_the_last_sample_that_fit() {
+        let (mut s, mut cmds, mut cap, shared) = side(1000);
+        cmds.push(InputCmd::StartCapture { start_ns: 0 }).unwrap();
+        // The ring holds 4096 samples; the writer is stalled (nothing is popped).
+        let x: Vec<f32> = (0..3000).map(|i| i as f32).collect();
+        no_alloc(|| s.process(&x, ts(0))).unwrap();
+        assert!(!shared.capture_done.load(Ordering::Acquire), "still room");
+        let y: Vec<f32> = (3000..6000).map(|i| i as f32).collect();
+        no_alloc(|| s.process(&y, ts(3_000_000_000))).unwrap();
+        assert!(shared.capture_done.load(Ordering::Acquire), "take ended");
+        assert_eq!(
+            shared.stop_reason.load(Ordering::Relaxed),
+            stop_code::OVERFLOW
+        );
+        assert_eq!(shared.overflow_samples.load(Ordering::Relaxed), 6000 - 4096);
+        // The writer catches up: later blocks are no longer part of the take.
+        let mut got = Vec::new();
+        while let Ok(v) = cap.pop() {
+            got.push(v);
+        }
+        let z: Vec<f32> = (6000..7000).map(|i| i as f32).collect();
+        no_alloc(|| s.process(&z, ts(6_000_000_000))).unwrap();
+        assert!(cap.pop().is_err(), "nothing captured after the overflow");
+        let want: Vec<f32> = (0..4096).map(|i| i as f32).collect();
+        assert_eq!(got, want, "a contiguous prefix of the input, no splice");
     }
 
     /// Clip runs closer than 10 ms merge into one event.

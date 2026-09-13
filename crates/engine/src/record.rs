@@ -64,6 +64,12 @@ pub enum StopReason {
     InputLost,
     /// The engine shut down while recording.
     Shutdown,
+    /// The capture ring overflowed (the writer fell 10 s behind, e.g. a disk stall): the take
+    /// ends at the last sample that fit (SPEC-002 §2.4, AC-8).
+    Overflow,
+    /// Appending to the take failed ([`RecordingResult::write_error`]): the recording stopped
+    /// and the take is kept up to the last good sample (SPEC-002 §2.5).
+    WriteError,
 }
 
 /// What the capture-writer hands to [`RecordDone`] once the take is finished.
@@ -77,9 +83,11 @@ pub struct RecordingResult {
     pub sample_rate_hz: u32,
     /// Clip events during the take (runs < 10 ms apart count once, SPEC-002 §2.1).
     pub clip_events: u32,
-    /// Samples dropped because the capture ring was full (overflow policy: hardening).
+    /// Samples that didn't fit in the full capture ring (> 0 only with
+    /// [`StopReason::Overflow`]: the take ended just before them).
     pub overflow_samples: u64,
-    /// First failure appending to the take while recording (the rest of the take is dropped).
+    /// First failure appending to the take while recording ([`StopReason::WriteError`]: the
+    /// recording stopped, and the rest of the take was dropped).
     pub write_error: Option<ProjectError>,
 }
 

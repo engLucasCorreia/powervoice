@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 use common::*;
 use vox_project::take::{
     MAX_TAKE_DATA_BYTES, TAKE_HEADER_BYTES, TakeSyncMode, TakeWriter, TakeWriterOptions,
-    read_take_samples, recover_take, recover_take_file, repair_take_header, take_part_path,
+    read_take_samples, recover_take, recover_take_file, repair_take_header, take_header,
+    take_part_path,
 };
 use vox_testkit::prng::Pcg32;
 use vox_testkit::wav::{SampleFormat, read_wav_file};
@@ -152,6 +153,51 @@ fn truncated_take_with_stale_header_recovers_by_file_size() {
             }
         }
     }
+}
+
+/// H-05: a crash while rolling over (or right after `begin_take`) can leave the newest part torn
+/// inside its header. It holds no samples, so it must not make the whole take unrecoverable; a
+/// damaged part that is *not* the newest is still an error.
+#[test]
+fn torn_trailing_part_does_not_fail_the_take() {
+    let tmp = TempDir::new("take-torn-part");
+    let options = TakeWriterOptions {
+        max_data_bytes: 4000, // 1 000 samples per part
+        ..TakeWriterOptions::default()
+    };
+    let source = noise(28, 2000);
+    let mut writer = TakeWriter::create(tmp.path(), 4, RATE, options).unwrap();
+    writer.append(&source).unwrap(); // fills parts 0 and 1 exactly
+    drop(writer); // "crash"
+    let header = take_header(RATE, 0);
+    let torn = take_part_path(tmp.path(), 4, 2);
+    for len in [0usize, 20, 43, 44] {
+        std::fs::write(&torn, &header[..len]).unwrap();
+        let parts = recover_take(tmp.path(), 4).unwrap_or_else(|e| panic!("len {len}: {e}"));
+        let total: u64 = parts.iter().map(|p| p.samples).sum();
+        assert_eq!(total, 2000, "torn part of {len} bytes");
+        let mut joined = Vec::new();
+        for part in &parts {
+            let mut buf = vec![0.0f32; part.samples as usize];
+            read_take_samples(part, 0, &mut buf).unwrap();
+            joined.extend(buf);
+        }
+        assert!(bits_equal(&joined, &source), "len {len}");
+    }
+    // A torn part 0 alone is an empty take, not an error.
+    let alone = take_part_path(tmp.path(), 5, 0);
+    std::fs::write(&alone, &header[..10]).unwrap();
+    assert!(recover_take(tmp.path(), 5).unwrap().is_empty());
+    // Damage before the newest part is not a torn rollover.
+    std::fs::write(&torn, header).unwrap();
+    let middle = take_part_path(tmp.path(), 4, 1);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&middle)
+        .unwrap()
+        .set_len(20)
+        .unwrap();
+    assert!(recover_take(tmp.path(), 4).is_err());
 }
 
 #[test]

@@ -462,6 +462,10 @@ pub fn recover_take_file(path: &Path) -> Result<RecoveredTake> {
 }
 
 /// Recovers every existing part of take `take`, in order.
+///
+/// The newest part may be torn inside its header (a crash while rolling over, or right after
+/// `begin_take`): it holds no samples — they are written only after the header is synced — so
+/// it is left out instead of failing the whole take. Any other damaged part is an error.
 pub fn recover_take(takes_dir: &Path, take: u32) -> Result<Vec<RecoveredTake>> {
     let mut parts = Vec::new();
     for part in 0.. {
@@ -469,7 +473,16 @@ pub fn recover_take(takes_dir: &Path, take: u32) -> Result<Vec<RecoveredTake>> {
         if !path.exists() {
             break;
         }
-        parts.push(recover_take_file(&path)?);
+        match recover_take_file(&path) {
+            Ok(recovered) => parts.push(recovered),
+            Err(_)
+                if !take_part_path(takes_dir, take, part + 1).exists()
+                    && std::fs::metadata(&path).is_ok_and(|m| m.len() <= TAKE_HEADER_BYTES) =>
+            {
+                break;
+            }
+            Err(e) => return Err(e),
+        }
     }
     Ok(parts)
 }

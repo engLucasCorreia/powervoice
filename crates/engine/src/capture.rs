@@ -128,7 +128,8 @@ impl CaptureWriter {
 
     /// Appends everything in the ring to the take (and its H-07 live peaks). Returns `true` once
     /// the take is complete and the ring is empty. After an append error the rest of the take is
-    /// drained and dropped (disk rules: hardening).
+    /// drained and dropped, and [`InputShared::writer_failed`] asks the control thread to stop
+    /// the recording (H-05: the take is kept up to the last good sample, SPEC-002 §2.5).
     pub(crate) fn drain(&mut self) -> bool {
         // Read the completion flags first: every sample pushed before they were set is then
         // visible to the drain below (Release/Acquire).
@@ -153,6 +154,7 @@ impl CaptureWriter {
                             .append(part),
                         Err(e) => {
                             self.write_error = Some(e);
+                            self.shared.writer_failed.store(true, Ordering::Release);
                             break;
                         }
                     }
@@ -173,6 +175,8 @@ impl CaptureWriter {
         let reason = match self.shared.stop_reason.load(Ordering::Relaxed) {
             stop_code::INPUT_LOST => StopReason::InputLost,
             stop_code::SHUTDOWN => StopReason::Shutdown,
+            stop_code::OVERFLOW => StopReason::Overflow,
+            stop_code::WRITE_ERROR => StopReason::WriteError,
             _ => StopReason::User,
         };
         let finished = self.capture.finish();

@@ -3,7 +3,9 @@
 
 vox_module_api::install_test_allocator!();
 
-use std::path::PathBuf;
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
@@ -19,6 +21,9 @@ use vox_engine::{
     PlaybackDoc, TelemetryFrame, TransportCommand,
 };
 use vox_module_api::test_util::{alloc_checks_active, no_alloc};
+use vox_project::gc::{SessionClass, classify_session};
+use vox_project::session::TAKES_DIR_NAME;
+use vox_project::take::{read_take_samples, recover_take, take_part_path};
 use vox_project::{
     DocSnapshot, Session, SessionConfig, StoreOptions, TAKE_LABEL_KEY, TakeMode, TakeWriterOptions,
 };
@@ -693,4 +698,256 @@ fn live_take_peaks_matches_the_appended_samples() {
     // Once the take is finished, there is no recording to query anymore.
     assert!(r.eng.live_take_peaks(0, 8).is_none());
     assert_eq!(r.fake.rt_violations(), 0, "a callback allocated");
+}
+
+/// H-05 (SPEC-002 §2.4, AC-8): when the capture-writer falls a whole ring (10 s) behind, the
+/// recording stops by itself and the take is kept as a contiguous, bit-exact run of the source up
+/// to the overflow — never a take with the lost samples silently spliced out.
+#[test]
+fn capture_ring_overflow_stops_and_keeps_the_take() {
+    let mut r = rig(src, true, Some(1));
+    r.run_ms(20);
+    r.arm();
+    r.run_ms(50);
+    let mut session = r.session();
+    let t_rec = r.start(&mut session);
+    r.run_ms(100);
+    // Stall the writer: fake time runs 11 s without a control tick (the manual engine's inline
+    // writer drains only in `tick`), so the input callback overflows the 10 s capture ring.
+    r.fake.advance_by(11_000 * MS);
+    r.run_ms(2);
+    let res = r
+        .done
+        .lock()
+        .unwrap()
+        .take()
+        .expect("the take finished by itself, without Stop");
+    let st = r.eng.record_state();
+    assert!(!st.recording && !st.finishing, "{st:?}");
+    assert_eq!(res.reason, StopReason::Overflow);
+    assert!(res.overflow_samples > 0);
+    assert!(res.write_error.is_none() && res.finished.error.is_none());
+
+    let step = session.commit_take(&res.finished, &[]).unwrap().unwrap();
+    let take = take_samples(&session, &step.snapshot);
+    let ring = u64::from(RATE) * 10;
+    let len = take.len() as u64;
+    assert!(
+        (ring..=ring + u64::from(RATE) / 5).contains(&len),
+        "kept {len} samples: the ~100 ms drained before the stall + one full ring"
+    );
+    let k = locate(&take, 0, r.frame_at(t_rec));
+    assert!(k.abs_diff(r.frame_at(t_rec)) <= 1);
+    assert_eq!(r.fake.rt_violations(), 0, "a callback allocated");
+}
+
+/// H-05 (SPEC-002 §2.5, ADR-004 §7.4): when appending to the take fails mid-take, the recording
+/// stops by itself (it used to keep "recording" and drop everything until the user pressed Stop)
+/// and the take is kept up to the last good sample.
+#[test]
+fn write_error_stops_the_recording_and_keeps_the_take() {
+    let mut r = rig(src, true, Some(1));
+    r.run_ms(20);
+    r.arm();
+    r.run_ms(50);
+    let mut session = r.session();
+    // Parts of 0.5 s; the second part's file already exists, so the rollover fails.
+    let takes = session.takes_dir();
+    std::fs::create_dir_all(&takes).unwrap();
+    std::fs::write(take_part_path(&takes, 1, 1), b"").unwrap();
+    let capture = session
+        .begin_take(
+            TakeMode::New,
+            TakeWriterOptions {
+                max_data_bytes: u64::from(RATE) * 2,
+                ..TakeWriterOptions::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(capture.id().0, 1);
+    let t_rec = r.fake.now_ns();
+    let done = r.done.clone();
+    r.eng
+        .record_start(
+            RATE,
+            capture,
+            Box::new(move |res| *done.lock().unwrap() = Some(res)),
+        )
+        .unwrap();
+    r.run_ms(1_000);
+    let res = r
+        .done
+        .lock()
+        .unwrap()
+        .take()
+        .expect("the take finished by itself, without Stop");
+    let st = r.eng.record_state();
+    assert!(!st.recording && !st.finishing && st.armed, "{st:?}");
+    assert_eq!(res.reason, StopReason::WriteError);
+    assert!(res.write_error.is_some());
+    assert_eq!(res.finished.wav_samples, u64::from(RATE) / 2);
+
+    let step = session.commit_take(&res.finished, &[]).unwrap().unwrap();
+    let take = take_samples(&session, &step.snapshot);
+    assert!(!take.is_empty() && take.len() as u64 <= u64::from(RATE) / 2);
+    let k = locate(&take, 0, r.frame_at(t_rec));
+    assert!(k.abs_diff(r.frame_at(t_rec)) <= 1);
+
+    // The input is free again: the next take records normally.
+    r.start(&mut session);
+    r.run_ms(200);
+    r.stop();
+    let res = r.result();
+    assert_eq!(res.reason, StopReason::User);
+    assert!(res.write_error.is_none() && res.finished.audio.len_samples > 9_000);
+    assert_eq!(r.fake.rt_violations(), 0, "a callback allocated");
+}
+
+/// Set for the child half of [`kill_9_mid_take_recovers_every_appended_sample`]: the session
+/// directory to record into. Unset, [`kill9_child_records_until_killed`] does nothing.
+const KILL9_CHILD_DIR: &str = "VOX_ENGINE_KILL9_CHILD_DIR";
+
+/// Kills (SIGKILL) and reaps the child on every exit path.
+struct ChildGuard(Child);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Child half of [`kill_9_mid_take_recovers_every_appended_sample`] (a no-op in a normal run):
+/// records through the threaded engine and prints `KILL9 <appended> <captured>` every few ms —
+/// samples the capture-writer handed to the take (`live_take_peaks`) and samples the input
+/// callback captured (telemetry) — until the parent kills it.
+#[test]
+fn kill9_child_records_until_killed() {
+    let Some(dir) = std::env::var_os(KILL9_CHILD_DIR) else {
+        return;
+    };
+    let fake = FakeBackend::new(7);
+    fake.plug(HostId::Alsa, mic(src)); // no output device needed (D-020)
+    let registry = Arc::new(Registry::with_factories(vox_modules::builtin_factories()).unwrap());
+    let mut cfg = EngineConfig::new(Arc::new(fake.clone()), registry);
+    cfg.prefs = DevicePrefs {
+        input_device: Some("Mic".into()),
+        input_channel: 1,
+        ..DevicePrefs::default()
+    };
+    let clock = fake.clone();
+    cfg.clock = Arc::new(move || clock.now_ns());
+    let engine = Engine::start(cfg).unwrap();
+    let h = engine.handle();
+    let _driver = fake.spawn_driver(Duration::from_millis(1));
+    let captured = Arc::new(AtomicU64::new(0));
+    let c = captured.clone();
+    h.set_telemetry_sink(Some(Box::new(move |f: &TelemetryFrame| {
+        if f.flags & vxtm_flags::RECORDING != 0 {
+            c.store(f.playhead_sample, Ordering::Relaxed);
+        }
+    })));
+    let opened = (0..300).any(|_| {
+        let open = h.set_armed(true).is_some_and(|s| s.input_open);
+        if !open {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        open
+    });
+    assert!(opened, "the input stream opened");
+    let mut session = Session::create(Path::new(&dir), SessionConfig::new(RATE)).unwrap();
+    let capture = session
+        .begin_take(TakeMode::New, TakeWriterOptions::default())
+        .unwrap();
+    h.record_start(RATE, capture, Box::new(|_| {}))
+        .expect("record_start");
+    let mut out = std::io::stdout().lock();
+    loop {
+        std::thread::sleep(Duration::from_millis(2));
+        let appended = h.live_take_peaks(0, 0).map_or(0, |p| p.len_samples);
+        let captured = captured.load(Ordering::Relaxed);
+        writeln!(out, "KILL9 {appended} {captured}").unwrap();
+        out.flush().unwrap();
+    }
+}
+
+/// H-05 / SPEC-002 §2.3, AC-6: `kill -9` mid-take. A child process records through the threaded
+/// engine (real capture-writer + sync threads) and is killed with SIGKILL once ≥ 1.5 s is in the
+/// take (past at least one header patch + `fdatasync`). The session is then recoverable, and its
+/// take WAV holds every sample the writer had appended (nothing is buffered in user space), within
+/// 250 ms of what the input had captured, bit-identical to the source.
+#[test]
+fn kill_9_mid_take_recovers_every_appended_sample() {
+    if std::env::var_os(KILL9_CHILD_DIR).is_some() {
+        return;
+    }
+    let dir = TempDir::new("kill9");
+    let mut child = ChildGuard(
+        Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "kill9_child_records_until_killed",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(KILL9_CHILD_DIR, &dir.0)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let stdout = BufReader::new(child.0.stdout.take().unwrap());
+    let target = u64::from(RATE) * 3 / 2;
+    let mut last = None;
+    for line in stdout.lines() {
+        let line = line.unwrap();
+        let Some(rest) = line.strip_prefix("KILL9 ") else {
+            continue;
+        };
+        let v: Vec<u64> = rest.split(' ').map(|x| x.parse().unwrap()).collect();
+        if v[0] >= target {
+            last = Some((v[0], v[1]));
+            break;
+        }
+    }
+    child.0.kill().unwrap(); // SIGKILL: no destructor, no final patch or sync
+    child.0.wait().unwrap();
+    let (appended, captured) = last.expect("the child recorded 1.5 s");
+
+    let sessions: Vec<PathBuf> = std::fs::read_dir(&dir.0)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    assert_eq!(sessions.len(), 1, "{sessions:?}");
+    match classify_session(&sessions[0]).unwrap() {
+        SessionClass::Recoverable(s) => {
+            assert_eq!(s.open_take, Some(1));
+            assert!(s.open_take_samples >= appended);
+        }
+        SessionClass::Clean => panic!("a killed take must be offered for recovery"),
+    }
+    let parts = recover_take(&sessions[0].join(TAKES_DIR_NAME), 1).unwrap();
+    assert_eq!(parts.len(), 1);
+    let len = parts[0].samples;
+    assert!(len >= appended, "recovered {len} < {appended} appended");
+    assert!(
+        len + u64::from(RATE) / 4 >= captured,
+        "recovered {len}, but {captured} were captured (> 250 ms lost)"
+    );
+    let mut take = vec![0.0f32; len as usize];
+    assert_eq!(
+        read_take_samples(&parts[0], 0, &mut take).unwrap(),
+        take.len()
+    );
+    let k = (0..u64::from(RATE) * 30)
+        .find(|&k| {
+            take[..64]
+                .iter()
+                .enumerate()
+                .all(|(i, &x)| x.to_bits() == src(k + i as u64, 0).to_bits())
+        })
+        .expect("the take start is in the source");
+    assert_eq!(locate(&take, 0, k), k, "bit-identical to the source");
 }

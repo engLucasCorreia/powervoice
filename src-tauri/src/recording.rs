@@ -13,7 +13,7 @@ use std::sync::{Arc, Weak};
 
 use tauri::{AppHandle, Emitter, Runtime};
 use vox_engine::EngineHandle;
-use vox_engine::record::{LiveTakePeaks, RecordDone, RecordError, RecordingResult};
+use vox_engine::record::{LiveTakePeaks, RecordDone, RecordError, RecordingResult, StopReason};
 
 use crate::document::{DocumentInfo, DocumentService};
 use crate::ipc::{
@@ -94,6 +94,17 @@ fn record_error(e: RecordError) -> IpcError {
     }
 }
 
+/// `m:ss` (`h:mm:ss` from one hour) of `samples` at `rate_hz`, for notices ("12:31 recorded").
+fn duration_text(samples: u64, rate_hz: u32) -> String {
+    let s = samples / u64::from(rate_hz.max(1));
+    let (h, m, s) = (s / 3600, s / 60 % 60, s % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
 /// The done callback's work (see the module docs). Runs on the capture-writer thread.
 fn on_take_finished(inner: &Inner, result: RecordingResult) {
     let notice = |n: Notice| (inner.emit)(RecordingEvent::Notice(n));
@@ -112,6 +123,15 @@ fn on_take_finished(inner: &Inner, result: RecordingResult) {
         notice(
             Notice::toast(NoticeLevel::Error, "notice.record.take_error")
                 .with_param("message", e.to_string()),
+        );
+    }
+    if result.reason == StopReason::Overflow {
+        // H-05, SPEC-002 §2.4: the take ended by itself; say why and what was kept.
+        notice(
+            Notice::toast(NoticeLevel::Error, "notice.record.overflow").with_param(
+                "duration",
+                duration_text(result.finished.wav_samples, result.sample_rate_hz),
+            ),
         );
     }
     if result.clip_events > 0 {
@@ -225,5 +245,17 @@ impl RecordingService {
                 Err(record_error(e))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::duration_text;
+
+    #[test]
+    fn duration_text_is_m_ss_then_h_mm_ss() {
+        assert_eq!(duration_text(0, 48_000), "0:00");
+        assert_eq!(duration_text(48_000 * 751 + 47_999, 48_000), "12:31");
+        assert_eq!(duration_text(44_100 * 3_661, 44_100), "1:01:01");
     }
 }

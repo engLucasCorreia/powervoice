@@ -122,6 +122,26 @@ export const saveDocument = (): Promise<boolean> => run(documentSave);
 export const saveDocumentAs = (path: string, bits: BitDepth): Promise<boolean> =>
   run(() => documentSaveAs(path, bits));
 
+/**
+ * Save from the unsaved-changes prompt: in place, or — for a never-saved recording, which has no
+ * path yet — through the native Save As dialog at the default bit depth. Resolves `true` only
+ * once the document is saved (a cancelled dialog or a failed save keeps the prompt's action from
+ * running).
+ */
+async function saveForPrompt(): Promise<boolean> {
+  if (doc.path) {
+    return (await saveDocument()) && !doc.dirty;
+  }
+  const path = await saveFileDialog({
+    defaultPath: doc.name ?? "untitled.wav",
+    filters: WAV_FILTERS,
+  });
+  if (typeof path !== "string") {
+    return false;
+  }
+  return (await saveDocumentAs(path, "24")) && !doc.dirty;
+}
+
 function askUnsavedChanges(name: string): Promise<UnsavedDecision> {
   return new Promise((resolve) => {
     unsavedPrompt = { name, resolve };
@@ -146,11 +166,8 @@ export async function withUnsavedChangesGuard(action: () => Promise<void>): Prom
     if (decision === "cancel") {
       return false;
     }
-    if (decision === "save") {
-      const saved = await saveDocument();
-      if (!saved || doc.dirty) {
-        return false;
-      }
+    if (decision === "save" && !(await saveForPrompt())) {
+      return false;
     }
   }
   await action();
@@ -233,13 +250,16 @@ export async function initDocument(): Promise<() => void> {
       if (decision === "cancel") {
         return;
       }
-      if (decision === "save") {
-        const saved = await saveDocument();
-        if (!saved || doc.dirty) {
-          return;
-        }
+      if (decision === "save" && !(await saveForPrompt())) {
+        return;
       }
-      await getCurrentWindow().destroy();
+      // Needs `core:window:allow-destroy` (capabilities/default.json) — without it the call is
+      // refused and the window can't be closed at all while the document is dirty.
+      try {
+        await getCurrentWindow().destroy();
+      } catch (err) {
+        report(err);
+      }
     });
     cleanups.push(unlisten);
   } catch {

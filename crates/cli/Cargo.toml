@@ -15,6 +15,9 @@ clap.workspace = true
 vox-testkit = { path = "../testkit" }
 vox-rack = { path = "../rack" }
 vox-modules = { path = "../modules" }
+# S4-02: `convert` reads/writes through the production encoders and offline resampler.
+vox-io = { path = "../io" }
+vox-dsp = { path = "../dsp" }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

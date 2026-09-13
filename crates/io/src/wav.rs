@@ -5,10 +5,11 @@
 //! tolerance (8-bit, 32-bit int, 64-bit float, A-law/µ-law on read; `cue `/`LIST adtl` markers;
 //! FLAC; atomic-save cleanup of stale temp files) is deferred — see the ticket report.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{BufReader, BufWriter};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+use crate::atomic::{finish, temp_path_for};
 use crate::dither::quantize_dithered;
 use crate::error::{IoError, Result};
 
@@ -203,11 +204,7 @@ pub fn write_wav(
     };
     // ADR-004 §8: fsync the data, then rename over the target, then fsync the directory. `path`
     // is only ever touched by the rename, so a failure up to here leaves it exactly as it was.
-    fsync_path(&tmp)?;
-    std::fs::rename(&tmp, path)?;
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        fsync_dir(parent)?;
-    }
+    finish(&tmp, path)?;
     Ok(WriteReport {
         clipped_samples: clipped,
     })
@@ -246,39 +243,10 @@ fn write_dithered<W: std::io::Write + std::io::Seek>(
     Ok(clipped)
 }
 
-/// `.<file name>.powervoice-tmp-<pid>`, next to `target` (ADR-004 §8).
-fn temp_path_for(target: &Path) -> PathBuf {
-    let mut name = std::ffi::OsString::from(".");
-    name.push(target.file_name().unwrap_or_default());
-    name.push(format!(".powervoice-tmp-{}", std::process::id()));
-    target.with_file_name(name)
-}
-
-fn fsync_path(path: &Path) -> Result<()> {
-    OpenOptions::new()
-        .write(true)
-        .open(path)?
-        .sync_all()
-        .map_err(IoError::from)
-}
-
-fn fsync_dir(dir: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        File::open(dir)?.sync_all()?;
-    }
-    #[cfg(not(unix))]
-    {
-        // The file system journals directory changes itself, and a directory can't be opened as
-        // a `File` on Windows (ADR-004 §1, `project::fs_util::sync_dir`).
-        let _ = dir;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn tmp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

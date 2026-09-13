@@ -53,3 +53,7 @@ rtrb = "0.4"
 rubato = "5"
 # S3-04: real FFT for the spectral noise reducer (vox-dsp only; SPEC-014 §4.9, docs/references.md).
 realfft = "3.5"
+# S4-02: FLAC export encoder (ADR-007), `io` only.
+flacenc = "0.5"
+# S4-02: runtime-loaded LAME MP3 encoder (ADR-007 §4, D-013), `io` only.
+libloading = "0.9"

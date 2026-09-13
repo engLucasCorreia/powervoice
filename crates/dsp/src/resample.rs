@@ -140,6 +140,79 @@ impl StreamResampler {
     }
 }
 
+/// Offline, fixed-ratio resampling of a whole buffer in `f64` (SPEC-005 §2.12, §4.8): used by
+/// export (S4-02/S4-04), not the realtime reader (which uses [`StreamResampler`] in `f32`).
+///
+/// Primes and trims `output_delay()` so an impulse at input sample `t` lands at
+/// `round(t * rate_out_hz / rate_in_hz)` in the output, then flushes the tail with zero padding.
+/// Output length is `round(input.len() * rate_out_hz / rate_in_hz)`. Equal rates are a no-op copy.
+pub fn resample_offline(
+    input: &[f64],
+    rate_in_hz: u32,
+    rate_out_hz: u32,
+) -> Result<Vec<f64>, ResampleError> {
+    if rate_in_hz == rate_out_hz {
+        return Ok(input.to_vec());
+    }
+    if input.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    const BLOCK_IN: usize = 4096;
+    let mut resampler = Fft::<f64>::new(
+        rate_in_hz as usize,
+        rate_out_hz as usize,
+        BLOCK_IN,
+        1,
+        FixedSync::Input,
+    )
+    .map_err(|e| ResampleError::Construction(e.to_string()))?;
+
+    let delay = resampler.output_delay();
+    let expected_len =
+        (input.len() as f64 * f64::from(rate_out_hz) / f64::from(rate_in_hz)).round() as usize;
+
+    let mut in_buf = vec![0.0f64; resampler.input_frames_max().max(BLOCK_IN)];
+    let out_cap = resampler.output_frames_max();
+    let mut out_buf = vec![0.0f64; out_cap];
+    let mut produced = Vec::with_capacity(delay + expected_len + out_cap);
+    let mut pos = 0usize;
+
+    // Feed the whole input, zero-padded past the end to flush the resampler's internal delay,
+    // until enough output has been produced to cover the trimmed, expected-length result.
+    while produced.len() < delay + expected_len {
+        let need = resampler.input_frames_next();
+        for (i, slot) in in_buf[..need].iter_mut().enumerate() {
+            *slot = input.get(pos + i).copied().unwrap_or(0.0);
+        }
+        pos += need;
+        let written = {
+            let adapter_in = SequentialSlice::new(&in_buf[..need], 1, need)
+                .map_err(|e| ResampleError::Process(e.to_string()))?;
+            let mut adapter_out = SequentialSlice::new_mut(&mut out_buf[..], 1, out_cap)
+                .map_err(|e| ResampleError::Process(e.to_string()))?;
+            let (_, written) = resampler
+                .process_into_buffer(&adapter_in, &mut adapter_out, None)
+                .map_err(|e| ResampleError::Process(e.to_string()))?;
+            written
+        };
+        produced.extend_from_slice(&out_buf[..written]);
+        if pos >= input.len() && written == 0 {
+            // Shouldn't happen with `FixedSync::Input`, but avoids spinning forever if it does;
+            // the trim/pad below still yields a correctly-sized (zero-padded) result.
+            break;
+        }
+    }
+
+    if produced.len() > delay {
+        produced.drain(0..delay);
+    } else {
+        produced.clear();
+    }
+    produced.resize(expected_len, 0.0);
+    Ok(produced)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +298,88 @@ mod tests {
             .map(|(a, b)| (a - b).abs())
             .fold(0.0f32, f32::max);
         assert!(max_err < 2e-3, "max error {max_err}");
+    }
+
+    fn sine64(freq_hz: f64, rate_hz: u32, amp: f64, n: usize) -> Vec<f64> {
+        (0..n)
+            .map(|i| {
+                let t = i as f64 / f64::from(rate_hz);
+                amp * (std::f64::consts::TAU * freq_hz * t).sin()
+            })
+            .collect()
+    }
+
+    /// Mean frequency from rising zero crossings (linearly interpolated), `f64` version of the
+    /// helper above.
+    fn frequency_hz64(x: &[f64], rate_hz: u32) -> f64 {
+        let mut crossings = Vec::new();
+        for i in 1..x.len() {
+            let (a, b) = (x[i - 1], x[i]);
+            if a < 0.0 && b >= 0.0 {
+                crossings.push((i - 1) as f64 + a / (a - b));
+            }
+        }
+        let n = crossings.len() - 1;
+        let span = crossings[n] - crossings[0];
+        n as f64 * f64::from(rate_hz) / span
+    }
+
+    fn peak(x: &[f64]) -> f64 {
+        x.iter().fold(0.0f64, |m, &v| m.max(v.abs()))
+    }
+
+    /// Ticket S4-02 acceptance: 48 kHz -> 44.1 kHz keeps a 1 kHz tone at 1 kHz within 0.05 % and
+    /// its level within 0.1 dB (a smaller slice of SPEC-005 AC-20, which the [M6] hardening ticket
+    /// checks in full).
+    #[test]
+    fn offline_resample_keeps_tone_frequency_and_level_48k_to_44k1() {
+        let (rate_in, rate_out) = (48_000u32, 44_100u32);
+        let input = sine64(1000.0, rate_in, 0.5, rate_in as usize * 2);
+        let output = resample_offline(&input, rate_in, rate_out).unwrap();
+
+        let expected_len =
+            (input.len() as f64 * f64::from(rate_out) / f64::from(rate_in)).round() as usize;
+        assert_eq!(output.len(), expected_len);
+
+        // Measure on the back half only, clear of the flushed/padded tail and any startup ripple.
+        let tail = &output[output.len() / 2..(output.len() - 200)];
+        let f = frequency_hz64(tail, rate_out);
+        let rel_err = (f - 1000.0).abs() / 1000.0;
+        assert!(
+            rel_err <= 0.0005,
+            "measured {f} Hz ({}% off)",
+            rel_err * 100.0
+        );
+
+        let in_tail = &input[input.len() / 2..];
+        let level_db = 20.0 * (peak(tail) / peak(in_tail)).log10();
+        assert!(level_db.abs() <= 0.1, "level changed by {level_db} dB");
+    }
+
+    /// Equal rates are a bit-exact no-op (no resampler constructed).
+    #[test]
+    fn offline_resample_is_a_no_op_for_equal_rates() {
+        let input = sine64(440.0, 48_000, 0.3, 1_000);
+        let output = resample_offline(&input, 48_000, 48_000).unwrap();
+        assert_eq!(input, output);
+    }
+
+    /// Output length tracks the input/output ratio exactly (SPEC-005 §2.12 "Output length =
+    /// round(len x fs_out/fs_in) +/- 1"); here the offline resampler hits it exactly.
+    #[test]
+    fn offline_resample_output_length_matches_the_ratio() {
+        for (rate_in, rate_out) in [(48_000u32, 44_100u32), (44_100, 48_000), (48_000, 96_000)] {
+            let input = sine64(200.0, rate_in, 0.2, rate_in as usize);
+            let output = resample_offline(&input, rate_in, rate_out).unwrap();
+            let expected =
+                (input.len() as f64 * f64::from(rate_out) / f64::from(rate_in)).round() as usize;
+            assert_eq!(output.len(), expected, "{rate_in} -> {rate_out}");
+        }
+    }
+
+    #[test]
+    fn offline_resample_of_empty_input_is_empty() {
+        let output = resample_offline(&[], 48_000, 44_100).unwrap();
+        assert!(output.is_empty());
     }
 }

@@ -23,4 +23,14 @@ pub enum IoError {
     /// An argument outside its documented range (e.g. `bits` not 16 or 24 for a dithered write).
     #[error("invalid argument: {0}")]
     InvalidArgument(&'static str),
+    /// `flacenc` rejected the encoder configuration or failed mid-encode (S4-02).
+    #[error("FLAC encode error: {0}")]
+    FlacEncode(String),
+    /// No `libmp3lame` shared library could be loaded (ADR-007 §4, D-013): MP3 export is
+    /// unavailable, and the app should show a message rather than crash.
+    #[error("MP3 export unavailable: no libmp3lame could be loaded ({0})")]
+    Mp3Unavailable(String),
+    /// A LAME call failed or returned an error code (S4-02).
+    #[error("MP3 encode error: {0}")]
+    Mp3Encode(String),
 }

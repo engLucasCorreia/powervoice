@@ -1,7 +1,10 @@
 //! `powervoice-cli`: the DSP acceptance tool. `gen` writes synthetic test
 //! signals to WAV, `analyze` reports objective measurements on a WAV file,
 //! `render --rack` renders a mono WAV through a rack file with the same code as
-//! the engine's offline render (SPEC-012 §2.8). `bench` is a stub (T-110).
+//! the engine's offline render (SPEC-012 §2.8). `convert` exercises the export
+//! encoders end to end (ticket S4-02): read a WAV through `vox_io`, optionally
+//! resample (`vox_dsp::resample::resample_offline`), and write WAV/FLAC/MP3
+//! chosen by the output extension. `bench` is a stub (T-110).
 //!
 //! ## `analyze --json` schema and non-finite/missing values
 //! Every numeric field in the JSON report is a plain JSON number, *except*
@@ -51,6 +54,8 @@ enum Commands {
     /// Render a mono WAV through an effects rack (32-bit float output, same length and
     /// time-aligned with the input).
     Render(RenderArgs),
+    /// Convert a WAV to WAV/FLAC/MP3, optionally resampling (S4-02 export encoders).
+    Convert(ConvertArgs),
     /// Benchmark DSP modules (T-110).
     Bench,
 }
@@ -84,6 +89,18 @@ impl From<BitsArg> for BitDepth {
             BitsArg::Bits16 => BitDepth::Int16,
             BitsArg::Bits24 => BitDepth::Int24,
             BitsArg::Bits32f => BitDepth::Float32,
+        }
+    }
+}
+
+/// As above, but into `vox_io`'s own `BitDepth` (the production encoder crate, distinct from
+/// `vox_testkit`'s independent measuring-stick type of the same name — ADR-001 §3).
+impl From<BitsArg> for vox_io::BitDepth {
+    fn from(bits: BitsArg) -> Self {
+        match bits {
+            BitsArg::Bits16 => vox_io::BitDepth::Int16,
+            BitsArg::Bits24 => vox_io::BitDepth::Int24,
+            BitsArg::Bits32f => vox_io::BitDepth::Float32,
         }
     }
 }
@@ -170,6 +187,7 @@ fn main() -> Result<()> {
         Some(Commands::Gen(args)) => cmd_gen(args),
         Some(Commands::Analyze(args)) => cmd_analyze(args),
         Some(Commands::Render(args)) => cmd_render(args),
+        Some(Commands::Convert(args)) => cmd_convert(args),
         Some(Commands::Bench) => {
             println!("bench: not implemented yet (T-110)");
             Ok(())
@@ -223,6 +241,113 @@ fn cmd_render(args: RenderArgs) -> Result<()> {
         .context("rendering")?;
     wav::write_wav_file(&args.output, &out, 1, info.sample_rate, BitDepth::Float32)
         .with_context(|| format!("writing {:?}", args.output))?;
+    Ok(())
+}
+
+#[derive(clap::Args)]
+struct ConvertArgs {
+    /// Input WAV (multichannel is downmixed to mono by average, like Save/Export).
+    input: PathBuf,
+
+    /// Output path; the format is inferred from its extension (.wav, .flac or .mp3).
+    output: PathBuf,
+
+    /// Resample to this rate in Hz before encoding (offline, f64, `vox_dsp::resample`). Omitted
+    /// keeps the source rate.
+    #[arg(long)]
+    rate: Option<u32>,
+
+    /// Bit depth for WAV/FLAC output (ignored for MP3, which has none).
+    #[arg(long, value_enum, default_value_t = BitsArg::Bits24)]
+    bits: BitsArg,
+
+    /// MP3 constant bitrate in kbps, 128-320 (the ACX preset is 192). Ignored for WAV/FLAC, and
+    /// ignored for MP3 when `--vbr` is given.
+    #[arg(long, default_value_t = 192)]
+    bitrate: u32,
+
+    /// MP3 variable bitrate quality, 0 (V0, best) to 4 (V4). Given together with an output ending
+    /// in `.mp3`, this switches from CBR (`--bitrate`) to VBR.
+    #[arg(long)]
+    vbr: Option<u8>,
+}
+
+fn cmd_convert(args: ConvertArgs) -> Result<()> {
+    let (rate_in, _channels, mut source) = vox_io::read_wav(&args.input)
+        .with_context(|| format!("reading WAV input {:?}", args.input))?;
+
+    let mut samples = Vec::new();
+    let mut buf = [0f32; 65_536];
+    loop {
+        let n = source
+            .read_mono(&mut buf)
+            .with_context(|| format!("reading samples from {:?}", args.input))?;
+        if n == 0 {
+            break;
+        }
+        samples.extend_from_slice(&buf[..n]);
+    }
+    drop(source);
+
+    let rate_out = args.rate.unwrap_or(rate_in);
+    let samples = if rate_out == rate_in {
+        samples
+    } else {
+        let input_f64: Vec<f64> = samples.iter().map(|&s| f64::from(s)).collect();
+        let resampled = vox_dsp::resample::resample_offline(&input_f64, rate_in, rate_out)
+            .map_err(|e| anyhow::anyhow!("resampling {rate_in} Hz -> {rate_out} Hz: {e}"))?;
+        resampled.into_iter().map(|s| s as f32).collect()
+    };
+
+    let ext = args
+        .output
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let bits: vox_io::BitDepth = args.bits.into();
+
+    let clipped = match ext.as_str() {
+        "wav" => {
+            vox_io::write_wav(&args.output, rate_out, bits, &samples)
+                .with_context(|| format!("writing {:?}", args.output))?
+                .clipped_samples
+        }
+        "flac" => {
+            let flac_bits = match bits {
+                vox_io::BitDepth::Int16 => vox_io::FlacBitDepth::Int16,
+                vox_io::BitDepth::Int24 => vox_io::FlacBitDepth::Int24,
+                vox_io::BitDepth::Float32 => {
+                    bail!("FLAC export needs --bits 16 or 24 (32f has no FLAC equivalent)")
+                }
+            };
+            vox_io::write_flac(&args.output, rate_out, flac_bits, &samples)
+                .with_context(|| format!("writing {:?}", args.output))?
+                .clipped_samples
+        }
+        "mp3" => {
+            if !vox_io::mp3_available() {
+                bail!(
+                    "MP3 export needs libmp3lame, which isn't installed on this system \
+                     (ADR-007 §4; Arch package `lame`)"
+                );
+            }
+            let settings = match args.vbr {
+                Some(quality) => vox_io::Mp3Settings::Vbr { quality },
+                None => vox_io::Mp3Settings::Cbr { kbps: args.bitrate },
+            };
+            vox_io::encode_mp3(&args.output, rate_out, &samples, settings)
+                .with_context(|| format!("writing {:?}", args.output))?
+                .clipped_samples
+        }
+        other => bail!("unknown output format {other:?} (use a .wav, .flac or .mp3 path)"),
+    };
+    if clipped > 0 {
+        eprintln!(
+            "warning: {clipped} of {} sample(s) exceeded full scale (|x| > 1.0) and were clamped",
+            samples.len()
+        );
+    }
     Ok(())
 }
 

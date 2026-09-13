@@ -15,7 +15,7 @@ use std::time::SystemTime;
 use crate::fs_util::{dir_size, sync_dir};
 use crate::journal::{Record, journal_file_name, read_journal};
 use crate::session::{LOCK_FILE_NAME, TAKES_DIR_NAME, read_meta};
-use crate::take::{recover_take, recover_take_file};
+use crate::take::{recover_take_file, take_part_path};
 use crate::{ProjectError, Result};
 
 /// Suffix of a session directory whose deletion has started.
@@ -36,6 +36,8 @@ pub struct RecoverableSession {
     pub open_take: Option<u32>,
     /// Samples recoverable from uncommitted takes.
     pub open_take_samples: u64,
+    /// Committed takes whose WAV holds audio beyond what was committed (store failure mid-take).
+    pub truncated_takes: Vec<u32>,
     /// The journal has a torn/corrupt tail or is inconsistent.
     pub journal_damaged: bool,
     pub last_modified: Option<SystemTime>,
@@ -151,6 +153,7 @@ struct Summary {
     redo: Vec<u64>,
     saved_seq: u64,
     open_takes: BTreeSet<u32>,
+    truncated_takes: BTreeSet<u32>,
     inconsistent: bool,
 }
 
@@ -164,6 +167,9 @@ fn summarize(records: &[Record]) -> Summary {
                 s.redo.clear();
                 if let Some(take) = e.take {
                     s.open_takes.remove(&take);
+                    if e.take_wav_samples.is_some() {
+                        s.truncated_takes.insert(take);
+                    }
                 }
             }
             Record::Undo { seq } => match s.undo.pop() {
@@ -212,23 +218,26 @@ pub fn classify_session(dir: &Path) -> Result<SessionClass> {
     if summary.closed && !damaged {
         return Ok(SessionClass::Clean);
     }
-    let open_take_samples: u64 = if journal_path.exists() {
+    // A take that was begun and never committed or discarded lives only in its WAV: the session
+    // is recoverable as soon as part 0 exists, whatever the parts hold. Samples are summed over
+    // the parts that parse; a torn part (crash during rollover, power loss) is skipped instead of
+    // zeroing the whole take.
+    let (open_take_present, open_take_samples) = if journal_path.exists() {
         summary
             .open_takes
             .iter()
-            .map(|&take| {
-                recover_take(&takes_dir, take)
-                    .map(|parts| parts.iter().map(|p| p.samples).sum::<u64>())
-                    .unwrap_or(0)
+            .map(|&take| lenient_take_samples(&takes_dir, take))
+            .fold((false, 0), |(any, sum), (exists, samples)| {
+                (any || exists, sum + samples)
             })
-            .sum()
     } else {
-        stray_take_samples(&takes_dir)
+        stray_takes(&takes_dir)
     };
     let current_seq = summary.undo.last().copied().unwrap_or(0);
     let unsaved = current_seq != summary.saved_seq;
     let journal_damaged = damaged || summary.inconsistent;
-    if !journal_damaged && !unsaved && open_take_samples == 0 {
+    let truncated_takes: Vec<u32> = summary.truncated_takes.iter().copied().collect();
+    if !journal_damaged && !unsaved && !open_take_present && truncated_takes.is_empty() {
         return Ok(SessionClass::Clean);
     }
     Ok(SessionClass::Recoverable(RecoverableSession {
@@ -244,21 +253,44 @@ pub fn classify_session(dir: &Path) -> Result<SessionClass> {
         unsaved_changes: unsaved,
         open_take: summary.open_takes.iter().next_back().copied(),
         open_take_samples,
+        truncated_takes,
         journal_damaged,
         last_modified: fs::metadata(&journal_path).and_then(|m| m.modified()).ok(),
         size_bytes: dir_size(dir),
     }))
 }
 
-fn stray_take_samples(takes_dir: &Path) -> u64 {
+/// `(part 0 exists, samples summed over the parts that parse)` for take `take`.
+fn lenient_take_samples(takes_dir: &Path, take: u32) -> (bool, u64) {
+    let mut samples = 0;
+    let mut part = 0;
+    loop {
+        let path = take_part_path(takes_dir, take, part);
+        if !path.exists() {
+            break;
+        }
+        if let Ok(recovered) = recover_take_file(&path) {
+            samples += recovered.samples;
+        }
+        part += 1;
+    }
+    (part > 0, samples)
+}
+
+/// `(any take file exists, samples summed over those that parse)` without a journal.
+fn stray_takes(takes_dir: &Path) -> (bool, u64) {
     let Ok(entries) = fs::read_dir(takes_dir) else {
-        return 0;
+        return (false, 0);
     };
     entries
         .flatten()
         .filter(|e| e.path().extension().is_some_and(|x| x == "wav"))
-        .map(|e| recover_take_file(&e.path()).map_or(0, |t| t.samples))
-        .sum()
+        .fold((false, 0), |(_, sum), e| {
+            (
+                true,
+                sum + recover_take_file(&e.path()).map_or(0, |t| t.samples),
+            )
+        })
 }
 
 /// Deletes a session directory crash-safely (see the module docs). A missing directory is fine.

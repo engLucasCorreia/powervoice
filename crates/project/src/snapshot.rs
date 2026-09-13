@@ -152,7 +152,7 @@ pub struct DocSnapshot {
     /// `starts[i]` is the document position of `pieces[i]` (prefix sums → O(log n) lookup).
     pub starts: Arc<[u64]>,
     pub len_samples: u64,
-    /// Sorted by `(pos_samples, id)`.
+    /// Sorted by position; markers at one position keep their relative order (SPEC-008 §4.2).
     pub markers: Arc<[Marker]>,
 }
 
@@ -263,9 +263,10 @@ impl DocSnapshot {
     }
 }
 
-/// Sorts markers by `(pos_samples, id)`; several markers may share a position.
+/// Sorts markers by position with a **stable** sort: markers that share a position (e.g. after a
+/// cut collapsed them onto its start) keep their relative order (SPEC-008 §4.2).
 pub(crate) fn sort_markers(markers: &mut [Marker]) {
-    markers.sort_by_key(|m| (m.pos_samples, m.id));
+    markers.sort_by_key(|m| m.pos_samples);
 }
 
 /// Marker positions after `Replace { at = a, remove_len = r, insert_len = n }`, exactly as
@@ -406,6 +407,19 @@ mod tests {
         let replaced = shift_markers(&markers, 0, 10 * S, 10 * S);
         let pos: Vec<u64> = replaced.iter().map(|m| m.pos_samples).collect();
         assert_eq!(pos, vec![0, 0, 10 * S]);
+    }
+
+    #[test]
+    fn markers_collapsing_onto_one_position_keep_their_order() {
+        // Marker 9 lies before marker 2; a cut over both sends them to its start.
+        let markers = vec![
+            Marker::new(MarkerId(9), 100, 0, "first"),
+            Marker::new(MarkerId(2), 150, 0, "second"),
+        ];
+        let cut = shift_markers(&markers, 50, 200, 0);
+        let ids: Vec<u64> = cut.iter().map(|m| m.id.0).collect();
+        assert_eq!(ids, vec![9, 2], "stable, not re-sorted by id");
+        assert!(cut.iter().all(|m| m.pos_samples == 50));
     }
 
     #[test]

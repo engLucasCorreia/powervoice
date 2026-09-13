@@ -66,6 +66,10 @@ pub enum ProjectError {
     /// A take WAV can't be parsed.
     #[error("invalid take file: {0}")]
     InvalidTakeFile(&'static str),
+    /// A take's audio is only in its WAV (the chunk store failed before its first chunk). The
+    /// take stays open, so crash recovery can apply it from the WAV.
+    #[error("take {take}: its {wav_samples} samples are only in the take file")]
+    TakeNotInStore { take: u32, wav_samples: u64 },
     /// JSON (de)serialization of a journal record or `meta.json` failed.
     #[error("serialization failed: {0}")]
     Json(#[from] serde_json::Error),
@@ -99,6 +103,7 @@ impl ProjectError {
             | ProjectError::InvalidArgument(_)
             | ProjectError::OutOfBounds { .. }
             | ProjectError::UnknownChunk(_) => "error.invalid_edit",
+            ProjectError::TakeNotInStore { .. } => "error.take_not_in_store",
             ProjectError::StoreInUse
             | ProjectError::NoSuchTake(_)
             | ProjectError::TakeAlreadyOpen

@@ -431,7 +431,13 @@ impl Session {
         self.commit_internal(&edit, None)
     }
 
-    fn commit_internal(&mut self, edit: &Edit, take: Option<TakeId>) -> Result<HistoryStep> {
+    /// `take`: the committed take and, if its WAV holds more than the committed audio, the WAV
+    /// length in samples.
+    fn commit_internal(
+        &mut self,
+        edit: &Edit,
+        take: Option<(TakeId, Option<u64>)>,
+    ) -> Result<HistoryStep> {
         for op in &edit.ops {
             let EditOp::Replace { pieces, .. } = op;
             self.validate_piece_refs(pieces)?;
@@ -450,11 +456,9 @@ impl Session {
                 chunks: new_chunks.clone(),
             });
         }
-        records.push(Record::Edit(EditRecord::from_edit(
-            prepared.seq(),
-            edit,
-            take.map(|t| t.0),
-        )));
+        let mut record = EditRecord::from_edit(prepared.seq(), edit, take.map(|(t, _)| t.0));
+        record.take_wav_samples = take.and_then(|(_, wav_samples)| wav_samples);
+        records.push(Record::Edit(record));
         self.journal.append(&records)?;
         for loc in &new_chunks {
             self.mark_journaled(loc.id);
@@ -597,8 +601,12 @@ impl Session {
     ///
     /// Markers are clamped into the take's range `[at, at + audio length]`: a marker pressed just
     /// before Stop (extrapolated ±10 ms, SPEC-003) or past audio lost to a store failure must not
-    /// sink the take. A take with no audio and no markers is closed with `take_discard` and adds
-    /// no entry (`Ok(None)`). Arguments are borrowed, so on error the take stays open and the
+    /// sink the take. A take whose WAV is empty and that has no markers is closed with
+    /// `take_discard` and adds no entry (`Ok(None)`). A take is never discarded while its WAV holds
+    /// audio: if the chunk store holds none of it, [`ProjectError::TakeNotInStore`] is returned
+    /// and the take stays open — drop the session so start-up recovery applies the take from its
+    /// WAV. If the store holds less than the WAV, the edit records the WAV length
+    /// (`take_wav_samples`) and GC keeps the session recoverable. Arguments are borrowed, so on error the take stays open and the
     /// caller can retry.
     pub fn commit_take(
         &mut self,
@@ -610,11 +618,19 @@ impl Session {
             _ => return Err(ProjectError::NoSuchTake(finished.take.0)),
         };
         let len = finished.audio.len_samples;
-        if len == 0 && markers.is_empty() {
+        if finished.wav_samples == 0 && len == 0 && markers.is_empty() {
             self.journal
                 .append(&[Record::TakeDiscard { take: open.id.0 }])?;
             self.open_take = None;
             return Ok(None);
+        }
+        if len == 0 && finished.wav_samples > 0 {
+            // The audio exists only in the WAV (the store failed before its first chunk). A
+            // discard would let GC delete the WAV, so the take stays open.
+            return Err(ProjectError::TakeNotInStore {
+                take: open.id.0,
+                wav_samples: finished.wav_samples,
+            });
         }
         let mut edit = Edit::new(TAKE_LABEL_KEY);
         if len > 0 {
@@ -630,7 +646,10 @@ impl Session {
                 ..marker.clone()
             }));
         }
-        let step = self.commit_internal(&edit, Some(open.id))?;
+        // A WAV longer than the committed audio (store failure mid-take) is recorded, so GC keeps
+        // the session and the WAV tail instead of deleting them after a save.
+        let truncated = (finished.wav_samples > len).then_some(finished.wav_samples);
+        let step = self.commit_internal(&edit, Some((open.id, truncated)))?;
         self.open_take = None;
         Ok(Some(step))
     }

@@ -183,6 +183,10 @@ pub struct EditRecord {
     /// ADR-004 Amendment 1: opaque, stored verbatim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment: Option<HexBytes>,
+    /// Set when the take's WAV holds more samples than the committed audio (the chunk store
+    /// failed mid-take): the WAV tail is still recoverable, so GC keeps the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub take_wav_samples: Option<u64>,
 }
 
 impl EditRecord {
@@ -231,6 +235,7 @@ impl EditRecord {
                 .collect(),
             take,
             attachment: edit.attachment.clone().map(HexBytes),
+            take_wav_samples: None,
         }
     }
 

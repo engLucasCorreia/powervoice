@@ -434,3 +434,98 @@ fn imported_audio_is_the_clean_undo_floor() {
     assert!(session.undo().unwrap().is_none(), "undo stops at the floor");
     assert_eq!(session.current().len_samples, 100_000);
 }
+
+/// The chunk store failing before its first chunk (disk full creating segment 0) must never
+/// discard a take whose WAV holds audio: the take stays open and GC keeps the session.
+#[test]
+fn take_only_in_its_wav_is_never_discarded() {
+    let tmp = TempDir::new("session-wav-only");
+    let mut config = SessionConfig::new(RATE);
+    config.store = StoreOptions {
+        memory_budget_bytes: 512 * MIB,
+        segment_hook: Some(Arc::new(|_: u32| -> std::io::Result<()> {
+            Err(std::io::Error::from(std::io::ErrorKind::StorageFull))
+        })),
+    };
+    let mut session = Session::create(tmp.path(), config).unwrap();
+    let dir = session.dir().to_path_buf();
+    let mut capture = session
+        .begin_take(TakeMode::New, TakeWriterOptions::default())
+        .unwrap();
+    capture.append(&noise(44, 30_000)).unwrap(); // below one chunk: nothing committed yet
+    let finished = capture.finish();
+    assert!(
+        finished
+            .error
+            .as_ref()
+            .is_some_and(ProjectError::is_disk_full)
+    );
+    assert_eq!(
+        (finished.audio.len_samples, finished.wav_samples),
+        (0, 30_000)
+    );
+
+    let err = session.commit_take(&finished, &[]).unwrap_err();
+    assert!(matches!(
+        err,
+        ProjectError::TakeNotInStore {
+            take: 1,
+            wav_samples: 30_000
+        }
+    ));
+    assert_eq!(err.i18n_key(), "error.take_not_in_store");
+    assert!(session.is_recording(), "the take stays open");
+    let journal = read_journal(session.journal_path()).unwrap();
+    assert!(
+        !journal
+            .records
+            .iter()
+            .any(|r| matches!(r, Record::TakeDiscard { .. }))
+    );
+
+    drop(session);
+    let report = vox_project::gc::collect_garbage(tmp.path());
+    assert!(report.deleted.is_empty());
+    assert_eq!(report.recoverable.len(), 1);
+    assert_eq!(report.recoverable[0].dir, dir);
+    assert_eq!(report.recoverable[0].open_take_samples, 30_000);
+}
+
+/// When the store holds less of a take than its WAV, the edit records the WAV length and GC keeps
+/// the session (with the WAV tail) even after a save.
+#[test]
+fn truncated_take_keeps_the_session_recoverable() {
+    let tmp = TempDir::new("session-truncated");
+    let mut session = new_session(tmp.path());
+    let dir = session.dir().to_path_buf();
+    let mut capture = session
+        .begin_take(TakeMode::New, TakeWriterOptions::default())
+        .unwrap();
+    capture.append(&noise(45, 100_000)).unwrap();
+    let mut finished = capture.finish();
+    // As if the store had failed after 100 000 samples while the WAV went on.
+    finished.wav_samples = 150_000;
+    session.commit_take(&finished, &[]).unwrap().unwrap();
+    assert_eq!(session.current().len_samples, 100_000);
+    let journal = read_journal(session.journal_path()).unwrap();
+    let edit = journal
+        .records
+        .iter()
+        .find_map(|r| match r {
+            Record::Edit(e) => Some(e.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(edit.take_wav_samples, Some(150_000));
+
+    session
+        .mark_saved(Path::new("/tmp/t.wav"), "wav24")
+        .unwrap();
+    drop(session);
+    let report = vox_project::gc::collect_garbage(tmp.path());
+    assert!(report.deleted.is_empty(), "never deleted silently");
+    assert_eq!(report.recoverable.len(), 1);
+    assert_eq!(report.recoverable[0].dir, dir);
+    assert_eq!(report.recoverable[0].truncated_takes, vec![1]);
+    assert!(!report.recoverable[0].unsaved_changes);
+}

@@ -208,19 +208,9 @@ struct Alloc {
     segments: u32,
 }
 
-/// Maps evicted under the segment lock, unmapped after it is released: `(map, dirty)`.
-type Evicted = Vec<(Arc<MmapRaw>, bool)>;
-
-/// Unmaps evicted segments. A dirty one first starts write-back of its view
-/// (`msync(MS_ASYNC)` / `FlushViewOfFile`): on Windows a view's dirty pages must be flushed
-/// through the view; elsewhere they stay in the page cache for the next `fdatasync`.
-fn unmap(evicted: Evicted) {
-    for (map, dirty) in evicted {
-        if dirty {
-            let _ = map.flush_async();
-        }
-    }
-}
+/// Maps evicted under the segment lock and dropped (unmapped) after it is released. Dirty
+/// victims already started their write-back under the lock (see `evict_locked`).
+type Evicted = Vec<Arc<MmapRaw>>;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -247,6 +237,8 @@ pub struct ChunkStore {
     index: RwLock<Vec<ChunkEntry>>,
     memory: Arc<Memory>,
     unreserved_segments: AtomicU32,
+    /// Serializes `sync()` calls, so one call's flag clearing can't race another's flush.
+    sync_lock: Mutex<()>,
     segment_hook: Option<SegmentHook>,
 }
 
@@ -298,6 +290,7 @@ impl ChunkStore {
                 peak: AtomicU64::new(0),
             }),
             unreserved_segments: AtomicU32::new(0),
+            sync_lock: Mutex::new(()),
             segment_hook: options.segment_hook,
         }))
     }
@@ -407,6 +400,7 @@ impl ChunkStore {
     /// `fdatasync` of the chunk file (`F_FULLFSYNC` on macOS, through std). A journal record may
     /// reference a chunk only after a `sync()` that started after the chunk was committed.
     pub fn sync(&self) -> Result<()> {
+        let _serialized = lock(&self.sync_lock);
         let dirty: Vec<(usize, Option<Arc<MmapRaw>>)> = {
             let mut segments = lock(&self.segments);
             segments
@@ -498,7 +492,7 @@ impl ChunkStore {
         let mut evicted = Vec::new();
         let result = self.acquire_segment_locked(seg, &mut evicted);
         // Unmap evicted segments only after the segment-table lock is released.
-        unmap(evicted);
+        drop(evicted);
         result
     }
 
@@ -555,7 +549,13 @@ impl ChunkStore {
             let Some(i) = victim else { break };
             let slot = &mut segments.slots[i];
             if let Some(map) = slot.map.take() {
-                evicted.push((map, slot.dirty));
+                if slot.dirty {
+                    // Start write-back of a dirty view before it becomes unreachable (on Windows
+                    // its dirty pages must be flushed through the view). Done under the segment
+                    // lock, so a concurrent `sync()` never sees it unmapped but not yet flushed.
+                    let _ = map.flush_async();
+                }
+                evicted.push(map);
                 self.memory
                     .mapped
                     .fetch_sub(SEGMENT_BYTES, Ordering::Relaxed);
@@ -677,7 +677,7 @@ impl ChunkStore {
             let mut segments = lock(&self.segments);
             self.evict_locked(&mut segments, 0, &mut evicted);
         }
-        unmap(evicted);
+        drop(evicted);
         self.memory.note_peak();
     }
 

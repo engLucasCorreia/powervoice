@@ -246,3 +246,60 @@ fn recoverable_sessions_are_never_deleted_silently() {
     discard_session(&unsaved_dir).unwrap();
     assert!(!unsaved_dir.exists() && interrupted_dir.exists());
 }
+
+/// A torn take part (crash during rollover, power loss) never hides a take: the parts that parse
+/// are summed, and a take whose part 0 exists always keeps its session.
+#[test]
+fn torn_take_parts_never_hide_a_take() {
+    use vox_project::take::take_part_path;
+    let tmp = TempDir::new("gc-torn-part");
+
+    // Three parts (1 000 + 1 000 + 500 samples), part 1 torn inside its header.
+    let mut session = new_session(tmp.path());
+    let options = TakeWriterOptions {
+        max_data_bytes: 4000,
+        ..TakeWriterOptions::default()
+    };
+    let mut capture = session.begin_take(TakeMode::New, options).unwrap();
+    capture.append(&noise(52, 2500)).unwrap();
+    let takes = session.takes_dir();
+    let dir = session.dir().to_path_buf();
+    drop(capture);
+    drop(session);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(take_part_path(&takes, 1, 1))
+        .unwrap()
+        .set_len(10)
+        .unwrap();
+
+    // A take whose only part is torn: no readable samples, still a take.
+    let mut other = new_session(tmp.path());
+    let capture = other
+        .begin_take(TakeMode::New, TakeWriterOptions::default())
+        .unwrap();
+    let other_dir = other.dir().to_path_buf();
+    let other_part = take_part_path(&other.takes_dir(), 1, 0);
+    drop(capture);
+    drop(other);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&other_part)
+        .unwrap()
+        .set_len(20)
+        .unwrap();
+
+    let report = collect_garbage(tmp.path());
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert!(report.deleted.is_empty(), "{:?}", report.deleted);
+    let torn = report.recoverable.iter().find(|r| r.dir == dir).unwrap();
+    assert_eq!(torn.open_take, Some(1));
+    assert_eq!(torn.open_take_samples, 1500, "parts 0 and 2 still count");
+    let empty = report
+        .recoverable
+        .iter()
+        .find(|r| r.dir == other_dir)
+        .unwrap();
+    assert_eq!(empty.open_take_samples, 0);
+    assert!(dir.exists() && other_dir.exists());
+}

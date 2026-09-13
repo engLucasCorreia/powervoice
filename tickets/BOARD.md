@@ -39,7 +39,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | S4-01 | Loudness analysis + LUFS normalize | S | S2-02, S1-01 | done |
 | S4-02 | Export encoders (FLAC, LAME via libloading, offline resampler) — library part | S | S1-01, S1-02 | done |
 | S4-04 | Export job + dialog (ACX preset) | S | S1-03, S4-02 | done |
-| S4-03 | ACX check report | S | S4-01 | in progress |
+| S4-03 | ACX check report | S | S4-01 | done |
 
 ### Hardening & backlog
 | ID | Title | Tier | Status |
@@ -48,7 +48,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-02 | Save: stream `save_snapshot_wav` (today holds the whole document in RAM, ~691 MB for 60 min); move TPDF dither from `vox-io` into `vox-dsp::dither` (ADR-001 §4) | S | todo |
 | H-03 | TP limiter: exact interval-endpoint coverage (+1 sample latency) instead of the measured +0.011 dB bound; test 1 ms look-ahead; full SPEC-017 AC matrix (44.1/96 kHz, all ceilings/gains), CPU bench, GR meter UI | O | todo |
 | H-04 | Playback engine fixes from the S1-01 post-merge review (fade state machine, host switch, rack-latency drain) | O | done |
-| H-05 | Post-merge Opus review of S1-04 (RT input callback, capture writer, take durability) — deferred for session budget | O | todo |
+| H-05 | Post-merge Opus review of S1-04 (RT input callback, capture writer, take durability) — deferred for session budget | O | in progress |
 | H-06 | UX: New Recording dialog (rate/bit depth); capture-writer resampling (Save-in-prompt → Save As for untitled recordings: done in the window-close hotfix) | S | todo |
 | H-07 | Live waveform while recording (writer-thread peaks → `record_peaks_get` → 10 Hz UI poll); owner-reported S1-04 gap | S | done |
 | H-08 | Export follow-ups from S4-04: Whole file / Selection choice (range already plumbed end to end); export reads the current rack model once S3-01 lands (today renders an empty rack); SPEC-014 "Output noise only" confirmation; MP3 VBR in the dialog | S | done |

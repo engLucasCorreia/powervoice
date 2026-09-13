@@ -20,7 +20,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 |---|---|---|---|---|
 | S2-01 | Selection + cut/copy/paste/delete/trim/silence + undo/redo end-to-end | S | S1-01, S1-03 | done |
 | S2-02 | Peak normalize favorites (−1/−0.1/−3 dB + custom) end-to-end | S | S2-01 | done |
-| S2-03 | Markers basic: add (M), panel, rename, delete, jump, WAV cue round-trip | S | S1-03, S2-01 | in progress |
+| S2-03 | Markers basic: add (M), panel, rename, delete, jump, WAV cue round-trip | S | S1-03, S2-01 | done |
 
 ### Slice 3 — Clean & shape
 | ID | Title | Tier | Deps | Status |
@@ -36,7 +36,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 ### Slice 4 — Deliver
 | ID | Title | Tier | Deps | Status |
 |---|---|---|---|---|
-| S4-01 | Loudness analysis + LUFS normalize | S | S2-02, S1-01 | todo |
+| S4-01 | Loudness analysis + LUFS normalize | S | S2-02, S1-01 | in progress |
 | S4-02 | Export encoders (FLAC, LAME via libloading, offline resampler) — library part | S | S1-01, S1-02 | done |
 | S4-04 | Export job + dialog (ACX preset) | S | S1-03, S4-02 | done |
 | S4-03 | ACX check report | S | S4-01 | todo |

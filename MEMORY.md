@@ -45,6 +45,8 @@
 
 ## Gotchas / learnings
 - Svelte 5: an element bound (`bind:this`) inside `{#if}` is `undefined` in `onMount` if the branch is closed at mount — attach observers/listeners in an `$effect` keyed on the element, not `onMount` (S1-03 blank-waveform bug, fixed d2f81b8). jsdom has `clientWidth` 0 and no `ResizeObserver`: stub `clientWidth` in tests.
+- Worktree behind main: after `git merge main`, run `npm ci --prefix <worktree>/ui` if main added UI deps (stale `node_modules` breaks svelte-check).
+- S3-03: clippy `approx_constant` flags spec literals like Q 0.7071 — keep the spec value in a const with a scoped `#[allow]` (don't swap to `FRAC_1_SQRT_2`: changes defaults/state). Butterworth slope ACs are tested on the f64 dsp sections (f32 `process()` can't resolve −190 dB).
 - `cpal` 0.18: no per-channel input selection (open full device, deinterleave), no hot-plug events (poll ~1 s off-thread), input/output are separate streams (monitoring needs drift-corrected ring). Enable `pipewire`/`jack` features on Linux; ALSA headers still required.
 - `hound` has no `cue`/`LIST adtl` support → custom RIFF chunk code.
 - `ebur128` needs feature `precision-true-peak` for 4× oversampled TP.

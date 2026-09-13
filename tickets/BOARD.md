@@ -27,7 +27,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 |---|---|---|---|---|
 | S3-01 | Rack panel + generic parameter UI end-to-end | S | S1-01, H-01 | paused (resume from worktree) |
 | S3-02 | Dynamics (compressor + limiter) + Noise Gate modules | O | T-103, H-01 | done |
-| S3-03 | Parametric EQ module (library part, lean SPEC-015) | O | T-103, H-01 | in progress (resumed) |
+| S3-03 | Parametric EQ module (library part, lean SPEC-015) | O | T-103, H-01 | done |
 | S3-07 | EQ graph panel (ResponseCurve, draggable nodes) | S | S3-01, S3-03 | todo |
 | S3-04 | Noise reduction module + noise-print profile (library part, lean SPEC-014) | O | T-103, H-01 | done |
 | S3-06 | Capture Noise Print command + NR slot panel | S | S3-01, S3-04, S2-01 | todo |
@@ -37,7 +37,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | ID | Title | Tier | Deps | Status |
 |---|---|---|---|---|
 | S4-01 | Loudness analysis + LUFS normalize | S | S2-02, S1-01 | todo |
-| S4-02 | Export encoders (FLAC, LAME via libloading, offline resampler) — library part | S | S1-01, S1-02 | paused (resume from worktree) |
+| S4-02 | Export encoders (FLAC, LAME via libloading, offline resampler) — library part | S | S1-01, S1-02 | in progress |
 | S4-04 | Export job + dialog (ACX preset) | S | S1-03, S4-02 | todo |
 | S4-03 | ACX check report | S | S4-01 | todo |
 

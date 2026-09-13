@@ -882,3 +882,16 @@ Slice 3 ships a working capture → clean loop. Everything else in this spec is 
   - the loud/short warnings' UI polish, and the 60 s-cap notice (the cap itself is S3);
   - Clear Noise Print, factory presets, the header badge, the export confirmation (M6);
   - the per-slot spectrum tap and `NoiseProfile::summary`.
+
+## Amendment 1 — S3-04 implementation (2026-09-13, orchestrator, autonomous)
+Accepted deviations, all measured in S3-04:
+1. **Tail = 2N** (not N): frequency-domain gains smear up to N samples past the delayed input (measured
+   last non-zero output 1919 / 3711 / 7295 / 15487 samples for N = 1024 / 2048 / 4096 / 8192). AC-1/AC-19
+   check exact zero from 2N.
+2. **Decision-directed history uses the full-strength gain 10^(Ĝ/20)**, not the applied (amount-blended)
+   gain — makes "Noise reduction %" a true dB-domain dry/wet; identical at 100 %.
+3. **AC-8 "sensitivity −6 → drop ≥ 9 dB"** is not reachable without worsening musical noise (DD recursion
+   is bistable with the print 6 dB below the noise); the test asserts ≥ 5.5 dB and monotonic ordering.
+   Re-derive the threshold in hardening.
+4. **AC-17 drag variant** uses a 3.5 s §4.3 tone (the harness's 3.0 s leaves too few steady frames after
+   drag + T_s + latency); proposed hardening item: a signal-length option in `ZipperTest`.

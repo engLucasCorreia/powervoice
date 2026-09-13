@@ -9,6 +9,9 @@ publish.workspace = true
 # ADR-001 §3: codec crates are confined to `io`.
 hound.workspace = true
 thiserror.workspace = true
+# ADR-001 §4/§2: TPDF dither lives in `dsp` (H-02 moved it out of `io`); the crate graph already
+# names the `io --> dsp` edge.
+vox-dsp = { path = "../dsp" }
 # S4-02: FLAC export encoder (ADR-007).
 flacenc.workspace = true
 # S4-02: LAME loaded at runtime via `libloading` (ADR-007 §4, D-013); LAME itself is never linked

@@ -8,10 +8,11 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use vox_dsp::dither::StreamingQuantizer;
 
 use crate::atomic::{finish, temp_path_for};
-use crate::dither::quantize_dithered;
 use crate::error::{IoError, Result};
 
 /// On-disk sample encoding (mirrors `hound::SampleFormat`, kept as our own type so callers don't
@@ -211,6 +212,10 @@ const CUE_MAX_POINTS: u32 = 100_000;
 
 /// Same as [`write_wav`], but also appends `cue `/`LIST adtl` chunks for `markers` (SPEC-005
 /// §2.9) after the audio, before the atomic rename. `markers.is_empty()` writes neither chunk.
+///
+/// Implemented on top of [`WavStreamWriter`] as a single `write_block` call, so this and a
+/// streamed save through `WavStreamWriter` directly produce byte-identical output for the same
+/// samples (H-02).
 pub fn write_wav_with_markers(
     path: impl AsRef<Path>,
     sample_rate_hz: u32,
@@ -218,26 +223,132 @@ pub fn write_wav_with_markers(
     samples: &[f32],
     markers: &[WavMarker],
 ) -> Result<WriteReport> {
-    let path = path.as_ref();
-    let spec = bits.hound_spec(sample_rate_hz);
-    let tmp = temp_path_for(path);
-    let write_result = write_temp(&tmp, spec, bits, samples).and_then(|clipped| {
-        append_markers(&tmp, markers)?;
-        Ok(clipped)
-    });
-    let clipped = match write_result {
-        Ok(clipped) => clipped,
-        Err(e) => {
+    let mut writer = WavStreamWriter::create(path, sample_rate_hz, bits)?;
+    if let Err(e) = writer.write_block(samples) {
+        writer.abort();
+        return Err(e);
+    }
+    writer.finish(markers)
+}
+
+/// A WAV file open for streaming, block-at-a-time writes (H-02): a caller with a large or
+/// unknown-length source (a save job reading a document through [`crate`]'s callers) feeds it
+/// fixed-size blocks — e.g. `vox_project::CHUNK_SAMPLES` (65 536) — instead of collecting the
+/// whole document into one buffer first, so memory stays bounded regardless of length.
+///
+/// 16/24-bit blocks are dithered through a [`StreamingQuantizer`] that persists across calls, so
+/// the output is byte-identical to quantizing the whole document in one call ([`write_wav`]) —
+/// see [`StreamingQuantizer`]'s contract on block-size alignment between calls. 32-bit float is
+/// written bit-exact, never dithered, with no alignment requirement.
+///
+/// On any error (from [`Self::write_block`] or [`Self::finish`]), the temp file is left in place
+/// for the caller to clean up: since the caller drove the read side too (e.g. reading the
+/// document failed), the caller — not this writer — knows when the stream is truly abandoned.
+/// Call [`Self::abort`] in that case. `path` is only ever touched by [`Self::finish`]'s final
+/// rename, so a failure at any point up to and including a failed `finish` leaves it untouched.
+pub struct WavStreamWriter {
+    writer: hound::WavWriter<BufWriter<File>>,
+    tmp: PathBuf,
+    path: PathBuf,
+    quantizer: Option<(StreamingQuantizer, u32)>,
+    clipped: usize,
+    scratch: Vec<i32>,
+}
+
+impl WavStreamWriter {
+    /// Opens `path`'s temp file (ADR-004 §8) and starts a streaming WAV write at `bits`.
+    pub fn create(path: impl AsRef<Path>, sample_rate_hz: u32, bits: BitDepth) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let tmp = temp_path_for(&path);
+        let spec = bits.hound_spec(sample_rate_hz);
+        let write_result = (|| {
+            let file = File::create(&tmp)?;
+            hound::WavWriter::new(BufWriter::new(file), spec).map_err(IoError::from)
+        })();
+        let writer = match write_result {
+            Ok(w) => w,
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e);
+            }
+        };
+        let quantizer = match bits {
+            BitDepth::Float32 => None,
+            BitDepth::Int16 => Some((StreamingQuantizer::new(16), 16)),
+            BitDepth::Int24 => Some((StreamingQuantizer::new(24), 24)),
+        };
+        Ok(WavStreamWriter {
+            writer,
+            tmp,
+            path,
+            quantizer,
+            clipped: 0,
+            scratch: Vec::new(),
+        })
+    }
+
+    /// Writes one block of mono samples, in document order. See the struct docs for the
+    /// block-alignment contract on 16/24-bit output.
+    pub fn write_block(&mut self, samples: &[f32]) -> Result<()> {
+        match &mut self.quantizer {
+            None => {
+                for &s in samples {
+                    self.writer
+                        .write_sample(if s.is_finite() { s } else { 0.0 })?;
+                }
+            }
+            Some((quantizer, bits)) => {
+                self.scratch.clear();
+                self.clipped += quantizer.push(samples, &mut self.scratch);
+                if *bits == 16 {
+                    for &v in &self.scratch {
+                        self.writer.write_sample(v as i16)?;
+                    }
+                } else {
+                    for &v in &self.scratch {
+                        self.writer.write_sample(v)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Finalizes the WAV data, appends `cue `/`LIST adtl` chunks for `markers` (SPEC-005 §2.9;
+    /// empty writes neither chunk), and atomically renames into place (ADR-004 §8: `fdatasync`,
+    /// rename, directory `fsync`). On error, removes the temp file and returns without touching
+    /// `path`.
+    pub fn finish(self, markers: &[WavMarker]) -> Result<WriteReport> {
+        let WavStreamWriter {
+            writer,
+            tmp,
+            path,
+            clipped,
+            ..
+        } = self;
+        let result = writer
+            .finalize()
+            .map_err(IoError::from)
+            .and_then(|()| append_markers(&tmp, markers));
+        if let Err(e) = result {
             let _ = std::fs::remove_file(&tmp);
             return Err(e);
         }
-    };
-    // ADR-004 §8: fsync the data, then rename over the target, then fsync the directory. `path`
-    // is only ever touched by the rename, so a failure up to here leaves it exactly as it was.
-    finish(&tmp, path)?;
-    Ok(WriteReport {
-        clipped_samples: clipped,
-    })
+        finish(&tmp, &path)?;
+        Ok(WriteReport {
+            clipped_samples: clipped,
+        })
+    }
+
+    /// Discards the temp file after the caller gives up on the stream (e.g. reading the source
+    /// failed partway through): `path` was never touched, so nothing needs to be restored, but
+    /// dropping a `WavStreamWriter` without calling either `finish` or `abort` would leak the
+    /// temp file.
+    pub fn abort(self) {
+        let tmp = self.tmp.clone();
+        drop(self);
+        let _ = std::fs::remove_file(&tmp);
+    }
 }
 
 /// Reads the `cue `/`LIST adtl` chunks of a WAV file (SPEC-005 §2.9): position (`dwSampleOffset`
@@ -501,39 +612,6 @@ fn write_ltxt(body: &mut Vec<u8>, id: u32, sample_length: u32) {
     // Fixed 20-byte body (no text): always even, no pad byte needed.
 }
 
-fn write_temp(tmp: &Path, spec: hound::WavSpec, bits: BitDepth, samples: &[f32]) -> Result<usize> {
-    let file = File::create(tmp)?;
-    let mut writer = hound::WavWriter::new(BufWriter::new(file), spec)?;
-    let clipped = match bits {
-        BitDepth::Float32 => {
-            for &s in samples {
-                writer.write_sample(if s.is_finite() { s } else { 0.0 })?;
-            }
-            0
-        }
-        BitDepth::Int16 => write_dithered(&mut writer, samples, 16)?,
-        BitDepth::Int24 => write_dithered(&mut writer, samples, 24)?,
-    };
-    writer.finalize()?;
-    Ok(clipped)
-}
-
-fn write_dithered<W: std::io::Write + std::io::Seek>(
-    writer: &mut hound::WavWriter<W>,
-    samples: &[f32],
-    bits: u32,
-) -> Result<usize> {
-    let (values, clipped) = quantize_dithered(samples, bits);
-    for v in values {
-        if bits == 16 {
-            writer.write_sample(v as i16)?;
-        } else {
-            writer.write_sample(v)?;
-        }
-    }
-    Ok(clipped)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -707,6 +785,130 @@ mod tests {
         let bytes = std::fs::read(&path).unwrap();
         let riff_size = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
         assert_eq!(riff_size, bytes.len() - 8);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // --- H-02: WavStreamWriter ---------------------------------------------------------------
+
+    /// A document larger than several `CHUNK_SAMPLES`-style blocks, with off-grid, grid-exact and
+    /// silent stretches so both dither paths and the RNG-continuation-across-blocks logic are
+    /// exercised, streamed in fixed-size blocks that aren't multiples of the block size to make
+    /// sure the writer doesn't secretly require alignment on the *caller's* side beyond "every
+    /// call but the last is a multiple of 4096" (here every call is 4096-aligned by construction:
+    /// see the comment below).
+    fn streaming_signal(n: usize) -> Vec<f32> {
+        (0..n)
+            .map(|i| match i % 11 {
+                0 => 0.0,
+                1 => ((i * 97) % 65536) as f32 / 32_768.0 - 1.0, // exact 16-bit grid point
+                // `.fract()` keeps the sign of its input in Rust, so `.abs()` first to land in
+                // [0, 1) before rescaling to (-0.8, 0.8) — well within range, no clipping.
+                _ => ((i as f32 * 12.9898).sin() * 43_758.547).fract().abs() * 1.6 - 0.8,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn stream_writer_matches_write_wav_int16() {
+        let dir = tmp_dir("stream-16");
+        let samples = streaming_signal(200_000);
+
+        let whole_path = dir.join("whole.wav");
+        write_wav(&whole_path, 48_000, BitDepth::Int16, &samples).unwrap();
+
+        let streamed_path = dir.join("streamed.wav");
+        let mut writer = WavStreamWriter::create(&streamed_path, 48_000, BitDepth::Int16).unwrap();
+        // Blocks are a multiple of DITHER_BLOCK_SAMPLES (4096): 16 * 4096 = 65 536, matching
+        // `vox_project::CHUNK_SAMPLES`.
+        for block in samples.chunks(65_536) {
+            writer.write_block(block).unwrap();
+        }
+        let report = writer.finish(&[]).unwrap();
+
+        let whole_bytes = std::fs::read(&whole_path).unwrap();
+        let streamed_bytes = std::fs::read(&streamed_path).unwrap();
+        assert_eq!(
+            whole_bytes, streamed_bytes,
+            "streaming in blocks must produce byte-identical output to one write_wav call"
+        );
+        assert_eq!(report.clipped_samples, 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn stream_writer_matches_write_wav_float32() {
+        let dir = tmp_dir("stream-32f");
+        let samples = streaming_signal(150_000);
+
+        let whole_path = dir.join("whole.wav");
+        write_wav(&whole_path, 48_000, BitDepth::Float32, &samples).unwrap();
+
+        let streamed_path = dir.join("streamed.wav");
+        let mut writer =
+            WavStreamWriter::create(&streamed_path, 48_000, BitDepth::Float32).unwrap();
+        for block in samples.chunks(65_536) {
+            writer.write_block(block).unwrap();
+        }
+        writer.finish(&[]).unwrap();
+
+        assert_eq!(
+            std::fs::read(&whole_path).unwrap(),
+            std::fs::read(&streamed_path).unwrap()
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn stream_writer_markers_survive_a_streamed_write() {
+        let dir = tmp_dir("stream-markers");
+        let samples = streaming_signal(140_000);
+        let markers = vec![
+            WavMarker {
+                pos_samples: 10,
+                len_samples: 0,
+                name: "Before first block boundary".into(),
+            },
+            WavMarker {
+                pos_samples: 65_536,
+                len_samples: 4_800,
+                name: "Exactly on a block boundary".into(),
+            },
+            WavMarker {
+                pos_samples: 130_000,
+                len_samples: 0,
+                name: "In the final short block".into(),
+            },
+        ];
+
+        let path = dir.join("out.wav");
+        let mut writer = WavStreamWriter::create(&path, 48_000, BitDepth::Int24).unwrap();
+        for block in samples.chunks(65_536) {
+            writer.write_block(block).unwrap();
+        }
+        writer.finish(&markers).unwrap();
+
+        let read_back = read_wav_markers(&path).unwrap();
+        assert_eq!(read_back.len(), 3);
+        assert_eq!(read_back[0].name, "Before first block boundary");
+        assert_eq!(read_back[1].pos_samples, 65_536);
+        assert_eq!(read_back[1].len_samples, 4_800);
+        assert_eq!(read_back[2].name, "In the final short block");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn stream_writer_abort_removes_the_temp_file_and_leaves_the_target_untouched() {
+        let dir = tmp_dir("stream-abort");
+        let path = dir.join("out.wav");
+        std::fs::write(&path, b"OLD-CONTENT").unwrap();
+
+        let mut writer = WavStreamWriter::create(&path, 48_000, BitDepth::Int16).unwrap();
+        writer.write_block(&[0.0; 10]).unwrap();
+        writer.abort();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"OLD-CONTENT");
+        let tmp = temp_path_for(&path);
+        assert!(!tmp.exists(), "abort must remove the temp file");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

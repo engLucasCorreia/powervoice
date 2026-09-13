@@ -1,8 +1,8 @@
 //! FLAC encode via `flacenc` (ADR-007; SPEC-005 §2.11, §2.14 export [M6]).
 //!
 //! Mono only (PowerVoice edits mono, PROMPT §2 LOCKED). Bit depth 16 or 24, TPDF-dithered from the
-//! f32 samples with the same quantizer [`write_wav`](crate::write_wav) uses (`crate::dither`), block
-//! size 4096 (SPEC-005 §2.11, `flac_block_size`). Atomic write: temp file next to the target,
+//! f32 samples with the same quantizer [`write_wav`](crate::write_wav) uses (`vox_dsp::dither`),
+//! block size 4096 (SPEC-005 §2.11, `flac_block_size`). Atomic write: temp file next to the target,
 //! `fdatasync`, rename, directory `fsync` (ADR-004 §8), matching [`crate::wav::write_wav`].
 //!
 //! **Deviation (S4-02 ticket report):** SPEC-005 §2.11 calls for decoding the temp file back and
@@ -22,8 +22,9 @@ use flacenc::config;
 use flacenc::error::Verify;
 use flacenc::source::MemSource;
 
+use vox_dsp::dither::quantize_dithered;
+
 use crate::atomic::{finish, temp_path_for};
-use crate::dither::quantize_dithered;
 use crate::error::{IoError, Result};
 use crate::wav::WriteReport;
 

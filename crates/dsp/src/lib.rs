@@ -7,8 +7,11 @@
 //!   true peak (S4-01) — off the audio thread only (job/edit-op code, not `process()`).
 //! - [`acx`]: ACX / Audible submission pass/fail rules (RMS, sample peak, noise floor; S4-03) —
 //!   off the audio thread only, over a whole (source or rack-processed) buffer.
+//! - [`dither`]: deterministic TPDF dither/quantizer for 16/24-bit save and export (ADR-001 §4;
+//!   H-02 moved this from `vox-io`) — off the audio thread only.
 
 pub mod acx;
+pub mod dither;
 pub mod dynamics;
 pub mod eq;
 pub mod fp;

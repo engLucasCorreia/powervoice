@@ -4862,6 +4862,7 @@ dependencies = [
  "hound",
  "libloading 0.9.0",
  "thiserror 2.0.20",
+ "vox-dsp",
  "vox-testkit",
 ]
 

@@ -8,9 +8,12 @@
 //! runtime-loaded LAME, ADR-007 §4) writers alongside WAV, and the [`Encoder`] trait ([`encoder`])
 //! that picks between them by output format. The offline resampler export needs is
 //! `vox_dsp::resample::resample_offline` (ADR-001 §3: `rubato` lives only in `dsp`).
+//!
+//! H-02: the TPDF dither/quantizer moved to `vox_dsp::dither` (ADR-001 §4); [`wav`] and [`flac`]
+//! call through it. [`wav::WavStreamWriter`] additionally lets a save stream through in blocks
+//! instead of collecting the whole document into one buffer first.
 
 mod atomic;
-mod dither;
 pub mod encoder;
 pub mod error;
 pub mod flac;
@@ -22,6 +25,6 @@ pub use error::{IoError, Result};
 pub use flac::{FlacBitDepth, write_flac};
 pub use mp3::{Mp3Settings, encode_mp3, mp3_available};
 pub use wav::{
-    BitDepth, SampleFormat, WavFormat, WavMarker, WavSource, WriteReport, read_wav,
-    read_wav_markers, write_wav, write_wav_with_markers,
+    BitDepth, SampleFormat, WavFormat, WavMarker, WavSource, WavStreamWriter, WriteReport,
+    read_wav, read_wav_markers, write_wav, write_wav_with_markers,
 };

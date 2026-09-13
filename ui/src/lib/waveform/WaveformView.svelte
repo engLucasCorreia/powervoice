@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { documentState, hasDocument } from "../document/document.svelte";
   import { t } from "../i18n";
   import { peaksGet } from "../ipc/commands";
@@ -295,27 +295,37 @@
     startSample = clampStartSample(value, samplesPerPixel, lenSamples, viewportPx);
   }
 
+  // The canvas container only exists while a document is open (`{#if isOpen}`), so the size
+  // observer must be (re)attached whenever the element appears — not once at mount, when no
+  // document is open yet (that left viewportPx at 0 and the waveform blank).
+  $effect(() => {
+    const el = containerEl;
+    if (!el) {
+      viewportPx = 0;
+      return;
+    }
+    untrack(() => {
+      viewportPx = el.clientWidth;
+      heightPx = el.clientHeight || heightPx;
+    });
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        viewportPx = Math.max(0, Math.round(entry.contentRect.width));
+        heightPx = Math.max(1, Math.round(entry.contentRect.height));
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
+
   onMount(() => {
     const cleanups: Array<() => void> = [
       registerAction("waveform.zoom_in", () => zoomKeyboard(1)),
       registerAction("waveform.zoom_out", () => zoomKeyboard(-1)),
     ];
-
-    if (containerEl) {
-      if (typeof ResizeObserver !== "undefined") {
-        const ro = new ResizeObserver((entries) => {
-          for (const entry of entries) {
-            viewportPx = Math.max(0, Math.round(entry.contentRect.width));
-            heightPx = Math.max(1, Math.round(entry.contentRect.height));
-          }
-        });
-        ro.observe(containerEl);
-        cleanups.push(() => ro.disconnect());
-      } else {
-        viewportPx = containerEl.clientWidth;
-        heightPx = containerEl.clientHeight || heightPx;
-      }
-    }
 
     const requestFrame: (cb: () => void) => number =
       typeof requestAnimationFrame === "function"

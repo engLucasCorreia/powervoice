@@ -8,7 +8,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
 
 use rtrb::Producer;
-use vox_dsp::resample::StreamResampler;
+use vox_dsp::resample::{ResampleError, StreamResampler};
 use vox_project::SnapshotReader;
 
 use crate::engine::PlaybackDoc;
@@ -48,7 +48,21 @@ pub(crate) struct Reader {
     len: u64,
     reader: Option<SnapshotReader>,
     resampler: Option<StreamResampler>,
+    /// The rates differ and no resampler could be built: nothing streams (never the wrong
+    /// speed); the control thread posted the notice (`Control::build_output`).
+    resample_failed: bool,
     active: Option<Active>,
+}
+
+/// The resampler playing a `doc_rate_hz` document at `dev_rate_hz` needs (`None`: same rate).
+pub(crate) fn resampler_for(
+    doc_rate_hz: u32,
+    dev_rate_hz: u32,
+) -> Result<Option<StreamResampler>, ResampleError> {
+    if doc_rate_hz == dev_rate_hz {
+        return Ok(None);
+    }
+    StreamResampler::new(doc_rate_hz, dev_rate_hz).map(Some)
 }
 
 impl Reader {
@@ -60,17 +74,19 @@ impl Reader {
             len: 0,
             reader: None,
             resampler: None,
+            resample_failed: false,
             active: None,
         }
     }
 
     fn rebuild_resampler(&mut self) {
-        self.resampler = (self.reader.is_some()
-            && self.dev_rate_hz > 0
-            && self.doc_rate_hz > 0
-            && self.doc_rate_hz != self.dev_rate_hz)
-            .then(|| StreamResampler::new(self.doc_rate_hz, self.dev_rate_hz).ok())
-            .flatten();
+        let built = if self.reader.is_some() && self.dev_rate_hz > 0 && self.doc_rate_hz > 0 {
+            resampler_for(self.doc_rate_hz, self.dev_rate_hz)
+        } else {
+            Ok(None)
+        };
+        self.resample_failed = built.is_err();
+        self.resampler = built.ok().flatten();
     }
 
     pub(crate) fn handle(&mut self, cmd: ReaderCmd) {
@@ -87,6 +103,9 @@ impl Reader {
             ReaderCmd::Detach => {
                 self.producer = None;
                 self.active = None;
+                if let Some(r) = self.reader.as_mut() {
+                    r.release_segments();
+                }
             }
             ReaderCmd::SetDoc(doc) => {
                 self.active = None;
@@ -140,6 +159,7 @@ impl Reader {
             producer: Some(prod),
             reader: Some(reader),
             active: Some(a),
+            resample_failed: false,
             resampler,
             len,
             doc_rate_hz,
@@ -218,5 +238,17 @@ pub(crate) fn run(mut reader: Reader, rx: Receiver<ReaderCmd>) {
             Err(RecvTimeoutError::Disconnected) => break,
         }
         reader.fill();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resampler_for;
+
+    #[test]
+    fn resampler_only_when_the_rates_differ() {
+        assert!(matches!(resampler_for(48_000, 48_000), Ok(None)));
+        assert!(matches!(resampler_for(44_100, 48_000), Ok(Some(_))));
+        assert!(resampler_for(0, 48_000).is_err(), "unsupported rates fail");
     }
 }

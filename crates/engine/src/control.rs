@@ -60,6 +60,8 @@ struct OutputStream {
     rate_hz: u32,
     doc_rate_hz: u32,
     buffer: BufferRequest,
+    /// The document rate converts to the stream rate (else the reader streams nothing).
+    playable: bool,
 }
 
 /// Latest heard position reported by the output callback.
@@ -232,7 +234,7 @@ impl Control {
     }
 
     fn can_play(&self) -> bool {
-        self.transport.len() > 0 && self.output.is_some()
+        self.transport.len() > 0 && self.output.as_ref().is_some_and(|o| o.playable)
     }
 
     // --- Transport -------------------------------------------------------------------------
@@ -624,6 +626,14 @@ impl Control {
             Ok(handle) => {
                 let stall = StallDetector::new(handle.info(), self.now());
                 let buffer = handle.info().buffer;
+                let playable = reader::resampler_for(doc_rate, rate).is_ok();
+                if !playable {
+                    self.notify(DeviceNotice::ResampleUnavailable {
+                        device: req.device.name.clone(),
+                        doc_rate_hz: doc_rate,
+                        device_rate_hz: rate,
+                    });
+                }
                 self.reader_send(ReaderCmd::Attach {
                     producer: pkt_tx,
                     dev_rate_hz: rate,
@@ -641,6 +651,7 @@ impl Control {
                     rate_hz: rate,
                     doc_rate_hz: doc_rate,
                     buffer,
+                    playable,
                 })
             }
             Err(e) => {
@@ -654,11 +665,17 @@ impl Control {
     }
 
     /// Drops the stream (the backend then drops the callback, which hands its parts back) and
-    /// tears the rack down here, on the control thread.
+    /// tears the rack down here, on the control thread. Playback stops first (Pause semantics at
+    /// the heard position; no stop fade will report back) on every close path.
     fn close_output(&mut self) {
         let Some(out) = self.output.take() else {
             return;
         };
+        if self.transport.playing() {
+            let heard = self.heard_now(self.now());
+            let _ = self.transport.pause(heard, false);
+            self.reader_send(ReaderCmd::Stop);
+        }
         let OutputStream {
             handle, slot, rack, ..
         } = out;
@@ -814,7 +831,8 @@ impl Control {
     }
 }
 
-/// The control thread's loop: messages as they come, a tick every [`TICK`].
+/// The control thread's loop: messages as they come, a tick every [`TICK`] (checked after every
+/// message too, so a steady stream of messages cannot starve the ticks).
 pub(crate) fn run(control: &mut Control, rx: &Receiver<ControlMsg>) {
     let mut next = Instant::now() + TICK;
     loop {
@@ -822,13 +840,14 @@ pub(crate) fn run(control: &mut Control, rx: &Receiver<ControlMsg>) {
             Ok(ControlMsg::Call(f)) => f(control),
             Ok(ControlMsg::Poll(ev)) => control.on_poll(ev),
             Ok(ControlMsg::Quit) | Err(RecvTimeoutError::Disconnected) => break,
-            Err(RecvTimeoutError::Timeout) => {
-                control.tick();
-                next += TICK;
-                let now = Instant::now();
-                if next < now {
-                    next = now + TICK;
-                }
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+        if Instant::now() >= next {
+            control.tick();
+            next += TICK;
+            let now = Instant::now();
+            if next < now {
+                next = now + TICK;
             }
         }
     }

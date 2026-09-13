@@ -14,8 +14,13 @@ use vox_engine::{
     DeviceKey, Direction, EngineConfig, EngineEvent, HostId, ManualEngine, PlaybackDoc,
     TelemetryFrame, TransportCommand,
 };
-use vox_module_api::test_util::{alloc_checks_active, no_alloc};
-use vox_module_api::{ModuleRef, ModuleState};
+use vox_module_api::test_util::{
+    TestDelay, ZIPPER_FREQ_HZ, ZIPPER_LEVEL_DBFS, ZipperWindow, alloc_checks_active,
+    analyze_zipper, no_alloc,
+};
+use vox_module_api::{
+    Module, ModuleDescriptor, ModuleError, ModuleFactory, ModuleRef, ModuleState, Version,
+};
 use vox_modules::Gain;
 use vox_project::{ChunkStore, ChunkWriter, DocSnapshot, StoreOptions};
 use vox_rack::{RackModel, Registry, SlotModel};
@@ -96,6 +101,17 @@ fn device(make_dev: fn() -> FakeDirection) -> FakeDevice {
 }
 
 fn rig(make_dev: fn() -> FakeDirection, samples: &[f32], doc_rate: u32, rack: RackModel) -> Rig {
+    rig_with(make_dev, samples, doc_rate, rack, |_, _| {})
+}
+
+/// [`rig`] with `setup` run on the backend and the config before the engine starts.
+fn rig_with(
+    make_dev: fn() -> FakeDirection,
+    samples: &[f32],
+    doc_rate: u32,
+    rack: RackModel,
+    setup: impl FnOnce(&FakeBackend, &mut EngineConfig),
+) -> Rig {
     assert!(
         alloc_checks_active(),
         "the allocation checker must be installed"
@@ -123,6 +139,7 @@ fn rig(make_dev: fn() -> FakeDirection, samples: &[f32], doc_rate: u32, rack: Ra
     cfg.events = Arc::new(move |e| ev.lock().unwrap().push(e));
     let clock = fake.clone();
     cfg.clock = Arc::new(move || clock.now_ns());
+    setup(&fake, &mut cfg);
     let mut eng = ManualEngine::new(cfg);
     let fr = frames.clone();
     eng.set_telemetry_sink(Some(Box::new(move |f| fr.lock().unwrap().push(*f))));
@@ -147,7 +164,7 @@ impl Rig {
         }
     }
 
-    fn recorded(&self) -> Vec<f32> {
+    fn output(&self) -> vox_engine::backend::fake::RecordedOutput {
         let id = self
             .fake
             .streams()
@@ -156,7 +173,16 @@ impl Rig {
             .find(|s| s.info.direction == Direction::Output)
             .map(|s| s.info.id)
             .expect("an output stream");
-        self.fake.recorded_output(id).unwrap().samples
+        self.fake.recorded_output(id).unwrap()
+    }
+
+    fn recorded(&self) -> Vec<f32> {
+        self.output().samples
+    }
+
+    /// Output callbacks run so far on the latest output stream.
+    fn blocks(&self) -> usize {
+        self.output().blocks.len()
     }
 
     fn last_frame(&self) -> TelemetryFrame {
@@ -426,4 +452,238 @@ fn scripted_session_is_allocation_free() {
             .all(|f| f.flags & vox_engine::telemetry::vxtm_flags::XRUN == 0),
         "no underrun"
     );
+}
+
+// --- H-04: post-merge review fixes -------------------------------------------------------------
+
+/// The 5 ms transport fade at 48 kHz.
+const FADE: usize = 240;
+
+/// The SPEC-012 §4.3 tone (997 Hz, −20 dBFS peak, 48 kHz), `n` samples long.
+fn tone(n: usize) -> Vec<f32> {
+    let amp = 10f64.powf(ZIPPER_LEVEL_DBFS / 20.0);
+    let w = std::f64::consts::TAU * ZIPPER_FREQ_HZ / 48_000.0;
+    (0..n)
+        .map(|i| (amp * (w * i as f64).sin()) as f32)
+        .collect()
+}
+
+/// Largest sample-to-sample step the faded tone can make: the tone's own slope plus one fade
+/// step, and a little rounding margin.
+fn max_tone_step() -> f32 {
+    let amp = 10f64.powf(ZIPPER_LEVEL_DBFS / 20.0);
+    let slope = amp * std::f64::consts::TAU * ZIPPER_FREQ_HZ / 48_000.0;
+    (slope + amp / FADE as f64 + 1e-4) as f32
+}
+
+/// A transport transition (fade-out, silence, fade-in) of the tone at or after `from` in `rec`
+/// passes SPEC-012 §4.3 with T_s = the 5 ms fade (the transition spans from one fade before the
+/// silent gap to its end), and no sample-to-sample step exceeds the faded tone's.
+fn assert_no_click(rec: &[f32], from: usize) {
+    let z0 = (from..rec.len() - 1)
+        .find(|&i| rec[i] == 0.0 && rec[i + 1] == 0.0)
+        .expect("a silent gap");
+    let z1 = (z0..rec.len())
+        .find(|&i| rec[i] != 0.0)
+        .expect("audio after the gap");
+    let report = analyze_zipper(
+        rec,
+        0,
+        48_000.0,
+        ZipperWindow {
+            start: z0 - FADE,
+            end: z1,
+            t_s_ms: 5.0,
+        },
+    )
+    .expect("enough steady tone around the transition");
+    assert!(report.pass, "§4.3 at the transition {z0}..{z1}: {report}");
+    let (at, step) = rec
+        .windows(2)
+        .enumerate()
+        .map(|(i, w)| (i, (w[1] - w[0]).abs()))
+        .fold((0, 0.0f32), |a, b| if b.1 > a.1 { b } else { a });
+    assert!(
+        step <= max_tone_step(),
+        "step {step} at {at} (gap {z0}..{z1}) above {}",
+        max_tone_step()
+    );
+}
+
+/// Latency of the rack-drain test module.
+const DELAY: u32 = 480;
+
+/// `TestDelay(480)` for the registry.
+struct DelayFactory(ModuleDescriptor);
+
+impl ModuleFactory for DelayFactory {
+    fn descriptor(&self) -> &ModuleDescriptor {
+        &self.0
+    }
+    fn create(&self) -> Result<Box<dyn Module>, ModuleError> {
+        Ok(Box::new(TestDelay::new(DELAY)))
+    }
+}
+
+fn delay_rack() -> RackModel {
+    RackModel {
+        slots: vec![SlotModel::new(
+            &ModuleRef {
+                id: TestDelay::ID.into(),
+                version: Version::new(1, 0, 0),
+            },
+            false,
+            &ModuleState::new(1),
+        )],
+    }
+}
+
+/// Blocking 1: a seek in the last 5 ms before the document end. The END arrives during the seek's
+/// fade-out; the queued seek must still start (not leave the transport "playing" with an idle
+/// callback and a frozen playhead).
+#[test]
+fn seek_in_the_last_5_ms_still_starts() {
+    // 3 callbacks of 256 frames + 100 frames: after 3 callbacks, 100 frames (< one fade) remain.
+    let src = noise(6, 3 * 256 + 100);
+    let mut r = rig(dev_256, &src, 48_000, gain_rack(0.0));
+    r.run_ms(20);
+    let n0 = r.blocks();
+    assert!(r.cmd(TransportCommand::Play).playing);
+    while r.blocks() < n0 + 3 {
+        r.fake.advance_by(MS / 10);
+        r.eng.tick();
+    }
+    assert!(r.eng.transport_state().playing);
+    let at = r.recorded().len();
+    assert!(r.cmd(TransportCommand::Seek(0)).playing);
+    r.run_ms(100);
+    let st = r.eng.transport_state();
+    assert!(!st.playing, "the second pass ended");
+    assert_eq!(
+        st.playhead_samples,
+        src.len() as u64,
+        "end = Pause at the end"
+    );
+    let rec = r.recorded();
+    let k = align(&rec[at..], &src, FADE);
+    assert!(
+        (FADE..src.len()).all(|i| (rec[at + k + i] - src[i]).abs() <= 1e-6),
+        "the seek replays the document"
+    );
+    assert_eq!(r.fake.rt_violations(), 0);
+}
+
+/// Blocking 1: Pause + Play within one callback quantum: the Play waits for the Pause's fade-out
+/// (no cut to silence), then fades in.
+#[test]
+fn pause_and_play_within_one_quantum_do_not_click() {
+    let src = tone(3 * 48_000);
+    let mut r = rig(dev_256, &src, 48_000, RackModel { slots: Vec::new() });
+    r.run_ms(20);
+    r.cmd(TransportCommand::Play);
+    r.run_ms(600);
+    let at = r.recorded().len();
+    assert!(!r.cmd(TransportCommand::Pause).playing);
+    assert!(r.cmd(TransportCommand::Play).playing);
+    r.run_ms(600);
+    assert!(r.eng.transport_state().playing);
+    assert_no_click(&r.recorded(), at);
+    assert_eq!(r.fake.rt_violations(), 0);
+}
+
+/// Blocking 1: a Pause during a seek's fade-out reports the seek target (the transport's
+/// position), not the position the fade-out played.
+#[test]
+fn stop_during_a_seek_fade_reports_the_seek_target() {
+    let src = noise(7, 3 * 48_000);
+    let mut r = rig(dev_256, &src, 48_000, gain_rack(0.0));
+    r.run_ms(20);
+    r.cmd(TransportCommand::Play);
+    r.run_ms(300);
+    r.cmd(TransportCommand::Seek(96_000));
+    let st = r.cmd(TransportCommand::Pause);
+    assert!(!st.playing);
+    assert_eq!(st.playhead_samples, 96_000);
+    r.run_ms(50);
+    assert_eq!(
+        r.eng.transport_state().playhead_samples,
+        96_000,
+        "the final stop position is the seek target"
+    );
+    let st = r.cmd(TransportCommand::Play);
+    assert_eq!(st.play_start_samples, 96_000);
+    r.run_ms(200);
+    assert!(r.last_frame().playhead_sample > 96_000);
+    assert_eq!(r.fake.rt_violations(), 0);
+}
+
+/// Blocking 2: a host switch closes the stream while playing → the transport pauses (heard
+/// position kept) and Play works again on the new host.
+#[test]
+fn host_switch_while_playing_pauses_the_transport() {
+    let src = noise(8, 3 * 48_000);
+    let mut r = rig_with(dev_256, &src, 48_000, gain_rack(0.0), |fake, cfg| {
+        // The saved host is unavailable at start: the default host (ALSA) is used.
+        fake.add_host(HostId::PipeWire, false);
+        fake.plug(HostId::PipeWire, device(dev_256));
+        cfg.prefs.host = Some(HostId::PipeWire);
+    });
+    assert_eq!(r.eng.devices().host, Some(HostId::Alsa));
+    r.run_ms(20);
+    assert!(r.cmd(TransportCommand::Play).playing);
+    r.run_ms(300);
+    // The saved host comes back: the engine switches to it.
+    r.fake.set_host_available(HostId::PipeWire, true);
+    r.eng.poll_devices();
+    assert_eq!(r.eng.devices().host, Some(HostId::PipeWire));
+    let st = r.eng.transport_state();
+    assert!(!st.playing, "the stream closed: Pause semantics");
+    assert!(
+        st.playhead_samples > 9_600,
+        "kept the heard position: {}",
+        st.playhead_samples
+    );
+    r.run_ms(20);
+    assert!(r.eng.transport_state().can_play, "reopened on the new host");
+    let st = r.cmd(TransportCommand::Play);
+    assert!(st.playing, "Play works again");
+    r.run_ms(200);
+    assert!(
+        r.recorded().iter().any(|&x| x != 0.0),
+        "audible on the new host"
+    );
+    assert!(r.last_frame().playhead_sample > st.play_start_samples);
+    assert_eq!(r.fake.rt_violations(), 0);
+}
+
+/// Blocking 3: a seek with a 480-sample-latency module in the rack. The rack reset waits until
+/// the delayed fade-out has left the rack: no cut, §4.3 passes at the transition.
+#[test]
+fn seek_with_rack_latency_does_not_cut_the_fade_out() {
+    let src = tone(5 * 48_000);
+    let mut r = rig_with(dev_256, &src, 48_000, delay_rack(), |_, cfg| {
+        let mut factories = vox_modules::builtin_factories();
+        factories.push(Arc::new(DelayFactory(
+            TestDelay::new(DELAY).descriptor().clone(),
+        )));
+        cfg.registry = Arc::new(Registry::with_factories(factories).unwrap());
+    });
+    r.run_ms(20);
+    r.cmd(TransportCommand::Play);
+    r.run_ms(600);
+    let at = r.recorded().len();
+    r.cmd(TransportCommand::Seek(100_003));
+    r.run_ms(600);
+    assert!(r.eng.transport_state().playing);
+    let rec = r.recorded();
+    assert_no_click(&rec, at);
+    // The fade-out reached the device in full: 480 samples of tone (latency) then 240 faded.
+    let z0 = (at..rec.len() - 1)
+        .find(|&i| rec[i] == 0.0 && rec[i + 1] == 0.0)
+        .unwrap();
+    assert!(
+        z0 >= at + DELAY as usize + FADE - 1,
+        "fade-out cut at {z0} (command at {at})"
+    );
+    assert_eq!(r.fake.rt_violations(), 0);
 }

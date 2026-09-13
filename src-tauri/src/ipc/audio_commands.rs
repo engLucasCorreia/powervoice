@@ -4,7 +4,7 @@
 use tauri::State;
 use tauri::ipc::{Channel, InvokeResponseBody};
 use vox_engine::device_state::DeviceStatus;
-use vox_engine::{DevicePrefs, TelemetryFrame, TransportCommand};
+use vox_engine::{DevicePrefs, EngineHandle, TelemetryFrame, TransportCommand};
 
 use crate::audio::AudioEngine;
 use crate::ipc::audio_dto::{DevicesDto, TransportStateDto};
@@ -15,8 +15,23 @@ fn engine_stopped() -> IpcError {
     IpcError::internal("the audio engine is not running")
 }
 
-fn transport(engine: &AudioEngine, cmd: TransportCommand) -> TransportStateDto {
-    TransportStateDto::from(&engine.handle().transport(cmd))
+/// Runs `f` on a blocking thread: engine calls wait for the control thread's answer.
+async fn blocking<T: Send + 'static>(
+    engine: &AudioEngine,
+    f: impl FnOnce(&EngineHandle) -> T + Send + 'static,
+) -> Result<T, IpcError> {
+    let handle = engine.handle().clone();
+    tauri::async_runtime::spawn_blocking(move || f(&handle))
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))
+}
+
+async fn transport(
+    engine: &AudioEngine,
+    cmd: TransportCommand,
+) -> Result<TransportStateDto, IpcError> {
+    let state = blocking(engine, move |h| h.transport(cmd)).await?;
+    Ok(TransportStateDto::from(&state))
 }
 
 /// The Audio Devices dialog's data (the engine's current device list; no new enumeration).
@@ -55,13 +70,14 @@ pub async fn devices_select(
 /// Current transport state.
 #[tauri::command]
 pub async fn transport_get(engine: State<'_, AudioEngine>) -> Result<TransportStateDto, IpcError> {
-    Ok(TransportStateDto::from(&engine.handle().transport_state()))
+    let state = blocking(&engine, |h| h.transport_state()).await?;
+    Ok(TransportStateDto::from(&state))
 }
 
 /// Play from the playhead.
 #[tauri::command]
 pub async fn transport_play(engine: State<'_, AudioEngine>) -> Result<TransportStateDto, IpcError> {
-    Ok(transport(&engine, TransportCommand::Play))
+    transport(&engine, TransportCommand::Play).await
 }
 
 /// Pause (keeps the heard position).
@@ -69,13 +85,13 @@ pub async fn transport_play(engine: State<'_, AudioEngine>) -> Result<TransportS
 pub async fn transport_pause(
     engine: State<'_, AudioEngine>,
 ) -> Result<TransportStateDto, IpcError> {
-    Ok(transport(&engine, TransportCommand::Pause))
+    transport(&engine, TransportCommand::Pause).await
 }
 
 /// Stop (returns to the play-start position).
 #[tauri::command]
 pub async fn transport_stop(engine: State<'_, AudioEngine>) -> Result<TransportStateDto, IpcError> {
-    Ok(transport(&engine, TransportCommand::Stop))
+    transport(&engine, TransportCommand::Stop).await
 }
 
 /// Play from the selection start, or 0.
@@ -83,7 +99,7 @@ pub async fn transport_stop(engine: State<'_, AudioEngine>) -> Result<TransportS
 pub async fn transport_play_from_start(
     engine: State<'_, AudioEngine>,
 ) -> Result<TransportStateDto, IpcError> {
-    Ok(transport(&engine, TransportCommand::PlayFromStart))
+    transport(&engine, TransportCommand::PlayFromStart).await
 }
 
 /// Seek to 0 (keeps playing).
@@ -91,7 +107,7 @@ pub async fn transport_play_from_start(
 pub async fn transport_return_to_start(
     engine: State<'_, AudioEngine>,
 ) -> Result<TransportStateDto, IpcError> {
-    Ok(transport(&engine, TransportCommand::ReturnToStart))
+    transport(&engine, TransportCommand::ReturnToStart).await
 }
 
 /// Move the playhead to a document position.
@@ -100,7 +116,7 @@ pub async fn transport_seek(
     engine: State<'_, AudioEngine>,
     position_samples: u64,
 ) -> Result<TransportStateDto, IpcError> {
-    Ok(transport(&engine, TransportCommand::Seek(position_samples)))
+    transport(&engine, TransportCommand::Seek(position_samples)).await
 }
 
 /// Streams binary `VXTM` frames (playhead anchor + output meter) at 60 Hz over `channel`,
@@ -110,12 +126,12 @@ pub async fn telemetry_subscribe(
     engine: State<'_, AudioEngine>,
     channel: Channel,
 ) -> Result<(), IpcError> {
-    engine
-        .handle()
-        .set_telemetry_sink(Some(Box::new(move |frame: &TelemetryFrame| {
+    blocking(&engine, move |h| {
+        h.set_telemetry_sink(Some(Box::new(move |frame: &TelemetryFrame| {
             let _ = channel.send(InvokeResponseBody::Raw(frame.encode().to_vec()));
         })));
-    Ok(())
+    })
+    .await
 }
 
 /// The engine's app clock (ns since the process epoch), for the UI's clock sync (ADR-003 §3).

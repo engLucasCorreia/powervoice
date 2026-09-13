@@ -1,6 +1,8 @@
 //! The output callback (ADR-002 §4), the transport clock. Per device buffer it drains control
 //! commands, pulls current-epoch packets from the playback ring (≈5 ms fades on start, stop and
-//! seek), runs the live rack in sub-blocks of at most `MAX_BLOCK`, writes the mono result to
+//! seek; a start while audible waits for a fade-out, and a rack reset waits until the rack's
+//! latency has drained that fade-out), runs the live rack in sub-blocks of at most `MAX_BLOCK`,
+//! writes the mono result to
 //! every device channel, meters it and reports one [`RtEvent::Block`] (heard position, heard
 //! time, peak, energy) to the control thread.
 //!
@@ -43,12 +45,21 @@ pub(crate) fn take_parts(slot: &PartsSlot) -> Option<OutputParts> {
 enum Mode {
     /// Silence into the rack.
     Idle,
-    /// Waiting for the prebuffer of `epoch`.
+    /// Waiting for the prebuffer of `epoch` and, before a rack reset, for the rack to drain.
     Waiting,
     /// Playing (fading in while `gain < 1`).
     Playing,
-    /// Fading out; then wait for `next` (a seek) or go idle.
-    FadingOut { next: Option<(u32, u64)> },
+    /// Fading out, then `then`.
+    FadingOut { then: AfterFade },
+}
+
+/// What follows a fade-out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AfterFade {
+    /// Start `epoch` at `pos` with a rack reset (a seek, or a Play during a stop fade).
+    Start { epoch: u32, pos: u64 },
+    /// Go idle and report [`RtEvent::Stopped`] at `pos` (`None`: where the fade-out ended).
+    Stop { pos: Option<u64> },
 }
 
 enum Next {
@@ -75,6 +86,9 @@ struct State {
     has_cur: bool,
     /// Document position of the next sample to play.
     next_pos: u64,
+    /// Silent samples fed to the rack since the last audio. A rack reset waits until they cover
+    /// the rack's latency, so the delayed end of a fade-out is heard, not cut.
+    quiet: u64,
     underrun: bool,
     rack_in: Vec<f32>,
     rack_out: Vec<f32>,
@@ -103,27 +117,42 @@ impl State {
         self.mode = Mode::Waiting;
     }
 
+    /// Play / seek: while audible, after a fade-out (a start never cuts the signal); else now.
+    fn start(&mut self, epoch: u32, pos: u64, reset: bool) {
+        self.cmd_epoch = epoch;
+        match self.mode {
+            Mode::Playing | Mode::FadingOut { .. } => {
+                self.mode = Mode::FadingOut {
+                    then: AfterFade::Start { epoch, pos },
+                };
+            }
+            Mode::Waiting | Mode::Idle => self.begin_wait(epoch, pos, reset),
+        }
+    }
+
     fn command(&mut self, cmd: AudioCmd, parts: &mut OutputParts) {
         match cmd {
-            AudioCmd::Play { epoch, pos, reset } => {
-                self.cmd_epoch = epoch;
-                self.begin_wait(epoch, pos, reset);
-            }
-            AudioCmd::Seek { epoch, pos } => {
-                self.cmd_epoch = epoch;
-                match self.mode {
-                    Mode::Playing | Mode::FadingOut { .. } => {
-                        self.mode = Mode::FadingOut {
-                            next: Some((epoch, pos)),
-                        };
-                    }
-                    Mode::Waiting | Mode::Idle => self.begin_wait(epoch, pos, true),
-                }
-            }
+            AudioCmd::Play { epoch, pos, reset } => self.start(epoch, pos, reset),
+            AudioCmd::Seek { epoch, pos } => self.start(epoch, pos, true),
             AudioCmd::Stop => match self.mode {
-                Mode::Playing | Mode::FadingOut { .. } => {
-                    self.mode = Mode::FadingOut { next: None }
+                Mode::Playing => {
+                    self.mode = Mode::FadingOut {
+                        then: AfterFade::Stop { pos: None },
+                    };
                 }
+                Mode::FadingOut {
+                    then: AfterFade::Start { pos, .. },
+                } => {
+                    // The transport stops at the pending start's position. The rack still holds
+                    // the old material, so the next start resets it whatever it asks for.
+                    self.reset_pending = true;
+                    self.mode = Mode::FadingOut {
+                        then: AfterFade::Stop { pos: Some(pos) },
+                    };
+                }
+                Mode::FadingOut {
+                    then: AfterFade::Stop { .. },
+                } => {}
                 Mode::Waiting => {
                     self.mode = Mode::Idle;
                     emit(
@@ -140,8 +169,9 @@ impl State {
     }
 
     /// Waiting: drops stale packets at the head, then starts once the prebuffer (or the document
-    /// end) of the current epoch is queued.
-    fn check_ready(&mut self, parts: &mut OutputParts) {
+    /// end) of the current epoch is queued and, when the rack must be reset, once the rack
+    /// (`latency` samples) has drained the previous fade-out.
+    fn check_ready(&mut self, parts: &mut OutputParts, latency: u64) {
         for _ in 0..PLAYBACK_RING_PACKETS {
             let stale = matches!(parts.packets.peek(), Ok(p) if p.epoch != self.epoch);
             if !stale {
@@ -168,6 +198,9 @@ impl State {
         }
         if frames >= self.prebuffer_frames || end {
             if self.reset_pending {
+                if self.quiet < latency {
+                    return;
+                }
                 parts.live.reset();
                 self.reset_pending = false;
             }
@@ -198,8 +231,9 @@ impl State {
                 continue;
             }
             match parts.packets.pop() {
-                Ok(_) if flags & packet_flags::END != 0 => {
+                Ok(p) if flags & packet_flags::END != 0 => {
                     self.has_cur = false;
+                    self.next_pos = p.doc_pos;
                     return Next::End;
                 }
                 Ok(p) => {
@@ -225,52 +259,64 @@ impl State {
         );
     }
 
+    /// The fade-out is over, or the document ended during it (`next_pos` = the end then).
+    fn finish_fade(&mut self, then: AfterFade, parts: &mut OutputParts) {
+        self.gain = 0.0;
+        match then {
+            AfterFade::Start { epoch, pos } => self.begin_wait(epoch, pos, true),
+            AfterFade::Stop { pos } => {
+                self.mode = Mode::Idle;
+                self.has_cur = false;
+                emit(
+                    parts,
+                    RtEvent::Stopped {
+                        epoch: self.cmd_epoch,
+                        pos: pos.unwrap_or(self.next_pos),
+                    },
+                );
+            }
+        }
+    }
+
     fn sample(&mut self, parts: &mut OutputParts) -> f32 {
         match self.mode {
-            Mode::Idle | Mode::Waiting => 0.0,
-            Mode::Playing => match self.next(parts) {
-                Next::Sample(x) => {
-                    let y = x * self.gain;
-                    if self.gain < 1.0 {
-                        self.gain = (self.gain + self.fade_step).min(1.0);
+            Mode::Idle | Mode::Waiting => {
+                self.quiet = self.quiet.saturating_add(1);
+                0.0
+            }
+            Mode::Playing => {
+                self.quiet = 0;
+                match self.next(parts) {
+                    Next::Sample(x) => {
+                        let y = x * self.gain;
+                        if self.gain < 1.0 {
+                            self.gain = (self.gain + self.fade_step).min(1.0);
+                        }
+                        y
                     }
-                    y
+                    Next::End => {
+                        self.end_reached(parts);
+                        0.0
+                    }
+                    Next::Empty => {
+                        self.underrun = true;
+                        0.0
+                    }
                 }
-                Next::End => {
-                    self.end_reached(parts);
-                    0.0
-                }
-                Next::Empty => {
-                    self.underrun = true;
-                    0.0
-                }
-            },
-            Mode::FadingOut { next } => {
+            }
+            Mode::FadingOut { then } => {
+                self.quiet = 0;
                 let y = match self.next(parts) {
                     Next::Sample(x) => x * self.gain,
                     Next::End => {
-                        self.end_reached(parts);
+                        self.finish_fade(then, parts);
                         return 0.0;
                     }
                     Next::Empty => 0.0,
                 };
                 self.gain -= self.fade_step;
                 if self.gain <= 0.0 {
-                    self.gain = 0.0;
-                    match next {
-                        Some((epoch, pos)) => self.begin_wait(epoch, pos, true),
-                        None => {
-                            self.mode = Mode::Idle;
-                            self.has_cur = false;
-                            emit(
-                                parts,
-                                RtEvent::Stopped {
-                                    epoch: self.cmd_epoch,
-                                    pos: self.next_pos,
-                                },
-                            );
-                        }
-                    }
+                    self.finish_fade(then, parts);
                 }
                 y
             }
@@ -312,6 +358,7 @@ impl OutputCb {
                 cur_off: 0,
                 has_cur: false,
                 next_pos: 0,
+                quiet: u64::MAX,
                 underrun: false,
                 rack_in: vec![0.0; max_block],
                 rack_out: vec![0.0; max_block],
@@ -355,9 +402,14 @@ impl OutputCallback for OutputCb {
         let mut sum_sq = 0.0f64;
         let mut done = 0;
         while done < frames {
-            let n = (frames - done).min(st.rack_in.len());
+            let mut n = (frames - done).min(st.rack_in.len());
             if st.mode == Mode::Waiting {
-                st.check_ready(parts);
+                st.check_ready(parts, latency);
+                if st.mode == Mode::Waiting && st.reset_pending && st.quiet < latency {
+                    // Draining: end the sub-block where the rack is empty, so the reset and the
+                    // fade-in follow at once.
+                    n = n.min((latency - st.quiet) as usize);
+                }
             }
             let playing = matches!(st.mode, Mode::Playing | Mode::FadingOut { .. });
             let sub_pos = playing.then_some(st.next_pos);

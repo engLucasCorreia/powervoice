@@ -67,6 +67,7 @@
   "notice.device.reconnected.output": "Output device reconnected.",
   "notice.device.reconnected.input": "Input device reconnected.",
   "notice.device.backend_error": "{device} reported an audio error.",
+  "notice.device.resample_unavailable": "Can't convert {doc_rate} Hz audio to {rate} Hz for {device} — playback is unavailable.",
 
   "spike.title": "T-007 Platform Spike",
   "spike.subtitle": "Dev-only renderer + IPC measurements for ADR-009. Not part of the production UI (only present when powervoice-app is built with --features spike).",

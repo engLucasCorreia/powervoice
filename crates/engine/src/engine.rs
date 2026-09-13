@@ -284,3 +284,41 @@ impl Drop for ManualEngine {
         self.control.shutdown();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use vox_rack::Registry;
+
+    use super::EngineConfig;
+    use crate::backend::fake::FakeBackend;
+    use crate::control::{self, Control, ControlMsg};
+
+    /// The control loop ticks on time while its inbox never runs empty (H-04 backlog).
+    #[test]
+    fn control_ticks_between_queued_messages() {
+        let registry = Arc::new(Registry::with_factories(Vec::new()).unwrap());
+        let config = EngineConfig::new(Arc::new(FakeBackend::new(1)), registry);
+        let mut control = Control::new(config, None);
+        let ticks = Arc::new(AtomicU64::new(0));
+        let t = ticks.clone();
+        control.set_telemetry_sink(Some(Box::new(move |_| {
+            t.fetch_add(1, Ordering::Relaxed);
+        })));
+        let (tx, rx) = mpsc::channel();
+        // ≥ 200 ms of queued work: 12 ticks due.
+        for _ in 0..200 {
+            let busy = |_: &mut Control| std::thread::sleep(Duration::from_millis(1));
+            tx.send(ControlMsg::Call(Box::new(busy))).unwrap();
+        }
+        tx.send(ControlMsg::Quit).unwrap();
+        control::run(&mut control, &rx);
+        control.shutdown();
+        let n = ticks.load(Ordering::Relaxed);
+        assert!(n >= 6, "{n} ticks during ≥ 200 ms of queued messages");
+    }
+}

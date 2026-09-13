@@ -237,6 +237,14 @@ pub fn notice_from_device(n: &DeviceNotice) -> Notice {
         DeviceNotice::BackendError { device, .. } => {
             Notice::toast(Warning, "notice.device.backend_error").with_param("device", device)
         }
+        DeviceNotice::ResampleUnavailable {
+            device,
+            doc_rate_hz,
+            device_rate_hz,
+        } => Notice::toast(Error, "notice.device.resample_unavailable")
+            .with_param("device", device)
+            .with_param("doc_rate", doc_rate_hz.to_string())
+            .with_param("rate", device_rate_hz.to_string()),
     }
 }
 

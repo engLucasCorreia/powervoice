@@ -187,6 +187,16 @@ pub enum DeviceNotice {
         /// Device name.
         device: String,
     },
+    /// The document rate cannot be converted to the output stream's rate: playback is
+    /// unavailable on it (never played at the wrong speed).
+    ResampleUnavailable {
+        /// Output device name.
+        device: String,
+        /// Document rate.
+        doc_rate_hz: u32,
+        /// Output stream rate.
+        device_rate_hz: u32,
+    },
 }
 
 /// Host rule (SPEC-001 §2.5): the saved host if available, else the default host with a notice.

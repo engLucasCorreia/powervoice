@@ -322,3 +322,26 @@ attachments exactly like the rest of the journal.
   the replaced range, so audio outside the selection stays bit-identical.
 - The capture writer keeps ~2 s of look-back so a take can start at a sample that is already in the past
   when the start position becomes known.
+
+## Amendment 5 — T-101 implementation notes, 2026-09-13
+- **Journal line format:** `<crc32 lowercase hex>\t<json>\n`; one write + `fdatasync` per append;
+  `Journal::open_append` truncates a torn tail to the last valid line before appending.
+- **Records added by T-101:** `take_discard {take}` (discarded or empty take; an empty take adds no undo
+  entry); `edit.take` pairs an edit with its `take_begin`; `edit.mapping` = `"shift" | "identity"`
+  (per-op marker mapping, SPEC-008 §4.2; Identity is refused for length-changing ops); attachments are
+  lowercase hex; checkpoints carry `next_rev` and `next_audio_rev`.
+- **Durability rule:** committing a chunk only copies it into the mapping and publishes it (readers see
+  it immediately); **`ChunkStore::sync()`** (async flush per dirty mapped segment + one `sync_data()` of
+  the chunk file; `F_FULLFSYNC` on macOS via std) must run before any journal record references new
+  chunks — `Session` is the single place that enforces it. A dirty segment evicted before a sync is
+  flushed before unmapping and stays marked. Measured: 60-min import 0.88 s + 0.11 s sync on btrfs
+  (was 8.1 s with per-chunk `msync`).
+- **Import floor:** `Session::set_floor` (before any edit/take) makes imported audio the undo floor
+  (journal `chunks` + checkpoint, clean document, no undo entry).
+- **Takes:** `commit_take(&FinishedTake, &[Marker])` borrows (a failed commit leaves the take open for
+  retry); take markers are clamped into the take range. `TakeSyncHandle` (default
+  `TakeSyncMode::Background`) lets the capture side run the ~1 s header patch + `fdatasync` on another
+  thread; the header never claims more data than written.
+- **Preallocation:** on `EOPNOTSUPP` the segment is still created but counted in
+  `unreserved_segments()` so the engine can warn; copy-on-write file systems (btrfs, ZFS, APFS) weaken
+  the no-SIGBUS guarantee (documented).

@@ -8,9 +8,14 @@ publish.workspace = true
 [dependencies]
 vox-module-api = { path = "../module-api" }
 thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rtrb.workspace = true
 
 [dev-dependencies]
 vox-module-api = { path = "../module-api", features = ["test-util"] }
+vox-modules = { path = "../modules" }
+vox-testkit = { path = "../testkit" }
 
 [lints]
 workspace = true

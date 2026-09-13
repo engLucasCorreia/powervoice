@@ -5,6 +5,10 @@
 //! - [`no_alloc`] and [`install_test_allocator!`](crate::install_test_allocator): the
 //!   allocation checker (`assert_no_alloc` in warn mode, active in debug and release builds).
 //! - [`TestRng`]: a tiny deterministic PRNG.
+//! - SPEC-012 §4.3 zipper/click harness: [`zipper_signal`], [`analyze_zipper`], [`ZipperTest`]
+//!   (with a hand-written radix-2 FFT, so no new dependency).
+//! - Test modules (SPEC-012 §6): [`TestHardStep`] and [`TestStair64`] (§4.3 calibration, must
+//!   fail), [`TestDelay`], [`TestNaN`], [`TestReporter`], [`TestRestart`].
 //!
 //! Every test binary that runs RT code under the checker must install it once:
 //!
@@ -12,13 +16,22 @@
 //! vox_module_api::install_test_allocator!();
 //! ```
 
+mod fft;
 mod host;
 mod rng;
 mod test_gain;
+mod test_modules;
+mod zipper;
 
 pub use host::{EffectProbe, HostFailure, HostReport, ModuleTestHost};
 pub use rng::TestRng;
 pub use test_gain::{TestGain, TestGainFactory};
+pub use test_modules::{TestDelay, TestHardStep, TestNaN, TestReporter, TestRestart, TestStair64};
+pub use zipper::{
+    ZIPPER_CHANGE_AT, ZIPPER_DRAG_EVENTS, ZIPPER_DRAG_INTERVAL_MS, ZIPPER_FFT_SIZE, ZIPPER_FREQ_HZ,
+    ZIPPER_HOP, ZIPPER_LEN, ZIPPER_LEVEL_DBFS, ZIPPER_SAMPLE_RATE, ZipperMode, ZipperMove,
+    ZipperReport, ZipperTest, ZipperWindow, analyze_zipper, zipper_signal,
+};
 
 /// The checking global allocator. Prefer [`install_test_allocator!`](crate::install_test_allocator).
 pub use assert_no_alloc::AllocDisabler;

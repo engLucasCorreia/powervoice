@@ -13,6 +13,8 @@ path = "src/main.rs"
 [dependencies]
 clap.workspace = true
 vox-testkit = { path = "../testkit" }
+vox-rack = { path = "../rack" }
+vox-modules = { path = "../modules" }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

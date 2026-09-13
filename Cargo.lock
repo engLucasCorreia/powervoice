@@ -2903,6 +2903,8 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
+ "vox-modules",
+ "vox-rack",
  "vox-testkit",
 ]
 
@@ -3112,6 +3114,12 @@ dependencies = [
  "wasm-streams",
  "web-sys",
 ]
+
+[[package]]
+name = "rtrb"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9278fb35b3e730abe136e9b395b5b81b96d06b9f5478a50f0c8430a2237b22de"
 
 [[package]]
 name = "rustc-hash"
@@ -4547,6 +4555,9 @@ dependencies = [
 [[package]]
 name = "vox-modules"
 version = "0.1.0"
+dependencies = [
+ "vox-module-api",
+]
 
 [[package]]
 name = "vox-project"
@@ -4565,8 +4576,13 @@ dependencies = [
 name = "vox-rack"
 version = "0.1.0"
 dependencies = [
+ "rtrb",
+ "serde",
+ "serde_json",
  "thiserror 2.0.20",
  "vox-module-api",
+ "vox-modules",
+ "vox-testkit",
 ]
 
 [[package]]

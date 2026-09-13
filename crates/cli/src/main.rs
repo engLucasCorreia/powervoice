@@ -1,7 +1,7 @@
 //! `powervoice-cli`: the DSP acceptance tool. `gen` writes synthetic test
-//! signals to WAV, `analyze` reports objective measurements on a WAV file.
-//! `render --rack` (T-103) and `bench` (T-110) are stubs owned by other
-//! tickets.
+//! signals to WAV, `analyze` reports objective measurements on a WAV file,
+//! `render --rack` renders a mono WAV through a rack file with the same code as
+//! the engine's offline render (SPEC-012 §2.8). `bench` is a stub (T-110).
 //!
 //! ## `analyze --json` schema and non-finite/missing values
 //! Every numeric field in the JSON report is a plain JSON number, *except*
@@ -25,9 +25,10 @@
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
+use vox_rack::{RackModel, Registry, offline};
 use vox_testkit::wav::{BitDepth, SampleFormat};
 use vox_testkit::{measure, signal, wav};
 
@@ -47,8 +48,9 @@ enum Commands {
     Gen(GenArgs),
     /// Report objective measurements (peak/RMS/loudness/noise floor/...) for a WAV file.
     Analyze(AnalyzeArgs),
-    /// Render audio through the effects rack (T-103).
-    Render,
+    /// Render a mono WAV through an effects rack (32-bit float output, same length and
+    /// time-aligned with the input).
+    Render(RenderArgs),
     /// Benchmark DSP modules (T-110).
     Bench,
 }
@@ -167,16 +169,61 @@ fn main() -> Result<()> {
     match cli.command {
         Some(Commands::Gen(args)) => cmd_gen(args),
         Some(Commands::Analyze(args)) => cmd_analyze(args),
-        Some(Commands::Render) => {
-            println!("render --rack: not implemented yet (T-103)");
-            Ok(())
-        }
+        Some(Commands::Render(args)) => cmd_render(args),
         Some(Commands::Bench) => {
             println!("bench: not implemented yet (T-110)");
             Ok(())
         }
         None => unreachable!("arg_required_else_help prints help and exits before this point"),
     }
+}
+
+#[derive(clap::Args)]
+struct RenderArgs {
+    /// Rack file: `{ "slots": [...] }` or a bare slot array, in the sidecar's slot schema.
+    #[arg(long)]
+    rack: PathBuf,
+
+    /// Input WAV (mono).
+    input: PathBuf,
+
+    /// Output WAV (32-bit float, input rate).
+    output: PathBuf,
+}
+
+/// The composition root's registry: every built-in module (SPEC-012 §2.10).
+fn builtin_registry() -> Result<Registry> {
+    Ok(Registry::with_factories(vox_modules::builtin_factories())?)
+}
+
+fn cmd_render(args: RenderArgs) -> Result<()> {
+    let text = std::fs::read_to_string(&args.rack)
+        .with_context(|| format!("reading rack file {:?}", args.rack))?;
+    let model = RackModel::from_json(&text)
+        .with_context(|| format!("parsing rack file {:?}", args.rack))?;
+    let registry = builtin_registry()?;
+    let missing = registry.missing_ids(&model);
+    if !missing.is_empty() {
+        bail!(
+            "unknown module id(s): {} (installed: {})",
+            missing.join(", "),
+            registry.ids().join(", ")
+        );
+    }
+    let (samples, info) = wav::read_wav_file(&args.input)
+        .with_context(|| format!("reading WAV input {:?}", args.input))?;
+    if info.channels != 1 {
+        bail!(
+            "render --rack needs a mono WAV, {:?} has {} channels",
+            args.input,
+            info.channels
+        );
+    }
+    let out = offline::render(&registry, &model, f64::from(info.sample_rate), &samples)
+        .context("rendering")?;
+    wav::write_wav_file(&args.output, &out, 1, info.sample_rate, BitDepth::Float32)
+        .with_context(|| format!("writing {:?}", args.output))?;
+    Ok(())
 }
 
 fn cmd_gen(args: GenArgs) -> Result<()> {

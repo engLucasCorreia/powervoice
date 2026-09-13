@@ -1,28 +1,131 @@
-//! Pure chain host (ADR-001 §4): slots, parameter routing, host bypass, latency compensation,
-//! offline render — shared by engine, export, bake and the CLI.
+//! Pure chain host (ADR-001 §4): module registry, chains, live chain swap with crossfades,
+//! host bypass and whole-rack A/B, parameter routing with coalescing, the RT drain of module
+//! reports, the non-finite guard and offline render — shared by engine, export, bake and the
+//! CLI (SPEC-012).
 //!
-//! T-005 skeleton: [`Rack`] runs an ordered chain of [`Module`]s with per-slot, sample-accurate
-//! event routing across sub-block boundaries, and reports total latency. Not yet here: host
-//! bypass/crossfade and the dual-mono shim (T-103), latency compensation and Restart handling
-//! (T-401), the module registry and placeholder slots.
+//! # Pieces
+//! - [`Registry`]: module id → factory, one version per id; the composition roots register the
+//!   built-ins (`vox_modules::builtin_factories`).
+//! - [`RackModel`] / [`SlotModel`]: the rack as plain data, in the sidecar's slot schema
+//!   (ADR-005 §10). Unknown modules become **placeholders** (dry, latency 0, written back
+//!   verbatim).
+//! - [`Chain`]: the slots processed in series — the one rack code path (ADR-001 §5).
+//! - [`RackHost`] (control thread) and [`LiveRack`] (audio thread): the live rack.
+//! - [`offline::render`]: offline mode, 4096-frame blocks, latency trim.
 //!
-//! **Chain edits (ADR-002 §3, ADR-005 §7/§12).** A `Rack` that runs on the audio thread is
-//! *live*; only [`process`](Rack::process), [`reset`](Rack::reset) and
-//! [`push_event`](Rack::push_event) may be called on it. Insert / remove / reorder never call
-//! control-thread methods on a live rack: the control thread builds and activates a **new** chain,
-//! hands it to the audio thread, which installs it with [`swap_chain`] at a block boundary, and
-//! the retired chain comes back through the return ring to be deactivated and dropped
-//! off-thread. The new chain's inserted or replaced slots hold fresh instances (activated off
-//! the audio thread from the committed states). For **unchanged** slots, T-103 may either
-//! cold-restart them the same way, or move their `Box<dyn Module>` instances from the retiring
-//! chain into the new one at the swap (pointer moves on the audio thread: no allocation, no
-//! `activate`, state stays warm). This skeleton's [`swap_chain`] only swaps whole chains.
+//! # Live edits (ADR-002 §3, ADR-005 §7/§12)
+//! The control thread ([`RackHost`]) owns the authoritative model and a parameter mirror. For an
+//! insert, removal, reorder or replacement it builds and activates a **new** chain off the audio
+//! thread and sends it through a lock-free command ring. The chain carries a *plan*: for every
+//! slot the module instance of an **untouched** slot is **moved** from the live chain at the swap
+//! (pointer moves on the audio thread: no allocation, no `activate`, its state — delay lines,
+//! envelopes — stays warm), while inserted or replaced slots bring fresh instances. Each edit is
+//! a per-slot 15 ms linear equal-gain crossfade: an inserted slot fades in from its undelayed
+//! input, a removed slot fades out to it (then turns into a pass-through), a replaced instance
+//! crossfades to its successor. The retired chain — shells, dead slots, finished outgoing
+//! instances — goes back through the **return ring** and is deactivated and dropped by the
+//! control thread; nothing is ever dropped on the audio thread.
+//!
+//! RT → control: module output events (READ_ONLY reports), restart requests, failures and
+//! finished transitions travel through the RT event ring ([`RackEvent`]).
+
+mod chain;
+mod delay;
+mod host;
+mod live;
+mod mix;
+mod model;
+pub mod offline;
+mod registry;
+mod shim;
+mod slot;
+
+pub use chain::Chain;
+pub use host::{RackHost, RackNotice, SlotInfo, SlotStatus};
+pub use live::{LiveRack, RackCommand};
+pub use mix::xfade_gain;
+pub use model::{RackModel, SlotModel};
+pub use registry::{Registry, RegistryError, Resolved};
+pub use shim::DualMonoShim;
 
 use vox_module_api::{
-    ActivateConfig, ChannelLayout, DEFAULT_EVENT_CAPACITY, EventList, EventListError, HostRequest,
-    Module, ModuleError, OutputEvents, ParamEvent, ProcessContext, ProcessStatus, SchemaError,
-    Tail, Transport, validate_schema,
+    DEFAULT_EVENT_CAPACITY, EventListError, ModuleError, ParamId, SchemaError, StateError,
 };
+
+/// Bypass / swap / replacement / A/B crossfade (SPEC-012 §3 `xfade_ms`).
+pub const XFADE_MS: f64 = 15.0;
+/// Slots per rack (SPEC-012 §3 `max_slots`).
+pub const MAX_SLOTS: usize = 16;
+/// Realtime sub-block (SPEC-000 `MAX_BLOCK`): the `max_block` of live chains.
+pub const MAX_BLOCK: u32 = 1024;
+/// Offline render block (SPEC-000 `OFFLINE_BLOCK`).
+pub const OFFLINE_BLOCK: u32 = 4096;
+/// Capacity of the control → audio command ring (ADR-002 §2).
+pub const COMMAND_RING_CAPACITY: usize = 1024;
+/// Capacity of the audio → control RT event ring (ADR-002 §2).
+pub const EVENT_RING_CAPACITY: usize = 1024;
+/// Capacity of the return ring for retired chains (ADR-002 §2).
+pub const RETURN_RING_CAPACITY: usize = 64;
+/// Chain swaps the control thread keeps in flight at most (ADR-002 §2).
+pub const MAX_SWAPS_IN_FLIGHT: usize = 32;
+/// Commands the live rack drains per `process` call at most (ADR-002 §3).
+pub const MAX_COMMANDS_PER_CALL: usize = 256;
+
+/// Crossfade length in samples at `sample_rate` (`round(15 ms × rate)`, at least 1).
+pub fn xfade_samples(sample_rate: f64) -> u32 {
+    ((sample_rate * XFADE_MS / 1000.0).round() as u32).max(1)
+}
+
+/// Stable identity of a slot within one rack (not persisted). Commands and RT events address
+/// slots by identity, so they stay correct across chain swaps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SlotUid(pub u64);
+
+/// Why the rack bypassed a slot on its own (SPEC-012 §2.9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FailReason {
+    /// The module produced a non-finite sample.
+    NonFinite,
+    /// The module returned `ProcessStatus::Error` (adapters only).
+    ModuleError,
+}
+
+/// Audio → control events (`Copy`, carried by the RT event ring).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RackEvent {
+    /// A module reported a value through `out_events` (READ_ONLY parameters, adapter-originated
+    /// changes).
+    ParamReport {
+        /// Slot.
+        slot: SlotUid,
+        /// Parameter.
+        id: ParamId,
+        /// Reported plain value.
+        value: f64,
+    },
+    /// The module requested `HostRequest::Restart` (reported once per instance).
+    RestartRequested {
+        /// Slot.
+        slot: SlotUid,
+    },
+    /// The slot failed and was bypassed (15 ms crossfade).
+    SlotFailed {
+        /// Slot.
+        slot: SlotUid,
+        /// Why.
+        reason: FailReason,
+    },
+    /// A removed slot finished fading out and is now a pass-through (compaction may follow).
+    SlotRemoved {
+        /// Slot.
+        slot: SlotUid,
+    },
+    /// A replacement crossfade finished; the outgoing instance can be retired.
+    ReplaceDone {
+        /// Slot.
+        slot: SlotUid,
+    },
+}
 
 /// Capacities of the per-slot event storage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,13 +156,16 @@ pub enum RackError {
         /// Number of slots.
         len: usize,
     },
-    /// The module cannot run 1-in/1-out.
-    #[error(
-        "module `{id}`: unsupported channel layout (the v1 rack needs MONO; the dual-mono shim is T-103)"
-    )]
+    /// The rack already holds [`MAX_SLOTS`] slots.
+    #[error("a rack holds at most {MAX_SLOTS} slots")]
+    TooManySlots,
+    /// The module has no mono or dual-mono-capable layout.
+    #[error("{name} has an unsupported channel layout")]
     UnsupportedLayout {
         /// Module id.
         id: String,
+        /// Module display name.
+        name: String,
     },
     /// The module's parameter schema is invalid.
     #[error("module `{id}`: invalid parameter schema: {source}")]
@@ -72,22 +178,68 @@ pub enum RackError {
     /// The activation config is invalid.
     #[error("invalid rack configuration: {0}")]
     InvalidConfig(&'static str),
-    /// `activate` on an active rack.
+    /// `activate` on an active chain.
     #[error("rack is already active")]
     AlreadyActive,
-    /// A module failed to activate.
-    #[error("slot {index} (`{id}`) failed to activate: {source}")]
+    /// A module failed to activate (it is not inserted).
+    #[error("Couldn't start {name}: {source}")]
     Activate {
         /// Slot index.
         index: usize,
         /// Module id.
         id: String,
+        /// Module display name.
+        name: String,
         /// Module error.
         source: ModuleError,
     },
+    /// The factory failed to create an instance.
+    #[error("Couldn't start {id}: {source}")]
+    Create {
+        /// Module id.
+        id: String,
+        /// Factory error.
+        source: ModuleError,
+    },
+    /// The slot's stored state could not be loaded.
+    #[error("module `{id}`: invalid state: {message}")]
+    InvalidState {
+        /// Module id.
+        id: String,
+        /// What went wrong.
+        message: String,
+    },
+    /// The state pipeline failed.
+    #[error("module `{id}`: {source}")]
+    State {
+        /// Module id.
+        id: String,
+        /// State error.
+        source: StateError,
+    },
+    /// No module with that id is registered.
+    #[error("unknown module `{0}`")]
+    UnknownModule(String),
+    /// The slot is a placeholder (its module is missing).
+    #[error("slot {index} is a placeholder")]
+    NotLoaded {
+        /// Slot index.
+        index: usize,
+    },
+    /// The module has no such parameter (or it is READ_ONLY).
+    #[error("slot {index}: no writable parameter {id:?}")]
+    UnknownParam {
+        /// Slot index.
+        index: usize,
+        /// Parameter id.
+        id: ParamId,
+    },
+    /// Typed text did not parse (nothing was sent).
+    #[error("`{0}` is not a valid value")]
+    InvalidText(String),
 }
 
-/// Error from [`Rack::push_event`] (RT-safe, `Copy`).
+/// Error from [`Chain::push_event`] (RT-safe, `Copy`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum PushEventError {
     /// No slot at that index.
@@ -96,487 +248,4 @@ pub enum PushEventError {
     /// Queue full or event out of order.
     #[error(transparent)]
     List(#[from] EventListError),
-}
-
-struct Slot {
-    module: Box<dyn Module>,
-    /// Events for the current/next `process()` call, offsets relative to its start. Carried-over
-    /// events sit at the front with offset 0.
-    queue: Vec<ParamEvent>,
-    queue_capacity: usize,
-    /// Index of the first undelivered event in `queue` during a `process()` call.
-    cursor: usize,
-    block_events: EventList,
-    out_events: OutputEvents,
-    latency_samples: u32,
-    tail: Tail,
-    steady_time: u64,
-    restart_requested: bool,
-}
-
-impl Slot {
-    fn new(module: Box<dyn Module>, options: &RackOptions) -> Self {
-        Self {
-            module,
-            queue: Vec::with_capacity(options.queue_capacity),
-            queue_capacity: options.queue_capacity,
-            cursor: 0,
-            block_events: EventList::with_capacity(options.event_capacity),
-            out_events: OutputEvents::with_capacity(options.event_capacity),
-            latency_samples: 0,
-            tail: Tail::Samples(0),
-            steady_time: 0,
-            restart_requested: false,
-        }
-    }
-
-    fn activate(&mut self, config: &ActivateConfig) -> Result<(), ModuleError> {
-        self.module.activate(config)?;
-        self.latency_samples = self.module.latency_samples();
-        self.tail = self.module.tail();
-        self.steady_time = 0;
-        self.restart_requested = false;
-        Ok(())
-    }
-
-    fn deactivate(&mut self) {
-        self.module.deactivate();
-        self.latency_samples = 0;
-        self.tail = Tail::Samples(0);
-    }
-
-    /// Fills `block_events` for the sub-block `[start, start + len)` of a `host_frames` call.
-    /// Carried events (offset before `start`) come first at offset 0; events that do not fit
-    /// stay queued for the next sub-block (or the next call).
-    fn collect_events(&mut self, start: usize, len: usize, host_frames: usize) {
-        self.block_events.clear();
-        while let Some(&e) = self.queue.get(self.cursor) {
-            let off = e.offset as usize;
-            let offset = if host_frames == 0 || off < start {
-                0
-            } else if off < start + len {
-                (off - start) as u32
-            } else {
-                break;
-            };
-            if self.block_events.push(ParamEvent { offset, ..e }).is_err() {
-                break;
-            }
-            self.cursor += 1;
-        }
-    }
-
-    fn run(
-        &mut self,
-        start: usize,
-        len: usize,
-        host_frames: usize,
-        transport: Transport,
-        input: &[f32],
-        output: &mut [f32],
-    ) -> ProcessStatus {
-        self.collect_events(start, len, host_frames);
-        // TODO(T-103): module output events (READ_ONLY reports, adapter-originated parameter
-        // changes) are cleared here and therefore dropped. They need an RT drain to the control
-        // thread's parameter mirror (RT event ring).
-        self.out_events.clear();
-        let mut ctx = ProcessContext::new(
-            len as u32,
-            self.steady_time,
-            transport,
-            self.block_events.as_slice(),
-            &mut self.out_events,
-        );
-        let status = self.module.process(&mut ctx, &[input], &mut [output]);
-        if ctx.requested(HostRequest::Restart) {
-            self.restart_requested = true;
-        }
-        self.steady_time += len as u64;
-        status
-    }
-
-    /// End of a `process()` call: undelivered events move to the front at offset 0.
-    fn finish_call(&mut self) {
-        let rest = self.queue.len() - self.cursor;
-        self.queue.copy_within(self.cursor.., 0);
-        self.queue.truncate(rest);
-        for e in &mut self.queue {
-            e.offset = 0;
-        }
-        self.cursor = 0;
-    }
-}
-
-/// An ordered chain of modules (one "chain" in ADR-002's `SwapChain(Box<Chain>)`).
-///
-/// Lifecycle: build it on the control thread ([`insert`](Self::insert) /
-/// [`remove`](Self::remove) / [`move_slot`](Self::move_slot)), [`activate`](Self::activate) it,
-/// then hand it to the audio thread (or an offline render), which only calls the RT-safe
-/// [`process`](Self::process), [`reset`](Self::reset) and [`push_event`](Self::push_event).
-/// Deactivate it after it comes back.
-pub struct Rack {
-    slots: Vec<Slot>,
-    options: RackOptions,
-    config: Option<ActivateConfig>,
-    ping: Vec<f32>,
-    pong: Vec<f32>,
-}
-
-impl Default for Rack {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Rack {
-    /// Empty, inactive rack with default capacities.
-    pub fn new() -> Self {
-        Self::with_options(RackOptions::default())
-    }
-
-    /// Empty, inactive rack.
-    pub fn with_options(options: RackOptions) -> Self {
-        Self {
-            slots: Vec::new(),
-            options,
-            config: None,
-            ping: Vec::new(),
-            pong: Vec::new(),
-        }
-    }
-
-    /// Number of slots.
-    pub fn len(&self) -> usize {
-        self.slots.len()
-    }
-
-    /// True if there are no slots.
-    pub fn is_empty(&self) -> bool {
-        self.slots.is_empty()
-    }
-
-    /// The configuration while active.
-    pub fn config(&self) -> Option<ActivateConfig> {
-        self.config
-    }
-
-    /// True between `activate` and `deactivate`.
-    pub fn is_active(&self) -> bool {
-        self.config.is_some()
-    }
-
-    /// The module in slot `index` (control thread, rack not live).
-    pub fn module(&self, index: usize) -> Option<&dyn Module> {
-        self.slots.get(index).map(|s| &*s.module)
-    }
-
-    /// \[control thread\] Inserts `module` (inactive) at `index` (`0..=len`). The module must
-    /// support MONO and have a valid schema. If the rack is active, the module is activated with
-    /// the rack's configuration.
-    pub fn insert(&mut self, index: usize, module: Box<dyn Module>) -> Result<(), RackError> {
-        if index > self.slots.len() {
-            return Err(RackError::IndexOutOfRange {
-                index,
-                len: self.slots.len(),
-            });
-        }
-        let id = || module.descriptor().id.clone();
-        if !module.supported_layouts().contains(&ChannelLayout::MONO) {
-            return Err(RackError::UnsupportedLayout { id: id() });
-        }
-        validate_schema(module.params(), module.groups())
-            .map_err(|source| RackError::Schema { id: id(), source })?;
-        let mut slot = Slot::new(module, &self.options);
-        if let Some(cfg) = self.config {
-            slot.activate(&cfg).map_err(|source| RackError::Activate {
-                index,
-                id: slot.module.descriptor().id.clone(),
-                source,
-            })?;
-        }
-        self.slots.insert(index, slot);
-        Ok(())
-    }
-
-    /// \[control thread\] Appends `module` (see [`insert`](Self::insert)).
-    pub fn push(&mut self, module: Box<dyn Module>) -> Result<(), RackError> {
-        self.insert(self.slots.len(), module)
-    }
-
-    /// \[control thread\] Removes and returns the module at `index`, deactivated if the rack is
-    /// active. Its queued events are discarded.
-    pub fn remove(&mut self, index: usize) -> Result<Box<dyn Module>, RackError> {
-        if index >= self.slots.len() {
-            return Err(RackError::IndexOutOfRange {
-                index,
-                len: self.slots.len(),
-            });
-        }
-        let mut slot = self.slots.remove(index);
-        if self.config.is_some() {
-            slot.deactivate();
-        }
-        Ok(slot.module)
-    }
-
-    /// \[control thread\] Moves the slot at `from` to position `to` (both `< len`); the others
-    /// shift. Queued events move with the slot.
-    pub fn move_slot(&mut self, from: usize, to: usize) -> Result<(), RackError> {
-        let len = self.slots.len();
-        for index in [from, to] {
-            if index >= len {
-                return Err(RackError::IndexOutOfRange { index, len });
-            }
-        }
-        let slot = self.slots.remove(from);
-        self.slots.insert(to, slot);
-        Ok(())
-    }
-
-    /// \[control thread\] Activates every module and allocates the ping-pong buffers. The v1 rack
-    /// runs MONO. On error the modules activated so far are deactivated again.
-    pub fn activate(&mut self, config: &ActivateConfig) -> Result<(), RackError> {
-        if self.config.is_some() {
-            return Err(RackError::AlreadyActive);
-        }
-        if config.max_block == 0 {
-            return Err(RackError::InvalidConfig("max_block must be >= 1"));
-        }
-        if !(config.sample_rate.is_finite() && config.sample_rate > 0.0) {
-            return Err(RackError::InvalidConfig(
-                "sample_rate must be finite and > 0",
-            ));
-        }
-        if config.layout != ChannelLayout::MONO {
-            return Err(RackError::InvalidConfig("the v1 rack runs MONO"));
-        }
-        for index in 0..self.slots.len() {
-            if let Err(source) = self.slots[index].activate(config) {
-                for slot in &mut self.slots[..index] {
-                    slot.deactivate();
-                }
-                return Err(RackError::Activate {
-                    index,
-                    id: self.slots[index].module.descriptor().id.clone(),
-                    source,
-                });
-            }
-        }
-        self.ping = vec![0.0; config.max_block as usize];
-        self.pong = vec![0.0; config.max_block as usize];
-        self.config = Some(*config);
-        Ok(())
-    }
-
-    /// \[control thread\] Deactivates every module (no-op if inactive).
-    pub fn deactivate(&mut self) {
-        if self.config.take().is_some() {
-            for slot in &mut self.slots {
-                slot.deactivate();
-            }
-        }
-    }
-
-    /// Total latency = sum of slot latencies (reporting only; compensation is T-401).
-    /// 0 while inactive.
-    pub fn latency_samples(&self) -> u32 {
-        self.slots
-            .iter()
-            .fold(0u32, |acc, s| acc.saturating_add(s.latency_samples))
-    }
-
-    /// Latency of slot `index` (read at activation).
-    pub fn slot_latency_samples(&self, index: usize) -> Option<u32> {
-        self.slots.get(index).map(|s| s.latency_samples)
-    }
-
-    /// Tail of slot `index` (read at activation).
-    pub fn slot_tail(&self, index: usize) -> Option<Tail> {
-        self.slots.get(index).map(|s| s.tail)
-    }
-
-    /// True once the module in slot `index` requested [`HostRequest::Restart`] (handled by
-    /// T-401).
-    pub fn restart_requested(&self, index: usize) -> bool {
-        self.slots.get(index).is_some_and(|s| s.restart_requested)
-    }
-
-    /// RT-safe. Queues a parameter event for slot `index`, for the **next** `process()` call:
-    /// `offset` is relative to that call's first sample; values must already be
-    /// `clamp_quantize`d (the control thread's mirror does it). Events must be pushed in
-    /// non-decreasing offset order. An offset at or past the next call's length is delivered at
-    /// offset 0 of the call after it. `Err(Full)`: the caller keeps the event and retries next
-    /// block (values are delayed, never lost).
-    pub fn push_event(&mut self, index: usize, event: ParamEvent) -> Result<(), PushEventError> {
-        let slot = self
-            .slots
-            .get_mut(index)
-            .ok_or(PushEventError::NoSuchSlot(index))?;
-        if slot.queue.len() >= slot.queue_capacity {
-            return Err(EventListError::Full.into());
-        }
-        if slot.queue.last().is_some_and(|l| event.offset < l.offset) {
-            return Err(EventListError::OutOfOrder.into());
-        }
-        slot.queue.push(event);
-        Ok(())
-    }
-
-    /// RT-safe. Resets every module (seek, loop wrap, transport start). Queued events stay.
-    pub fn reset(&mut self) {
-        if self.config.is_some() {
-            for slot in &mut self.slots {
-                slot.module.reset();
-            }
-        }
-    }
-
-    /// RT-safe. Runs `input` through the chain into `output` (equal lengths; any length —
-    /// blocks longer than `max_block` are split into sub-blocks, and each slot's queued events
-    /// are split at the sub-block boundaries, keeping their exact sample positions). A
-    /// zero-length call is a parameter flush. If an event list fills up, the remaining events are
-    /// carried to offset 0 of the next sub-block or call.
-    ///
-    /// An inactive or empty rack copies input to output. Returns
-    /// [`ProcessStatus::Error`] if any slot did (failure handling is T-103).
-    ///
-    /// Module output events (`ProcessContext::out_events`) are currently discarded;
-    /// TODO(T-103): drain them to the control thread.
-    pub fn process(
-        &mut self,
-        transport: Transport,
-        input: &[f32],
-        output: &mut [f32],
-    ) -> ProcessStatus {
-        debug_assert_eq!(
-            input.len(),
-            output.len(),
-            "rack input/output length mismatch"
-        );
-        let frames = input.len().min(output.len());
-        let (input, output) = (&input[..frames], &mut output[..frames]);
-        let Some(cfg) = self.config else {
-            output.copy_from_slice(input);
-            return ProcessStatus::Continue;
-        };
-        if self.slots.is_empty() {
-            output.copy_from_slice(input);
-            return ProcessStatus::Continue;
-        }
-        let max = cfg.max_block as usize;
-        let mut status = ProcessStatus::Continue;
-        let mut start = 0;
-        loop {
-            let len = (frames - start).min(max);
-            let t = Transport {
-                playing: transport.playing,
-                position_samples: transport.position_samples.map(|p| p + start as u64),
-            };
-            if self.run_sub_block(start, len, frames, t, input, output) == ProcessStatus::Error {
-                status = ProcessStatus::Error;
-            }
-            start += len;
-            if start >= frames {
-                break;
-            }
-        }
-        for slot in &mut self.slots {
-            slot.finish_call();
-        }
-        status
-    }
-
-    /// One sub-block through every slot, ping-ponging between the two scratch buffers; the first
-    /// slot reads `input`, the last writes `output`.
-    fn run_sub_block(
-        &mut self,
-        start: usize,
-        len: usize,
-        host_frames: usize,
-        t: Transport,
-        input: &[f32],
-        output: &mut [f32],
-    ) -> ProcessStatus {
-        let Self {
-            slots, ping, pong, ..
-        } = self;
-        let r = start..start + len;
-        let count = slots.len();
-        let mut status = ProcessStatus::Continue;
-        for (i, slot) in slots.iter_mut().enumerate() {
-            let last = i + 1 == count;
-            let even = i.is_multiple_of(2);
-            // Slot i writes ping if i is even, pong if odd (unless last), and reads what slot
-            // i - 1 wrote.
-            let s = match (i == 0, last, even) {
-                (true, true, _) => slot.run(
-                    start,
-                    len,
-                    host_frames,
-                    t,
-                    &input[r.clone()],
-                    &mut output[r.clone()],
-                ),
-                (true, false, _) => slot.run(
-                    start,
-                    len,
-                    host_frames,
-                    t,
-                    &input[r.clone()],
-                    &mut ping[..len],
-                ),
-                (false, true, true) => slot.run(
-                    start,
-                    len,
-                    host_frames,
-                    t,
-                    &pong[..len],
-                    &mut output[r.clone()],
-                ),
-                (false, true, false) => slot.run(
-                    start,
-                    len,
-                    host_frames,
-                    t,
-                    &ping[..len],
-                    &mut output[r.clone()],
-                ),
-                (false, false, true) => {
-                    slot.run(start, len, host_frames, t, &pong[..len], &mut ping[..len])
-                }
-                (false, false, false) => {
-                    slot.run(start, len, host_frames, t, &ping[..len], &mut pong[..len])
-                }
-            };
-            if s == ProcessStatus::Error {
-                status = ProcessStatus::Error;
-            }
-        }
-        status
-    }
-}
-
-/// \[audio thread, block boundary\] Installs `next` as the live chain and returns the retired
-/// one. RT-safe: moves two pointers, allocates and frees nothing.
-///
-/// **Placeholder for T-103.** The real rack-edit swap receives `next` through the command ring
-/// (`SwapChain(Box<Chain>)`), crossfades old → new over 15 ms, and pushes the retired chain onto
-/// the return ring; the control thread deactivates and drops it. `next` must already be active
-/// with the same sample rate and `max_block` as the live chain (debug builds assert it when the
-/// live chain is active).
-#[must_use = "the retired chain must go back to the control thread (return ring); never drop it on the audio thread"]
-pub fn swap_chain(live: &mut Box<Rack>, next: Box<Rack>) -> Box<Rack> {
-    debug_assert!(
-        next.is_active(),
-        "swap_chain: the next chain must be active"
-    );
-    debug_assert!(
-        match (live.config, next.config) {
-            (Some(a), Some(b)) =>
-                a.sample_rate.to_bits() == b.sample_rate.to_bits() && a.max_block == b.max_block,
-            _ => true,
-        },
-        "swap_chain: the next chain's sample_rate/max_block differ from the live chain"
-    );
-    std::mem::replace(live, next)
 }

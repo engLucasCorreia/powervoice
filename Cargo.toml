@@ -47,3 +47,5 @@ cpal = "0.18"
 memmap2 = "0.9"
 crc32fast = "1"
 libc = "0.2"
+# T-103: lock-free SPSC rings between the rack host (control thread) and the live rack (audio thread).
+rtrb = "0.4"

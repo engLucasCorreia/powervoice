@@ -245,6 +245,7 @@ impl ParamInfo {
     /// Resolution of the displayed text at `v`, in plain units: one unit of the last shown
     /// decimal. 0 means the text is exact (enum, bool, `-inf`). Used by the round-trip contract:
     /// `text_to_value(value_to_text(v))` is within half of this of `clamp_quantize(v)`.
+    #[cfg_attr(not(feature = "test-util"), allow(dead_code))] // used by ModuleTestHost
     pub(crate) fn text_resolution(&self, v: f64) -> f64 {
         let v = self.clamp_quantize(v);
         match kind(self) {

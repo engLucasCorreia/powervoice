@@ -19,6 +19,12 @@ New-file recording is lossless, crash-safe and honest about damage, exactly as S
 - Take → one undoable "Record" edit with its markers; audio edits/undo/redo refused while recording; Add marker allowed.
 - Live recording peaks (`VXRP` frames, 64 spp) produced for T-108.
 
+**Handoff requirements from T-101/T-102 (merged — see MEMORY.md ticket learnings):**
+- Take durability: `TakeSyncMode::Background` is the default — **T-106 must run `TakeSyncHandle::sync()` about every 1 s on its own thread** (the ~1.5 s power-loss bound depends on it); the capture writer drains the ring at least every 50 ms (250 ms crash bound).
+- After `TakeCapture::finish()`, check `FinishedTake.error` (post the notice), then `commit_take(&finished, &markers)` — it borrows, clamps markers into the take, and leaves the take open on failure so you can retry. Markers pressed during a take go into `commit_take`, never `commit_edit`.
+- Use capture timestamps' `now_ns`/`to_app_ns()` for start/stop alignment and dropout detection; the fake backend delivers input blocks at `time(F+N)+latency` and supports seeded jitter and dropout injection for calibrating the `max(0.5·period, 1 ms)` threshold.
+- Keep ~2 s capture look-back (needed by T-304 punch-in; ADR-004 Amendment 4).
+
 **Out:** monitoring (T-107), UI (T-109), record-at-cursor and punch-in (T-304).
 
 ## Crates / files

@@ -20,6 +20,13 @@ into a prefetch ring, the output callback runs the rack, and a heard-position cl
 - Heard-position clock from cpal playback timestamps mapped to the app clock; telemetry producer building `VXTM` frames at 60 Hz (channel wiring is T-108).
 - Fake-backend integration harness (scripted sessions, random callback sizes, `test_util::no_alloc` around callbacks).
 
+**Handoff requirements from T-101/T-102/T-103 (reviewed and merged — see MEMORY.md ticket learnings):**
+- Clock: use the callback timestamps' `now_ns` (app clock) and `to_app_ns()`; never read the clock again in a callback.
+- Devices: run `StallDetector` on every control tick and feed a stall into the device state machine as `DEVICE_LOST`; wait for the capabilities diff while `caps_pending` (ALSA ~2.4 s); remember the configured device `id` and make lookup prefer it (twin devices); `StopPlayback` from the device machine must not stop a recording.
+- Callback ownership: cpal drops the callback closure (and the `LiveRack` it owns) on its own thread → hand heavy state back through a slot the control thread takes after the stream handle drop returns; use `LiveRack::into_chain` (or the Drop hand-back) so `deactivate()` runs on the control thread.
+- Rack: `RackHost::new(registry, cfg, options, model) → (RackHost, LiveRack)`; `live.process(transport, in, out)` in the output callback; `live.latency_samples()` in the heard-position formula; `host.tick()` every 16 ms; add the `dsp::fp` FTZ/DAZ guard to `rack::offline::render` too.
+- Document: `SnapshotReader` on the reader thread, `release_segments()` when idle; drop all readers/writers before `Session::close` (which returns the session back in `CloseError` on refusal); destructive edits via `Session` only (it owns the chunk-sync-before-journal rule).
+
 **Out:** recording (T-106), monitoring (T-107), IPC (T-108), UI (T-109), latency compensation beyond the heard-position formula (T-401).
 
 ## Crates / files

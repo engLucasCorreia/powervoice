@@ -11,7 +11,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | ID | Title | Tier | Deps | Status |
 |---|---|---|---|---|
 | S1-01 | Playback end-to-end: engine core, output device, rack in path, transport, VXTM telemetry, transport + device UI | O | T-101, T-102, T-103 | in-progress |
-| S1-02 | WAV read/write (`vox-io`) + document peaks query (`vox-project`) — libraries only | S | T-101 | in-progress |
+| S1-02 | WAV read/write (`vox-io`) + document peaks query (`vox-project`) — libraries only | S | T-101 | done |
 | S1-03 | Open/Save WAV in the app + Canvas2D waveform view (zoom/scroll/playhead/click-to-seek) | S | S1-01, S1-02 | todo |
 | S1-04 | Recording end-to-end: input device, arm, input meter, record → take → document, live waveform | O | S1-01 | todo |
 
@@ -28,7 +28,8 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | S3-01 | Rack panel + generic parameter UI end-to-end | S | S1-01, H-01 | todo |
 | S3-02 | Dynamics (compressor + limiter) + Noise Gate modules | O | T-103, H-01 | in-progress |
 | S3-03 | Parametric EQ module + EQ graph (lean SPEC-015) | O | S3-01 | todo |
-| S3-04 | Noise reduction: capture noise print + streaming NR (lean SPEC-014) | O | S3-01 | todo (ticket after SPEC-014 lands) |
+| S3-04 | Noise reduction module + noise-print profile (library part, lean SPEC-014) | O | T-103, H-01 | in-progress |
+| S3-06 | Capture Noise Print command + NR slot panel | S | S3-01, S3-04, S2-01 | todo |
 | S3-05 | True-peak limiter (lean SPEC-017) | O | T-103 | in-progress |
 
 ### Slice 4 — Deliver
@@ -42,6 +43,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | ID | Title | Tier | Status |
 |---|---|---|---|
 | H-01 | Rack: bypass toggle during a new instance's warm-up hold re-introduces the cold-output click (T-103 re-review #1) + restart of load-failed slots, stuck held-back restart, count dropped moved events | O | done |
+| H-02 | Save: stream `save_snapshot_wav` (today holds the whole document in RAM, ~691 MB for 60 min); move TPDF dither from `vox-io` into `vox-dsp::dither` (ADR-001 §4) | S | todo |
 
 ## M0 — Foundations
 | ID | Title | Wave | Tier | Deps | Status |
@@ -98,7 +100,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 ## M4 — Effects modules & rack UI
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
-| T-400 | M4 spec wave: SPEC-015 parametric EQ + SPEC-017 true-peak limiter (part 1); SPEC-013 noise gate + SPEC-016 dynamics (part 2) | W0 | O | M0 | in-progress |
+| T-400 | M4 spec wave: SPEC-015 parametric EQ + SPEC-017 true-peak limiter (part 1); SPEC-013 noise gate + SPEC-016 dynamics (part 2) | W0 | O | M0 | done |
 | T-401 | Latency compensation, latency_changed re-activation, A/B dry delay | W1 | O | M3 | todo |
 | T-402 | Parametric EQ DSP + ResponseCurve | W1 | O | M3 | todo |
 | T-403 | Dynamics A: detector, compressor, limiter | W1 | O | M3 | todo |
@@ -113,7 +115,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 ## M5 — Noise reduction
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
-| T-500 | M5 spec wave: SPEC-014 noise reduction (module, noise print capture, UI) | W0 | O | M0 | in-progress |
+| T-500 | M5 spec wave: SPEC-014 noise reduction (module, noise print capture, UI) | W0 | O | M0 | done |
 | T-501 | Offline NR algorithm (decision-directed Wiener + smoothing) + goldens | W1 | O | M4 | todo |
 | T-502 | Noise print capture + profile storage (state blob) | W1 | S | M4 | todo |
 | T-503 | Streaming NR module, latency_changed on FFT size | W2 | O | T-501, T-502 | todo |

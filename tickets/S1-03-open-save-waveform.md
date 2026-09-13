@@ -13,6 +13,19 @@ saves it (Save / Save As WAV 16/24/32f).
 - UI: File menu / toolbar (Open, Save, Save As with bit-depth choice), title "name — PowerVoice" with `*` when modified, unsaved-changes prompt on open/quit (Save / Don't Save / Cancel); waveform panel (Canvas2D, HiDPI aware, dark theme tokens) with zoom, scroll bar, time ruler, playhead + cursor, click-to-seek, stale response rejection by `audio_rev`; keymap Ctrl+O, Ctrl+S, Ctrl+Shift+S (provisional).
 - Tests: Vitest for zoom math (pixel ↔ sample exact), peaks request selection, open/save flows with mockIPC; Rust integration: open fixture WAV → peaks → save → bytes identical for 24-bit source.
 
+## S1-02 API (merged — use these)
+```rust
+// vox-io
+pub fn read_wav(path) -> Result<(u32 /*rate*/, u16 /*orig channels*/, WavSource)>;   // WavSource::read_mono(&mut [f32]) streams, downmixed
+pub fn write_wav(path, sample_rate_hz: u32, bits: BitDepth /*Int16|Int24|Float32*/, samples: &[f32]) -> Result<WriteReport { clipped_samples }>;
+// vox-project
+pub fn import_wav(session: &mut Session, source: &mut WavSource) -> Result<Arc<DocSnapshot>>;   // Session::create(SessionConfig::new(rate)) first
+pub fn save_snapshot_wav(reader: &mut SnapshotReader, path, bits: BitDepth) -> Result<WriteReport>;   // atomic; holds the doc in RAM (H-02 streams it)
+pub fn peaks(store: &ChunkStore, snapshot: &DocSnapshot, spp: u32, start: u64, count: u32) -> Result<Vec<(f32, f32)>>;   // spp == PEAKS_RAW_SPP (1) → raw
+pub fn encode_vxpk(header: &VxpkHeader, buckets: &[(f32, f32)]) -> Vec<u8>;   // ADR-003 bytes for ipc::Response
+```
+Only WAV 16/24-bit int and 32-bit float are accepted; other variants return `IoError::Unsupported` (show it as a notice).
+
 ## Out (deferred to hardening)
 Spectral view, selection editing (Slice 2), WebGL2 renderer, overview strip, vertical zoom, markers display, other formats, recent files, progress UI for long imports.
 

@@ -37,7 +37,8 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | ID | Title | Tier | Deps | Status |
 |---|---|---|---|---|
 | S4-01 | Loudness analysis + LUFS normalize | S | S2-02, S1-01 | todo |
-| S4-02 | Export WAV / FLAC / MP3 (LAME via libloading) + ACX preset | S | S1-03, S1-02 | todo |
+| S4-02 | Export encoders (FLAC, LAME via libloading, offline resampler) — library part | S | S1-01, S1-02 | in-progress |
+| S4-04 | Export job + dialog (ACX preset) | S | S1-03, S4-02 | todo |
 | S4-03 | ACX check report | S | S4-01 | todo |
 
 ### Hardening & backlog
@@ -46,7 +47,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-01 | Rack: bypass toggle during a new instance's warm-up hold re-introduces the cold-output click (T-103 re-review #1) + restart of load-failed slots, stuck held-back restart, count dropped moved events | O | done |
 | H-02 | Save: stream `save_snapshot_wav` (today holds the whole document in RAM, ~691 MB for 60 min); move TPDF dither from `vox-io` into `vox-dsp::dither` (ADR-001 §4) | S | todo |
 | H-03 | TP limiter: exact interval-endpoint coverage (+1 sample latency) instead of the measured +0.011 dB bound; test 1 ms look-ahead; full SPEC-017 AC matrix (44.1/96 kHz, all ceilings/gains), CPU bench, GR meter UI | O | todo |
-| H-04 | Playback engine fixes from the S1-01 post-merge review (fade state machine, host switch, rack-latency drain) | O | in-progress |
+| H-04 | Playback engine fixes from the S1-01 post-merge review (fade state machine, host switch, rack-latency drain) | O | done |
 
 ## M0 — Foundations
 | ID | Title | Wave | Tier | Deps | Status |

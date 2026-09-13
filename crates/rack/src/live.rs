@@ -262,26 +262,29 @@ impl LiveRack {
     fn apply_swap(&mut self, mut next: Box<Chain>) {
         {
             let old = &mut *self.chain;
-            for j in 0..next.plan.len() {
-                match next.plan[j] {
+            let Chain {
+                slots,
+                plan,
+                outbox,
+                ..
+            } = &mut *next;
+            for (j, entry) in plan.iter().enumerate() {
+                match *entry {
                     PlanEntry::Fresh => {}
                     PlanEntry::Keep { uid, drop_aux } => {
                         if let Some(i) = old.find(uid) {
-                            std::mem::swap(&mut next.slots[j], &mut old.slots[i]);
+                            std::mem::swap(&mut slots[j], &mut old.slots[i]);
                             if drop_aux {
-                                std::mem::swap(
-                                    &mut next.slots[j].outgoing,
-                                    &mut old.slots[i].outgoing,
-                                );
-                                next.slots[j].clear_aux();
+                                std::mem::swap(&mut slots[j].outgoing, &mut old.slots[i].outgoing);
+                                slots[j].clear_aux();
                             }
                         }
                     }
-                    PlanEntry::Replace { uid } => {
-                        if let Some(i) = old.find(uid) {
-                            next.slots[j].take_over(&mut old.slots[i]);
-                        }
-                    }
+                    PlanEntry::Replace { uid } => match old.find(uid) {
+                        Some(i) => slots[j].take_over(&mut old.slots[i], outbox),
+                        // Nothing to crossfade out: done, so a held-back replacement can go.
+                        None => outbox.post(RackEvent::ReplaceDone { slot: uid }),
+                    },
                 }
             }
         }
@@ -392,5 +395,118 @@ impl LiveRack {
         if d > 0 {
             dropped.fetch_add(d, Ordering::Relaxed);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use vox_module_api::test_util::{TestGain, no_alloc};
+    use vox_module_api::{ActivateConfig, ChannelLayout, Module, ProcessMode};
+
+    use super::*;
+    use crate::RackOptions;
+    use crate::slot::{Slot, SlotInit};
+
+    fn config() -> ActivateConfig {
+        ActivateConfig {
+            sample_rate: 48_000.0,
+            max_block: 64,
+            mode: ProcessMode::Realtime,
+            layout: ChannelLayout::MONO,
+        }
+    }
+
+    /// An active slot around a TestGain.
+    fn gain_slot(uid: u64, options: &RackOptions) -> Slot {
+        let mut m: Box<dyn Module> = Box::new(TestGain::new());
+        m.activate(&config()).unwrap();
+        let mut s = Slot::new(SlotUid(uid), Some(m), "Test Gain".into(), options);
+        s.attach(
+            &config(),
+            crate::xfade_samples(48_000.0),
+            SlotInit::default(),
+            0,
+        );
+        s
+    }
+
+    fn chain(slots: Vec<Slot>, plan: Vec<PlanEntry>, options: RackOptions) -> Box<Chain> {
+        let mut c = Chain::assembled(&config(), options);
+        c.slots = slots;
+        c.plan = plan;
+        Box::new(c)
+    }
+
+    fn process(live: &mut LiveRack) {
+        let x = [0.25f32; 64];
+        let mut y = [0.0f32; 64];
+        no_alloc(|| live.process(Transport::default(), &x, &mut y))
+            .expect("LiveRack::process allocated");
+    }
+
+    fn events(link: &mut RackLink) -> Vec<RackEvent> {
+        let mut v = Vec::new();
+        while let Ok(e) = link.events.pop() {
+            v.push(e);
+        }
+        v
+    }
+
+    fn teardown(live: LiveRack, link: &mut RackLink) {
+        for mut c in live.into_chains() {
+            c.deactivate();
+        }
+        while let Ok(mut c) = link.retired.pop() {
+            c.deactivate();
+        }
+    }
+
+    #[test]
+    fn a_replacement_whose_old_slot_is_gone_still_reports_done() {
+        let o = RackOptions::default();
+        let (mut live, mut link) = LiveRack::new(chain(vec![gain_slot(1, &o)], vec![], o), 0);
+        let next = chain(
+            vec![Slot::shell(SlotUid(1)), gain_slot(2, &o)],
+            vec![
+                PlanEntry::Keep {
+                    uid: SlotUid(1),
+                    drop_aux: false,
+                },
+                PlanEntry::Replace { uid: SlotUid(2) },
+            ],
+            o,
+        );
+        assert!(live.handle(RackCommand::Swap(next)).is_ok());
+        process(&mut live);
+        assert_eq!(
+            events(&mut link),
+            vec![RackEvent::ReplaceDone { slot: SlotUid(2) }]
+        );
+        teardown(live, &mut link);
+    }
+
+    #[test]
+    fn events_that_do_not_fit_the_replacement_queue_are_counted() {
+        let o = RackOptions {
+            event_capacity: 4,
+            queue_capacity: 4,
+        };
+        let (mut live, mut link) = LiveRack::new(chain(vec![gain_slot(1, &o)], vec![], o), 0);
+        let ev = |offset, value| ParamEvent {
+            offset,
+            id: TestGain::GAIN_DB,
+            value,
+        };
+        for k in 1..=4 {
+            live.push_event(SlotUid(1), ev(k, -1.0)).unwrap();
+        }
+        // The replacement already holds one event (a mirror diff): 1 + 4 > 4.
+        let mut fresh = gain_slot(1, &o);
+        fresh.push_event(ev(0, -2.0)).unwrap();
+        let next = chain(vec![fresh], vec![PlanEntry::Replace { uid: SlotUid(1) }], o);
+        assert!(live.handle(RackCommand::Swap(next)).is_ok());
+        process(&mut live);
+        assert_eq!(link.dropped.load(Ordering::Relaxed), 1);
+        teardown(live, &mut link);
     }
 }

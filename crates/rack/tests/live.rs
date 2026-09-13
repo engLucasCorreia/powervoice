@@ -6,15 +6,17 @@
 #![allow(clippy::float_cmp, clippy::needless_range_loop)] // exact values, indexed by sample time
 mod common;
 
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use common::*;
 use vox_module_api::test_util::{
-    TestReporter, TestRestart, TestRng, ZIPPER_CHANGE_AT, ZipperWindow, analyze_zipper,
+    TestReporter, TestRestart, TestRng, ZIPPER_CHANGE_AT, ZipperWindow, analyze_zipper, no_alloc,
     zipper_signal,
 };
-use vox_modules::Gain;
-use vox_rack::{RackNotice, SlotStatus, xfade_gain};
+use vox_module_api::{ActivateConfig, ModuleFactory, Transport};
+use vox_modules::{Gain, GainFactory};
+use vox_rack::{LiveRack, RackHost, RackNotice, RackOptions, Registry, SlotStatus, xfade_gain};
 
 vox_module_api::install_test_allocator!();
 
@@ -563,6 +565,168 @@ fn ac8_restart_path_never_goes_silent() {
     d.run_to_end(&x);
     assert_eq!(d.live.latency_samples(), 960);
     assert!(max_silent_run(&d.out[C..]) < 3);
+}
+
+// ---------------------------------------------------------------------------------------------
+// H-01: a bypass toggle or a failure inside a new instance's warm-up hold waits until its output
+// (and its fresh dry line) is valid, instead of cancelling the hold (SPEC-012 §2.2, §2.3, §2.9).
+
+/// A long latency (100 ms at 48 kHz), in the range of Slice 3's noise reduction.
+const LONG: usize = 4800;
+
+/// §4.3 over the whole transition, unshifted: T_s = the latency hold + the 15 ms crossfade.
+fn zipper_hold(out: &[f32], latency: usize, label: &str) {
+    let t_s_ms = 15.0 + latency as f64 * 1000.0 / SR;
+    let r = analyze_zipper(out, 0, SR, ZipperWindow::step(S, t_s_ms)).unwrap();
+    println!("{label}: {r}");
+    assert!(r.pass, "{label}: {r}");
+}
+
+/// From S the output plays `before` for `hold` samples, then crossfades (15 ms) to `after`.
+fn assert_hold_then_fade(
+    out: &[f32],
+    hold: usize,
+    before: impl Fn(usize) -> f32,
+    after: impl Fn(usize) -> f32,
+    label: &str,
+) {
+    for n in S..out.len() {
+        let expected = if n < S + hold {
+            before(n)
+        } else {
+            let g = xfade_gain(n - S - hold, XF as u32);
+            (1.0 - g) * before(n) + g * after(n)
+        };
+        assert!(
+            (out[n] - expected).abs() <= 1e-6,
+            "{label}: sample {n}: {} vs {expected}",
+            out[n]
+        );
+    }
+}
+
+#[test]
+fn bypass_inside_an_insert_hold_waits_for_the_new_output() {
+    let label = "insert TestDelay 4800, bypass on 1000 samples later";
+    let x = zipper_signal();
+    let mut b = Driver::new(&model(vec![gain_slot(0.0)]), 50, x.len());
+    b.run_until(&x, S);
+    b.host.insert(1, delay_slot(LONG as u32)).unwrap();
+    b.run_until(&x, S + 1000);
+    b.host.set_bypass(1, true).unwrap();
+    b.run_to_end(&x);
+    zipper_hold(&b.out, LONG, label);
+    assert!(max_silent_run(&b.out[S..]) < 3, "{label}: silent gap");
+    assert_hold_then_fade(&b.out, LONG, |n| x[n], |n| x[n - LONG], label);
+    assert_eq!(b.live.latency_samples(), LONG as u32);
+}
+
+#[test]
+fn unbypass_inside_a_bypassed_insert_hold_waits_for_the_new_output() {
+    let label = "insert TestDelay 4800 bypassed, un-bypass 1000 samples later";
+    let x = zipper_signal();
+    let mut b = Driver::new(&model(vec![gain_slot(0.0)]), 51, x.len());
+    b.run_until(&x, S);
+    b.host.insert(1, bypassed(delay_slot(LONG as u32))).unwrap();
+    b.run_until(&x, S + 1000);
+    b.host.set_bypass(1, false).unwrap();
+    b.run_to_end(&x);
+    zipper_hold(&b.out, LONG, label);
+    assert!(max_silent_run(&b.out[S..]) < 3, "{label}: silent gap");
+    assert_hold_then_fade(&b.out, LONG, |n| x[n], |n| x[n - LONG], label);
+    assert_eq!(b.live.latency_samples(), LONG as u32);
+}
+
+#[test]
+fn bypass_inside_a_restart_hold_keeps_the_old_instance_until_the_new_output_is_valid() {
+    let label = "restart TestDelay 480 -> 4800, bypass on 1000 samples later";
+    let x = zipper_signal();
+    let mut b = Driver::new(&model(vec![delay_slot(480)]), 52, x.len());
+    b.run_until(&x, S);
+    b.host
+        .set_param(0, TestRestart::LATENCY, LONG as f64)
+        .unwrap();
+    b.host.restart(0).unwrap();
+    b.run_until(&x, S + 1000);
+    b.host.set_bypass(0, true).unwrap();
+    b.run_to_end(&x);
+    for _ in 0..3 {
+        b.tick();
+    }
+    zipper_hold(&b.out, LONG, label);
+    assert!(max_silent_run(&b.out[S..]) < 3, "{label}: silent gap");
+    assert_hold_then_fade(&b.out, LONG, |n| x[n - 480], |n| x[n - LONG], label);
+    assert_eq!(b.live.latency_samples(), LONG as u32);
+    assert_eq!(b.host.swaps_in_flight(), 0);
+    assert_eq!(b.live.chain().len(), 1, "outgoing instance retired");
+}
+
+#[test]
+fn a_failure_inside_an_insert_hold_waits_for_the_dry_line() {
+    let label = "insert Probe 4800 that outputs NaN after 1000 samples";
+    let reg = Arc::new(
+        Registry::with_factories([
+            Arc::new(GainFactory::new()) as Arc<dyn ModuleFactory>,
+            factory(|| {
+                let mut p = Probe::new(LONG as u32);
+                p.nan_from = Some(1000);
+                Box::new(p)
+            }),
+        ])
+        .unwrap(),
+    );
+    let x = zipper_signal();
+    let mut b = Driver::with_registry(reg, &model(vec![gain_slot(0.0)]), 53, x.len());
+    b.run_until(&x, S);
+    b.host
+        .insert(1, slot("org.powervoice.test-probe", &[]))
+        .unwrap();
+    b.run_to_end(&x);
+    assert!(b.out.iter().all(|s| s.is_finite()));
+    zipper_hold(&b.out, LONG, label);
+    assert!(max_silent_run(&b.out[S..]) < 3, "{label}: silent gap");
+    assert_hold_then_fade(&b.out, LONG, |n| x[n], |n| x[n - LONG], label);
+    assert!(
+        b.notices
+            .iter()
+            .any(|(_, n)| matches!(n, RackNotice::SlotFailed { index: 1, .. }))
+    );
+}
+
+fn run_blocks(host: &mut RackHost, live: &mut LiveRack, blocks: usize) {
+    let x = [0.25f32; 64];
+    let mut y = [0.0f32; 64];
+    let t = Transport {
+        playing: true,
+        position_samples: None,
+    };
+    for _ in 0..blocks {
+        no_alloc(|| live.process(t, &x, &mut y)).expect("LiveRack::process allocated");
+        host.tick();
+    }
+}
+
+#[test]
+fn a_replacement_without_a_crossfade_does_not_hold_back_the_next_one() {
+    // At 50 Hz the crossfade is 1 sample: a latency-0 replacement completes at the swap.
+    let config = ActivateConfig {
+        sample_rate: 50.0,
+        ..rt_config()
+    };
+    let (mut host, mut live) = RackHost::new(
+        registry(),
+        config,
+        RackOptions::default(),
+        &model(vec![delay_slot(0)]),
+    )
+    .unwrap();
+    host.restart(0).unwrap();
+    run_blocks(&mut host, &mut live, 4);
+    host.set_param(0, TestRestart::LATENCY, 5.0).unwrap();
+    host.restart(0).unwrap();
+    run_blocks(&mut host, &mut live, 4);
+    assert_eq!(live.latency_samples(), 5, "second replacement went through");
+    assert_eq!(host.swaps_in_flight(), 0);
 }
 
 // ---------------------------------------------------------------------------------------------

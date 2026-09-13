@@ -93,6 +93,11 @@ pub(crate) struct Slot {
     aux: Vec<f32>,
     pub(crate) mixer: Mixer,
     fade_len: u32,
+    /// Samples until a new instance's output and its fresh dry line are valid (its latency,
+    /// after a live insert or a replacement; counted down in `run`). A bypass toggle or a
+    /// failure inside this warm-up holds the current gains until then instead of fading to a
+    /// source that is not valid yet (H-01).
+    warm_left: u32,
     pub(crate) bypassed: bool,
     bypass_param: Option<ParamId>,
     pub(crate) failed: Option<FailReason>,
@@ -127,6 +132,7 @@ impl Slot {
             aux: Vec::new(),
             mixer: Mixer::steady(DRY0),
             fade_len: 0,
+            warm_left: 0,
             bypassed: false,
             bypass_param: None,
             failed: None,
@@ -200,6 +206,7 @@ impl Slot {
         self.aux = vec![0.0; max_block];
         self.dry = DelayLine::new(latency.max(extra_tap) as usize, max_block);
         self.fade_len = fade_len;
+        self.warm_left = if init.fade_in { latency } else { 0 };
         self.bypassed = init.bypassed;
         let target = if self.module.is_none() {
             DRY0
@@ -280,6 +287,8 @@ impl Slot {
 
     /// RT-safe. Host bypass toggle: crossfade to the latency-matched dry path (or back), or an
     /// event to the module's own BYPASS parameter. A failed or departing slot stays as it is.
+    /// Inside a new instance's warm-up the current gains are held until its output and dry
+    /// line are valid, then the crossfade runs.
     pub(crate) fn set_bypass(&mut self, bypassed: bool) {
         self.bypassed = bypassed;
         if self.module.is_none() || self.removing || self.failed.is_some() {
@@ -293,8 +302,11 @@ impl Slot {
             });
             return;
         }
-        self.mixer
-            .fade_to(if bypassed { DRY_LAT } else { WET }, self.fade_len);
+        self.mixer.fade_to_after(
+            if bypassed { DRY_LAT } else { WET },
+            self.fade_len,
+            self.warm_left,
+        );
     }
 
     /// \[control thread, not live\] Sets the bypass state without a crossfade.
@@ -319,7 +331,8 @@ impl Slot {
         }
         self.failed = Some(reason);
         if !self.removing {
-            self.mixer.fade_to(DRY_LAT, self.fade_len);
+            self.mixer
+                .fade_to_after(DRY_LAT, self.fade_len, self.warm_left);
         }
         outbox.post(RackEvent::SlotFailed {
             slot: self.uid,
@@ -331,15 +344,21 @@ impl Slot {
     /// RT-safe (pointer moves, bounded copies). `self` is a freshly built slot with the
     /// replacement instance; `old` is the live slot it replaces. The old instance becomes this
     /// slot's outgoing instance and keeps sounding until the new one's output is valid (its
-    /// latency), then crossfades out. Events still queued for the old slot move over.
-    pub(crate) fn take_over(&mut self, old: &mut Slot) {
+    /// latency), then crossfades out. Events still queued for the old slot move over; those the
+    /// replacement's queue cannot take are counted as dropped. If there is nothing to
+    /// crossfade out (the old slot had no instance: a slot that failed to start at load) or no
+    /// fade at all, [`RackEvent::ReplaceDone`] is posted at once, so a held-back replacement
+    /// can follow.
+    pub(crate) fn take_over(&mut self, old: &mut Slot, outbox: &mut Outbox) {
         self.outgoing = old.module.take();
         self.aux_latency = old.latency;
         self.aux_steady_time = old.steady_time;
         self.dry.copy_history_from(&old.dry);
         for i in old.cursor..old.queue.len() {
             let e = old.queue[i];
-            let _ = self.push_event(e);
+            if self.push_event(e).is_err() {
+                outbox.dropped += 1;
+            }
         }
         old.queue.clear();
         old.cursor = 0;
@@ -350,8 +369,10 @@ impl Slot {
             WET
         };
         self.mixer = Mixer::fading(from, target, self.fade_len, self.latency);
-        if !self.mixer.is_fading() {
+        self.warm_left = self.latency;
+        if self.outgoing.is_none() || !self.mixer.is_fading() {
             self.aux_done = true;
+            outbox.post(RackEvent::ReplaceDone { slot: self.uid });
         }
     }
 
@@ -490,6 +511,7 @@ impl Slot {
             }
         }
         self.mix(input, base, output);
+        self.warm_left = self.warm_left.saturating_sub(len as u32);
         if self.mixer.advance(len) {
             let target = self.mixer.target_source();
             if self.removing && target == DRY0 {

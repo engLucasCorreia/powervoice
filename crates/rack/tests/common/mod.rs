@@ -350,6 +350,8 @@ pub struct Probe {
     pub layouts: Vec<ChannelLayout>,
     pub fail_activate: bool,
     pub deactivations: Arc<AtomicUsize>,
+    /// Output NaN from this instance's `steady_time` on (non-finite guard tests).
+    pub nan_from: Option<u64>,
 }
 
 impl Probe {
@@ -391,6 +393,7 @@ impl Probe {
             layouts: vec![ChannelLayout::MONO],
             fail_activate: false,
             deactivations: Arc::default(),
+            nan_from: None,
         }
     }
 }
@@ -449,6 +452,13 @@ impl Module for Probe {
                     output[i] = self.line[self.pos];
                     self.line[self.pos] = input[i];
                     self.pos = (self.pos + 1) % self.line.len();
+                }
+            }
+        }
+        if let Some(from) = self.nan_from {
+            for (i, o) in output.iter_mut().enumerate() {
+                if ctx.steady_time + i as u64 >= from {
+                    *o = f32::NAN;
                 }
             }
         }

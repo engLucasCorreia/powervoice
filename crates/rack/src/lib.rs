@@ -52,6 +52,9 @@ use vox_module_api::{
     DEFAULT_EVENT_CAPACITY, EventListError, ModuleError, ParamId, SchemaError, StateError,
 };
 
+#[cfg(test)]
+vox_module_api::install_test_allocator!();
+
 /// Bypass / swap / replacement / A/B crossfade (SPEC-012 §3 `xfade_ms`).
 pub const XFADE_MS: f64 = 15.0;
 /// Slots per rack (SPEC-012 §3 `max_slots`).

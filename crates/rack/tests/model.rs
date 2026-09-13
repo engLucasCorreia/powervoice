@@ -5,6 +5,7 @@
 mod common;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use common::*;
 use serde_json::json;
@@ -159,6 +160,63 @@ impl Module for Failing {
         _: &[&[f32]],
         _: &mut [&mut [f32]],
     ) -> ProcessStatus {
+        ProcessStatus::Continue
+    }
+    fn reset(&mut self) {}
+    fn param_value(&self, _: ParamId) -> Option<f64> {
+        None
+    }
+    fn save_state(&self) -> Result<ModuleState, StateError> {
+        Ok(ModuleState::new(1))
+    }
+    fn load_state(&mut self, _: &ModuleState) -> Result<(), StateError> {
+        Ok(())
+    }
+}
+
+/// Used by `restart_retries_a_slot_that_failed_to_start_at_load` only.
+static FLAKY_FAILS: AtomicBool = AtomicBool::new(true);
+static FLAKY_DEACTIVATIONS: AtomicUsize = AtomicUsize::new(0);
+
+/// ×0.5, but `activate` fails while [`FLAKY_FAILS`] is set (a licence that shows up later).
+struct Flaky;
+
+impl Flaky {
+    const ID: &'static str = "org.powervoice.test-flaky";
+}
+
+impl Module for Flaky {
+    fn descriptor(&self) -> &ModuleDescriptor {
+        static D: std::sync::OnceLock<ModuleDescriptor> = std::sync::OnceLock::new();
+        D.get_or_init(|| descriptor(Flaky::ID, "Flaky"))
+    }
+    fn params(&self) -> &[ParamInfo] {
+        &[]
+    }
+    fn activate(&mut self, _c: &ActivateConfig) -> Result<(), ModuleError> {
+        if FLAKY_FAILS.load(Ordering::Relaxed) {
+            return Err(ModuleError::Resource("no licence".into()));
+        }
+        Ok(())
+    }
+    fn deactivate(&mut self) {
+        FLAKY_DEACTIVATIONS.fetch_add(1, Ordering::Relaxed);
+    }
+    fn latency_samples(&self) -> u32 {
+        0
+    }
+    fn tail(&self) -> Tail {
+        Tail::Samples(0)
+    }
+    fn process(
+        &mut self,
+        _: &mut ProcessContext<'_>,
+        inputs: &[&[f32]],
+        outputs: &mut [&mut [f32]],
+    ) -> ProcessStatus {
+        for (o, i) in outputs[0].iter_mut().zip(inputs[0]) {
+            *o = 0.5 * i;
+        }
         ProcessStatus::Continue
     }
     fn reset(&mut self) {}
@@ -349,6 +407,66 @@ fn load_time_failures_are_failed_slots_kept_verbatim() {
         serde_json::to_value(&d.host.model().slots[0]).unwrap(),
         original
     );
+}
+
+#[test]
+fn restart_retries_a_slot_that_failed_to_start_at_load() {
+    let mut r = Registry::with_factories(test_factories()).unwrap();
+    r.register(factory(|| Box::new(Flaky))).unwrap();
+    let x = white(12, 48_000);
+    let m = model(vec![gain_slot(0.0), slot(Flaky::ID, &[])]);
+    let mut d = Driver::with_registry(Arc::new(r), &m, 7, x.len());
+    d.run_until(&x, 10_000);
+    let failed = SlotStatus::Failed {
+        message: "Couldn't start Flaky: resource error: no licence".into(),
+    };
+    assert_eq!(d.host.slot_info(1).unwrap().status, failed);
+    // Still failing: the error comes back and the slot stays as it was.
+    let e = d.host.restart(1).unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "Couldn't start Flaky: resource error: no licence"
+    );
+    assert_eq!(d.host.slot_info(1).unwrap().status, failed);
+    FLAKY_FAILS.store(false, Ordering::Relaxed);
+    d.host.restart(1).unwrap();
+    d.run_until(&x, 20_000);
+    assert_eq!(d.host.slot_info(1).unwrap().status, SlotStatus::Active);
+    assert!(
+        d.notices
+            .iter()
+            .any(|(_, n)| matches!(n, RackNotice::SlotRestarted { index: 1, .. }))
+    );
+    assert!(bit_identical(&d.out[..10_000], &x[..10_000]));
+    // Fades in from the dry path over 15 ms.
+    for n in 10_000 + XF..20_000 {
+        assert!((d.out[n] - 0.5 * x[n]).abs() <= 1e-6, "sample {n}");
+    }
+    // A further replacement is not held back: the first instance gets retired.
+    d.host.restart(1).unwrap();
+    d.run_to_end(&x);
+    for _ in 0..3 {
+        d.tick();
+    }
+    assert_eq!(FLAKY_DEACTIVATIONS.load(Ordering::Relaxed), 1);
+    assert_eq!(d.host.swaps_in_flight(), 0);
+    assert_eq!(d.live.chain().len(), 2);
+    assert_eq!(
+        d.host.model().slots[1].module,
+        "org.powervoice.test-flaky@1.0.0"
+    );
+    // A missing module still cannot be restarted.
+    let (mut host, _live) = RackHost::new(
+        registry(),
+        rt_config(),
+        RackOptions::default(),
+        &model(vec![slot("com.acme.x", &[])]),
+    )
+    .unwrap();
+    assert!(matches!(
+        host.restart(0),
+        Err(RackError::NotLoaded { index: 0 })
+    ));
 }
 
 #[test]

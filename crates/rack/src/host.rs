@@ -555,7 +555,8 @@ impl RackHost {
     }
 
     /// RT events the audio thread dropped (module reports beyond the ring's lifecycle reserve,
-    /// or a full outbox).
+    /// or a full outbox), plus queued parameter events a replacement instance's full queue
+    /// could not take over.
     pub fn dropped_rt_events(&self) -> u64 {
         self.link.dropped.load(Ordering::Relaxed)
     }
@@ -931,8 +932,55 @@ impl RackHost {
     /// and blob), ADR-005 §12. Used for restart requests (latency changes) and for "Restart" of a
     /// failed slot. The new instance is activated here and crossfades in over 15 ms once its
     /// output is valid (its latency); until then the old one keeps playing.
+    ///
+    /// For a slot that could not start when the rack was loaded ("Couldn't start …"), Restart
+    /// resolves the stored slot again (SPEC-012 §2.9): on success the instance fades in from
+    /// the dry path once its output is valid; on failure the error is returned and the slot
+    /// stays as it was. Missing-module placeholders return [`RackError::NotLoaded`].
     pub fn restart(&mut self, index: usize) -> Result<(), RackError> {
+        if let Some(HostSlot {
+            kind: Kind::Placeholder { failed: true, .. },
+            ..
+        }) = self.slots.get(index)
+        {
+            return self.retry_start(index);
+        }
         self.replace_with(index, None)
+    }
+
+    /// [`restart`](Self::restart) of a slot that failed to start at load (a failed
+    /// placeholder, index checked by the caller).
+    fn retry_start(&mut self, index: usize) -> Result<(), RackError> {
+        let hs = &self.slots[index];
+        let uid = hs.uid;
+        let Kind::Placeholder { model, .. } = &hs.kind else {
+            unreachable!("checked by restart");
+        };
+        let mut model = model.clone();
+        model.bypass = hs.bypass;
+        let m = match self.registry.instantiate(&model, &self.config, index)? {
+            Resolved::Module(m) => m,
+            Resolved::Placeholder { message, .. } => {
+                return Err(RackError::InvalidState {
+                    id: model.module,
+                    message,
+                });
+            }
+        };
+        self.slots[index].kind = Kind::Loaded(loaded_from(m));
+        // The audio thread runs the placeholder: replace it (the old slot has no instance, so
+        // the new one fades in from the undelayed input after its latency).
+        if let Some(li) = self.layout_pos(uid)
+            && self.layout[li].sent
+        {
+            self.layout[li].replace = true;
+        }
+        self.dirty = true;
+        self.notices
+            .push(RackNotice::SlotRestarted { slot: uid, index });
+        self.flush();
+        self.check_latency();
+        Ok(())
     }
 
     /// Replaces slot `index`'s instance with one loaded from `state` (a preset with a blob, a

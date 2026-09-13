@@ -13,7 +13,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | S1-01 | Playback end-to-end: engine core, output device, rack in path, transport, VXTM telemetry, transport + device UI | O | T-101, T-102, T-103 | done |
 | S1-02 | WAV read/write (`vox-io`) + document peaks query (`vox-project`) — libraries only | S | T-101 | done |
 | S1-03 | Open/Save WAV in the app + Canvas2D waveform view (zoom/scroll/playhead/click-to-seek) | S | S1-01, S1-02 | done |
-| S1-04 | Recording end-to-end: input device, arm, input meter, record → take → document, live waveform | O | S1-01 | in-progress |
+| S1-04 | Recording end-to-end: input device, arm, input meter, record → take → document, live waveform | O | S1-01 | done |
 
 ### Slice 2 — Edit
 | ID | Title | Tier | Deps | Status |
@@ -48,6 +48,8 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-02 | Save: stream `save_snapshot_wav` (today holds the whole document in RAM, ~691 MB for 60 min); move TPDF dither from `vox-io` into `vox-dsp::dither` (ADR-001 §4) | S | todo |
 | H-03 | TP limiter: exact interval-endpoint coverage (+1 sample latency) instead of the measured +0.011 dB bound; test 1 ms look-ahead; full SPEC-017 AC matrix (44.1/96 kHz, all ceilings/gains), CPU bench, GR meter UI | O | todo |
 | H-04 | Playback engine fixes from the S1-01 post-merge review (fade state machine, host switch, rack-latency drain) | O | done |
+| H-05 | Post-merge Opus review of S1-04 (RT input callback, capture writer, take durability) — deferred for session budget | O | todo |
+| H-06 | UX: Save in the unsaved-changes prompt opens Save As for untitled recordings; New Recording dialog (rate/bit depth); capture-writer resampling | S | todo |
 
 ## M0 — Foundations
 | ID | Title | Wave | Tier | Deps | Status |

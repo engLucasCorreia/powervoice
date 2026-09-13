@@ -15,8 +15,12 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | S1-03 | Open/Save WAV in the app + Canvas2D waveform view (zoom/scroll/playhead/click-to-seek) | S | S1-01, S1-02 | todo |
 | S1-04 | Recording end-to-end: input device, arm, input meter, record → take → document, live waveform | O | S1-01 | todo |
 
-### Slice 2 — Edit (planned)
-Selection, cut/copy/paste/delete, undo/redo, peak normalize favorites, markers (add/list/jump) — lean subsets of T-206, T-301, T-302, T-303, T-305.
+### Slice 2 — Edit
+| ID | Title | Tier | Deps | Status |
+|---|---|---|---|---|
+| S2-01 | Selection + cut/copy/paste/delete/trim/silence + undo/redo end-to-end | S | S1-01, S1-03 | todo |
+| S2-02 | Peak normalize favorites (−1/−0.1/−3 dB + custom) end-to-end | S | S2-01 | todo |
+| S2-03 | Markers basic: add (M), panel, rename, delete, jump, WAV cue round-trip | S | S1-03, S2-01 | todo |
 
 ### Slice 3 — Clean & shape (planned)
 Rack panel + generic parameter UI, parametric EQ, compressor/limiter, noise gate, noise reduction (capture + module), true-peak limiter — subsets of M4/M5; first fix H-01.

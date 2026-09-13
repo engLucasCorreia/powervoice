@@ -126,6 +126,7 @@ function slotFixture(): RackSlotDto {
     params,
     groups,
     values: params.map((pp) => ({ id: pp.id, value: pp.default, normalized: 0, text: String(pp.default) })),
+    noise_profile: null,
   };
 }
 
@@ -215,6 +216,29 @@ describe("AC-12: generic UI from a 40-parameter schema fixture", () => {
     expect(target.querySelector('[data-testid="param-row"][data-key="compressor_enabled"]')).toBeNull();
     expect(row("ratio").querySelector('[data-testid="param-slider"].stepped')).toBeTruthy();
     expect(row("gain_reduction_db").querySelector('[data-testid="param-readout"]')).toBeTruthy();
+    teardown();
+  });
+});
+
+// S3-06, SPEC-014 §2.8: the NR section only renders for a module exposing `NoiseProfile`.
+describe("noise-print section (S3-06)", () => {
+  it("is absent for a slot with no NoiseProfile extension", () => {
+    const { target, teardown } = render(slotFixture());
+    expect(target.querySelector('[data-testid="nr-capture"]')).toBeNull();
+    teardown();
+  });
+
+  it("renders above the parameters for a slot that has one", () => {
+    const slot: RackSlotDto = { ...slotFixture(), noise_profile: "loaded" };
+    const { target, teardown } = render(slot);
+    const body = target.querySelector(".body")!;
+    const nrSection = body.querySelector('[data-testid="nr-capture"]');
+    expect(nrSection).not.toBeNull();
+    // "above the parameters": it's an earlier child of `.body` than the first param row/group.
+    const firstParamNode = body.querySelector('[data-testid="param-row"], [data-testid="param-group"]');
+    expect(
+      nrSection!.compareDocumentPosition(firstParamNode!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     teardown();
   });
 });

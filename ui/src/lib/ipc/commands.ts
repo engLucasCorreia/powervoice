@@ -14,6 +14,7 @@ import type {
   MarkerDto,
   MarkerRangeKindDto,
   ModuleDescriptorDto,
+  NrCaptureStartedDto,
   PeaksRequestDto,
   RackStateDto,
   Settings,
@@ -278,4 +279,26 @@ export async function exportStart(request: ExportRequestDto): Promise<ExportStar
 /** S4-04: cancels a running export job (best-effort). */
 export async function exportCancel(jobId: number): Promise<void> {
   return invoke<void>("export_cancel" satisfies CommandName, { jobId });
+}
+
+/**
+ * S3-06: starts a Capture Noise Print job for `[startSamples, endSamples)` (SPEC-014 §2.3).
+ * `hintSlot` is the last-focused NR slot, if any. Progress/completion arrive as `job_progress`
+ * events (kind `nr_capture`); warnings and errors as `notice`s.
+ */
+export async function nrCaptureStart(
+  hintSlot: number | null,
+  startSamples: number,
+  endSamples: number,
+): Promise<NrCaptureStartedDto> {
+  return invoke<NrCaptureStartedDto>("nr_capture_start" satisfies CommandName, {
+    hintSlot,
+    start: startSamples,
+    end: endSamples,
+  });
+}
+
+/** S3-06: cancels a running capture job (best-effort). */
+export async function nrCaptureCancel(jobId: number): Promise<void> {
+  return invoke<void>("nr_capture_cancel" satisfies CommandName, { jobId });
 }

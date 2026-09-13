@@ -17,6 +17,8 @@ mod events;
 pub mod export_commands;
 pub mod export_dto;
 mod macros;
+mod nr_capture_commands;
+mod nr_capture_dto;
 mod rack_commands;
 mod rack_dto;
 mod record_commands;
@@ -46,8 +48,12 @@ pub use export_dto::{
     ExportFormatDto, ExportFormatsDto, ExportRangeDto, ExportRequestDto, ExportStartedDto,
     Mp3SettingsDto,
 };
+pub use nr_capture_commands::*;
+pub use nr_capture_dto::NrCaptureStartedDto;
 pub use rack_commands::*;
-pub use rack_dto::{ParamChangedDto, RackLatencyDto, RackStateDto, rack_ipc_error};
+pub use rack_dto::{
+    NoiseProfileStatusDto, ParamChangedDto, RackLatencyDto, RackStateDto, rack_ipc_error,
+};
 pub use record_commands::*;
 pub use record_dto::{RecordStateDto, engine_monitor_mode};
 
@@ -111,6 +117,8 @@ crate::ipc_commands!(
     export_formats,
     export_start,
     export_cancel,
+    nr_capture_start,
+    nr_capture_cancel,
 );
 
 #[cfg(feature = "spike")]
@@ -166,6 +174,8 @@ crate::ipc_commands!(
     export_formats,
     export_start,
     export_cancel,
+    nr_capture_start,
+    nr_capture_cancel,
     spike_env,
     spike_waveform_peaks,
     spike_spectrogram_texture,

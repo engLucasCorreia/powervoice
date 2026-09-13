@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use vox_engine::{RackApiError, RackSlot as EngineRackSlot, RackSnapshot as EngineRackSnapshot};
 use vox_rack::{
-    LocalizedText, ModuleDescriptor, ParamFlags, ParamGroup, ParamInfo, SlotInfo, SlotStatus,
-    Taper, Unit,
+    LocalizedText, ModuleDescriptor, NoiseProfileStatus, ParamFlags, ParamGroup, ParamInfo,
+    SlotInfo, SlotStatus, Taper, Unit,
 };
 
 use crate::ipc::error::{IpcError, IpcErrorCode};
@@ -272,6 +272,30 @@ pub enum SlotStatusDto {
     Failed { message: String },
 }
 
+/// A slot's noise-print status (S3-06, SPEC-014 §2.5, §2.8). `None` (the outer `Option` this
+/// wraps on [`RackSlotDto`]) means the module has no `NoiseProfile` extension — the NR panel
+/// section only renders when this DTO is present.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum NoiseProfileStatusDto {
+    None,
+    Loaded,
+    Unreadable,
+    TooNew,
+}
+
+impl From<&NoiseProfileStatus> for NoiseProfileStatusDto {
+    fn from(s: &NoiseProfileStatus) -> Self {
+        match s {
+            NoiseProfileStatus::None => Self::None,
+            NoiseProfileStatus::Loaded => Self::Loaded,
+            NoiseProfileStatus::Unreadable => Self::Unreadable,
+            NoiseProfileStatus::TooNew => Self::TooNew,
+        }
+    }
+}
+
 impl From<&SlotStatus> for SlotStatusDto {
     fn from(s: &SlotStatus) -> Self {
         match s {
@@ -304,6 +328,9 @@ pub struct RackSlotDto {
     pub groups: Vec<ParamGroupDto>,
     /// Index-aligned with `params`; empty for a placeholder (no schema).
     pub values: Vec<ParamValueDto>,
+    /// `Some` only for a module with the `NoiseProfile` extension (S3-06): drives the NR panel's
+    /// Capture button and status line.
+    pub noise_profile: Option<NoiseProfileStatusDto>,
 }
 
 impl From<&EngineRackSlot> for RackSlotDto {
@@ -325,6 +352,7 @@ impl From<&EngineRackSlot> for RackSlotDto {
             params: info.params.iter().map(Into::into).collect(),
             groups: info.groups.iter().map(Into::into).collect(),
             values,
+            noise_profile: info.noise_profile.as_ref().map(Into::into),
         }
     }
 }

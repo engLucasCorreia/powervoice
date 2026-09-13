@@ -13,7 +13,7 @@ export type BitDepth = "16" | "24" | "32f";
  */
 export type ClipboardChangedDto = { len_samples: number | null, sample_rate_hz: number | null, };
 
-export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_save" | "document_save_as" | "peaks_get" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel";
+export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_save" | "document_save_as" | "peaks_get" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel";
 
 export type DefaultFormatDto = { sample_rate_hz: number, bit_depth: BitDepth, };
 
@@ -189,7 +189,7 @@ export type IpcErrorCode = "internal" | "invalid_argument" | "not_found" | "not_
  * job kinds add a variant here rather than a new event, so the frontend has one progress/cancel
  * pattern for every job.
  */
-export type JobKind = "export";
+export type JobKind = "export" | "nr_capture";
 
 /**
  * `job_progress` event payload (ADR-003; ≤ 10 Hz per job). `job_id` distinguishes overlapping or
@@ -237,6 +237,13 @@ export type MonitorMode = "off" | "dry" | "through_rack";
 export type Mp3SettingsDto = { "kind": "cbr", kbps: number, } | { "kind": "vbr", quality: number, };
 
 /**
+ * A slot's noise-print status (S3-06, SPEC-014 §2.5, §2.8). `None` (the outer `Option` this
+ * wraps on [`RackSlotDto`]) means the module has no `NoiseProfile` extension — the NR panel
+ * section only renders when this DTO is present.
+ */
+export type NoiseProfileStatusDto = "none" | "loaded" | "unreadable" | "too_new";
+
+/**
  * A user-facing notice (ADR-003 `notice` event). Two shapes, distinguished by `persistent`:
  * - a **toast** (`persistent: false`, `id: None`): transient, auto-dismisses in the UI (e.g.
  *   SPEC-001 §2.3's fallback/reconnect notices).
@@ -255,6 +262,13 @@ export type Notice = { level: NoticeLevel, key: string, params: { [key in string
 id: string | null, };
 
 export type NoticeLevel = "info" | "warning" | "error";
+
+/**
+ * `nr_capture_start`'s immediate result: the job id (echoed on every `job_progress` event for
+ * it) and the resolved target slot index — authoritative even when a slot was just inserted, so
+ * the panel can show the spinner on the right one without waiting for `rack_changed`.
+ */
+export type NrCaptureStartedDto = { job_id: number, slot: number, };
 
 /**
  * A parameter changed (`param_changed` event): the slot's current index plus its new value.
@@ -314,7 +328,12 @@ module: string, name: string, bypass: boolean, latency_samples: number, status: 
 /**
  * Index-aligned with `params`; empty for a placeholder (no schema).
  */
-values: Array<ParamValueDto>, };
+values: Array<ParamValueDto>, 
+/**
+ * `Some` only for a module with the `NoiseProfile` extension (S3-06): drives the NR panel's
+ * Capture button and status line.
+ */
+noise_profile: NoiseProfileStatusDto | null, };
 
 /**
  * The rack panel's whole state (`rack_get`, every mutating command's result, and the

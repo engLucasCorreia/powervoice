@@ -8,7 +8,15 @@
 //! owner's machine an output device is open essentially always (PipeWire default), so this is a
 //! narrow edge case, not the common path.
 
-use vox_rack::{ParamId, RackHost, SlotInfo};
+use std::sync::Arc;
+
+use vox_rack::{NoiseProfile, ParamId, RackHost, RackModel, SlotInfo};
+
+/// The built-in Noise Reduction module's id (SPEC-014 §2.1, ADR-005 §2). Mirrors
+/// `vox_modules::NoiseReduction::ID`; `vox-engine` doesn't otherwise depend on `vox-modules`
+/// (composition roots register modules, not the engine crate), so it is repeated here rather than
+/// imported — `nr_capture_module_id_matches_the_noise_reduction_module` guards against drift.
+pub const NOISE_REDUCTION_MODULE_ID: &str = "org.powervoice.noise-reduction";
 
 /// A rack edit or parameter change from the UI (SPEC-012 §2.1–§2.4). Slots are addressed by
 /// their current index in the rack (not the internal [`SlotUid`](vox_rack::SlotUid), which never
@@ -114,6 +122,25 @@ impl RackSnapshot {
             latency_samples: host.total_latency_samples(),
         }
     }
+}
+
+/// What [`crate::EngineHandle::nr_capture_prepare`] resolves before a Capture Noise Print job
+/// reads any audio (SPEC-014 §2.3): the target slot, the committed state of the slots before it
+/// (for the offline pre-render), the slot's current parameter values (`NoiseProfile::capture`'s
+/// `values` argument) and the extension handle itself — safe to call `capture` on from the job's
+/// own worker thread (module docs; ADR-002).
+#[derive(Clone)]
+pub struct NrCapturePrep {
+    /// The target slot's current index.
+    pub index: usize,
+    /// A Noise Reduction slot didn't exist and was inserted as the first slot.
+    pub inserted: bool,
+    /// The committed state of every slot before `index` (placeholders omitted).
+    pub upstream_model: RackModel,
+    /// The target slot's current plain parameter values (index-aligned with its schema).
+    pub values: Vec<f64>,
+    /// The target slot's `NoiseProfile` handle.
+    pub extension: Arc<dyn NoiseProfile>,
 }
 
 /// Error from a rack command.

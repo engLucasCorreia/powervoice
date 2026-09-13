@@ -45,7 +45,9 @@ pub use engine::{
     PlaybackDoc,
 };
 pub use prefs::DevicePrefs;
-pub use rack_api::{RackApiError, RackCommand, RackSlot, RackSnapshot};
+pub use rack_api::{
+    NOISE_REDUCTION_MODULE_ID, NrCapturePrep, RackApiError, RackCommand, RackSlot, RackSnapshot,
+};
 pub use record::{
     LIVE_PEAKS_SPB, LiveTakePeaks, MonitorMode, RecordDone, RecordError, RecordState,
     RecordingResult, StopReason,

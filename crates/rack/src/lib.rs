@@ -41,22 +41,22 @@ mod shim;
 mod slot;
 
 pub use chain::Chain;
-pub use host::{RackHost, RackNotice, SlotInfo, SlotStatus};
+pub use host::{NoiseProfileStatus, RackHost, RackNotice, SlotInfo, SlotStatus};
 pub use live::{LiveRack, RackCommand};
 pub use mix::xfade_gain;
 pub use model::{RackModel, SlotModel};
 pub use registry::{Registry, RegistryError, Resolved};
 pub use shim::DualMonoShim;
 /// Module-API types a rack driver needs (the engine drives the rack through these without a
-/// direct `module-api` edge, ADR-001 §2).
+/// direct `module-api` edge, ADR-001 §2). `NoiseProfile` (S3-06): the noise-print capture
+/// extension a target slot's [`RackHost::noise_profile_extension`] returns.
 pub use vox_module_api::{
-    ActivateConfig, ChannelLayout, GroupId, LocalizedText, ModuleDescriptor, ModuleFactory,
-    ParamFlags, ParamGroup, ParamId, ParamInfo, ProcessMode, Taper, Transport, Unit,
+    ActivateConfig, ChannelLayout, GroupId, LocalizedText, ModuleDescriptor, ModuleError,
+    ModuleFactory, NoiseProfile, ParamFlags, ParamGroup, ParamId, ParamInfo, ProcessMode, Taper,
+    Transport, Unit,
 };
 
-use vox_module_api::{
-    DEFAULT_EVENT_CAPACITY, EventListError, ModuleError, SchemaError, StateError,
-};
+use vox_module_api::{DEFAULT_EVENT_CAPACITY, EventListError, SchemaError, StateError};
 
 #[cfg(test)]
 vox_module_api::install_test_allocator!();

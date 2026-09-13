@@ -37,7 +37,9 @@ use crate::input::{
 };
 use crate::output::{OutputCb, OutputParts, PartsSlot, take_parts};
 use crate::prefs::DevicePrefs;
-use crate::rack_api::{RackApiError, RackCommand, RackSnapshot};
+use crate::rack_api::{
+    NOISE_REDUCTION_MODULE_ID, NrCapturePrep, RackApiError, RackCommand, RackSnapshot,
+};
 use crate::reader::{self, Reader, ReaderCmd};
 use crate::record::{LiveTakePeaks, MonitorMode, RecordDone, RecordError, RecordState, StopReason};
 use crate::rt::{
@@ -595,6 +597,80 @@ impl Control {
         if needs_refresh {
             (self.events)(EngineEvent::RackChanged(self.rack_snapshot()));
         }
+    }
+
+    /// Capture Noise Print, step 1 (SPEC-014 §2.3 "target slot"): resolves the last-focused NR
+    /// slot, else the first one, else inserts a default Noise Reduction slot at the top — and
+    /// reads out everything the job needs before it starts reading audio (the upstream model,
+    /// the slot's current values, its `NoiseProfile` handle). A structural change (an insertion)
+    /// is broadcast as a `RackChanged` snapshot, same as every mutating [`RackCommand`].
+    pub(crate) fn nr_capture_prepare(
+        &mut self,
+        hint: Option<usize>,
+    ) -> Result<NrCapturePrep, RackApiError> {
+        let (prep, notices) = {
+            let Some(out) = self.output.as_mut() else {
+                return Err(RackApiError::Unavailable);
+            };
+            let host = &mut out.rack;
+            let (index, inserted) = host
+                .resolve_or_insert_noise_profile_slot(hint, NOISE_REDUCTION_MODULE_ID)
+                .map_err(|e| RackApiError::Rack(e.to_string()))?;
+            let notices = host.take_notices();
+            let Some(extension) = host.noise_profile_extension(index) else {
+                return Err(RackApiError::Rack(
+                    "the target slot has no noise-profile support".into(),
+                ));
+            };
+            let upstream_model = host.upstream_model(index);
+            let values = host
+                .slot_info(index)
+                .map(|info| {
+                    info.params
+                        .iter()
+                        .map(|p| host.param_value(index, p.id).unwrap_or(p.default))
+                        .collect()
+                })
+                .unwrap_or_default();
+            (
+                NrCapturePrep {
+                    index,
+                    inserted,
+                    upstream_model,
+                    values,
+                    extension,
+                },
+                notices,
+            )
+        };
+        self.handle_rack_notices(notices);
+        if prep.inserted {
+            (self.events)(EngineEvent::RackChanged(self.rack_snapshot()));
+        }
+        Ok(prep)
+    }
+
+    /// Capture Noise Print, step 2 (SPEC-014 §2.3 "Result"): installs `blob` as the target slot's
+    /// committed noise print, live (ADR-005 §12's replacement crossfade — the same path `Restart`
+    /// and preset loading use).
+    pub(crate) fn nr_capture_apply(
+        &mut self,
+        index: usize,
+        blob: Vec<u8>,
+    ) -> Result<RackSnapshot, RackApiError> {
+        let (result, notices) = {
+            let Some(out) = self.output.as_mut() else {
+                return Err(RackApiError::Unavailable);
+            };
+            let host = &mut out.rack;
+            let result = host.replace_noise_print(index, blob);
+            (result, host.take_notices())
+        };
+        self.handle_rack_notices(notices);
+        result.map_err(|e| RackApiError::Rack(e.to_string()))?;
+        let snapshot = self.rack_snapshot();
+        (self.events)(EngineEvent::RackChanged(snapshot.clone()));
+        Ok(snapshot)
     }
 
     // --- Devices ---------------------------------------------------------------------------

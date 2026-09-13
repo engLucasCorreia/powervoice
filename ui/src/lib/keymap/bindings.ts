@@ -37,6 +37,8 @@ export interface KeyBinding {
  *   Insert Silence have no default binding (menu only, SPEC-008 §2.11).
  * - Ctrl/⌘+0 = delete selected marker(s), Ctrl/⌘+Alt+→/← = next/previous marker (S2-03,
  *   SPEC-009 §2.6/§2.7; Delete All is deferred, ticket "Out" list).
+ * - Shift+P = Capture Noise Print (S3-06, SPEC-014 §2.3; **provisional**, per Audition's default
+ *   confirmed by two secondary sources — final binding in SPEC-019).
  */
 export const DEFAULT_KEYMAP: readonly KeyBinding[] = [
   { action: "transport.play_pause", code: "Space" },
@@ -61,4 +63,5 @@ export const DEFAULT_KEYMAP: readonly KeyBinding[] = [
   { action: "marker.delete_selected", code: "Digit0", mod: true },
   { action: "marker.next", code: "ArrowRight", mod: true, alt: true },
   { action: "marker.prev", code: "ArrowLeft", mod: true, alt: true },
+  { action: "nr.capture_noise_print", code: "KeyP", shift: true },
 ];

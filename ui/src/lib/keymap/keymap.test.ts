@@ -58,6 +58,12 @@ describe("default keymap bindings", () => {
     expect(DEFAULT_KEYMAP.some((b) => (b.action as string) === "edit.silence")).toBe(false);
   });
 
+  // S3-06, SPEC-014 §2.3: Shift+P captures a noise print (provisional, SPEC-019).
+  it("resolves Shift+P to nr.capture_noise_print, distinct from plain P", () => {
+    expect(matchBinding(key("KeyP", { shift: true }), false)).toBe("nr.capture_noise_print");
+    expect(matchBinding(key("KeyP"), false)).toBeNull();
+  });
+
   it("Shift+Space is not the same action as plain Space", () => {
     const space = matchBinding(key("Space"), false);
     const shiftSpace = matchBinding(key("Space", { shift: true }), false);

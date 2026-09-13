@@ -97,6 +97,8 @@ pub fn emit_notice<R: tauri::Runtime>(
 #[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
 pub enum JobKind {
     Export,
+    /// S3-06: Capture Noise Print (SPEC-014 §2.3).
+    NrCapture,
 }
 
 /// `job_progress`'s lifecycle. `Running` fractions are monotonically non-decreasing in `[0, 1]`;

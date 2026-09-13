@@ -13,7 +13,9 @@
   import MeterBridge from "./lib/layout/MeterBridge.svelte";
   import Toolbar from "./lib/layout/Toolbar.svelte";
   import FavoritesMenu from "./lib/normalize/FavoritesMenu.svelte";
+  import EffectsMenu from "./lib/rack/EffectsMenu.svelte";
   import RackPanel from "./lib/rack/RackPanel.svelte";
+  import { initNrCapture } from "./lib/rack/nrCapture.svelte";
   import NoticeHost from "./lib/notices/NoticeHost.svelte";
   import { initMarkers } from "./lib/markers/markers.svelte";
   import { initEdit } from "./lib/state/edit.svelte";
@@ -129,12 +131,15 @@
       teardown?.();
     };
   });
+  // S3-06: Capture Noise Print (Shift+P) and its job-progress listener.
+  onMount(() => initNrCapture());
 </script>
 
 <div class="shell">
   <DocumentMenu />
   <EditMenu />
   <FavoritesMenu />
+  <EffectsMenu />
   <Toolbar {version} />
   <div class="workspace">
     <MarkersProperties />

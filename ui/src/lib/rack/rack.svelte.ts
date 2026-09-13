@@ -37,6 +37,9 @@ let modules = $state<ModuleDescriptorDto[]>([]);
 let loading = $state(true);
 /** True once a command has failed with `error.rack_unavailable` (no output device open yet). */
 let unavailable = $state(false);
+/** S3-06: the last rack slot whose panel had focus (SPEC-014 §2.3 "last-focused NR slot" — the
+ * backend validates it actually has a `NoiseProfile` extension, so this is tracked generically). */
+let lastFocusedSlot: number | null = null;
 
 /** Read-only accessor for components. */
 export function rackState(): {
@@ -114,6 +117,16 @@ export const setBypass = (index: number, on: boolean): Promise<void> =>
   run(() => rackBypass(index, on));
 export const setAb = (on: boolean): Promise<void> => run(() => rackAb(on));
 export const restartSlot = (index: number): Promise<void> => run(() => rackRestart(index));
+
+/** A rack slot's panel gained focus (a click or a keyboard focus inside it). */
+export function noteSlotFocused(index: number): void {
+  lastFocusedSlot = index;
+}
+
+/** The last-focused slot's index, or `null` (nothing focused yet this session). */
+export function lastFocusedSlotIndex(): number | null {
+  return lastFocusedSlot;
+}
 
 /**
  * Sets a parameter from typed text (Rust parses it, SPEC-012 §2.6); returns whether it was
@@ -265,6 +278,7 @@ export function resetRackForTest(): void {
   modules = [];
   loading = true;
   unavailable = false;
+  lastFocusedSlot = null;
   for (const pending of pendingDrags.values()) {
     cancelFrame(pending.frame);
   }

@@ -502,7 +502,9 @@ impl DocumentService {
         })
     }
 
-    fn is_recording(&self) -> bool {
+    /// S3-06: whether a take is being recorded — Capture Noise Print is disabled then (SPEC-014
+    /// §2.3), same rule as every edit command.
+    pub fn is_recording(&self) -> bool {
         self.0
             .open
             .lock()

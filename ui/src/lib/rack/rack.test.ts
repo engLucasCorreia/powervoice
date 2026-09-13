@@ -81,6 +81,7 @@ function slotFixture(overrides: Partial<RackSlotDto> = {}): RackSlotDto {
     params,
     groups: [],
     values: params.map((p) => ({ id: p.id, value: p.default, normalized: 0.5, text: "0.0 dB" })),
+    noise_profile: null,
     ...overrides,
   };
 }

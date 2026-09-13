@@ -8,6 +8,7 @@ pub mod document;
 pub mod export;
 pub mod ipc;
 pub mod logging;
+pub mod nr_capture;
 pub mod recording;
 pub mod settings;
 #[cfg(feature = "spike")]
@@ -46,10 +47,17 @@ pub fn run() {
             // S4-04: the export job service (its own registry instance — modules are stateless
             // per-instance, so sharing the engine's would only save one small allocation).
             let export = export::start(app.handle().clone(), documents.clone())?;
+            // S3-06: the Capture Noise Print job service.
+            let nr_capture = nr_capture::start(
+                app.handle().clone(),
+                engine.handle().clone(),
+                documents.clone(),
+            )?;
             app.manage(documents);
             app.manage(recording);
             app.manage(engine);
             app.manage(export);
+            app.manage(nr_capture);
             Ok(())
         })
         .invoke_handler(ipc::invoke_handler())

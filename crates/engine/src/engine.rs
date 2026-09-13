@@ -22,7 +22,7 @@ use crate::control::{self, Control, ControlMsg};
 use crate::device_state::DeviceStatus;
 use crate::devices::DeviceNotice;
 use crate::prefs::DevicePrefs;
-use crate::rack_api::{RackApiError, RackCommand, RackSnapshot};
+use crate::rack_api::{NrCapturePrep, RackApiError, RackCommand, RackSnapshot};
 use crate::record::{LiveTakePeaks, MonitorMode, RecordDone, RecordError, RecordState};
 use crate::telemetry::TelemetrySink;
 use crate::transport::{TransportCommand, TransportState};
@@ -310,6 +310,24 @@ impl EngineHandle {
         self.call(move |c| c.live_take_peaks(start_bucket, max))
             .flatten()
     }
+
+    /// Capture Noise Print, step 1 (S3-06, SPEC-014 §2.3): resolves the target slot (inserting a
+    /// default one if none exists) and reads out what the capture job needs before it starts
+    /// reading audio. Call from any thread (the job's own worker), never from an [`EventSink`].
+    pub fn nr_capture_prepare(&self, hint: Option<usize>) -> Result<NrCapturePrep, RackApiError> {
+        self.call(move |c| c.nr_capture_prepare(hint))
+            .unwrap_or(Err(RackApiError::Unavailable))
+    }
+
+    /// Capture Noise Print, step 2: installs `blob` as slot `index`'s committed noise print, live.
+    pub fn nr_capture_apply(
+        &self,
+        index: usize,
+        blob: Vec<u8>,
+    ) -> Result<RackSnapshot, RackApiError> {
+        self.call(move |c| c.nr_capture_apply(index, blob))
+            .unwrap_or(Err(RackApiError::Unavailable))
+    }
 }
 
 /// The engine without threads (deterministic tests, benches): the reader runs inline, devices are
@@ -430,6 +448,23 @@ impl ManualEngine {
     /// See [`EngineHandle::live_take_peaks`].
     pub fn live_take_peaks(&self, start_bucket: u32, max: u32) -> Option<LiveTakePeaks> {
         self.control.live_take_peaks(start_bucket, max)
+    }
+
+    /// See [`EngineHandle::nr_capture_prepare`].
+    pub fn nr_capture_prepare(
+        &mut self,
+        hint: Option<usize>,
+    ) -> Result<NrCapturePrep, RackApiError> {
+        self.control.nr_capture_prepare(hint)
+    }
+
+    /// See [`EngineHandle::nr_capture_apply`].
+    pub fn nr_capture_apply(
+        &mut self,
+        index: usize,
+        blob: Vec<u8>,
+    ) -> Result<RackSnapshot, RackApiError> {
+        self.control.nr_capture_apply(index, blob)
     }
 }
 

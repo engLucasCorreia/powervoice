@@ -9,8 +9,8 @@ use std::sync::atomic::Ordering;
 use rtrb::PushError;
 use serde_json::Map;
 use vox_module_api::{
-    ActivateConfig, Module, ModuleDescriptor, ModuleRef, ModuleState, ParamEvent, ParamFlags,
-    ParamGroup, ParamId, ParamInfo,
+    ActivateConfig, Module, ModuleDescriptor, ModuleError, ModuleRef, ModuleState, NoiseProfile,
+    ParamEvent, ParamFlags, ParamGroup, ParamId, ParamInfo, noise_profile,
 };
 
 use crate::chain::PlanEntry;
@@ -85,6 +85,20 @@ pub enum SlotStatus {
     },
 }
 
+/// Whether/how a slot's [`NoiseProfile`] blob loads (SPEC-014 §2.5, §2.8). `None` at the call
+/// site (not a variant here) means the module has no `NoiseProfile` extension at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoiseProfileStatus {
+    /// No blob: the module passes audio through unchanged.
+    None,
+    /// A blob is present and validates.
+    Loaded,
+    /// A blob is present but fails validation (corrupt/truncated).
+    Unreadable,
+    /// A blob is present but was written by a newer version than this build supports.
+    TooNew,
+}
+
 /// Metadata of one slot (copied at insertion, ADR-005 §7).
 #[derive(Clone, Debug)]
 pub struct SlotInfo {
@@ -104,6 +118,10 @@ pub struct SlotInfo {
     pub params: Arc<[ParamInfo]>,
     /// Parameter groups, display order (empty for placeholders, S3-01 generic UI layout).
     pub groups: Arc<[ParamGroup]>,
+    /// The slot's noise-print status (S3-06): `None` when the module has no `NoiseProfile`
+    /// extension (every module but Noise Reduction, and placeholders), `Some(..)` otherwise —
+    /// the NR panel section only renders when this is `Some`.
+    pub noise_profile: Option<NoiseProfileStatus>,
 }
 
 struct Loaded {
@@ -118,6 +136,11 @@ struct Loaded {
     failed: Option<String>,
     /// An activated instance not yet handed to the audio thread (insert or replacement).
     fresh: Option<Box<dyn Module>>,
+    /// The module's [`NoiseProfile`] handle (S3-06), captured once here so it stays available
+    /// after `fresh` is taken by the audio thread — `capture`/`describe` are pure functions of
+    /// their inputs (module docs), safe to call from any non-audio thread regardless of which
+    /// instance is currently live.
+    noise_profile: Option<Arc<dyn NoiseProfile>>,
 }
 
 enum Kind {
@@ -175,6 +198,27 @@ impl LayoutEntry {
     }
 }
 
+/// [`SlotInfo::noise_profile`] for a loaded slot: `None` (outer) when the module has no
+/// `NoiseProfile` extension; otherwise the status of `blob` per SPEC-014 §2.5/§2.8. `describe`'s
+/// scratch buffer is not otherwise used here (the profile graph is [H]).
+fn noise_profile_status(
+    ext: Option<&dyn NoiseProfile>,
+    blob: Option<&[u8]>,
+) -> Option<NoiseProfileStatus> {
+    let ext = ext?;
+    Some(match blob {
+        None => NoiseProfileStatus::None,
+        Some(b) => {
+            let mut scratch = Vec::new();
+            match ext.describe(b, &mut scratch) {
+                Ok(()) => NoiseProfileStatus::Loaded,
+                Err(ModuleError::Unsupported(_)) => NoiseProfileStatus::TooNew,
+                Err(_) => NoiseProfileStatus::Unreadable,
+            }
+        }
+    })
+}
+
 fn committed_state(l: &Loaded) -> ModuleState {
     ModuleState {
         format_version: l.descriptor.state_format_version,
@@ -197,6 +241,7 @@ fn loaded_from(module: Box<dyn Module>) -> Box<Loaded> {
         .map(|p| module.param_value(p.id).unwrap_or(p.default))
         .collect();
     let blob = module.save_state().ok().and_then(|s| s.blob);
+    let profile = noise_profile(module.as_ref());
     Box::new(Loaded {
         descriptor: module.descriptor().clone(),
         params,
@@ -206,6 +251,7 @@ fn loaded_from(module: Box<dyn Module>) -> Box<Loaded> {
         latency: module.latency_samples(),
         failed: None,
         fresh: Some(module),
+        noise_profile: profile,
     })
 }
 
@@ -508,6 +554,7 @@ impl RackHost {
                 },
                 params: l.params.clone(),
                 groups: l.groups.clone(),
+                noise_profile: noise_profile_status(l.noise_profile.as_deref(), l.blob.as_deref()),
             },
             Kind::Placeholder {
                 model,
@@ -532,6 +579,7 @@ impl RackHost {
                 },
                 params: Arc::from(Vec::new()),
                 groups: Arc::from(Vec::new()),
+                noise_profile: None,
             },
         })
     }
@@ -1052,6 +1100,87 @@ impl RackHost {
         self.flush();
         self.check_latency();
         Ok(())
+    }
+
+    // --- Noise print capture (S3-06, SPEC-014 §2.3, §2.9) -----------------------------------
+
+    /// The module's [`NoiseProfile`] handle, if any (`None` for a placeholder or a module without
+    /// the extension). Safe to call `capture`/`describe` on from any thread (module docs).
+    pub fn noise_profile_extension(&self, index: usize) -> Option<Arc<dyn NoiseProfile>> {
+        match &self.slots.get(index)?.kind {
+            Kind::Loaded(l) => l.noise_profile.clone(),
+            Kind::Placeholder { .. } => None,
+        }
+    }
+
+    /// The first slot exposing [`NoiseProfile`] that matches `hint` (Capture Noise Print's
+    /// "last-focused NR slot"), else the first such slot in rack order, else `None`.
+    pub fn find_noise_profile_slot(&self, hint: Option<usize>) -> Option<usize> {
+        let has_profile =
+            |hs: &HostSlot| matches!(&hs.kind, Kind::Loaded(l) if l.noise_profile.is_some());
+        if let Some(h) = hint
+            && self.slots.get(h).is_some_and(has_profile)
+        {
+            return Some(h);
+        }
+        self.slots.iter().position(has_profile)
+    }
+
+    /// [`find_noise_profile_slot`](Self::find_noise_profile_slot), inserting a default instance
+    /// of `module_id` as the first slot when none exists (SPEC-014 §2.3 "target slot"). Returns
+    /// the resolved index and whether a slot was inserted (the caller shows "‹Module› added to
+    /// the rack" only then).
+    pub fn resolve_or_insert_noise_profile_slot(
+        &mut self,
+        hint: Option<usize>,
+        module_id: &str,
+    ) -> Result<(usize, bool), RackError> {
+        if let Some(i) = self.find_noise_profile_slot(hint) {
+            return Ok((i, false));
+        }
+        self.insert_module(0, module_id)?;
+        Ok((0, true))
+    }
+
+    /// The committed state of every slot strictly before `index` (bypass flags included),
+    /// **omitting placeholders** — they pass dry at latency 0 live, so omitting them from an
+    /// offline pre-render is equivalent (SPEC-014 §2.3). Used to render the audio a target NR
+    /// slot receives, for noise-print capture.
+    pub fn upstream_model(&self, index: usize) -> RackModel {
+        let end = index.min(self.slots.len());
+        RackModel {
+            slots: self.slots[..end]
+                .iter()
+                .filter_map(|hs| match &hs.kind {
+                    Kind::Loaded(l) => {
+                        let mut m = SlotModel::new(
+                            &ModuleRef::of(&l.descriptor),
+                            hs.bypass,
+                            &committed_state(l),
+                        );
+                        m.extra = hs.extra.clone();
+                        Some(m)
+                    }
+                    Kind::Placeholder { .. } => None,
+                })
+                .collect(),
+        }
+    }
+
+    /// Replaces slot `index`'s instance with one holding `blob` as its noise print, keeping every
+    /// other committed value (SPEC-014 §2.3 "Result"): a live replacement through the same
+    /// crossfade as [`restart`](Self::restart)/[`replace_state`](Self::replace_state).
+    pub fn replace_noise_print(&mut self, index: usize, blob: Vec<u8>) -> Result<(), RackError> {
+        let hs = self.slots.get(index).ok_or(RackError::IndexOutOfRange {
+            index,
+            len: self.slots.len(),
+        })?;
+        let Kind::Loaded(l) = &hs.kind else {
+            return Err(RackError::NotLoaded { index });
+        };
+        let mut state = committed_state(l);
+        state.blob = Some(blob);
+        self.replace_with(index, Some(state))
     }
 
     /// Replaces the whole rack (document open): every current slot fades out, the new slots

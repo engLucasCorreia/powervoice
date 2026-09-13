@@ -1,8 +1,9 @@
 <script lang="ts">
   import { t } from "../i18n";
   import type { ParamInfoDto, RackSlotDto } from "../ipc/bindings";
+  import NoiseReductionSection from "./NoiseReductionSection.svelte";
   import ParamGroupSection from "./ParamGroupSection.svelte";
-  import { removeSlot, restartSlot, setBypass } from "./rack.svelte";
+  import { noteSlotFocused, removeSlot, restartSlot, setBypass } from "./rack.svelte";
 
   /**
    * One rack slot (SPEC-012 §2.1): header (bypass, name, latency, menu, collapse) and the
@@ -85,6 +86,7 @@
     ondrop(index);
   }}
   ondragend={ondragend}
+  onfocusin={() => noteSlotFocused(index)}
 >
   <header>
     <button
@@ -153,6 +155,9 @@
   {/if}
   {#if !collapsed && slot.status.kind === "active"}
     <div class="body">
+      {#if slot.noise_profile !== null}
+        <NoiseReductionSection slotIndex={index} status={slot.noise_profile} />
+      {/if}
       {#if ungrouped.length > 0}
         <ParamGroupSection slotIndex={index} rackSlot={slot} group={null} {groupsByKey} params={ungrouped} />
       {/if}

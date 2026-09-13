@@ -32,6 +32,7 @@ function slotFixture(uid: number): RackSlotDto {
     params: [],
     groups: [],
     values: [],
+    noise_profile: null,
   };
 }
 

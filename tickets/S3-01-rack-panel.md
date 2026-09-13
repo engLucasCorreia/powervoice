@@ -18,5 +18,9 @@ The owner builds a voice chain in the right-hand rack panel and tweaks every par
 - After `SlotRestarted` the host sends `LatencyChanged` but no `ParamChanged` for the (re)created parameters → the UI must re-read `slot_info` on `SlotRestarted`.
 - `replace_state()` on a failed-at-load slot still returns `NotLoaded` (only `restart()` retries).
 
+## Handoff from S3-02 (merged)
+- Hide a parameter group whose enable parameter and all body parameters are `HIDDEN` (Dynamics AutoGate/Expander stubs), otherwise empty section headers appear.
+- Module i18n keys `module.dynamics.*`, `module.noise_gate.*`, `param.gain.*` are not in `en.json` yet — add them (names, groups, telemetry, enum labels).
+
 ## Out (deferred to hardening)
 Presets (T-406), custom module panels (EQ graph, dynamics graph — come with their module tickets), filter box for > 32 params, placeholders UI polish, latency compensation of the playhead (T-401).

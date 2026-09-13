@@ -9,6 +9,7 @@ import {
   transportPlay,
   transportPlayFromStart,
   transportReturnToStart,
+  transportSeek,
   transportStop,
 } from "../ipc/commands";
 import { VXTM_FLAGS, decodeVxtm, toArrayBuffer } from "../ipc/telemetry";
@@ -100,6 +101,9 @@ export const pause = (): Promise<void> => run(transportPause);
 export const stop = (): Promise<void> => run(transportStop);
 export const playFromStart = (): Promise<void> => run(transportPlayFromStart);
 export const returnToStart = (): Promise<void> => run(transportReturnToStart);
+/** S1-03: click-to-seek on the waveform view moves the playhead to a document sample. */
+export const seek = (positionSamples: number): Promise<void> =>
+  run(() => transportSeek(positionSamples));
 
 /** Space: Pause while playing, else Play. */
 export function playPause(): Promise<void> {

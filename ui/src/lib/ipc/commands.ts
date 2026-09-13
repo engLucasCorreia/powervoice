@@ -1,9 +1,12 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   AppInfo,
+  BitDepth,
   CommandName,
   DevicePrefsDto,
   DevicesDto,
+  DocumentDto,
+  PeaksRequestDto,
   Settings,
   TransportStateDto,
 } from "./bindings";
@@ -75,4 +78,27 @@ export async function telemetrySubscribe(channel: Channel<ArrayBuffer>): Promise
 /** S1-01: the engine's app clock in ns (clock sync, ADR-003 §3). */
 export async function clockNowNs(): Promise<number> {
   return invoke<number>("clock_now_ns" satisfies CommandName);
+}
+
+/** S1-03: opens `path` as the document (SPEC-005 §2.3), replacing whatever was open. */
+export async function documentOpen(path: string): Promise<DocumentDto> {
+  return invoke<DocumentDto>("document_open" satisfies CommandName, { path });
+}
+
+/** S1-03: saves the current revision back to its bound path and format (SPEC-005 §2.7). */
+export async function documentSave(): Promise<DocumentDto> {
+  return invoke<DocumentDto>("document_save" satisfies CommandName);
+}
+
+/** S1-03: saves the current revision to `path` at `bits`, then binds the document to it. */
+export async function documentSaveAs(path: string, bits: BitDepth): Promise<DocumentDto> {
+  return invoke<DocumentDto>("document_save_as" satisfies CommandName, { path, bits });
+}
+
+/**
+ * S1-03: `count` buckets of `(min, max)` (or raw samples below the pyramid floor) as a binary
+ * `VXPK` frame (ADR-003 §2) — never JSON floats (CLAUDE.md).
+ */
+export async function peaksGet(request: PeaksRequestDto): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>("peaks_get" satisfies CommandName, { request });
 }

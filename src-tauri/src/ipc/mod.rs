@@ -9,6 +9,8 @@
 mod audio_commands;
 mod audio_dto;
 mod commands;
+pub mod document_commands;
+pub mod document_dto;
 mod dto;
 mod error;
 mod events;
@@ -22,6 +24,8 @@ pub use audio_dto::{
     DeviceDto, DeviceStatusDto, DevicesDto, TransportStateDto, notice_from_device,
 };
 pub use commands::*;
+pub use document_commands::*;
+pub use document_dto::{DocumentDto, PeaksRequestDto};
 pub use dto::AppInfo;
 pub use error::{IpcError, IpcErrorCode};
 pub use events::{EVENT_NAME_VARIANTS, EVENT_NAMES, EventName, Notice, NoticeLevel, emit_notice};
@@ -49,6 +53,10 @@ crate::ipc_commands!(
     transport_seek,
     telemetry_subscribe,
     clock_now_ns,
+    document_open,
+    document_save,
+    document_save_as,
+    peaks_get,
 );
 
 #[cfg(feature = "spike")]
@@ -67,6 +75,10 @@ crate::ipc_commands!(
     transport_seek,
     telemetry_subscribe,
     clock_now_ns,
+    document_open,
+    document_save,
+    document_save_as,
+    peaks_get,
     spike_env,
     spike_waveform_peaks,
     spike_spectrogram_texture,

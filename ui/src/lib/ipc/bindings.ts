@@ -7,7 +7,7 @@ export type AppInfo = { name: string, version: string, };
 
 export type BitDepth = "16" | "24" | "32f";
 
-export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns";
+export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "document_open" | "document_save" | "document_save_as" | "peaks_get";
 
 export type DefaultFormatDto = { sample_rate_hz: number, bit_depth: BitDepth, };
 
@@ -96,7 +96,13 @@ prefs: DevicePrefsDto,
  */
 output_device: string | null, output_rate_hz: number | null, output_buffer_frames: number | null, output_status: DeviceStatusDto, };
 
-export type EventName = "notice" | "transport_state" | "devices_changed";
+/**
+ * `document_changed` event payload, and the result of `document_open`/`document_save`/
+ * `document_save_as`. `name: None` means no document is open.
+ */
+export type DocumentDto = { name: string | null, path: string | null, sample_rate_hz: number, len_samples: number, dirty: boolean, audio_rev: number, };
+
+export type EventName = "notice" | "transport_state" | "devices_changed" | "document_changed";
 
 /**
  * Error shape returned by every command (ADR-003). `key` is an i18n key, `params` fills its
@@ -134,6 +140,14 @@ export type Notice = { level: NoticeLevel, key: string, params: { [key in string
 id: string | null, };
 
 export type NoticeLevel = "info" | "warning" | "error";
+
+/**
+ * `peaks_get`'s request (ADR-003 §2's `PeaksRequest`). `audio_rev` is the revision the UI last
+ * saw; the server always answers with the document's *current* `audio_rev` regardless (in its
+ * `VXPK` response header) — staleness is the caller's problem to detect (ADR-003: "the UI drops
+ * any response whose `audio_rev` is not current"), not something this command refuses.
+ */
+export type PeaksRequestDto = { request_id: number, audio_rev: number, spp: number, start_sample: number, count: number, };
 
 /**
  * The whole settings file. `#[serde(default)]` at the container level means any field missing

@@ -11,4 +11,9 @@ export type ActionId =
   | "record.toggle"
   | "marker.add"
   | "history.undo"
-  | "history.redo";
+  | "history.redo"
+  | "file.open"
+  | "file.save"
+  | "file.save_as"
+  | "waveform.zoom_in"
+  | "waveform.zoom_out";

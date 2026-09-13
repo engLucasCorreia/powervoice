@@ -1,18 +1,15 @@
 <script lang="ts">
-  import { t } from "../i18n";
+  import WaveformView from "../waveform/WaveformView.svelte";
 </script>
 
 <main class="editor" data-testid="editor">
-  <p>{t("panel.editor.empty")}</p>
+  <WaveformView />
 </main>
 
 <style>
   .editor {
     display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--surface-inset);
-    color: var(--text-secondary);
     min-width: 0;
+    min-height: 0;
   }
 </style>

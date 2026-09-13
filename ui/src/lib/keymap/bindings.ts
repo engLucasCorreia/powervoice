@@ -18,7 +18,8 @@ export interface KeyBinding {
 }
 
 /**
- * Default keymap (PROMPT §3.6, SPEC-002 §2.2, SPEC-003 §2.5, SPEC-004 §2.2; MEMORY D-014):
+ * Default keymap (PROMPT §3.6, SPEC-002 §2.2, SPEC-003 §2.5, SPEC-004 §2.2, SPEC-005 §2.1,
+ * SPEC-006 §2.6; MEMORY D-014):
  * - Space = play/pause
  * - Shift+Space = play from start (owner-confirmed; not Record — D-014)
  * - Home = return to start
@@ -26,6 +27,9 @@ export interface KeyBinding {
  * - M = add marker
  * - Ctrl/⌘+Z = undo
  * - Ctrl/⌘+Shift+Z = redo
+ * - Ctrl/⌘+O = open, Ctrl/⌘+S = save, Ctrl/⌘+Shift+S = save as (S1-03, SPEC-005 §2.1)
+ * - `=`/`-` = waveform zoom in/out (S1-03, SPEC-006 §2.6; `Alt+=`/`Alt+-` vertical zoom and
+ *   Ctrl/Shift+wheel zoom are deferred, out of this ticket's scope)
  */
 export const DEFAULT_KEYMAP: readonly KeyBinding[] = [
   { action: "transport.play_pause", code: "Space" },
@@ -35,4 +39,9 @@ export const DEFAULT_KEYMAP: readonly KeyBinding[] = [
   { action: "marker.add", code: "KeyM" },
   { action: "history.undo", code: "KeyZ", mod: true },
   { action: "history.redo", code: "KeyZ", mod: true, shift: true },
+  { action: "file.open", code: "KeyO", mod: true },
+  { action: "file.save", code: "KeyS", mod: true },
+  { action: "file.save_as", code: "KeyS", mod: true, shift: true },
+  { action: "waveform.zoom_in", code: "Equal" },
+  { action: "waveform.zoom_out", code: "Minus" },
 ];

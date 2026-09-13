@@ -38,6 +38,24 @@
 
   /* Focus ring, used on every interactive control. */
   --focus-ring: #7fc8ff;
+
+  /* Waveform view (SPEC-006 §2.12): token *names* are fixed by the spec; a future theme/accent
+   * pass only needs to redefine these values, never touch the rendering code. Selection/marker
+   * tokens are declared now even though S1-03 doesn't draw them yet (deferred to Slice 2) so
+   * hardening tickets don't need a token-naming pass later. */
+  --wave-bg: #16171a;
+  --wave-fill: #7fc8ff;
+  --wave-outline: #4da3ff;
+  --wave-pending: #3a3d44;
+  --wave-clip: #e5484d;
+  --wave-playhead: #ffb454;
+  --wave-selection-fill: rgba(77, 163, 255, 0.22);
+  --wave-selection-handle: #4da3ff;
+  --wave-marker: #35c46a;
+  --wave-marker-region: rgba(53, 196, 106, 0.18);
+  --wave-ruler-text: #9a9da4;
+  --wave-ruler-grid: #34373d;
+  --wave-zero-line: #454850;
 }
 
 * {

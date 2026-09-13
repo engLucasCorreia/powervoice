@@ -18,6 +18,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2.11", features = [] }
+# S1-03: native Open/Save/Save As dialogs (ADR-007 Amendment 2, ADR-003 §4.10).
+tauri-plugin-dialog = "2.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 ts-rs = "12"
@@ -32,6 +34,14 @@ directories = "6"
 vox-engine = { path = "../crates/engine" }
 vox-rack = { path = "../crates/rack" }
 vox-modules = { path = "../crates/modules" }
+# S1-03: the document service (open/save WAV, peaks) wraps these directly (thin command layer).
+vox-project = { path = "../crates/project" }
+vox-io = { path = "../crates/io" }
+
+[dev-dependencies]
+# S1-03: WAV fixtures for the `document` module's tests (dev-only, PROMPT §4).
+vox-testkit = { path = "../crates/testkit" }
+hound = { workspace = true }
 
 [features]
 # Dev-only platform spike (T-007 / ADR-009): renderer + IPC throughput measurements. Off by

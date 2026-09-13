@@ -53,6 +53,11 @@
   "error.cancelled": "Cancelled.",
   "error.settings_io": "Couldn't save settings: {message}",
   "error.unknown": "An unexpected error occurred.",
+  "error.document.none": "No document is open.",
+  "error.open.not_found": "That file couldn't be found.",
+  "error.open.unsupported_format": "That file isn't a supported WAV (16/24-bit integer or 32-bit float).",
+  "error.open.io": "Opening the file failed: {message}",
+  "error.save.io": "Saving the file failed: {message}",
 
   "notice.dismiss": "Dismiss",
   "notice.device.rate_fallback": "{requested} Hz isn't supported by {device} — using {applied} Hz.",
@@ -68,6 +73,29 @@
   "notice.device.reconnected.input": "Input device reconnected.",
   "notice.device.backend_error": "{device} reported an audio error.",
   "notice.device.resample_unavailable": "Can't convert {doc_rate} Hz audio to {rate} Hz for {device} — playback is unavailable.",
+
+  "menu.file.open": "Open…",
+  "menu.file.save": "Save",
+  "menu.file.save_as": "Save As…",
+  "menu.file.document_name": "{name}",
+  "menu.file.no_document": "No file open",
+
+  "dialog.unsaved.title": "Unsaved changes",
+  "dialog.unsaved.message": "Save changes to \"{name}\" before continuing?",
+  "dialog.unsaved.save": "Save",
+  "dialog.unsaved.discard": "Don't Save",
+  "dialog.unsaved.cancel": "Cancel",
+
+  "dialog.save_as.title": "Save As",
+  "dialog.save_as.bit_depth": "Format",
+  "dialog.save_as.bit_depth.16": "WAV 16-bit integer",
+  "dialog.save_as.bit_depth.24": "WAV 24-bit integer",
+  "dialog.save_as.bit_depth.32f": "WAV 32-bit float",
+  "dialog.save_as.choose_location": "Choose location…",
+  "dialog.save_as.cancel": "Cancel",
+
+  "waveform.empty": "Open a WAV file to see its waveform",
+  "waveform.canvas_label": "Waveform",
 
   "spike.title": "T-007 Platform Spike",
   "spike.subtitle": "Dev-only renderer + IPC measurements for ADR-009. Not part of the production UI (only present when powervoice-app is built with --features spike).",

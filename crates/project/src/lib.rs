@@ -37,6 +37,7 @@ pub mod gc;
 pub mod history;
 pub mod import;
 pub mod journal;
+pub mod normalize;
 pub mod peaks_query;
 pub mod reader;
 pub mod save;
@@ -50,6 +51,10 @@ pub use edit::{PostEdit, Range, RangeError, Target as EditTarget, validate_range
 pub use error::{ProjectError, Result};
 pub use history::{Edit, EditOp, History, HistoryStep, MarkerMapping, MarkerOp};
 pub use import::import_wav;
+pub use normalize::{
+    ALREADY_TOL_DB, LABEL_NORMALIZE, MIN_PEAK_DBFS, NormalizeOutcome, NormalizeResult,
+    applied_post_edit as normalize_applied_post_edit, normalize_peak, target_linear,
+};
 pub use peaks_query::{PEAKS_RAW_SPP, peaks};
 pub use reader::SnapshotReader;
 pub use save::save_snapshot_wav;

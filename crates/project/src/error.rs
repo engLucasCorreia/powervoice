@@ -76,6 +76,10 @@ pub enum ProjectError {
     /// Reading or writing a WAV file failed ([`vox_io`], S1-02 `import_wav`/`save_snapshot_wav`).
     #[error("WAV I/O failed: {0}")]
     Wav(#[from] vox_io::IoError),
+    /// A normalize scope contains a non-finite sample (SPEC-010 §2.7): defensive, since the store
+    /// should never hold one. `error.normalize_non_finite`.
+    #[error("the scope contains a non-finite sample")]
+    NonFiniteSample,
 }
 
 impl ProjectError {
@@ -107,6 +111,7 @@ impl ProjectError {
             | ProjectError::OutOfBounds { .. }
             | ProjectError::UnknownChunk(_) => "error.invalid_edit",
             ProjectError::TakeNotInStore { .. } => "error.take_not_in_store",
+            ProjectError::NonFiniteSample => "error.normalize_non_finite",
             ProjectError::StoreInUse
             | ProjectError::NoSuchTake(_)
             | ProjectError::TakeAlreadyOpen

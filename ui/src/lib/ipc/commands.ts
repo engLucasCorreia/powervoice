@@ -138,6 +138,22 @@ export async function editSilence(startSamples: number, endSamples: number): Pro
   return invoke<EditResultDto>("edit_silence" satisfies CommandName, { startSamples, endSamples });
 }
 
+/**
+ * S2-02: peak-normalizes `[startSamples, endSamples)` to `targetDb` dBFS sample peak (SPEC-010).
+ * Callers resolve "no selection" to the whole file before calling.
+ */
+export async function editNormalizePeak(
+  startSamples: number,
+  endSamples: number,
+  targetDb: number,
+): Promise<EditResultDto> {
+  return invoke<EditResultDto>("edit_normalize_peak" satisfies CommandName, {
+    startSamples,
+    endSamples,
+    targetDb,
+  });
+}
+
 /** S2-01: undoes the top history entry. */
 export async function historyUndo(): Promise<EditResultDto> {
   return invoke<EditResultDto>("history_undo" satisfies CommandName);

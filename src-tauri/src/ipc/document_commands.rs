@@ -6,13 +6,13 @@ use tauri::ipc::Response;
 use tauri::{AppHandle, Emitter, Runtime, State};
 use vox_project::{PEAKS_RAW_SPP, VxpkHeader, encode_vxpk};
 
-use crate::document::{DocumentService, PasteTarget};
+use crate::document::{DocumentService, NormalizeNotice, PasteTarget};
 use crate::ipc::document_dto::{
     ClipboardChangedDto, DocumentDto, EditResultDto, EditTargetDto, HistoryStateDto,
     PeaksRequestDto,
 };
 use crate::ipc::error::IpcError;
-use crate::ipc::events::EventName;
+use crate::ipc::events::{EventName, Notice, NoticeLevel, emit_notice};
 use crate::settings::BitDepth;
 
 /// ADR-003 §2's request cap: 65 536 buckets, or 1 Mi samples in `RAW` mode (4 MiB either way).
@@ -233,6 +233,36 @@ pub async fn edit_silence<R: Runtime>(
             .into();
     after_edit(&app, &doc);
     Ok(result)
+}
+
+/// S2-02: peak-normalizes `[start_samples, end_samples)` (the frontend resolves "no selection" to
+/// the whole file, SPEC-010 §2.1) to `target_db` dBFS sample peak — one undo entry
+/// `history.normalize`, one click, no confirmation. A no-op (silent/near-silent scope, or already
+/// at the target) posts `notice.normalize_silent`/`notice.normalize_already` and changes nothing;
+/// `error.normalize_non_finite` refuses a scope with a non-finite sample.
+#[tauri::command]
+pub async fn edit_normalize_peak<R: Runtime>(
+    app: AppHandle<R>,
+    doc: State<'_, DocumentService>,
+    start_samples: u64,
+    end_samples: u64,
+    target_db: f64,
+) -> Result<EditResultDto, IpcError> {
+    let service = (*doc).clone();
+    let outcome =
+        run_blocking(move || service.edit_normalize_peak(start_samples, end_samples, target_db))
+            .await?;
+    after_edit(&app, &doc);
+    if let Some(notice) = outcome.notice {
+        let key = match notice {
+            NormalizeNotice::Silent => "notice.normalize_silent",
+            NormalizeNotice::AlreadyNormalized => "notice.normalize_already",
+        };
+        if let Err(error) = emit_notice(&app, Notice::toast(NoticeLevel::Info, key)) {
+            tracing::warn!(%error, "emitting a normalize notice failed");
+        }
+    }
+    Ok(outcome.result.into())
 }
 
 /// Undoes the top history entry.

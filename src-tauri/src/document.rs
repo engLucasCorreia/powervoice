@@ -10,8 +10,9 @@ use std::time::Duration;
 
 use vox_engine::{EngineHandle, PlaybackDoc, TransportCommand};
 use vox_project::{
-    EditTarget, FinishedTake, Piece, ProjectError, Range, RangeError, Session, SessionConfig,
-    SnapshotReader, TakeCapture, TakeId, TakeMode, TakeWriterOptions, edit, validate_range,
+    EditTarget, FinishedTake, NormalizeOutcome, NormalizeResult, Piece, ProjectError, Range,
+    RangeError, Session, SessionConfig, SnapshotReader, TakeCapture, TakeId, TakeMode,
+    TakeWriterOptions, edit, normalize_applied_post_edit, normalize_peak, validate_range,
 };
 
 use crate::ipc::{IpcError, IpcErrorCode};
@@ -28,6 +29,9 @@ const CLOSE_RETRY_ATTEMPTS: u32 = 40;
 /// S1-04: `commit_take` attempts before giving up (the take then stays open for recovery).
 const COMMIT_ATTEMPTS: u32 = 3;
 const COMMIT_RETRY_DELAY: Duration = Duration::from_millis(100);
+/// S2-02: the Normalize… dialog's dB-mode range (SPEC-010 §2.4, §3 `target_db`).
+const NORMALIZE_TARGET_MIN_DB: f64 = -60.0;
+const NORMALIZE_TARGET_MAX_DB: f64 = 0.0;
 
 /// The OS data dir's `sessions` subfolder (mirrors `settings::project_dirs`'s convention; no
 /// state dir on macOS/Windows, so those fall back to the data dir like `logging.rs` does).
@@ -114,6 +118,23 @@ pub struct EditResult {
     pub playhead_samples: u64,
 }
 
+/// S2-02: why `edit_normalize_peak` did nothing (SPEC-010 §2.7) — `EditResult.changed` is already
+/// `false`; the command handler turns this into a `notice` event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NormalizeNotice {
+    /// The scope's sample peak is `0` or below the −120 dBFS near-silence floor.
+    Silent,
+    /// The gain needed is closer to 0 dB than the 0.001 dB "already there" tolerance.
+    AlreadyNormalized,
+}
+
+/// The result of [`DocumentService::edit_normalize_peak`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct NormalizeEditResult {
+    pub result: EditResult,
+    pub notice: Option<NormalizeNotice>,
+}
+
 struct Inner {
     sessions_dir: PathBuf,
     engine: EngineHandle,
@@ -168,9 +189,9 @@ fn clipboard_empty() -> IpcError {
 fn document_error(err: ProjectError) -> IpcError {
     let code = match &err {
         ProjectError::NotWhileRecording => IpcErrorCode::NotWhileRecording,
-        ProjectError::InvalidArgument(_) | ProjectError::InvalidEdit(_) => {
-            IpcErrorCode::InvalidArgument
-        }
+        ProjectError::InvalidArgument(_)
+        | ProjectError::InvalidEdit(_)
+        | ProjectError::NonFiniteSample => IpcErrorCode::InvalidArgument,
         ProjectError::Cancelled => IpcErrorCode::Cancelled,
         _ => IpcErrorCode::Internal,
     };
@@ -675,6 +696,56 @@ impl DocumentService {
             .commit_edit(edit::silence(range))
             .map_err(document_error)?;
         Ok(self.apply_committed(doc, step, edit::post_silence(range)))
+    }
+
+    /// S2-02: peak-normalizes `[start, end)` (the frontend resolves "no selection" to the whole
+    /// file before calling, SPEC-010 §2.1) to `target_db` dBFS sample peak. One undo entry
+    /// `history.normalize`; a no-op (silent/near-silent scope, or already at the target within the
+    /// 0.001 dB tolerance) changes nothing and reports which — the caller (`edit_normalize_peak`,
+    /// `ipc::document_commands`) turns that into a `notice` event.
+    /// `error.normalize_non_finite` refuses a scope containing a non-finite sample.
+    pub fn edit_normalize_peak(
+        &self,
+        start: u64,
+        end: u64,
+        target_db: f64,
+    ) -> Result<NormalizeEditResult, IpcError> {
+        if !target_db.is_finite()
+            || !(NORMALIZE_TARGET_MIN_DB..=NORMALIZE_TARGET_MAX_DB).contains(&target_db)
+        {
+            return Err(IpcError::new(
+                IpcErrorCode::InvalidArgument,
+                "error.invalid_argument",
+            ));
+        }
+        let mut guard = self.0.open.lock().unwrap();
+        let doc = guard.as_mut().ok_or_else(no_document)?;
+        if doc.session.is_recording() {
+            return Err(IpcError::not_while_recording());
+        }
+        let range = Self::selected_range(doc, start, end)?;
+        match normalize_peak(&mut doc.session, range, target_db).map_err(document_error)? {
+            NormalizeResult::NoOp(outcome) => {
+                let snapshot = doc.session.current();
+                Ok(NormalizeEditResult {
+                    result: EditResult {
+                        changed: false,
+                        audio_rev: snapshot.audio_rev,
+                        len_samples: snapshot.len_samples,
+                        selection: Some((range.start, range.end)),
+                        playhead_samples: range.start,
+                    },
+                    notice: Some(match outcome {
+                        NormalizeOutcome::Silent => NormalizeNotice::Silent,
+                        NormalizeOutcome::AlreadyNormalized => NormalizeNotice::AlreadyNormalized,
+                    }),
+                })
+            }
+            NormalizeResult::Applied(step) => Ok(NormalizeEditResult {
+                result: self.apply_committed(doc, step, normalize_applied_post_edit(range)),
+                notice: None,
+            }),
+        }
     }
 
     /// Undoes the top entry (`Ok` with `changed: false` at the undo floor).
@@ -1273,5 +1344,136 @@ mod tests {
             engine.handle().transport_state().playing,
             "Copy doesn't touch the transport"
         );
+    }
+
+    // --- S2-02: peak normalize favorites -----------------------------------------------------
+
+    #[test]
+    fn normalize_favorite_hits_the_target_and_adds_one_undo_entry() {
+        let samples = vox_testkit::signal::sine(440.0, -12.0, 0.2, 48_000).unwrap();
+        let len = samples.len() as u64;
+
+        for target_db in [-1.0, -0.1, -3.0] {
+            let (service, _engine, dir) = service("normalize-favorite-loop");
+            open_test_doc(&service, &dir, &samples);
+            let result = service.edit_normalize_peak(0, len, target_db).unwrap();
+            assert!(result.notice.is_none());
+            assert!(result.result.changed);
+            assert_eq!(
+                result.result.selection,
+                Some((0, len)),
+                "selection unchanged"
+            );
+
+            let snapshot = {
+                let guard = service.0.open.lock().unwrap();
+                guard.as_ref().unwrap().session.current()
+            };
+            let mut out = vec![0.0f32; snapshot.len_samples as usize];
+            {
+                let guard = service.0.open.lock().unwrap();
+                guard
+                    .as_ref()
+                    .unwrap()
+                    .session
+                    .store()
+                    .read(&snapshot, 0, &mut out)
+                    .unwrap();
+            }
+            let peak_dbfs = vox_testkit::measure::peak_dbfs(&out);
+            assert!(
+                (peak_dbfs - target_db).abs() <= 0.01,
+                "target {target_db}, got {peak_dbfs}"
+            );
+
+            assert!(service.history_state().can_undo);
+            assert_eq!(
+                service.history_state().undo_label.as_deref(),
+                Some("history.normalize")
+            );
+            let undo = service.history_undo().unwrap();
+            assert!(undo.changed);
+            assert_eq!(undo.len_samples, len);
+        }
+    }
+
+    #[test]
+    fn normalize_selection_only_leaves_the_length_and_rest_untouched() {
+        let (service, _engine, dir) = service("normalize-scope");
+        let mut samples = vox_testkit::signal::sine(440.0, -6.0, 0.2, 48_000).unwrap();
+        samples[0] = 0.99; // a louder transient outside the selection below
+        open_test_doc(&service, &dir, &samples);
+        let len = samples.len() as u64;
+
+        // Selection-only: [1000, 5000) is normalized, the rest is untouched (length preserved).
+        let result = service.edit_normalize_peak(1_000, 5_000, -1.0).unwrap();
+        assert!(result.result.changed);
+        assert_eq!(result.result.selection, Some((1_000, 5_000)));
+        assert_eq!(result.result.len_samples, len, "length preserved");
+    }
+
+    #[test]
+    fn normalize_is_a_no_op_on_silence_and_posts_a_notice() {
+        let (service, _engine, dir) = service("normalize-silent");
+        let samples = vox_testkit::signal::silence(0.05, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let len = samples.len() as u64;
+
+        let result = service.edit_normalize_peak(0, len, -1.0).unwrap();
+        assert!(!result.result.changed);
+        assert_eq!(result.notice, Some(NormalizeNotice::Silent));
+        assert!(
+            !service.history_state().can_undo,
+            "no undo entry for a no-op"
+        );
+    }
+
+    #[test]
+    fn normalize_already_at_the_target_is_a_no_op() {
+        let (service, _engine, dir) = service("normalize-already");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.05, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let len = samples.len() as u64;
+
+        let first = service.edit_normalize_peak(0, len, -1.0).unwrap();
+        assert!(
+            first.result.changed,
+            "the first normalize still applies (exactness)"
+        );
+        let second = service.edit_normalize_peak(0, len, -1.0).unwrap();
+        assert!(!second.result.changed);
+        assert_eq!(second.notice, Some(NormalizeNotice::AlreadyNormalized));
+    }
+
+    #[test]
+    fn normalize_rejects_an_out_of_range_target() {
+        let (service, _engine, dir) = service("normalize-bad-target");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.05, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let len = samples.len() as u64;
+
+        for bad in [-60.01, 0.01, f64::NAN, f64::INFINITY] {
+            let err = service.edit_normalize_peak(0, len, bad).unwrap_err();
+            assert_eq!(err.code, IpcErrorCode::InvalidArgument);
+        }
+    }
+
+    #[test]
+    fn normalize_is_refused_while_recording() {
+        let (service, _engine, dir) = service("normalize-recording");
+        open_test_doc(
+            &service,
+            &dir,
+            &vox_testkit::signal::silence(0.05, 48_000).unwrap(),
+        );
+        let (mut capture, _info) = service
+            .begin_recording(48_000, BitDepth::Bit24, true)
+            .unwrap();
+        capture.append(&[0.0; 100]).unwrap();
+
+        let err = service.edit_normalize_peak(0, 10, -1.0).unwrap_err();
+        assert_eq!(err.code, IpcErrorCode::NotWhileRecording);
+
+        service.discard_take(capture.id());
     }
 }

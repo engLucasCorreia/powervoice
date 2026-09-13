@@ -1,4 +1,5 @@
-import type { IpcError, Notice } from "../ipc/bindings";
+import { listen } from "@tauri-apps/api/event";
+import type { EventName, Notice } from "../ipc/bindings";
 
 /** A `Notice` plus a local id the UI uses as a Svelte `{#each}` key / dismiss handle. */
 export interface ActiveNotice extends Notice {
@@ -58,4 +59,21 @@ export function dismissBanner(localId: string): void {
 export function clearNotices(): void {
   toasts = [];
   banners = [];
+}
+
+/**
+ * S2-02: subscribes to the backend's `notice` event (ADR-003) and pushes every one it sends —
+ * device-lost/reconnected banners (S1-01/T-104), recording notices (S1-04) and normalize's
+ * `notice.normalize_silent`/`notice.normalize_already` (SPEC-010 §2.7) all arrive this way.
+ * Returns the teardown.
+ */
+export async function initNotices(): Promise<() => void> {
+  try {
+    return await listen<Notice>("notice" satisfies EventName, (e) => {
+      pushNotice(e.payload);
+    });
+  } catch {
+    // Without the event, notices only follow direct command failures (still functional).
+    return () => {};
+  }
 }

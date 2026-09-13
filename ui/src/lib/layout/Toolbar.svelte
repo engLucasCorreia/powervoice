@@ -1,6 +1,7 @@
 <script lang="ts">
   import AudioDevicesDialog from "../devices/AudioDevicesDialog.svelte";
   import { t } from "../i18n";
+  import NormalizeToolbarButtons from "../normalize/NormalizeToolbarButtons.svelte";
   import RecordControls from "../record/RecordControls.svelte";
   import { playFromStart, playPause, returnToStart, stop, transportState } from "../state/transport.svelte";
   import { formatTime } from "../transport/playhead";
@@ -47,6 +48,7 @@
     <span class="time" data-testid="transport-time">{time}</span>
   </div>
   <RecordControls />
+  <NormalizeToolbarButtons />
   <button type="button" data-testid="open-audio-devices" onclick={() => (devicesOpen = true)}>
     {t("devices.open")}
   </button>

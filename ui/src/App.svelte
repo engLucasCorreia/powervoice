@@ -13,8 +13,11 @@
   import MeterBridge from "./lib/layout/MeterBridge.svelte";
   import RackPanel from "./lib/layout/RackPanel.svelte";
   import Toolbar from "./lib/layout/Toolbar.svelte";
+  import FavoritesMenu from "./lib/normalize/FavoritesMenu.svelte";
   import NoticeHost from "./lib/notices/NoticeHost.svelte";
   import { initEdit } from "./lib/state/edit.svelte";
+  import { initNormalize } from "./lib/state/normalize.svelte";
+  import { initNotices } from "./lib/state/notices.svelte";
   import { initRecord } from "./lib/state/record.svelte";
   import { loadSettings } from "./lib/state/settings.svelte";
   import { initTransport } from "./lib/state/transport.svelte";
@@ -33,6 +36,24 @@
 
   onMount(() => {
     void loadSettings();
+  });
+
+  // S2-02: the backend's `notice` event (silent/already-normalized notices, and every other
+  // notice the app already emits — device loss, recording).
+  onMount(() => {
+    let disposed = false;
+    let teardown: (() => void) | null = null;
+    void initNotices().then((cleanup) => {
+      if (disposed) {
+        cleanup();
+      } else {
+        teardown = cleanup;
+      }
+    });
+    return () => {
+      disposed = true;
+      teardown?.();
+    };
   });
 
   // S1-04: record panel (arm, Record + Shift+R, input meter).
@@ -87,11 +108,15 @@
       teardown?.();
     };
   });
+
+  // S2-02: peak normalize favorites (toolbar buttons, Favorites menu, Normalize… dialog).
+  onMount(() => initNormalize());
 </script>
 
 <div class="shell">
   <DocumentMenu />
   <EditMenu />
+  <FavoritesMenu />
   <Toolbar {version} />
   <div class="workspace">
     <MarkersProperties />
@@ -108,7 +133,7 @@
 <style>
   .shell {
     display: grid;
-    grid-template-rows: auto auto auto 1fr auto;
+    grid-template-rows: auto auto auto auto 1fr auto;
     height: 100vh;
   }
 

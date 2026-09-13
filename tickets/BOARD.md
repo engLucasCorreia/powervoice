@@ -19,8 +19,8 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | ID | Title | Tier | Deps | Status |
 |---|---|---|---|---|
 | S2-01 | Selection + cut/copy/paste/delete/trim/silence + undo/redo end-to-end | S | S1-01, S1-03 | done |
-| S2-02 | Peak normalize favorites (−1/−0.1/−3 dB + custom) end-to-end | S | S2-01 | in progress |
-| S2-03 | Markers basic: add (M), panel, rename, delete, jump, WAV cue round-trip | S | S1-03, S2-01 | todo |
+| S2-02 | Peak normalize favorites (−1/−0.1/−3 dB + custom) end-to-end | S | S2-01 | done |
+| S2-03 | Markers basic: add (M), panel, rename, delete, jump, WAV cue round-trip | S | S1-03, S2-01 | in progress |
 
 ### Slice 3 — Clean & shape
 | ID | Title | Tier | Deps | Status |
@@ -52,6 +52,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-06 | UX: New Recording dialog (rate/bit depth); capture-writer resampling (Save-in-prompt → Save As for untitled recordings: done in the window-close hotfix) | S | todo |
 | H-07 | Live waveform while recording (writer-thread peaks → `record_peaks_get` → 10 Hz UI poll); owner-reported S1-04 gap | S | done |
 | H-08 | Export follow-ups from S4-04: Whole file / Selection choice (range already plumbed end to end); export reads the current rack model once S3-01 lands (today renders an empty rack); SPEC-014 "Output noise only" confirmation; MP3 VBR in the dialog | S | todo |
+| H-09 | Normalize follow-ups from S2-02: progress via the S4-04 `job_progress` event + cancel for long files; % targets; Effects menu entry; pyramid-accelerated peak scan (SPEC-010 AC-9/AC-15); remembered dialog value | S | todo |
 
 ## M0 — Foundations
 | ID | Title | Wave | Tier | Deps | Status |

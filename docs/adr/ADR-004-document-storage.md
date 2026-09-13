@@ -299,3 +299,13 @@ carry an optional opaque `attachment: Option<Vec<u8>>`. `project` stores and ret
 never interprets it (ADR-001: `project` must not depend on `rack`). The engine supplies the serialized
 pre-bake `RackModel` when it commits a bake and consumes it on undo/redo. Recovery restores
 attachments exactly like the rest of the journal.
+
+## Amendment 2 — T-300 (SPEC-009/018), 2026-09-13
+- **Marker kind:** `Marker` gains `kind: MarkerKind` (`User`, `Dropout`, plus `Unknown(String)` kept
+  verbatim so kinds written by newer versions survive a round trip). Point vs region stays derived from
+  `len_samples` (0 = point). Markers are kept sorted by `(pos_samples, id)`. Implemented in T-303.
+- **Journal `saved` record** gains additive fields `audio_crc32` (CRC-32 of the samples as written, used
+  by the sidecar identity check) and `sidecar` (path + whether it was written). Implemented in T-306.
+- The rack and view sections of the sidecar are stored by `project` as **opaque JSON** (like the
+  Amendment 1 attachment), preserving ADR-001's "`project` never depends on `rack`".
+- T-301's journal label-params change becomes **Amendment 3**.

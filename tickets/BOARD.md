@@ -48,17 +48,18 @@ Tickets for M1+ are stubs; full ticket files are written in each milestone's W0.
 ## M3 — Editing & history
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
-| T-300 | M3 spec wave: SPEC-008 editing ops ✓, SPEC-010 normalize ✓, SPEC-009 markers, SPEC-018 sessions, SPEC-022 punch-in | W0 | O | M0, SPEC-005 | in-progress |
+| T-300 | M3 spec wave: SPEC-008 ✓, SPEC-010 ✓, SPEC-009 ✓, SPEC-018 ✓, SPEC-022 punch-in | W0 | O | M0, SPEC-005 | in-progress |
 | T-301 | Undo/redo, resident memory budget, edit journal, crash recovery | W1 | O | M2 | todo |
 | T-302 | Cut/copy/paste/delete, trim, silence, insert silence, clipboard | W2 | S+OR | T-301 | todo |
-| T-303 | Markers panel + navigation | W2 | S | T-301 | todo |
+| T-303 | Markers: kinds, add/region, rename, drag, delete, navigation, Markers panel | W2 | S | T-301 | todo |
 | T-304 | Record at cursor (insert/overwrite) + punch-in + latency calibration (SPEC-022) | W2 | O | T-301, SPEC-022 | todo |
 | T-305 | Peak normalize favorites | W2 | S+OR | T-301 | todo |
-| T-306 | Sidecar `.vo.json`, autosave, recent files | W3 | S | T-302, T-303 | todo |
+| T-306 | Sidecar `.vo.json`, identity check, sidecar-only saves, recent files, second-instance warning | W3 | S+OR | T-302, T-303 | todo |
 
 ## M4 — Effects modules & rack UI
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
+| T-400 | M4 spec wave: SPEC-015 parametric EQ + SPEC-017 true-peak limiter (part 1); SPEC-013 noise gate + SPEC-016 dynamics (part 2) | W0 | O | M0 | in-progress |
 | T-401 | Latency compensation, latency_changed re-activation, A/B dry delay | W1 | O | M3 | todo |
 | T-402 | Parametric EQ DSP + ResponseCurve | W1 | O | M3 | todo |
 | T-403 | Dynamics A: detector, compressor, limiter | W1 | O | M3 | todo |

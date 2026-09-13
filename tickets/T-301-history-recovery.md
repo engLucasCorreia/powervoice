@@ -11,7 +11,7 @@ survives a crash; recovery is a clear dialog; sessions never silently lose or le
 
 ## Scope
 **In:**
-- History with labels + label params (ADR-004 amendment: journal `edit` records carry `{label_key, params}`; write the amendment text into ADR-004 as "Amendment 2" in your branch), redo truncation, dirty vs saved sequence, undo/redo cursor/selection rule (SPEC-008 §2.3), `history_undo` / `history_redo` commands and a `history_state` event (labels, can_undo/can_redo, dirty).
+- History with labels + label params (ADR-004 amendment: journal `edit` records carry `{label_key, params}`; write the amendment text into ADR-004 as "Amendment 3" in your branch (Amendment 2 = marker kind + saved-record fields)), redo truncation, dirty vs saved sequence, undo/redo cursor/selection rule (SPEC-008 §2.3), `history_undo` / `history_redo` commands and a `history_state` event (labels, can_undo/can_redo, dirty).
 - Journal replay and crash recovery in `vox-project` + engine: classify sessions (clean/recoverable/locked), restore snapshots, undo/redo stacks, labels, attachments; damaged-record handling; interrupted-take handling hand-off to T-106's recovery path ("Apply as recorded" / "Open as new document" / "Discard take").
 - Recovery dialog (Svelte) at startup + Settings → Recovery & storage (list, sizes, Clear…, Decide later), all strings i18n.
 - Disk budget checks (after each edit and every 10 s idle), compaction by generation (crash-safe), drop-oldest-undo with notice (OD-1 = A), never during recording; memory budget live change from settings.

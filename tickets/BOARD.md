@@ -30,7 +30,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | S3-03 | Parametric EQ module (library part, lean SPEC-015) | O | T-103, H-01 | done |
 | S3-07 | EQ graph panel (ResponseCurve, draggable nodes) | S | S3-01, S3-03 | todo |
 | S3-04 | Noise reduction module + noise-print profile (library part, lean SPEC-014) | O | T-103, H-01 | done |
-| S3-06 | Capture Noise Print command + NR slot panel | S | S3-01, S3-04, S2-01 | in progress |
+| S3-06 | Capture Noise Print command + NR slot panel | S | S3-01, S3-04, S2-01 | done |
 | S3-05 | True-peak limiter (lean SPEC-017) | O | T-103 | done |
 
 ### Slice 4 — Deliver
@@ -51,7 +51,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-05 | Post-merge Opus review of S1-04 (RT input callback, capture writer, take durability) — deferred for session budget | O | todo |
 | H-06 | UX: New Recording dialog (rate/bit depth); capture-writer resampling (Save-in-prompt → Save As for untitled recordings: done in the window-close hotfix) | S | todo |
 | H-07 | Live waveform while recording (writer-thread peaks → `record_peaks_get` → 10 Hz UI poll); owner-reported S1-04 gap | S | done |
-| H-08 | Export follow-ups from S4-04: Whole file / Selection choice (range already plumbed end to end); export reads the current rack model once S3-01 lands (today renders an empty rack); SPEC-014 "Output noise only" confirmation; MP3 VBR in the dialog | S | todo |
+| H-08 | Export follow-ups from S4-04: Whole file / Selection choice (range already plumbed end to end); export reads the current rack model once S3-01 lands (today renders an empty rack); SPEC-014 "Output noise only" confirmation; MP3 VBR in the dialog | S | in progress |
 | H-09 | Normalize follow-ups from S2-02: progress via the S4-04 `job_progress` event + cancel for long files; % targets; Effects menu entry; pyramid-accelerated peak scan (SPEC-010 AC-9/AC-15); remembered dialog value | S | todo |
 
 ## M0 — Foundations

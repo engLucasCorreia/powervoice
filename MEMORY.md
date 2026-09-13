@@ -44,6 +44,7 @@
 - Subagents must run long checks in the foreground and never end a turn waiting on a background monitor (happened in T-007 and S3-02; the orchestrator had to nudge them). Now a CLAUDE.md hard rule.
 
 ## Gotchas / learnings
+- Svelte 5: an element bound (`bind:this`) inside `{#if}` is `undefined` in `onMount` if the branch is closed at mount — attach observers/listeners in an `$effect` keyed on the element, not `onMount` (S1-03 blank-waveform bug, fixed d2f81b8). jsdom has `clientWidth` 0 and no `ResizeObserver`: stub `clientWidth` in tests.
 - `cpal` 0.18: no per-channel input selection (open full device, deinterleave), no hot-plug events (poll ~1 s off-thread), input/output are separate streams (monitoring needs drift-corrected ring). Enable `pipewire`/`jack` features on Linux; ALSA headers still required.
 - `hound` has no `cue`/`LIST adtl` support → custom RIFF chunk code.
 - `ebur128` needs feature `precision-true-peak` for 4× oversampled TP.

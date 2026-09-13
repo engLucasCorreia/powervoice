@@ -22,11 +22,21 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | S2-02 | Peak normalize favorites (−1/−0.1/−3 dB + custom) end-to-end | S | S2-01 | todo |
 | S2-03 | Markers basic: add (M), panel, rename, delete, jump, WAV cue round-trip | S | S1-03, S2-01 | todo |
 
-### Slice 3 — Clean & shape (planned)
-Rack panel + generic parameter UI, parametric EQ, compressor/limiter, noise gate, noise reduction (capture + module), true-peak limiter — subsets of M4/M5; first fix H-01.
+### Slice 3 — Clean & shape
+| ID | Title | Tier | Deps | Status |
+|---|---|---|---|---|
+| S3-01 | Rack panel + generic parameter UI end-to-end | S | S1-01, H-01 | todo |
+| S3-02 | Dynamics (compressor + limiter) + Noise Gate modules | O | T-103, H-01 | todo |
+| S3-03 | Parametric EQ module + EQ graph (lean SPEC-015) | O | S3-01 | todo (ticket after SPEC-015 lands) |
+| S3-04 | Noise reduction: capture noise print + streaming NR (lean SPEC-014) | O | S3-01 | todo (ticket after SPEC-014 lands) |
+| S3-05 | True-peak limiter (lean SPEC-017) | O | T-103 | todo (ticket after SPEC-017 lands) |
 
-### Slice 4 — Deliver (planned)
-LUFS normalize, ACX check, export WAV/FLAC/MP3 — subsets of M6.
+### Slice 4 — Deliver
+| ID | Title | Tier | Deps | Status |
+|---|---|---|---|---|
+| S4-01 | Loudness analysis + LUFS normalize | S | S2-02, S1-01 | todo |
+| S4-02 | Export WAV / FLAC / MP3 (LAME via libloading) + ACX preset | S | S1-03, S1-02 | todo |
+| S4-03 | ACX check report | S | S4-01 | todo (ticket later) |
 
 ### Hardening & backlog
 | ID | Title | Tier | Status |

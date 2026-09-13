@@ -41,3 +41,5 @@ thiserror = "2"
 anyhow = "1"
 # No default features: `disable_release` conflicts with `warn_release` (compile_error!).
 assert_no_alloc = { version = "1.1.2", default-features = false }
+# T-102
+cpal = "0.18"

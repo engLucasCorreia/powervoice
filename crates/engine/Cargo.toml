@@ -5,5 +5,29 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = ["backend-cpal"]
+# Real audio I/O through cpal (ADR-001 §3). Without it the crate builds and tests with no system
+# audio libraries, using only the fake backend (SPEC-000 AC-5).
+backend-cpal = ["dep:cpal"]
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+cpal = { workspace = true, optional = true }
+
+# Linux: PipeWire and JACK hosts in addition to ALSA (SPEC-001 §2.1). Needs libpipewire-0.3,
+# libjack and libclang (bindgen) at build time; ALSA headers are always required.
+[target.'cfg(target_os = "linux")'.dependencies]
+cpal = { workspace = true, optional = true, features = ["pipewire", "jack"] }
+
+[dev-dependencies]
+vox-module-api = { path = "../module-api", features = ["test-util"] }
+serde_json.workspace = true
+
+[[example]]
+name = "list_devices"
+required-features = ["backend-cpal"]
+
 [lints]
 workspace = true

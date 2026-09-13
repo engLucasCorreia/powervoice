@@ -6,6 +6,8 @@
 //! their schema derives `ts_rs::TS` directly) are where DTOs live; domain crates never see
 //! either dependency. `src-tauri` maps domain → DTO with `From` impls, which the compiler checks.
 
+mod acx_commands;
+mod acx_dto;
 mod audio_commands;
 mod audio_dto;
 mod commands;
@@ -29,6 +31,8 @@ mod record_dto;
 // A glob import, not a named one: `#[tauri::command]` also generates a hidden macro alongside
 // each command function (in the macro namespace), and `tauri::generate_handler!` below needs
 // that hidden macro in scope, not just the function.
+pub use acx_commands::*;
+pub use acx_dto::{AcxCheckReportDto, AcxCheckRequestDto, AcxRuleDto, AcxRuleStatusDto};
 pub use audio_commands::*;
 pub use audio_dto::{
     DeviceDto, DeviceStatusDto, DevicesDto, TransportStateDto, notice_from_device,
@@ -128,6 +132,7 @@ crate::ipc_commands!(
     nr_capture_cancel,
     loudness_analyze_start,
     loudness_analyze_cancel,
+    acx_check,
 );
 
 #[cfg(feature = "spike")]
@@ -188,6 +193,7 @@ crate::ipc_commands!(
     nr_capture_cancel,
     loudness_analyze_start,
     loudness_analyze_cancel,
+    acx_check,
     spike_env,
     spike_waveform_peaks,
     spike_spectrogram_texture,

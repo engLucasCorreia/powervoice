@@ -18,12 +18,18 @@
 //! `DocumentService::edit_normalize_lufs`) measures the raw *source* samples directly instead
 //! (SPEC-010's write path, `project` alone, no rack — see `crates/project/src/normalize.rs`'s
 //! module docs), so it needs none of this file.
+//!
+//! S4-03 (ACX check) reuses this same service and its render plumbing (`LoudnessService::
+//! run_acx_check`, `render_processed_to_buffer`) rather than duplicating the read/render setup —
+//! `acx_check` is a plain synchronous command (no job id, no `job_progress`/cancel), unlike the
+//! analysis job above, since the ticket asks for "Command `acx_check` → report DTO" directly.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Runtime};
+use vox_dsp::acx::AcxReport;
 use vox_dsp::loudness::{LoudnessError, LoudnessMeter, LoudnessReport};
 use vox_engine::EngineHandle;
 use vox_project::{CHUNK_SAMPLES, SnapshotReader};
@@ -145,6 +151,35 @@ impl LoudnessService {
         if let Some(job) = self.0.jobs.lock().unwrap().get(&job_id) {
             job.cancel.store(true, Ordering::Relaxed);
         }
+    }
+
+    /// `acx_check` (S4-03): synchronous — meant to run inside `spawn_blocking`, not its own job
+    /// thread (no progress/cancel, per the ticket). Always the whole document: ACX submissions
+    /// are whole chapters, not selections, unlike the loudness analysis job above. Reads the raw
+    /// samples, renders them through the live rack for `LoudnessSource::Processed` (same
+    /// `EngineHandle::rack_model()` convention as `start_job`), then evaluates the result against
+    /// the ACX rules (`vox_dsp::acx::evaluate`).
+    pub fn run_acx_check(&self, source: LoudnessSource) -> Result<AcxReport, IpcError> {
+        let export_source = self.0.documents.export_source()?;
+        let samples = read_range(&export_source, 0, export_source.len_samples)?;
+        let cancel = AtomicBool::new(false);
+        let buffer = match source {
+            LoudnessSource::Source => samples,
+            LoudnessSource::Processed => {
+                let rack_model = self.0.engine.rack_model().unwrap_or_default();
+                render_processed_to_buffer(
+                    &self.0.registry,
+                    &rack_model,
+                    export_source.sample_rate_hz,
+                    &samples,
+                    &cancel,
+                )?
+            }
+        };
+        Ok(vox_dsp::acx::evaluate(
+            &buffer,
+            export_source.sample_rate_hz,
+        ))
     }
 }
 
@@ -322,17 +357,69 @@ fn analyze_processed(
     sample_rate_hz: u32,
     samples: &[f32],
     cancel: &AtomicBool,
-    mut progress: impl FnMut(f32),
+    progress: impl FnMut(f32),
 ) -> Result<LoudnessReport, IpcError> {
+    let mut meter = LoudnessMeter::new(sample_rate_hz).map_err(loudness_error)?;
+    render_processed(
+        registry,
+        model,
+        sample_rate_hz,
+        samples,
+        cancel,
+        progress,
+        |chunk| meter.push(chunk).map_err(loudness_error),
+    )?;
+    meter.finish().map_err(loudness_error)
+}
+
+/// Renders `samples` through `model` (same time-aligned offline chain as `vox_rack::offline`,
+/// SPEC-012 §2.8) into a single `Vec<f32>` — used by the ACX check (S4-03), which needs the whole
+/// rendered waveform for RMS/noise-floor measurement rather than a streamed loudness meter.
+fn render_processed_to_buffer(
+    registry: &Registry,
+    model: &RackModel,
+    sample_rate_hz: u32,
+    samples: &[f32],
+    cancel: &AtomicBool,
+) -> Result<Vec<f32>, IpcError> {
+    let mut buffer = Vec::with_capacity(samples.len());
+    render_processed(
+        registry,
+        model,
+        sample_rate_hz,
+        samples,
+        cancel,
+        |_fraction| {},
+        |chunk| {
+            buffer.extend_from_slice(chunk);
+            Ok(())
+        },
+    )?;
+    Ok(buffer)
+}
+
+/// The shared block-render loop behind both [`analyze_processed`] (sink = push into a
+/// [`LoudnessMeter`]) and [`render_processed_to_buffer`] (sink = extend a `Vec`): 4096-frame
+/// blocks (`vox_rack::OFFLINE_BLOCK`), per-block cancellation, and the same latency trim
+/// `export.rs::render_with_progress` uses (`out.drain(..latency); out.truncate(input.len())`,
+/// done incrementally here instead of on a fully materialized buffer).
+fn render_processed(
+    registry: &Registry,
+    model: &RackModel,
+    sample_rate_hz: u32,
+    samples: &[f32],
+    cancel: &AtomicBool,
+    mut progress: impl FnMut(f32),
+    mut sink: impl FnMut(&[f32]) -> Result<(), IpcError>,
+) -> Result<(), IpcError> {
     let _fp = vox_dsp::fp::DenormalGuard::new();
     let mut chain = vox_rack::offline::build_chain(registry, model, f64::from(sample_rate_hz))
         .map_err(rack_error)?;
     let latency = chain.latency_samples() as usize;
     let total = samples.len() + latency;
-    let mut meter = LoudnessMeter::new(sample_rate_hz).map_err(loudness_error)?;
     if total == 0 {
         chain.deactivate();
-        return meter.finish().map_err(loudness_error);
+        return Ok(());
     }
     let block = vox_rack::OFFLINE_BLOCK as usize;
     let mut inbuf = vec![0.0f32; block];
@@ -371,15 +458,13 @@ fn analyze_processed(
         let want_start = pos.max(latency);
         let want_end = (pos + n).min(latency + samples.len());
         if want_start < want_end {
-            meter
-                .push(&outbuf[(want_start - pos)..(want_end - pos)])
-                .map_err(loudness_error)?;
+            sink(&outbuf[(want_start - pos)..(want_end - pos)])?;
         }
         pos += n;
         progress(pos as f32 / total as f32);
     }
     chain.deactivate();
-    meter.finish().map_err(loudness_error)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -515,5 +600,63 @@ mod tests {
         )
         .unwrap();
         assert!((last - 1.0).abs() < 1e-6);
+    }
+
+    /// `render_processed_to_buffer` through an empty rack (passthrough, zero latency) must be
+    /// bit-exact with the input — the ACX check's "processed" path shares this helper.
+    #[test]
+    fn render_processed_to_buffer_through_an_empty_rack_matches_the_input() {
+        let samples = vox_testkit::signal::sine(1000.0, -20.0, 1.0, 48_000).unwrap();
+        let reg = registry();
+        let rendered = render_processed_to_buffer(
+            &reg,
+            &RackModel::default(),
+            48_000,
+            &samples,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(rendered.len(), samples.len());
+        for (a, b) in rendered.iter().zip(samples.iter()) {
+            assert!((a - b).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn render_processed_to_buffer_is_cancellable() {
+        let samples = vox_testkit::signal::sine(1000.0, -20.0, 5.0, 48_000).unwrap();
+        let reg = registry();
+        let cancel = AtomicBool::new(true);
+        let err =
+            render_processed_to_buffer(&reg, &RackModel::default(), 48_000, &samples, &cancel)
+                .unwrap_err();
+        assert_eq!(err.code, IpcErrorCode::Cancelled);
+    }
+
+    /// Ticket AC: "processed vs source toggle reflects a Gain −6 dB rack" — for the ACX check
+    /// specifically: measuring the same buffer's RMS before/after a `[Gain −6 dB]` render must
+    /// differ by exactly 6 dB (mirrors the loudness job's own `analyze_processed_through_gain_
+    /// minus_6_db_differs_by_six_lu` test, one level down at the `vox_dsp::acx` evaluation).
+    #[test]
+    fn acx_evaluate_on_processed_vs_source_differs_by_the_rack_gain() {
+        let samples = vox_testkit::signal::white_noise(1, -20.0, 2.0, 48_000).unwrap();
+        let reg = registry();
+        let processed = render_processed_to_buffer(
+            &reg,
+            &gain_model(-6.0),
+            48_000,
+            &samples,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        let source_report = vox_dsp::acx::evaluate(&samples, 48_000);
+        let processed_report = vox_dsp::acx::evaluate(&processed, 48_000);
+        let delta_db =
+            source_report.rms.measured_db.unwrap() - processed_report.rms.measured_db.unwrap();
+        assert!(
+            (delta_db - 6.0).abs() <= 0.1,
+            "expected a 6.0 +/- 0.1 dB drop, got {delta_db:.4}"
+        );
     }
 }

@@ -5,7 +5,10 @@
 //! - [`eq`]: parametric-EQ biquads, Butterworth cascades and smoothed bands (SPEC-015).
 //! - [`loudness`]: BS.1770/EBU R128 integrated/short-term/momentary loudness, LRA, sample and
 //!   true peak (S4-01) — off the audio thread only (job/edit-op code, not `process()`).
+//! - [`acx`]: ACX / Audible submission pass/fail rules (RMS, sample peak, noise floor; S4-03) —
+//!   off the audio thread only, over a whole (source or rack-processed) buffer.
 
+pub mod acx;
 pub mod dynamics;
 pub mod eq;
 pub mod fp;

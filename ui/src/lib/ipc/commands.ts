@@ -1,5 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
+  AcxCheckReportDto,
+  AcxCheckRequestDto,
   AppInfo,
   BitDepth,
   CommandName,
@@ -338,4 +340,13 @@ export async function loudnessAnalyzeStart(
 /** S4-01: cancels a running loudness analysis job (best-effort). */
 export async function loudnessAnalyzeCancel(jobId: number): Promise<void> {
   return invoke<void>("loudness_analyze_cancel" satisfies CommandName, { jobId });
+}
+
+/**
+ * S4-03: checks the whole document (processed or source, per `request.source`) against the ACX /
+ * Audible submission rules (RMS, sample peak, noise floor) and returns one report — synchronous,
+ * unlike `loudnessAnalyzeStart`: no job id, no `job_progress`/cancel.
+ */
+export async function acxCheck(request: AcxCheckRequestDto): Promise<AcxCheckReportDto> {
+  return invoke<AcxCheckReportDto>("acx_check" satisfies CommandName, { request });
 }

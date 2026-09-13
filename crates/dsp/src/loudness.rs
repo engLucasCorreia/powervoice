@@ -45,7 +45,10 @@ const SHORT_TERM_WINDOW_S: f64 = 3.0;
 /// `20*log10(|linear|)`; exact digital silence maps to `-inf`, `NaN` propagates — no artificial
 /// floor (the project-wide convention, `vox-testkit::units::linear_to_dbfs`; duplicated here
 /// rather than shared, since `dsp` and `testkit` are independent leaves, ADR-001 §3).
-fn linear_to_dbfs(linear: f64) -> f64 {
+///
+/// `pub(crate)`: [`crate::acx`] reuses it for RMS/peak/noise-floor (S4-03) rather than
+/// duplicating it a second time within this same crate.
+pub(crate) fn linear_to_dbfs(linear: f64) -> f64 {
     20.0 * linear.abs().log10()
 }
 

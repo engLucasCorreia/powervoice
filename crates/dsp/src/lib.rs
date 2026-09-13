@@ -5,5 +5,6 @@
 
 pub mod dynamics;
 pub mod fp;
+pub mod nr;
 pub mod resample;
 pub mod true_peak;

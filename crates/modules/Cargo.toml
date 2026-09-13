@@ -12,6 +12,7 @@ vox-dsp = { path = "../dsp" }
 [dev-dependencies]
 vox-module-api = { path = "../module-api", features = ["test-util"] }
 vox-testkit = { path = "../testkit" }
+serde_json.workspace = true
 
 [lints]
 workspace = true

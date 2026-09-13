@@ -51,3 +51,5 @@ libc = "0.2"
 rtrb = "0.4"
 # S1-01: document → device rate conversion in the playback reader (ADR-002 §5); only in vox-dsp.
 rubato = "5"
+# S3-04: real FFT for the spectral noise reducer (vox-dsp only; SPEC-014 §4.9, docs/references.md).
+realfft = "3.5"

@@ -8,6 +8,9 @@ publish.workspace = true
 [dependencies]
 # S1-01: fixed-ratio FFT resampler for the playback reader (ADR-002 §5, ADR-001 §3: rubato only here).
 rubato.workspace = true
+# S3-04
+realfft.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

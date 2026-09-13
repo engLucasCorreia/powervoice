@@ -9,8 +9,9 @@ use std::sync::atomic::Ordering;
 use rtrb::PushError;
 use serde_json::Map;
 use vox_module_api::{
-    ActivateConfig, Module, ModuleDescriptor, ModuleError, ModuleRef, ModuleState, NoiseProfile,
-    ParamEvent, ParamFlags, ParamGroup, ParamId, ParamInfo, noise_profile,
+    ActivateConfig, CurveHandle, Module, ModuleDescriptor, ModuleError, ModuleRef, ModuleState,
+    NoiseProfile, ParamEvent, ParamFlags, ParamGroup, ParamId, ParamInfo, ResponseCurve,
+    noise_profile, response_curve,
 };
 
 use crate::chain::PlanEntry;
@@ -122,6 +123,11 @@ pub struct SlotInfo {
     /// extension (every module but Noise Reduction, and placeholders), `Some(..)` otherwise —
     /// the NR panel section only renders when this is `Some`.
     pub noise_profile: Option<NoiseProfileStatus>,
+    /// The module's [`ResponseCurve`] handles (S3-07, SPEC-015 §2.6.6): `None` when the module
+    /// has no `ResponseCurve` extension (every module but the EQ, and placeholders) — the graph
+    /// panel only renders when this is `Some`. `Some(handles)` even when `handles` is empty (a
+    /// `ResponseCurve` with no draggable nodes is still drawable).
+    pub curve_handles: Option<Vec<CurveHandle>>,
 }
 
 struct Loaded {
@@ -141,6 +147,11 @@ struct Loaded {
     /// their inputs (module docs), safe to call from any non-audio thread regardless of which
     /// instance is currently live.
     noise_profile: Option<Arc<dyn NoiseProfile>>,
+    /// The module's [`ResponseCurve`] handle (S3-07), captured the same way and for the same
+    /// reason: `magnitude_db`/`component_magnitude_db` are pure functions of their arguments
+    /// (module docs), safe to call from the control thread regardless of which instance is
+    /// currently live.
+    response_curve: Option<Arc<dyn ResponseCurve>>,
 }
 
 enum Kind {
@@ -242,6 +253,7 @@ fn loaded_from(module: Box<dyn Module>) -> Box<Loaded> {
         .collect();
     let blob = module.save_state().ok().and_then(|s| s.blob);
     let profile = noise_profile(module.as_ref());
+    let curve = response_curve(module.as_ref());
     Box::new(Loaded {
         descriptor: module.descriptor().clone(),
         params,
@@ -252,6 +264,7 @@ fn loaded_from(module: Box<dyn Module>) -> Box<Loaded> {
         failed: None,
         fresh: Some(module),
         noise_profile: profile,
+        response_curve: curve,
     })
 }
 
@@ -555,6 +568,7 @@ impl RackHost {
                 params: l.params.clone(),
                 groups: l.groups.clone(),
                 noise_profile: noise_profile_status(l.noise_profile.as_deref(), l.blob.as_deref()),
+                curve_handles: l.response_curve.as_deref().map(|c| c.handles().to_vec()),
             },
             Kind::Placeholder {
                 model,
@@ -580,6 +594,7 @@ impl RackHost {
                 params: Arc::from(Vec::new()),
                 groups: Arc::from(Vec::new()),
                 noise_profile: None,
+                curve_handles: None,
             },
         })
     }
@@ -1109,6 +1124,19 @@ impl RackHost {
     pub fn noise_profile_extension(&self, index: usize) -> Option<Arc<dyn NoiseProfile>> {
         match &self.slots.get(index)?.kind {
             Kind::Loaded(l) => l.noise_profile.clone(),
+            Kind::Placeholder { .. } => None,
+        }
+    }
+
+    // --- Response curve (S3-07, SPEC-015 §2.6.6) ---------------------------------------------
+
+    /// The module's [`ResponseCurve`] handle, if any (`None` for a placeholder or a module
+    /// without the extension). Safe to call `magnitude_db`/`component_magnitude_db` on from any
+    /// thread (module docs) — it is a pure function of its arguments, not of which instance is
+    /// currently live.
+    pub fn response_curve_extension(&self, index: usize) -> Option<Arc<dyn ResponseCurve>> {
+        match &self.slots.get(index)?.kind {
+            Kind::Loaded(l) => l.response_curve.clone(),
             Kind::Placeholder { .. } => None,
         }
     }

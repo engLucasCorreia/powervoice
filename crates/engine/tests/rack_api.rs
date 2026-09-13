@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use vox_engine::backend::fake::{FakeBackend, FakeDevice, FakeDirection};
 use vox_engine::{EngineConfig, EngineEvent, HostId, ManualEngine, RackApiError, RackCommand};
-use vox_modules::{Gain, NoiseGate};
+use vox_modules::{Gain, NoiseGate, ParametricEq};
 use vox_rack::{RackNotice, Registry, SlotStatus};
 
 fn dev() -> FakeDirection {
@@ -200,6 +200,113 @@ fn restart_reports_slot_restarted() {
         )
     });
     assert!(saw_restart, "expected a SlotRestarted notice");
+}
+
+/// S3-07 (SPEC-015 §2.6.6): `SetParamPlain` sets the mirror straight from a plain Hz/dB/Q value
+/// (no normalization, no text parsing) and echoes the same `ParamChanged` notice the other two
+/// setters do.
+#[test]
+fn set_param_plain_round_trips_through_the_mirror() {
+    let (mut eng, events) = rig();
+    eng.rack_command(RackCommand::Add {
+        module_id: ParametricEq::ID.into(),
+        index: 0,
+    })
+    .unwrap();
+
+    let freq_id = ParametricEq::param_id(2, ParametricEq::FREQ);
+    let snap = eng
+        .rack_command(RackCommand::SetParamPlain {
+            index: 0,
+            id: freq_id,
+            value: 1_234.0,
+        })
+        .unwrap();
+    let pi = snap.slots[0]
+        .info
+        .params
+        .iter()
+        .position(|p| p.id == freq_id)
+        .unwrap();
+    assert!((snap.slots[0].values[pi] - 1_234.0).abs() < 1e-9);
+
+    let saw_text = events.lock().unwrap().iter().any(|e| {
+        matches!(
+            e,
+            EngineEvent::Rack(RackNotice::ParamChanged { id, .. }) if *id == freq_id
+        )
+    });
+    assert!(saw_text, "expected a ParamChanged notice for the plain set");
+
+    // Out of range: rejected without touching the rack (same contract as the other setters).
+    let err = eng.rack_command(RackCommand::SetParamPlain {
+        index: 9,
+        id: freq_id,
+        value: 1.0,
+    });
+    assert!(matches!(err, Err(RackApiError::Rack(_))));
+}
+
+/// S3-07 (SPEC-015 §2.6.6): `response_curve` evaluates the EQ's `ResponseCurve` extension at the
+/// requested frequencies from the mirror's target values — reflecting a `SetParamPlain` echo
+/// immediately, with no audio processed in between (AC-16's "no audio processed in between",
+/// exercised here through the JSON lean-slice path rather than the binary `VXRC` frame).
+#[test]
+fn response_curve_reflects_the_mirror_and_reports_no_support_for_other_modules() {
+    let (mut eng, _events) = rig();
+
+    // No slot at all: `Unavailable`? No — out of range is a `Rack` error once the rack exists;
+    // before any output device opens it's `Unavailable` (covered by the dedicated test above).
+    eng.rack_command(RackCommand::Add {
+        module_id: Gain::ID.into(),
+        index: 0,
+    })
+    .unwrap();
+    let err = eng.response_curve(0, vec![1_000.0]);
+    assert!(
+        matches!(err, Err(RackApiError::Rack(_))),
+        "Gain has no ResponseCurve"
+    );
+
+    eng.rack_command(RackCommand::Add {
+        module_id: ParametricEq::ID.into(),
+        index: 1,
+    })
+    .unwrap();
+    let freqs = vec![20.0, 1_000.0, 20_000.0];
+    let curve = eng.response_curve(1, freqs.clone()).unwrap();
+    assert_eq!(curve.freqs_hz, freqs);
+    assert_eq!(curve.total_db, vec![0.0, 0.0, 0.0], "default EQ is flat");
+    assert_eq!(curve.components_db.len(), 9);
+
+    let freq_id = ParametricEq::param_id(2, ParametricEq::FREQ);
+    let gain_id = ParametricEq::param_id(2, ParametricEq::GAIN);
+    eng.rack_command(RackCommand::SetParamPlain {
+        index: 1,
+        id: freq_id,
+        value: 1_000.0,
+    })
+    .unwrap();
+    eng.rack_command(RackCommand::SetParamPlain {
+        index: 1,
+        id: gain_id,
+        value: 6.0,
+    })
+    .unwrap();
+    let curve = eng.response_curve(1, freqs).unwrap();
+    assert!(
+        (curve.total_db[1] - 6.0).abs() < 0.01,
+        "1 kHz should read ~+6 dB now"
+    );
+    assert!(
+        curve.total_db[0].abs() < curve.total_db[1].abs(),
+        "20 Hz, three decades from the peak's centre, should move far less than the centre itself"
+    );
+
+    // An oversized request is truncated, not rejected.
+    let many: Vec<f64> = (0..600).map(|i| 20.0 + f64::from(i)).collect();
+    let curve = eng.response_curve(1, many).unwrap();
+    assert_eq!(curve.freqs_hz.len(), vox_engine::MAX_RESPONSE_CURVE_POINTS);
 }
 
 /// `rack_model` (H-08 handoff: export builds its offline chain from this instead of

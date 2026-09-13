@@ -56,6 +56,20 @@
   --wave-ruler-text: #9a9da4;
   --wave-ruler-grid: #34373d;
   --wave-zero-line: #454850;
+
+  /* EQ graph (SPEC-015 §2.6.3, S3-07): band colors follow the HP…LP processing order. */
+  --eq-curve: #e6e7ea;
+  --eq-fill: rgba(230, 231, 234, 0.15);
+  --eq-grid: #34373d;
+  --eq-band-hp: #9a9da4;
+  --eq-band-ls: #4da3ff;
+  --eq-band-1: #35c46a;
+  --eq-band-2: #e0c93f;
+  --eq-band-3: #ff9f4d;
+  --eq-band-4: #e5484d;
+  --eq-band-5: #c76ae0;
+  --eq-band-hs: #7fc8ff;
+  --eq-band-lp: #6fb6ff;
 }
 
 * {

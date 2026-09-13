@@ -12,10 +12,13 @@
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
-use vox_engine::{RackApiError, RackSlot as EngineRackSlot, RackSnapshot as EngineRackSnapshot};
+use vox_engine::{
+    RackApiError, RackSlot as EngineRackSlot, RackSnapshot as EngineRackSnapshot,
+    ResponseCurvePoints,
+};
 use vox_rack::{
-    LocalizedText, ModuleDescriptor, NoiseProfileStatus, ParamFlags, ParamGroup, ParamInfo,
-    SlotInfo, SlotStatus, Taper, Unit,
+    CurveHandle, LocalizedText, ModuleDescriptor, NoiseProfileStatus, ParamFlags, ParamGroup,
+    ParamInfo, SlotInfo, SlotStatus, Taper, Unit,
 };
 
 use crate::ipc::error::{IpcError, IpcErrorCode};
@@ -296,6 +299,53 @@ impl From<&NoiseProfileStatus> for NoiseProfileStatusDto {
     }
 }
 
+/// One draggable EQ-graph node (S3-07, SPEC-015 §3 "ResponseCurve components"): the band's
+/// frequency/gain/Q/enable parameter ids, and which row of `rack_response_curve`'s
+/// `components_db` is its own response. `gain`/`q` are `None` for HP/LP (SPEC-015 §3 "handles").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct CurveHandleDto {
+    pub component: usize,
+    pub freq: u32,
+    pub gain: Option<u32>,
+    pub q: Option<u32>,
+    pub enable: Option<u32>,
+}
+
+impl From<&CurveHandle> for CurveHandleDto {
+    fn from(h: &CurveHandle) -> Self {
+        Self {
+            component: h.component,
+            freq: h.freq.0,
+            gain: h.gain.map(|p| p.0),
+            q: h.q.map(|p| p.0),
+            enable: h.enable.map(|p| p.0),
+        }
+    }
+}
+
+/// `rack_response_curve`'s response (S3-07, SPEC-015 §2.6.6, lean slice: JSON — the binary
+/// `VXRC` frame is hardening). `components_db` is one row per band, in `curve_handles` order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct ResponseCurveDto {
+    pub freqs_hz: Vec<f64>,
+    pub sample_rate_hz: f64,
+    pub total_db: Vec<f64>,
+    pub components_db: Vec<Vec<f64>>,
+}
+
+impl From<ResponseCurvePoints> for ResponseCurveDto {
+    fn from(p: ResponseCurvePoints) -> Self {
+        Self {
+            freqs_hz: p.freqs_hz,
+            sample_rate_hz: p.sample_rate_hz,
+            total_db: p.total_db,
+            components_db: p.components_db,
+        }
+    }
+}
+
 impl From<&SlotStatus> for SlotStatusDto {
     fn from(s: &SlotStatus) -> Self {
         match s {
@@ -331,6 +381,9 @@ pub struct RackSlotDto {
     /// `Some` only for a module with the `NoiseProfile` extension (S3-06): drives the NR panel's
     /// Capture button and status line.
     pub noise_profile: Option<NoiseProfileStatusDto>,
+    /// `Some` only for a module with the `ResponseCurve` extension (S3-07): the EQ graph panel
+    /// only renders when this is present, generic to any future module that exposes a curve.
+    pub curve_handles: Option<Vec<CurveHandleDto>>,
 }
 
 impl From<&EngineRackSlot> for RackSlotDto {
@@ -353,6 +406,10 @@ impl From<&EngineRackSlot> for RackSlotDto {
             groups: info.groups.iter().map(Into::into).collect(),
             values,
             noise_profile: info.noise_profile.as_ref().map(Into::into),
+            curve_handles: info
+                .curve_handles
+                .as_ref()
+                .map(|hs| hs.iter().map(Into::into).collect()),
         }
     }
 }

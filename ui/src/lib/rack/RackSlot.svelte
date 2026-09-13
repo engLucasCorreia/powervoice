@@ -1,4 +1,5 @@
 <script lang="ts">
+  import EqGraph from "../eq/EqGraph.svelte";
   import { t } from "../i18n";
   import type { ParamInfoDto, RackSlotDto } from "../ipc/bindings";
   import NoiseReductionSection from "./NoiseReductionSection.svelte";
@@ -155,6 +156,9 @@
   {/if}
   {#if !collapsed && slot.status.kind === "active"}
     <div class="body">
+      {#if slot.curve_handles !== null}
+        <EqGraph slotIndex={index} rackSlot={slot} {rateHz} />
+      {/if}
       {#if slot.noise_profile !== null}
         <NoiseReductionSection slotIndex={index} status={slot.noise_profile} />
       {/if}

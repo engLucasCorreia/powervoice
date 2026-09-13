@@ -35,7 +35,14 @@ export type BitDepth = "16" | "24" | "32f";
  */
 export type ClipboardChangedDto = { len_samples: number | null, sample_rate_hz: number | null, };
 
-export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_save" | "document_save_as" | "peaks_get" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak" | "edit_normalize_lufs" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check";
+export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_save" | "document_save_as" | "peaks_get" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak" | "edit_normalize_lufs" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check";
+
+/**
+ * One draggable EQ-graph node (S3-07, SPEC-015 §3 "ResponseCurve components"): the band's
+ * frequency/gain/Q/enable parameter ids, and which row of `rack_response_curve`'s
+ * `components_db` is its own response. `gain`/`q` are `None` for HP/LP (SPEC-015 §3 "handles").
+ */
+export type CurveHandleDto = { component: number, freq: number, gain: number | null, q: number | null, enable: number | null, };
 
 export type DefaultFormatDto = { sample_rate_hz: number, bit_depth: BitDepth, };
 
@@ -379,7 +386,12 @@ values: Array<ParamValueDto>,
  * `Some` only for a module with the `NoiseProfile` extension (S3-06): drives the NR panel's
  * Capture button and status line.
  */
-noise_profile: NoiseProfileStatusDto | null, };
+noise_profile: NoiseProfileStatusDto | null, 
+/**
+ * `Some` only for a module with the `ResponseCurve` extension (S3-07): the EQ graph panel
+ * only renders when this is present, generic to any future module that exposes a curve.
+ */
+curve_handles: Array<CurveHandleDto> | null, };
 
 /**
  * The rack panel's whole state (`rack_get`, every mutating command's result, and the
@@ -427,6 +439,12 @@ finishing: boolean, monitor: MonitorMode,
  * Monitoring is audible now.
  */
 monitoring: boolean, };
+
+/**
+ * `rack_response_curve`'s response (S3-07, SPEC-015 §2.6.6, lean slice: JSON — the binary
+ * `VXRC` frame is hardening). `components_db` is one row per band, in `curve_handles` order.
+ */
+export type ResponseCurveDto = { freqs_hz: Array<number>, sample_rate_hz: number, total_db: Array<number>, components_db: Array<Array<number>>, };
 
 /**
  * The whole settings file. `#[serde(default)]` at the container level means any field missing

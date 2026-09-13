@@ -12,6 +12,11 @@ use std::sync::Arc;
 
 use vox_rack::{NoiseProfile, ParamId, RackHost, RackModel, SlotInfo};
 
+/// Cap on [`EngineHandle::response_curve`](crate::EngineHandle::response_curve)'s frequency list
+/// (S3-07, SPEC-015 §2.6.6 "≤ 512 points"): an oversized request is truncated, not rejected — the
+/// graph never legitimately needs more than one point per device-pixel column.
+pub const MAX_RESPONSE_CURVE_POINTS: usize = 512;
+
 /// The built-in Noise Reduction module's id (SPEC-014 §2.1, ADR-005 §2). Mirrors
 /// `vox_modules::NoiseReduction::ID`; `vox-engine` doesn't otherwise depend on `vox-modules`
 /// (composition roots register modules, not the engine crate), so it is repeated here rather than
@@ -71,6 +76,18 @@ pub enum RackCommand {
         id: ParamId,
         /// Typed text.
         text: String,
+    },
+    /// Sets a parameter from a plain value (S3-07, SPEC-015 §2.6.6): the EQ graph's draggable
+    /// nodes send Hz/dB/Q values directly, through the inverse of the display axis mapping —
+    /// not taper code, so the UI still never runs filter math. Clamp-quantized and mirrored the
+    /// same way as [`RackCommand::SetParamNormalized`]/[`RackCommand::SetParamText`].
+    SetParamPlain {
+        /// Slot index.
+        index: usize,
+        /// Parameter id.
+        id: ParamId,
+        /// Plain value.
+        value: f64,
     },
     /// Restarts the slot's instance from its committed state (Restart of a failed slot, or a
     /// manual retry).
@@ -141,6 +158,24 @@ pub struct NrCapturePrep {
     pub values: Vec<f64>,
     /// The target slot's `NoiseProfile` handle.
     pub extension: Arc<dyn NoiseProfile>,
+}
+
+/// What [`crate::EngineHandle::response_curve`] returns (S3-07, SPEC-015 §2.6.6, lean slice: a
+/// plain in-memory answer, not yet the binary `VXRC` frame — hardening). Evaluated on the
+/// control thread from the target slot's `ResponseCurve` extension at the **target** values of
+/// the parameter mirror (so it reflects a `set_param_plain`/`SetParamPlain` echo immediately,
+/// with no audio processed in between), at the rack's rate.
+#[derive(Clone, Debug)]
+pub struct ResponseCurvePoints {
+    /// The requested frequencies (Hz), unchanged and in the order given.
+    pub freqs_hz: Vec<f64>,
+    /// The rate the curve was evaluated at.
+    pub sample_rate_hz: f64,
+    /// Total response (dB) at each of `freqs_hz`.
+    pub total_db: Vec<f64>,
+    /// One row per component (band), in the module's `handles()` order; empty when the module
+    /// reports zero components.
+    pub components_db: Vec<Vec<f64>>,
 }
 
 /// Error from a rack command.

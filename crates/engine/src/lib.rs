@@ -46,7 +46,8 @@ pub use engine::{
 };
 pub use prefs::DevicePrefs;
 pub use rack_api::{
-    NOISE_REDUCTION_MODULE_ID, NrCapturePrep, RackApiError, RackCommand, RackSlot, RackSnapshot,
+    MAX_RESPONSE_CURVE_POINTS, NOISE_REDUCTION_MODULE_ID, NrCapturePrep, RackApiError, RackCommand,
+    RackSlot, RackSnapshot, ResponseCurvePoints,
 };
 pub use record::{
     LIVE_PEAKS_SPB, LiveTakePeaks, MonitorMode, RecordDone, RecordError, RecordState,

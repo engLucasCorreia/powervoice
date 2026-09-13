@@ -21,6 +21,7 @@ import type {
   NrCaptureStartedDto,
   PeaksRequestDto,
   RackStateDto,
+  ResponseCurveDto,
   Settings,
   TransportStateDto,
 } from "./bindings";
@@ -150,6 +151,25 @@ export async function paramSetText(
   text: string,
 ): Promise<RackStateDto> {
   return invoke<RackStateDto>("param_set_text" satisfies CommandName, { slot, id, text });
+}
+
+/** S3-07: sets a parameter from a plain Hz/dB/Q value (SPEC-015 §2.6.6, the EQ graph's
+ * drag/wheel/double-click gestures). */
+export async function paramSetPlain(
+  slot: number,
+  id: number,
+  value: number,
+): Promise<RackStateDto> {
+  return invoke<RackStateDto>("param_set_plain" satisfies CommandName, { slot, id, value });
+}
+
+/** S3-07: the EQ graph's response curve at `points` (Hz), lean-slice JSON (SPEC-015 §2.6.6; the
+ * binary `VXRC` frame is hardening). */
+export async function rackResponseCurve(
+  slot: number,
+  points: number[],
+): Promise<ResponseCurveDto> {
+  return invoke<ResponseCurveDto>("rack_response_curve" satisfies CommandName, { slot, points });
 }
 
 /** S1-03: opens `path` as the document (SPEC-005 §2.3), replacing whatever was open. */

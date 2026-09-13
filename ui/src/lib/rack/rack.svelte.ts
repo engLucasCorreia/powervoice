@@ -9,6 +9,7 @@ import type {
 } from "../ipc/bindings";
 import {
   paramSetNormalized,
+  paramSetPlain,
   paramSetText,
   rackAb,
   rackAdd,
@@ -133,6 +134,14 @@ export function lastFocusedSlotIndex(): number | null {
  * accepted. `notifyOnError: false` (the inline text-entry field) shows its own error outline
  * instead of a toast — see `ParamControl.svelte`.
  */
+/**
+ * Sets a parameter from a plain Hz/dB/Q value immediately (S3-07, SPEC-015 §2.6.6): double-click
+ * (toggle a band), Alt+click, and the header toggles — one-shot gestures, not a drag. Node drags
+ * use {@link setParamPlainDragged} instead, coalesced to one call per animation frame.
+ */
+export const setParamPlain = (slot: number, id: number, value: number): Promise<void> =>
+  run(() => paramSetPlain(slot, id, value));
+
 export async function setParamText(
   slot: number,
   id: number,
@@ -211,6 +220,48 @@ export function flushPendingDrags(): void {
   }
 }
 
+// --- Plain-value drags (S3-07, SPEC-015 §2.6.6): the EQ graph's node drags, same coalescing
+// rule as the slider drags above but sending Hz/dB/Q values, not normalized positions.
+
+const pendingPlainDrags = new Map<string, PendingDrag>();
+
+function flushPlainDrag(key: string, slot: number, id: number): void {
+  const pending = pendingPlainDrags.get(key);
+  if (!pending) {
+    return;
+  }
+  pendingPlainDrags.delete(key);
+  paramSetPlain(slot, id, pending.value).then(applyState).catch(report);
+}
+
+/**
+ * EQ node drag: a plain Hz/dB/Q value. Coalesced to at most one `param_set_plain` call per
+ * animation frame per parameter (SPEC-015 §2.6.4 "Rate") — call this as often as pointer events
+ * arrive; only the latest value before each frame is sent.
+ */
+export function setParamPlainDragged(slot: number, id: number, value: number): void {
+  const key = dragKey(slot, id);
+  const existing = pendingPlainDrags.get(key);
+  if (existing) {
+    existing.value = value;
+    return;
+  }
+  const frame = requestFrame(() => flushPlainDrag(key, slot, id));
+  pendingPlainDrags.set(key, { value, frame });
+}
+
+/** Test helper: waits for any coalesced plain-value drag calls to be sent. */
+export function flushPendingPlainDrags(): void {
+  for (const [key, pending] of pendingPlainDrags) {
+    cancelFrame(pending.frame);
+    pendingPlainDrags.delete(key);
+    const [slotStr, idStr] = key.split(":");
+    paramSetPlain(Number(slotStr), Number(idStr), pending.value)
+      .then(applyState)
+      .catch(report);
+  }
+}
+
 // --- Loading and live updates ---------------------------------------------------------------
 
 /** Loads the registry and the current rack, subscribes to `rack_changed`/`param_changed`/
@@ -269,6 +320,10 @@ export async function loadRack(): Promise<() => void> {
       cancelFrame(pending.frame);
     }
     pendingDrags.clear();
+    for (const pending of pendingPlainDrags.values()) {
+      cancelFrame(pending.frame);
+    }
+    pendingPlainDrags.clear();
   };
 }
 
@@ -283,4 +338,8 @@ export function resetRackForTest(): void {
     cancelFrame(pending.frame);
   }
   pendingDrags.clear();
+  for (const pending of pendingPlainDrags.values()) {
+    cancelFrame(pending.frame);
+  }
+  pendingPlainDrags.clear();
 }

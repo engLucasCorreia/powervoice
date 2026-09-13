@@ -33,6 +33,7 @@ function slotFixture(uid: number): RackSlotDto {
     groups: [],
     values: [],
     noise_profile: null,
+    curve_handles: null,
   };
 }
 

@@ -49,11 +49,13 @@ pub use registry::{Registry, RegistryError, Resolved};
 pub use shim::DualMonoShim;
 /// Module-API types a rack driver needs (the engine drives the rack through these without a
 /// direct `module-api` edge, ADR-001 §2). `NoiseProfile` (S3-06): the noise-print capture
-/// extension a target slot's [`RackHost::noise_profile_extension`] returns.
+/// extension a target slot's [`RackHost::noise_profile_extension`] returns. `ResponseCurve` /
+/// `CurveHandle` (S3-07): the EQ-graph extension a target slot's
+/// [`RackHost::response_curve_extension`] returns.
 pub use vox_module_api::{
-    ActivateConfig, ChannelLayout, GroupId, LocalizedText, ModuleDescriptor, ModuleError,
-    ModuleFactory, NoiseProfile, ParamFlags, ParamGroup, ParamId, ParamInfo, ProcessMode, Taper,
-    Transport, Unit,
+    ActivateConfig, ChannelLayout, CurveHandle, GroupId, LocalizedText, ModuleDescriptor,
+    ModuleError, ModuleFactory, NoiseProfile, ParamFlags, ParamGroup, ParamId, ParamInfo,
+    ProcessMode, ResponseCurve, Taper, Transport, Unit,
 };
 
 use vox_module_api::{DEFAULT_EVENT_CAPACITY, EventListError, SchemaError, StateError};

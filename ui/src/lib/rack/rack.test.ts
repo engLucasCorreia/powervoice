@@ -15,6 +15,7 @@ import { clearNotices, noticesState } from "../state/notices.svelte";
 import {
   addModule,
   flushPendingDrags,
+  flushPendingPlainDrags,
   loadRack,
   moveSlot,
   rackState,
@@ -24,6 +25,8 @@ import {
   setAb,
   setBypass,
   setParamNormalized,
+  setParamPlain,
+  setParamPlainDragged,
   setParamText,
 } from "./rack.svelte";
 
@@ -82,6 +85,7 @@ function slotFixture(overrides: Partial<RackSlotDto> = {}): RackSlotDto {
     groups: [],
     values: params.map((p) => ({ id: p.id, value: p.default, normalized: 0.5, text: "0.0 dB" })),
     noise_profile: null,
+    curve_handles: null,
     ...overrides,
   };
 }
@@ -275,6 +279,50 @@ describe("setParamNormalized drag coalescing (SPEC-012 §2.4: ≤1 call/frame, l
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(calls).toContainEqual({ slot: 0, id: 0, value: 0.2 });
     expect(calls).toContainEqual({ slot: 1, id: 5, value: 0.7 });
+  });
+});
+
+describe("setParamPlain (S3-07, SPEC-015 §2.6.6: EQ graph plain-value gestures)", () => {
+  it("sends the value immediately (double-click / Alt+click, not a drag)", async () => {
+    const calls: unknown[] = [];
+    mockIPC((cmd, args) => {
+      calls.push({ cmd, args });
+      return rackFixture([slotFixture()]);
+    });
+    await setParamPlain(0, 11, 1_234.5);
+    expect(calls).toEqual([{ cmd: "param_set_plain", args: { slot: 0, id: 11, value: 1_234.5 } }]);
+  });
+
+  it("setParamPlainDragged coalesces to one call per animation frame, latest wins", async () => {
+    const calls: unknown[] = [];
+    mockIPC((cmd, args) => {
+      calls.push(args);
+      return rackFixture([slotFixture()]);
+    });
+    setParamPlainDragged(0, 11, 100);
+    setParamPlainDragged(0, 11, 500);
+    setParamPlainDragged(0, 11, 999);
+    flushPendingPlainDrags();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toEqual([{ slot: 0, id: 11, value: 999 }]);
+  });
+
+  it("tracks separate slots/params independently, and independently of normalized drags", async () => {
+    const calls: unknown[] = [];
+    mockIPC((cmd, args) => {
+      calls.push({ cmd, args });
+      return rackFixture([slotFixture()]);
+    });
+    setParamPlainDragged(0, 11, 200);
+    setParamNormalized(0, 11, 0.4);
+    flushPendingDrags();
+    flushPendingPlainDrags();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toContainEqual({ cmd: "param_set_plain", args: { slot: 0, id: 11, value: 200 } });
+    expect(calls).toContainEqual({
+      cmd: "param_set_normalized",
+      args: { slot: 0, id: 11, value: 0.4 },
+    });
   });
 });
 

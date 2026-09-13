@@ -127,6 +127,7 @@ function slotFixture(): RackSlotDto {
     groups,
     values: params.map((pp) => ({ id: pp.id, value: pp.default, normalized: 0, text: String(pp.default) })),
     noise_profile: null,
+    curve_handles: null,
   };
 }
 
@@ -238,6 +239,33 @@ describe("noise-print section (S3-06)", () => {
     const firstParamNode = body.querySelector('[data-testid="param-row"], [data-testid="param-group"]');
     expect(
       nrSection!.compareDocumentPosition(firstParamNode!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    teardown();
+  });
+});
+
+// S3-07, SPEC-015 §2.1/§2.6: the EQ graph replaces nothing — it renders above the generic
+// parameter body for any module exposing `ResponseCurve` (`curve_handles !== null`), which stays
+// available below it.
+describe("EQ graph section (S3-07)", () => {
+  it("is absent for a slot with no curve_handles", () => {
+    const { target, teardown } = render(slotFixture());
+    expect(target.querySelector('[data-testid="eq-graph"]')).toBeNull();
+    teardown();
+  });
+
+  it("renders above the generic parameter body for a slot that has curve_handles", () => {
+    const slot: RackSlotDto = {
+      ...slotFixture(),
+      curve_handles: [{ component: 0, freq: 0, gain: null, q: null, enable: null }],
+    };
+    const { target, teardown } = render(slot);
+    const body = target.querySelector(".body")!;
+    const graph = body.querySelector('[data-testid="eq-graph"]');
+    expect(graph).not.toBeNull();
+    const firstParamNode = body.querySelector('[data-testid="param-row"], [data-testid="param-group"]');
+    expect(
+      graph!.compareDocumentPosition(firstParamNode!) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     teardown();
   });

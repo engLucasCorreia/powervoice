@@ -38,7 +38,8 @@ use crate::input::{
 use crate::output::{OutputCb, OutputParts, PartsSlot, take_parts};
 use crate::prefs::DevicePrefs;
 use crate::rack_api::{
-    NOISE_REDUCTION_MODULE_ID, NrCapturePrep, RackApiError, RackCommand, RackSnapshot,
+    MAX_RESPONSE_CURVE_POINTS, NOISE_REDUCTION_MODULE_ID, NrCapturePrep, RackApiError, RackCommand,
+    RackSnapshot, ResponseCurvePoints,
 };
 use crate::reader::{self, Reader, ReaderCmd};
 use crate::record::{LiveTakePeaks, MonitorMode, RecordDone, RecordError, RecordState, StopReason};
@@ -562,6 +563,9 @@ impl Control {
                 RackCommand::SetParamText { index, id, text } => {
                     host.set_param_text(index, id, &text).map(|_| ())
                 }
+                RackCommand::SetParamPlain { index, id, value } => {
+                    host.set_param(index, id, value).map(|_| ())
+                }
                 RackCommand::Restart { index } => host.restart(index),
             };
             (result, host.take_notices())
@@ -671,6 +675,50 @@ impl Control {
         let snapshot = self.rack_snapshot();
         (self.events)(EngineEvent::RackChanged(snapshot.clone()));
         Ok(snapshot)
+    }
+
+    /// The EQ graph's response curve (S3-07, SPEC-015 §2.6.6): evaluates slot `index`'s
+    /// `ResponseCurve` extension at `freqs_hz` (truncated to
+    /// [`MAX_RESPONSE_CURVE_POINTS`](crate::rack_api::MAX_RESPONSE_CURVE_POINTS) if longer) from
+    /// the parameter mirror's current (target) values, at the rack's rate. Read-only: never
+    /// touches the audio thread, so it's safe to call every animation frame.
+    pub(crate) fn response_curve(
+        &self,
+        index: usize,
+        mut freqs_hz: Vec<f64>,
+    ) -> Result<ResponseCurvePoints, RackApiError> {
+        freqs_hz.truncate(MAX_RESPONSE_CURVE_POINTS);
+        let Some(out) = self.output.as_ref() else {
+            return Err(RackApiError::Unavailable);
+        };
+        let host = &out.rack;
+        let ext = host.response_curve_extension(index).ok_or_else(|| {
+            RackApiError::Rack("the target slot has no response-curve support".into())
+        })?;
+        let info = host.slot_info(index).ok_or(RackApiError::Rack(format!(
+            "slot index {index} out of range"
+        )))?;
+        let values: Vec<f64> = info
+            .params
+            .iter()
+            .map(|p| host.param_value(index, p.id).unwrap_or(p.default))
+            .collect();
+        let sample_rate_hz = host.config().sample_rate;
+        let mut total_db = vec![0.0; freqs_hz.len()];
+        ext.magnitude_db(&values, sample_rate_hz, &freqs_hz, &mut total_db);
+        let component_count = ext.component_count(&values);
+        let mut components_db = Vec::with_capacity(component_count);
+        for c in 0..component_count {
+            let mut out = vec![0.0; freqs_hz.len()];
+            ext.component_magnitude_db(c, &values, sample_rate_hz, &freqs_hz, &mut out);
+            components_db.push(out);
+        }
+        Ok(ResponseCurvePoints {
+            freqs_hz,
+            sample_rate_hz,
+            total_db,
+            components_db,
+        })
     }
 
     // --- Devices ---------------------------------------------------------------------------

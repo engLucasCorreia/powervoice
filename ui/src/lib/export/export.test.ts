@@ -67,6 +67,7 @@ function nrSlotFixture(overrides: Partial<RackSlotDto> = {}): RackSlotDto {
     groups: [],
     values: params.map((p) => ({ id: p.id, value: 1, normalized: 1, text: "On" })),
     noise_profile: "loaded",
+    curve_handles: null,
     ...overrides,
   };
 }

@@ -22,7 +22,9 @@ use crate::control::{self, Control, ControlMsg};
 use crate::device_state::DeviceStatus;
 use crate::devices::DeviceNotice;
 use crate::prefs::DevicePrefs;
-use crate::rack_api::{NrCapturePrep, RackApiError, RackCommand, RackSnapshot};
+use crate::rack_api::{
+    NrCapturePrep, RackApiError, RackCommand, RackSnapshot, ResponseCurvePoints,
+};
 use crate::record::{LiveTakePeaks, MonitorMode, RecordDone, RecordError, RecordState};
 use crate::telemetry::TelemetrySink;
 use crate::transport::{TransportCommand, TransportState};
@@ -328,6 +330,19 @@ impl EngineHandle {
         self.call(move |c| c.nr_capture_apply(index, blob))
             .unwrap_or(Err(RackApiError::Unavailable))
     }
+
+    /// The EQ graph's response curve (S3-07, SPEC-015 §2.6.6): evaluates slot `index`'s
+    /// `ResponseCurve` extension at `freqs_hz` from the parameter mirror's current values, at the
+    /// rack's rate. `freqs_hz` is truncated to `MAX_RESPONSE_CURVE_POINTS` if longer. Read-only;
+    /// call from any thread.
+    pub fn response_curve(
+        &self,
+        index: usize,
+        freqs_hz: Vec<f64>,
+    ) -> Result<ResponseCurvePoints, RackApiError> {
+        self.call(move |c| c.response_curve(index, freqs_hz))
+            .unwrap_or(Err(RackApiError::Unavailable))
+    }
 }
 
 /// The engine without threads (deterministic tests, benches): the reader runs inline, devices are
@@ -465,6 +480,15 @@ impl ManualEngine {
         blob: Vec<u8>,
     ) -> Result<RackSnapshot, RackApiError> {
         self.control.nr_capture_apply(index, blob)
+    }
+
+    /// See [`EngineHandle::response_curve`].
+    pub fn response_curve(
+        &self,
+        index: usize,
+        freqs_hz: Vec<f64>,
+    ) -> Result<ResponseCurvePoints, RackApiError> {
+        self.control.response_curve(index, freqs_hz)
     }
 }
 

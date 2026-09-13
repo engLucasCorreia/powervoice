@@ -1,11 +1,15 @@
-//! Tauri IPC layer (ADR-003): DTOs, the command registry, and the shared error type.
+//! Tauri IPC layer (ADR-003): DTOs, the command registry, events, and the shared error type.
 //!
-//! This is the only module allowed to depend on `tauri` and `ts-rs` (ADR-001 rule 3). Domain
-//! crates never see either; `src-tauri` maps domain types to these DTOs with `From` impls.
+//! `tauri`/`ts-rs` usage is confined to `src-tauri` at the crate level (ADR-001 rule 3: "`tauri`
+//! and `ts-rs`: only `src-tauri`"). Within this crate, this module plus the closely related
+//! `settings` module (T-104: settings have no separate domain crate to keep those out of, so
+//! their schema derives `ts_rs::TS` directly) are where DTOs live; domain crates never see
+//! either dependency. `src-tauri` maps domain → DTO with `From` impls, which the compiler checks.
 
 mod commands;
 mod dto;
 mod error;
+mod events;
 mod macros;
 
 // A glob import, not a named one: `#[tauri::command]` also generates a hidden macro alongside
@@ -14,6 +18,7 @@ mod macros;
 pub use commands::*;
 pub use dto::AppInfo;
 pub use error::{IpcError, IpcErrorCode};
+pub use events::{EVENT_NAME_VARIANTS, EVENT_NAMES, EventName, Notice, NoticeLevel, emit_notice};
 
 // T-007 / ADR-009: the dev-only platform spike registers its commands here too (rather than
 // duplicating `ipc_commands!`/`invoke_handler` machinery) only when built with `--features
@@ -23,11 +28,13 @@ pub use error::{IpcError, IpcErrorCode};
 pub use crate::spike::*;
 
 #[cfg(not(feature = "spike"))]
-crate::ipc_commands!(app_info);
+crate::ipc_commands!(app_info, settings_get, settings_set);
 
 #[cfg(feature = "spike")]
 crate::ipc_commands!(
     app_info,
+    settings_get,
+    settings_set,
     spike_env,
     spike_waveform_peaks,
     spike_spectrogram_texture,

@@ -7,6 +7,19 @@
   "panel.properties.title": "Properties",
   "panel.meters.title": "Meters",
 
+  "error.internal": "Something went wrong: {message}",
+  "error.invalid_argument": "That value isn't valid.",
+  "error.not_found": "That item couldn't be found.",
+  "error.not_while_recording": "Not available while recording.",
+  "error.device_not_found": "Device not found.",
+  "error.device_lost": "Device disconnected.",
+  "error.io": "A file operation failed: {message}",
+  "error.cancelled": "Cancelled.",
+  "error.settings_io": "Couldn't save settings: {message}",
+  "error.unknown": "An unexpected error occurred.",
+
+  "notice.dismiss": "Dismiss",
+
   "spike.title": "T-007 Platform Spike",
   "spike.subtitle": "Dev-only renderer + IPC measurements for ADR-009. Not part of the production UI (only present when powervoice-app is built with --features spike).",
   "spike.env.autoRun": "auto-run: {value}",

@@ -19,9 +19,15 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2.11", features = [] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 ts-rs = "12"
 anyhow = "1"
+# T-104: file logging + crash logs (tracing to a rotating file in the OS state/log dir), and OS
+# config/state directory lookup for the settings file and logs. src-tauri-only (CLAUDE.md).
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+directories = "6"
 
 [features]
 # Dev-only platform spike (T-007 / ADR-009): renderer + IPC throughput measurements. Off by

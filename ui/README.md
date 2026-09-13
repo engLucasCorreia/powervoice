@@ -16,14 +16,23 @@ From the repo root:
 Directly in `ui/`, the usual `npm run dev` / `npm run build` / `npm run check` / `npm run test`
 scripts work the same way `just` invokes them.
 
-## Linux WebKitGTK workaround
+## Linux WebKitGTK DMA-BUF default
 
-WebKitGTK's GPU (DMA-BUF) compositing path can be slow or broken on some Linux setups (notably
-some NVIDIA configurations). If `just dev` renders a blank/garbled window or a laggy UI, set:
+WebKitGTK's GPU (DMA-BUF) compositing path measured ~1.7x worse frame times on this project's test
+hardware (ADR-009 §3: AMD Phoenix/Mesa, not just NVIDIA as first assumed). So, **on Linux,
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` is the default**, applied two ways (ADR-009 Amendment 1 / MEMORY
+D-016):
+
+- `powervoice-app` itself sets it at startup, before the WebView is created (`src-tauri/src/webkit.rs`),
+  unless it's already set.
+- `just dev` and `just spike` set it too, so the Tauri CLI's own dev-server process sees it from the
+  start.
+
+**Opt out** (keep the default WebKit DMA-BUF renderer) with:
 
 ```sh
-POWERVOICE_WEBKIT_SAFE=1 just dev
+POWERVOICE_WEBKIT_DMABUF=1 just dev
 ```
 
-`just dev` then sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` before launching, which forces a software
-compositing path. This is off by default because it costs some GPU performance.
+Setting `WEBKIT_DISABLE_DMABUF_RENDERER` yourself (to `0` or otherwise) also takes precedence —
+PowerVoice never overrides a value you already set.

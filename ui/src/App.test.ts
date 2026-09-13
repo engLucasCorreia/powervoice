@@ -13,6 +13,23 @@ describe("App shell", () => {
       if (cmd === "app_info") {
         return { name: "PowerVoice", version: "9.9.9" };
       }
+      if (cmd === "settings_get") {
+        return {
+          version: 1,
+          device: {
+            host: "pipewire",
+            input_device: null,
+            input_channel: 1,
+            output_device: null,
+            sample_rate_hz: null,
+            buffer_size_frames: null,
+          },
+          default_format: { sample_rate_hz: 48000, bit_depth: "24" },
+          monitor_mode: "off",
+          telemetry_rate_hz: 60,
+          memory_budget_mib: 2048,
+        };
+      }
       throw new Error(`unmocked command: ${cmd}`);
     });
 

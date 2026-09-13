@@ -53,12 +53,15 @@ bench:
 fixtures:
     cargo run --release -p powervoice-cli --bin gen-fixtures
 
-# Run app in dev mode. Set POWERVOICE_WEBKIT_SAFE=1 to work around slow/broken WebKitGTK GPU
-# compositing on some Linux setups (see ui/README.md).
+# Run app in dev mode. On Linux, defaults WEBKIT_DISABLE_DMABUF_RENDERER=1 (ADR-009 Amendment 1 /
+# MEMORY D-016) unless it's already set, or POWERVOICE_WEBKIT_DMABUF=1 opts out and keeps the
+# default WebKit DMA-BUF renderer (see ui/README.md). `powervoice-app` itself applies the same
+# rule at startup (src-tauri/src/webkit.rs) — this mirrors it for `npm run dev`'s own Vite/Tauri
+# CLI process, which starts before the Rust binary does.
 dev:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ "${POWERVOICE_WEBKIT_SAFE:-0}" = "1" ]; then
+    if [ "$(uname -s)" = "Linux" ] && [ -z "${WEBKIT_DISABLE_DMABUF_RENDERER:-}" ] && [ "${POWERVOICE_WEBKIT_DMABUF:-0}" != "1" ]; then
         export WEBKIT_DISABLE_DMABUF_RENDERER=1
     fi
     npm --prefix ui run tauri dev
@@ -67,11 +70,15 @@ dev:
 # it. POWERVOICE_SPIKE=1 (default here) makes the spike view auto-run its measurement suite and
 # write results to bench-results/spike-<timestamp>.json; set POWERVOICE_SPIKE_EXIT=1 beforehand to
 # also close the window once results are written (used for automated/scripted runs). Without
-# POWERVOICE_SPIKE_EXIT the window stays open for the owner's manual input checks (ADR-009). Set
-# WEBKIT_DISABLE_DMABUF_RENDERER=1 beforehand to run that configuration.
+# POWERVOICE_SPIKE_EXIT the window stays open for the owner's manual input checks (ADR-009). Same
+# Linux WEBKIT_DISABLE_DMABUF_RENDERER default/opt-out as `just dev` (see above); set
+# POWERVOICE_WEBKIT_DMABUF=1 beforehand to force the default WebKit DMA-BUF renderer instead.
 spike:
     #!/usr/bin/env bash
     set -euo pipefail
+    if [ "$(uname -s)" = "Linux" ] && [ -z "${WEBKIT_DISABLE_DMABUF_RENDERER:-}" ] && [ "${POWERVOICE_WEBKIT_DMABUF:-0}" != "1" ]; then
+        export WEBKIT_DISABLE_DMABUF_RENDERER=1
+    fi
     export POWERVOICE_SPIKE="${POWERVOICE_SPIKE:-1}"
     npm --prefix ui run tauri dev -- --features spike
 

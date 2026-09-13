@@ -5,15 +5,98 @@
  */
 export type AppInfo = { name: string, version: string, };
 
-export type CommandName = "app_info";
+export type BitDepth = "16" | "24" | "32f";
+
+export type CommandName = "app_info" | "settings_get" | "settings_set";
+
+export type DefaultFormatDto = { sample_rate_hz: number, bit_depth: BitDepth, };
+
+/**
+ * Persisted device selection — "saved intent", not the applied value: SPEC-001 §2.5 requires
+ * that a value which triggered a runtime fallback (unsupported sample rate, out-of-range buffer
+ * size) is still saved as the user's *intent*, so PowerVoice retries it next time the device's
+ * capabilities might have changed. This DTO therefore never carries a "what was actually
+ * applied" field — that belongs to runtime state/telemetry (a later ticket), not settings.
+ */
+export type DevicePrefsDto = { 
+/**
+ * Audio host/backend id (SPEC-001 §3: `alsa`|`pipewire`|`jack` on Linux, `wasapi` on
+ * Windows, `coreaudio` on macOS). Kept as a plain string rather than a closed enum: only
+ * the engine (T-102) can enumerate which hosts actually exist on this machine.
+ */
+host: string, 
+/**
+ * `None` = "None" (SPEC-001 §3 factory default; disarms recording/monitoring input).
+ * Otherwise the device's host-reported name — devices are keyed by `(host, name)`, not
+ * index (SPEC-001 §2.2: cpal indices aren't stable across enumerations).
+ */
+input_device: string | null, 
+/**
+ * 1-based input channel index (SPEC-001 §3: `1..=N`, N = device max input channels).
+ */
+input_channel: number, 
+/**
+ * `None` = host default output device (SPEC-001 §3).
+ */
+output_device: string | null, 
+/**
+ * `None` = device default sample rate ("Auto" is not a documented option for rate in
+ * SPEC-001 §3, but no saved preference yet behaves the same as "use the device default").
+ */
+sample_rate_hz: number | null, 
+/**
+ * `None` = "Auto" (device default; SPEC-001 §3 factory default).
+ */
+buffer_size_frames: number | null, };
+
+export type EventName = "notice";
 
 /**
  * Error shape returned by every command (ADR-003). `key` is an i18n key, `params` fills its
- * placeholders. This is a stub: the full error taxonomy and code list land in T-104.
+ * placeholders (CLAUDE.md: every user-facing string goes through i18n — commands never return
+ * pre-rendered text).
  */
 export type IpcError = { code: IpcErrorCode, key: string, params: { [key in string]: string }, };
 
 /**
- * Coarse error classification. T-104 fills in the full set of codes.
+ * Coarse error classification shared by every command (ADR-003). This ticket (T-104) fixes the
+ * taxonomy shape and fills in the codes already named by an approved spec/ADR; a command-owning
+ * ticket adds a new variant here only when its own spec names a distinct error condition, to
+ * keep this a small, meaningful set rather than one variant per command.
  */
-export type IpcErrorCode = "internal";
+export type IpcErrorCode = "internal" | "invalid_argument" | "not_found" | "not_while_recording" | "device_not_found" | "device_lost" | "io" | "cancelled";
+
+export type MonitorMode = "off" | "dry" | "through_rack";
+
+/**
+ * A user-facing notice (ADR-003 `notice` event). Two shapes, distinguished by `persistent`:
+ * - a **toast** (`persistent: false`, `id: None`): transient, auto-dismisses in the UI (e.g.
+ *   SPEC-001 §2.3's fallback/reconnect notices).
+ * - a **banner** (`persistent: true`, `id: Some(..)`): stays until the user dismisses it or
+ *   another `Notice` with the same `id` replaces/clears it (e.g. SPEC-001 §2.3's device-lost
+ *   banner turning into a brief "reconnected" notice).
+ *
+ * `key`/`params` is an i18n message key plus its placeholder values (CLAUDE.md: every
+ * user-facing string goes through i18n) — this event never carries pre-rendered text.
+ */
+export type Notice = { level: NoticeLevel, key: string, params: { [key in string]: string }, persistent: boolean, 
+/**
+ * Stable id for a banner that a later `Notice` can replace or clear. `None` for one-shot
+ * toasts, which are never replaced (each is its own event).
+ */
+id: string | null, };
+
+export type NoticeLevel = "info" | "warning" | "error";
+
+/**
+ * The whole settings file. `#[serde(default)]` at the container level means any field missing
+ * from the on-disk JSON (an older/partial file) is filled from [`Settings::default`], and the
+ * flattened `extra` map preserves any *unknown* field a future version wrote, so round-tripping
+ * through this version never silently drops it (acceptance criterion: "unknown future fields
+ * preserved").
+ */
+export type Settings = { version: number, device: DevicePrefsDto, default_format: DefaultFormatDto, monitor_mode: MonitorMode, 
+/**
+ * SPEC-003 §3: {30, 60} Hz, default 60 (measured free on WebKitGTK, ADR-009 §3).
+ */
+telemetry_rate_hz: number, memory_budget_mib: number, };

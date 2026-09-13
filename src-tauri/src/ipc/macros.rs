@@ -31,3 +31,35 @@ macro_rules! ipc_commands {
         pub const COMMAND_NAME_VARIANTS: &[CommandName] = &[$(CommandName::$name),+];
     };
 }
+
+/// Declares every event name emitted to the UI in one place (ADR-003), mirroring
+/// `ipc_commands!` above. `ipc_events!(notice, other_event, ...)` expands to:
+/// - `EVENT_NAMES: &[&str]`, the literal, snake_case event name list;
+/// - `EventName`, a unit enum (one variant per event) deriving `ts_rs::TS`, exported as a TS
+///   string union whose members are exactly the event names, plus an `as_str()` for use with
+///   `tauri::Emitter::emit`;
+/// - `EVENT_NAME_VARIANTS`, one `EventName` per event, used only by the unit test that guards
+///   `EVENT_NAMES` and `EventName` against drifting apart (same pattern as `COMMAND_NAME_VARIANTS`).
+#[macro_export]
+macro_rules! ipc_events {
+    ($($name:ident),+ $(,)?) => {
+        pub const EVENT_NAMES: &[&str] = &[$(stringify!($name)),+];
+
+        #[allow(non_camel_case_types)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
+        #[ts(export, export_to = "bindings.ts")]
+        pub enum EventName {
+            $($name),+
+        }
+
+        impl EventName {
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(EventName::$name => stringify!($name)),+
+                }
+            }
+        }
+
+        pub const EVENT_NAME_VARIANTS: &[EventName] = &[$(EventName::$name),+];
+    };
+}

@@ -8,8 +8,8 @@ use vox_project::{PEAKS_RAW_SPP, VxpkHeader, encode_vxpk};
 
 use crate::document::{DocumentService, NormalizeNotice, PasteTarget};
 use crate::ipc::document_dto::{
-    ClipboardChangedDto, DocumentDto, EditResultDto, EditTargetDto, HistoryStateDto,
-    PeaksRequestDto,
+    ClipboardChangedDto, DocumentDto, EditResultDto, EditTargetDto, HistoryStateDto, MarkerDto,
+    MarkerRangeKindDto, PeaksRequestDto,
 };
 use crate::ipc::error::IpcError;
 use crate::ipc::events::{EventName, Notice, NoticeLevel, emit_notice};
@@ -287,4 +287,80 @@ pub async fn history_redo<R: Runtime>(
     let result: EditResultDto = run_blocking(move || service.history_redo()).await?.into();
     after_edit(&app, &doc);
     Ok(result)
+}
+
+// --- S2-03: markers ---------------------------------------------------------------------------
+
+/// The current marker list (SPEC-009 §2.1), in canonical order. Empty (not an error) when no
+/// document is open. The UI refetches on every `document_changed` (marker commands emit it too,
+/// below), rather than a dedicated `markers_changed` event (S2-03 essential subset).
+#[tauri::command]
+pub async fn markers_get(doc: State<'_, DocumentService>) -> Result<Vec<MarkerDto>, IpcError> {
+    let service = (*doc).clone();
+    let markers = run_blocking(move || Ok(service.markers_get())).await?;
+    Ok(markers.into_iter().map(Into::into).collect())
+}
+
+/// Adds a point (`len_samples == 0`) or region marker (SPEC-009 §2.2). One undo entry
+/// `history.marker_add`; never stops playback.
+#[tauri::command]
+pub async fn marker_add<R: Runtime>(
+    app: AppHandle<R>,
+    doc: State<'_, DocumentService>,
+    pos_samples: u64,
+    len_samples: u64,
+) -> Result<MarkerDto, IpcError> {
+    let service = (*doc).clone();
+    let marker: MarkerDto = run_blocking(move || service.marker_add(pos_samples, len_samples))
+        .await?
+        .into();
+    after_edit(&app, &doc);
+    Ok(marker)
+}
+
+/// Renames marker `id` (SPEC-009 §2.4, normalized server-side). `error.marker_name_empty` when
+/// the normalized name is empty.
+#[tauri::command]
+pub async fn marker_rename<R: Runtime>(
+    app: AppHandle<R>,
+    doc: State<'_, DocumentService>,
+    id: u64,
+    name: String,
+) -> Result<(), IpcError> {
+    let service = (*doc).clone();
+    run_blocking(move || service.marker_rename(id, &name)).await?;
+    after_edit(&app, &doc);
+    Ok(())
+}
+
+/// Moves or resizes marker `id` to `[pos_samples, pos_samples + len_samples)` (SPEC-009 §2.5's
+/// panel-typed Start/End/Duration edits — dragging is deferred, ticket "Out" list).
+#[tauri::command]
+pub async fn marker_set_range<R: Runtime>(
+    app: AppHandle<R>,
+    doc: State<'_, DocumentService>,
+    id: u64,
+    pos_samples: u64,
+    len_samples: u64,
+    kind: MarkerRangeKindDto,
+) -> Result<(), IpcError> {
+    let service = (*doc).clone();
+    run_blocking(move || service.marker_set_range(id, pos_samples, len_samples, kind.into()))
+        .await?;
+    after_edit(&app, &doc);
+    Ok(())
+}
+
+/// Deletes the markers in `ids` as one undo entry `history.marker_delete` (SPEC-009 §2.6). Delete
+/// All/Filtered are deferred (ticket "Out" list).
+#[tauri::command]
+pub async fn marker_delete<R: Runtime>(
+    app: AppHandle<R>,
+    doc: State<'_, DocumentService>,
+    ids: Vec<u64>,
+) -> Result<(), IpcError> {
+    let service = (*doc).clone();
+    run_blocking(move || service.marker_delete(&ids)).await?;
+    after_edit(&app, &doc);
+    Ok(())
 }

@@ -10,9 +10,10 @@ use std::time::Duration;
 
 use vox_engine::{EngineHandle, PlaybackDoc, TransportCommand};
 use vox_project::{
-    EditTarget, FinishedTake, NormalizeOutcome, NormalizeResult, Piece, ProjectError, Range,
-    RangeError, Session, SessionConfig, SnapshotReader, TakeCapture, TakeId, TakeMode,
-    TakeWriterOptions, edit, normalize_applied_post_edit, normalize_peak, validate_range,
+    Edit, EditTarget, FinishedTake, Marker, MarkerId, MarkerOp, NormalizeOutcome, NormalizeResult,
+    Piece, ProjectError, Range, RangeError, Session, SessionConfig, SnapshotReader, TakeCapture,
+    TakeId, TakeMode, TakeWriterOptions, edit, normalize_applied_post_edit, normalize_peak,
+    validate_range,
 };
 
 use crate::ipc::{IpcError, IpcErrorCode};
@@ -135,6 +136,85 @@ pub struct NormalizeEditResult {
     pub notice: Option<NormalizeNotice>,
 }
 
+/// S2-03: one marker (SPEC-009 §2.1's essential subset — no `kind`, deferred with dropout
+/// markers/recording), as `markers_get`/`marker_add` report it to the UI.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MarkerInfo {
+    pub id: u64,
+    pub pos_samples: u64,
+    pub len_samples: u64,
+    pub name: String,
+}
+
+impl From<&Marker> for MarkerInfo {
+    fn from(m: &Marker) -> Self {
+        MarkerInfo {
+            id: m.id.0,
+            pos_samples: m.pos_samples,
+            len_samples: m.len_samples,
+            name: m.name.to_string(),
+        }
+    }
+}
+
+/// SPEC-009 §2.5: whether a panel-typed range edit is a move (Start, keeping `len`) or a resize
+/// (End/Duration, keeping `pos`) — only the undo label differs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkerRangeEditKind {
+    Move,
+    Resize,
+}
+
+impl MarkerRangeEditKind {
+    fn label_key(self) -> &'static str {
+        match self {
+            MarkerRangeEditKind::Move => "history.marker_move",
+            MarkerRangeEditKind::Resize => "history.marker_resize",
+        }
+    }
+}
+
+/// SPEC-009 §2.3: "Marker NN" (N zero-padded to at least 2 digits), N = 1 + the largest number
+/// among existing default-named markers ("Marker 7" and "Marker 07" both count), or 1 if none
+/// match. S2-03 essential subset: the pattern is hardcoded English, not looked up through i18n
+/// (SPEC-009 says the name is generated in the current locale and then stored as plain text —
+/// full locale plumbing across the IPC boundary is deferred, ticket report).
+fn next_marker_name(markers: &[Marker]) -> String {
+    let max = markers
+        .iter()
+        .filter_map(|m| marker_default_number(&m.name))
+        .max()
+        .unwrap_or(0);
+    format!("Marker {:02}", max + 1)
+}
+
+fn marker_default_number(name: &str) -> Option<u64> {
+    let rest = name.strip_prefix("Marker ")?;
+    if rest.is_empty() || rest.len() > 6 || !rest.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    rest.parse().ok()
+}
+
+/// SPEC-009 §2.4's rename normalization (also SPEC-005 §4.6's cue-name reading rules): trim
+/// leading/trailing whitespace, strip control characters other than tab, cut to at most 1024
+/// bytes at a character boundary.
+fn normalize_marker_name(name: &str) -> String {
+    let trimmed: String = name
+        .trim()
+        .chars()
+        .filter(|&c| c == '\t' || !c.is_control())
+        .collect();
+    if trimmed.len() <= 1024 {
+        return trimmed;
+    }
+    let mut cut = 1024;
+    while !trimmed.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    trimmed[..cut].to_owned()
+}
+
 struct Inner {
     sessions_dir: PathBuf,
     engine: EngineHandle,
@@ -183,6 +263,16 @@ fn invalid_range() -> IpcError {
 /// SPEC-008 §4.3: Paste with an empty clipboard.
 fn clipboard_empty() -> IpcError {
     IpcError::new(IpcErrorCode::InvalidArgument, "error.clipboard_empty")
+}
+
+/// SPEC-009 §4.2: a marker command named an id that doesn't exist (any more).
+fn marker_not_found() -> IpcError {
+    IpcError::new(IpcErrorCode::InvalidArgument, "error.marker_not_found")
+}
+
+/// SPEC-009 §2.4: a rename whose normalized name is empty.
+fn marker_name_empty() -> IpcError {
+    IpcError::new(IpcErrorCode::InvalidArgument, "error.marker_name_empty")
 }
 
 /// Maps a [`ProjectError`] to an [`IpcError`], reusing its i18n key (`ProjectError::i18n_key`).
@@ -323,9 +413,13 @@ impl DocumentService {
         }
         let (rate, _channels, mut source) = vox_io::read_wav(path).map_err(io_open_error)?;
         let save_bits = save_bits_for(source.format());
+        // SPEC-005 §2.9 / SPEC-009 §2.13 case 5 (no sidecar yet, T-306): read the WAV's own
+        // `cue `/`LIST adtl` markers. A malformed chunk layout quietly yields no markers
+        // (`read_wav_markers`'s own contract) rather than failing the whole open.
+        let wav_markers = vox_io::read_wav_markers(path).unwrap_or_default();
         let mut session = Session::create(&self.0.sessions_dir, SessionConfig::new(rate))
             .map_err(document_error)?;
-        if let Err(err) = vox_project::import_wav(&mut session, &mut source) {
+        if let Err(err) = vox_project::import_wav(&mut session, &mut source, wav_markers) {
             let _ = std::fs::remove_dir_all(session.dir());
             return Err(document_error(err));
         }
@@ -748,6 +842,139 @@ impl DocumentService {
         }
     }
 
+    // --- S2-03: markers (add, rename, move/resize, delete) -----------------------------------
+
+    /// The current marker list, in canonical order (SPEC-009 §2.1). Empty (not an error) when no
+    /// document is open.
+    pub fn markers_get(&self) -> Vec<MarkerInfo> {
+        let guard = self.0.open.lock().unwrap();
+        match guard.as_ref() {
+            Some(doc) => doc
+                .session
+                .current()
+                .markers
+                .iter()
+                .map(Into::into)
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Adds a point (`len_samples == 0`) or region marker at `[pos_samples, pos_samples +
+    /// len_samples)` (SPEC-009 §2.2; the UI resolves *where* per its transport-state table —
+    /// heard position while playing, cursor or selection while stopped — before calling this).
+    /// One undo entry `history.marker_add`, allowed during playback (marker edits never stop it,
+    /// SPEC-009 §2.9). Named "Marker NN" (§2.3). `error.invalid_range` when the range doesn't fit
+    /// the document.
+    pub fn marker_add(&self, pos_samples: u64, len_samples: u64) -> Result<MarkerInfo, IpcError> {
+        let mut guard = self.0.open.lock().unwrap();
+        let doc = guard.as_mut().ok_or_else(no_document)?;
+        if doc.session.is_recording() {
+            return Err(IpcError::not_while_recording());
+        }
+        let len = doc.session.current().len_samples;
+        if pos_samples
+            .checked_add(len_samples)
+            .is_none_or(|end| end > len)
+        {
+            return Err(invalid_range());
+        }
+        let name = next_marker_name(&doc.session.current().markers);
+        let id = doc.session.new_marker_id();
+        let marker = Marker::new(id, pos_samples, len_samples, name);
+        let edit = Edit::new("history.marker_add").marker(MarkerOp::Add(marker.clone()));
+        doc.session.commit_edit(edit).map_err(document_error)?;
+        Ok(MarkerInfo::from(&marker))
+    }
+
+    /// Renames marker `id` to `name`, normalized per SPEC-009 §2.4. `error.marker_name_empty`
+    /// when the normalized name is empty (no undo entry, the old name stays);
+    /// `error.marker_not_found` when `id` doesn't exist. One undo entry `history.marker_rename`.
+    pub fn marker_rename(&self, id: u64, name: &str) -> Result<(), IpcError> {
+        let mut guard = self.0.open.lock().unwrap();
+        let doc = guard.as_mut().ok_or_else(no_document)?;
+        if doc.session.is_recording() {
+            return Err(IpcError::not_while_recording());
+        }
+        let normalized = normalize_marker_name(name);
+        if normalized.is_empty() {
+            return Err(marker_name_empty());
+        }
+        let marker_id = MarkerId(id);
+        if doc.session.current().marker(marker_id).is_none() {
+            return Err(marker_not_found());
+        }
+        let edit = Edit::new("history.marker_rename").marker(MarkerOp::Rename {
+            id: marker_id,
+            name: normalized.into(),
+        });
+        doc.session.commit_edit(edit).map_err(document_error)?;
+        Ok(())
+    }
+
+    /// Moves or resizes marker `id` to `[pos_samples, pos_samples + len_samples)` (SPEC-009 §2.5's
+    /// panel-typed edits; dragging is deferred, ticket "Out" list). `kind` only picks the undo
+    /// label (`history.marker_move`/`history.marker_resize`) — the stored range is the same
+    /// either way. `error.invalid_range`/`error.marker_not_found` as in [`Self::marker_add`].
+    pub fn marker_set_range(
+        &self,
+        id: u64,
+        pos_samples: u64,
+        len_samples: u64,
+        kind: MarkerRangeEditKind,
+    ) -> Result<(), IpcError> {
+        let mut guard = self.0.open.lock().unwrap();
+        let doc = guard.as_mut().ok_or_else(no_document)?;
+        if doc.session.is_recording() {
+            return Err(IpcError::not_while_recording());
+        }
+        let marker_id = MarkerId(id);
+        if doc.session.current().marker(marker_id).is_none() {
+            return Err(marker_not_found());
+        }
+        let len = doc.session.current().len_samples;
+        if pos_samples
+            .checked_add(len_samples)
+            .is_none_or(|end| end > len)
+        {
+            return Err(invalid_range());
+        }
+        let edit = Edit::new(kind.label_key()).marker(MarkerOp::Move {
+            id: marker_id,
+            pos_samples,
+            len_samples,
+        });
+        doc.session.commit_edit(edit).map_err(document_error)?;
+        Ok(())
+    }
+
+    /// Deletes the markers in `ids` as one undo entry `history.marker_delete`, whatever the count
+    /// (SPEC-009 §2.6; Delete All/Filtered are deferred, ticket "Out" list). A no-op (`Ok(())`,
+    /// no undo entry) for an empty `ids`. `error.marker_not_found` if any id doesn't exist —
+    /// nothing is deleted then (validated before the edit is built).
+    pub fn marker_delete(&self, ids: &[u64]) -> Result<(), IpcError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let mut guard = self.0.open.lock().unwrap();
+        let doc = guard.as_mut().ok_or_else(no_document)?;
+        if doc.session.is_recording() {
+            return Err(IpcError::not_while_recording());
+        }
+        let snapshot = doc.session.current();
+        for &id in ids {
+            if snapshot.marker(MarkerId(id)).is_none() {
+                return Err(marker_not_found());
+            }
+        }
+        let mut edit = Edit::new("history.marker_delete");
+        for &id in ids {
+            edit = edit.marker(MarkerOp::Remove(MarkerId(id)));
+        }
+        doc.session.commit_edit(edit).map_err(document_error)?;
+        Ok(())
+    }
+
     /// Undoes the top entry (`Ok` with `changed: false` at the undo floor).
     pub fn history_undo(&self) -> Result<EditResult, IpcError> {
         let mut guard = self.0.open.lock().unwrap();
@@ -787,10 +1014,13 @@ impl DocumentService {
 
 fn save_to(doc: &mut OpenDocument, path: &Path, bits: BitDepth) -> Result<(), IpcError> {
     let snapshot = doc.session.current();
+    let markers = snapshot.markers.to_vec();
     let mut reader = SnapshotReader::new(Arc::clone(doc.session.store()), snapshot);
-    vox_project::save_snapshot_wav(&mut reader, path, bits.into()).map_err(|err| match err {
-        ProjectError::Wav(io_err) => io_save_error(io_err),
-        other => document_error(other),
+    vox_project::save_snapshot_wav(&mut reader, path, bits.into(), &markers).map_err(|err| {
+        match err {
+            ProjectError::Wav(io_err) => io_save_error(io_err),
+            other => document_error(other),
+        }
     })?;
     doc.session
         .mark_saved(path, format_tag(bits))
@@ -1515,5 +1745,224 @@ mod tests {
         assert_eq!(err.code, IpcErrorCode::NotWhileRecording);
 
         service.discard_take(capture.id());
+    }
+
+    // --- S2-03: markers -----------------------------------------------------------------------
+
+    #[test]
+    fn marker_add_names_and_orders_markers_and_is_undoable() {
+        let (service, _engine, dir) = service("marker-add");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 3.0, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+
+        let a = service.marker_add(96_000, 0).unwrap();
+        assert_eq!(a.name, "Marker 01");
+        assert_eq!((a.pos_samples, a.len_samples), (96_000, 0));
+
+        let region = service.marker_add(48_000, 48_000).unwrap();
+        assert_eq!(region.name, "Marker 02");
+
+        assert_eq!(service.markers_get().len(), 2);
+        // Canonical order: by position, so the region (48 000) sorts before the point (96 000).
+        let list = service.markers_get();
+        assert_eq!(list[0].id, region.id);
+        assert_eq!(list[1].id, a.id);
+
+        assert!(service.history_state().can_undo);
+        assert_eq!(
+            service.history_state().undo_label.as_deref(),
+            Some("history.marker_add")
+        );
+        let undo = service.history_undo().unwrap();
+        assert!(undo.changed, "a marker-only edit is still an undo entry");
+        assert_eq!(service.markers_get().len(), 1);
+        let redo = service.history_redo().unwrap();
+        assert!(redo.changed);
+        assert_eq!(service.markers_get().len(), 2);
+    }
+
+    #[test]
+    fn marker_add_rejects_an_out_of_range_marker() {
+        let (service, _engine, dir) = service("marker-add-bad-range");
+        let samples = vox_testkit::signal::silence(0.05, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let len = samples.len() as u64;
+
+        assert_eq!(
+            service.marker_add(len + 1, 0).unwrap_err().key,
+            "error.invalid_range"
+        );
+        assert_eq!(
+            service.marker_add(len, 1).unwrap_err().key,
+            "error.invalid_range"
+        );
+        // A point exactly at the end is legal (SPEC-009 AC-1).
+        assert!(service.marker_add(len, 0).is_ok());
+        assert!(service.history_state().can_undo);
+    }
+
+    #[test]
+    fn marker_rename_normalizes_and_rejects_an_empty_name() {
+        let (service, _engine, dir) = service("marker-rename");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.2, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let marker = service.marker_add(1_000, 0).unwrap();
+
+        service.marker_rename(marker.id, "  Intro  ").unwrap();
+        assert_eq!(service.markers_get()[0].name, "Intro");
+        assert_eq!(
+            service.history_state().undo_label.as_deref(),
+            Some("history.marker_rename")
+        );
+
+        assert_eq!(
+            service.marker_rename(marker.id, "   ").unwrap_err().key,
+            "error.marker_name_empty"
+        );
+        assert_eq!(
+            service.markers_get()[0].name,
+            "Intro",
+            "a rejected rename keeps the old name"
+        );
+
+        assert_eq!(
+            service.marker_rename(999, "x").unwrap_err().key,
+            "error.marker_not_found"
+        );
+    }
+
+    #[test]
+    fn marker_set_range_moves_or_resizes_with_the_matching_undo_label() {
+        let (service, _engine, dir) = service("marker-set-range");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 3.0, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let marker = service.marker_add(96_000, 4_800).unwrap();
+
+        service
+            .marker_set_range(marker.id, 100_000, 4_800, MarkerRangeEditKind::Move)
+            .unwrap();
+        assert_eq!(
+            service.history_state().undo_label.as_deref(),
+            Some("history.marker_move")
+        );
+        let moved = &service.markers_get()[0];
+        assert_eq!((moved.pos_samples, moved.len_samples), (100_000, 4_800));
+
+        service
+            .marker_set_range(marker.id, 100_000, 9_600, MarkerRangeEditKind::Resize)
+            .unwrap();
+        assert_eq!(
+            service.history_state().undo_label.as_deref(),
+            Some("history.marker_resize")
+        );
+        let resized = &service.markers_get()[0];
+        assert_eq!((resized.pos_samples, resized.len_samples), (100_000, 9_600));
+
+        let len = samples.len() as u64;
+        assert_eq!(
+            service
+                .marker_set_range(marker.id, len, 1, MarkerRangeEditKind::Move)
+                .unwrap_err()
+                .key,
+            "error.invalid_range"
+        );
+    }
+
+    #[test]
+    fn marker_delete_removes_several_as_one_undo_entry() {
+        let (service, _engine, dir) = service("marker-delete");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 1.0, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let a = service.marker_add(1_000, 0).unwrap();
+        let b = service.marker_add(2_000, 0).unwrap();
+        service.marker_add(3_000, 0).unwrap();
+        assert_eq!(service.markers_get().len(), 3);
+
+        service.marker_delete(&[a.id, b.id]).unwrap();
+        assert_eq!(service.markers_get().len(), 1);
+        assert_eq!(
+            service.history_state().undo_label.as_deref(),
+            Some("history.marker_delete")
+        );
+
+        let undo = service.history_undo().unwrap();
+        assert!(undo.changed);
+        assert_eq!(
+            service.markers_get().len(),
+            3,
+            "one undo restores both deleted markers"
+        );
+
+        assert_eq!(
+            service.marker_delete(&[999]).unwrap_err().key,
+            "error.marker_not_found"
+        );
+        assert_eq!(
+            service.markers_get().len(),
+            3,
+            "a failed delete changes nothing"
+        );
+        assert!(
+            service.marker_delete(&[]).is_ok(),
+            "an empty list is a no-op"
+        );
+    }
+
+    #[test]
+    fn marker_commands_are_refused_while_recording() {
+        let (service, _engine, dir) = service("marker-recording");
+        open_test_doc(
+            &service,
+            &dir,
+            &vox_testkit::signal::silence(0.5, 48_000).unwrap(),
+        );
+        let marker = service.marker_add(1_000, 0).unwrap();
+
+        let (mut capture, _info) = service
+            .begin_recording(48_000, BitDepth::Bit24, true)
+            .unwrap();
+        capture.append(&[0.0; 100]).unwrap();
+
+        for result in [
+            service.marker_add(0, 0).map(|_| ()),
+            service.marker_rename(marker.id, "x").map(|_| ()),
+            service
+                .marker_set_range(marker.id, 0, 0, MarkerRangeEditKind::Move)
+                .map(|_| ()),
+            service.marker_delete(&[marker.id]).map(|_| ()),
+        ] {
+            assert_eq!(result.unwrap_err().code, IpcErrorCode::NotWhileRecording);
+        }
+
+        service.discard_take(capture.id());
+    }
+
+    /// SPEC-005 §2.9 / SPEC-009 §2.13 case 5: end-to-end through `DocumentService` — Save writes
+    /// markers as WAV cue points, and Open reads them back exactly (positions, lengths, names).
+    #[test]
+    fn markers_survive_a_save_and_reopen_round_trip() {
+        let (service, _engine, dir) = service("marker-round-trip");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 2.0, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        service.marker_add(0, 0).unwrap();
+        service
+            .marker_rename(service.markers_get()[0].id, "Intro")
+            .unwrap();
+        service.marker_add(48_000, 9_600).unwrap();
+
+        let save_path = dir.join("with-markers.wav");
+        service.save_as(&save_path, BitDepth::Bit24).unwrap();
+
+        // A second document service (a fresh session dir) opens the saved file back.
+        let reopened = DocumentService::new(dir.join("sessions2"), service.0.engine.clone());
+        reopened.open(&save_path).unwrap();
+        let markers = reopened.markers_get();
+        assert_eq!(markers.len(), 2);
+        assert_eq!((markers[0].pos_samples, markers[0].len_samples), (0, 0));
+        assert_eq!(markers[0].name, "Intro");
+        assert_eq!(
+            (markers[1].pos_samples, markers[1].len_samples),
+            (48_000, 9_600)
+        );
     }
 }

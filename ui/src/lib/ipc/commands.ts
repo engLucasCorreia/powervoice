@@ -11,6 +11,8 @@ import type {
   ExportFormatsDto,
   ExportRequestDto,
   ExportStartedDto,
+  MarkerDto,
+  MarkerRangeKindDto,
   ModuleDescriptorDto,
   PeaksRequestDto,
   RackStateDto,
@@ -222,6 +224,45 @@ export async function historyUndo(): Promise<EditResultDto> {
 /** S2-01: redoes the top history entry. */
 export async function historyRedo(): Promise<EditResultDto> {
   return invoke<EditResultDto>("history_redo" satisfies CommandName);
+}
+
+// --- S2-03: markers -----------------------------------------------------------------------
+
+/** S2-03: the current marker list (SPEC-009 §2.1), in canonical order. */
+export async function markersGet(): Promise<MarkerDto[]> {
+  return invoke<MarkerDto[]>("markers_get" satisfies CommandName);
+}
+
+/** S2-03: adds a point (`lenSamples === 0`) or region marker (SPEC-009 §2.2). */
+export async function markerAdd(posSamples: number, lenSamples: number): Promise<MarkerDto> {
+  return invoke<MarkerDto>("marker_add" satisfies CommandName, { posSamples, lenSamples });
+}
+
+/** S2-03: renames marker `id` (SPEC-009 §2.4, normalized server-side). */
+export async function markerRename(id: number, name: string): Promise<void> {
+  return invoke<void>("marker_rename" satisfies CommandName, { id, name });
+}
+
+/** S2-03: moves (`kind: "move"`) or resizes (`kind: "resize"`) marker `id` to
+ * `[posSamples, posSamples + lenSamples)` — the panel's typed Start/End/Duration edits
+ * (SPEC-009 §2.5; dragging is deferred). */
+export async function markerSetRange(
+  id: number,
+  posSamples: number,
+  lenSamples: number,
+  kind: MarkerRangeKindDto,
+): Promise<void> {
+  return invoke<void>("marker_set_range" satisfies CommandName, {
+    id,
+    posSamples,
+    lenSamples,
+    kind,
+  });
+}
+
+/** S2-03: deletes the markers in `ids` as one undo entry (SPEC-009 §2.6). */
+export async function markerDelete(ids: number[]): Promise<void> {
+  return invoke<void>("marker_delete" satisfies CommandName, { ids });
 }
 
 /** S4-04: MP3 availability (WAV/FLAC are always available) for the export dialog. */

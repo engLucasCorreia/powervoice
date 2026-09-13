@@ -84,8 +84,25 @@ describe("default keymap bindings", () => {
     expect(matchBinding(key("KeyQ"), false)).toBeNull();
   });
 
-  it("a held Alt never matches a default binding", () => {
+  it("a held Alt never matches a plain (non-alt) default binding", () => {
     expect(matchBinding(key("Space", { alt: true }), false)).toBeNull();
+    expect(matchBinding(key("KeyM", { alt: true }), false)).toBeNull();
+  });
+
+  // S2-03, SPEC-009 §2.6/§2.7: Ctrl+0 delete selected marker(s), Ctrl+Alt+arrow navigation.
+  it("resolves the S2-03 marker bindings (non-mac: Ctrl as the primary modifier)", () => {
+    expect(matchBinding(key("Digit0", { ctrl: true }), false)).toBe("marker.delete_selected");
+    expect(matchBinding(key("ArrowRight", { ctrl: true, alt: true }), false)).toBe("marker.next");
+    expect(matchBinding(key("ArrowLeft", { ctrl: true, alt: true }), false)).toBe("marker.prev");
+    // Alt alone, or mod alone, doesn't satisfy a binding that needs both.
+    expect(matchBinding(key("ArrowRight", { alt: true }), false)).toBeNull();
+    expect(matchBinding(key("ArrowRight", { ctrl: true }), false)).toBeNull();
+  });
+
+  it("resolves the S2-03 marker bindings on mac (⌘ as the primary modifier)", () => {
+    expect(matchBinding(key("Digit0", { meta: true }), true)).toBe("marker.delete_selected");
+    expect(matchBinding(key("ArrowRight", { meta: true, alt: true }), true)).toBe("marker.next");
+    expect(matchBinding(key("ArrowLeft", { meta: true, alt: true }), true)).toBe("marker.prev");
   });
 
   it("every default binding is unique by (code, shift, mod)", () => {
@@ -94,7 +111,7 @@ describe("default keymap bindings", () => {
 
   it("detects a duplicate binding when given a deliberately colliding table", () => {
     const withDuplicate = [...DEFAULT_KEYMAP, { action: "marker.add" as const, code: "Space" }];
-    expect(findDuplicateBindings(withDuplicate)).toEqual(["Space|shift=false|mod=false"]);
+    expect(findDuplicateBindings(withDuplicate)).toEqual(["Space|shift=false|mod=false|alt=false"]);
   });
 });
 

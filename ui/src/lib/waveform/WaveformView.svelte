@@ -5,6 +5,7 @@
   import { peaksGet } from "../ipc/commands";
   import { recordPeaksGet } from "../ipc/record_commands";
   import { registerAction } from "../keymap";
+  import { markersState } from "../markers/markers.svelte";
   import { formatTime } from "../transport/playhead";
   import { recordState } from "../state/record.svelte";
   import {
@@ -80,6 +81,7 @@
   const transport = transportState();
   const rec = recordState();
   const selection = selectionState();
+  const markers = markersState();
   const requester = new PeaksRequester(peaksGet);
 
   const lenSamples = $derived(doc.current.len_samples);
@@ -239,8 +241,57 @@
       ctx.fillRect(0, 0, viewportPx, heightPx);
     }
     drawSelection(ctx);
+    drawMarkers(ctx);
     drawPlayhead(ctx, centerY);
     ctx.restore();
+  }
+
+  /** Marker flags (S2-03, SPEC-009 §2.5's essential subset: drawing only — no drag, no flag
+   * hit-testing on the canvas; the panel is the click-to-jump/rename/delete surface). A region
+   * also gets a filled band and an end flag. Clipped to the visible viewport. */
+  function drawMarkers(ctx: CanvasRenderingContext2D): void {
+    if (!isOpen || markers.list.length === 0) {
+      return;
+    }
+    const flagColor = colorToken("--wave-marker", "#35c46a");
+    const regionFill = colorToken("--wave-marker-region", "rgba(53, 196, 106, 0.18)");
+    for (const marker of markers.list) {
+      const startPx = pixelAtSample(marker.pos_samples, startSample, samplesPerPixel);
+      if (marker.len_samples > 0) {
+        const endPx = pixelAtSample(
+          marker.pos_samples + marker.len_samples,
+          startSample,
+          samplesPerPixel,
+        );
+        if (endPx >= 0 && startPx <= viewportPx) {
+          ctx.fillStyle = regionFill;
+          ctx.fillRect(startPx, 0, endPx - startPx, heightPx);
+          drawFlag(ctx, endPx, flagColor);
+        }
+      }
+      if (startPx >= -6 && startPx <= viewportPx + 6) {
+        ctx.strokeStyle = flagColor;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(startPx + 0.5, 0);
+        ctx.lineTo(startPx + 0.5, heightPx);
+        ctx.stroke();
+        drawFlag(ctx, startPx, flagColor);
+      }
+    }
+  }
+
+  /** A small filled triangle at the top of the canvas (SPEC-006 §2.11's "flag"). */
+  function drawFlag(ctx: CanvasRenderingContext2D, px: number, color: string): void {
+    const w = 6;
+    const h = 8;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(px, 0);
+    ctx.lineTo(px + w, 0);
+    ctx.lineTo(px, h);
+    ctx.closePath();
+    ctx.fill();
   }
 
   /** The time selection (S2-01, SPEC-006 §2.1/§2.9), clipped to the visible viewport. */

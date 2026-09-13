@@ -15,6 +15,8 @@ export interface KeyBinding {
   mod?: boolean;
   /** Requires Shift. Defaults to not required. */
   shift?: boolean;
+  /** Requires Alt (⌥ on macOS). Defaults to not required (S2-03: Ctrl+Alt+arrow navigation). */
+  alt?: boolean;
 }
 
 /**
@@ -33,6 +35,8 @@ export interface KeyBinding {
  * - Ctrl/⌘+X/C/V = cut/copy/paste, Delete = delete, Ctrl/⌘+T = trim to selection (Crop); Ctrl/⌘+A
  *   selects all, Esc clears the selection (S2-01, SPEC-006 §2.9, SPEC-008 §2.11). Silence and
  *   Insert Silence have no default binding (menu only, SPEC-008 §2.11).
+ * - Ctrl/⌘+0 = delete selected marker(s), Ctrl/⌘+Alt+→/← = next/previous marker (S2-03,
+ *   SPEC-009 §2.6/§2.7; Delete All is deferred, ticket "Out" list).
  */
 export const DEFAULT_KEYMAP: readonly KeyBinding[] = [
   { action: "transport.play_pause", code: "Space" },
@@ -54,4 +58,7 @@ export const DEFAULT_KEYMAP: readonly KeyBinding[] = [
   { action: "edit.trim", code: "KeyT", mod: true },
   { action: "waveform.select_all", code: "KeyA", mod: true },
   { action: "waveform.deselect", code: "Escape" },
+  { action: "marker.delete_selected", code: "Digit0", mod: true },
+  { action: "marker.next", code: "ArrowRight", mod: true, alt: true },
+  { action: "marker.prev", code: "ArrowLeft", mod: true, alt: true },
 ];

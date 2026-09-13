@@ -120,6 +120,20 @@ export function playPause(): Promise<void> {
   return state.playing ? pause() : play();
 }
 
+/**
+ * S2-03, SPEC-009 §4.3: the heard position at `eventTimeStampMs` (a `KeyboardEvent.timeStamp`,
+ * the same clock as `performance.now()`), so a marker added mid-playback lands where the user
+ * heard it, not where the key's IPC round trip happened to land. Falls back to the last known
+ * playhead sample while stopped or before any telemetry frame has arrived.
+ */
+export function extrapolatedPositionAt(eventTimeStampMs: number): number {
+  if (!extrapolator.hasAnchor) {
+    return playheadSamples;
+  }
+  const nowNs = eventTimeStampMs * 1e6 + clock.offsetNs;
+  return extrapolator.position(nowNs, state.doc_len_samples);
+}
+
 /** Handles one telemetry channel message. */
 export function onTelemetry(message: unknown): void {
   const buf = toArrayBuffer(message);

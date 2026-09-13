@@ -15,6 +15,7 @@
   import FavoritesMenu from "./lib/normalize/FavoritesMenu.svelte";
   import RackPanel from "./lib/rack/RackPanel.svelte";
   import NoticeHost from "./lib/notices/NoticeHost.svelte";
+  import { initMarkers } from "./lib/markers/markers.svelte";
   import { initEdit } from "./lib/state/edit.svelte";
   import { initNormalize } from "./lib/state/normalize.svelte";
   import { initNotices } from "./lib/state/notices.svelte";
@@ -111,6 +112,23 @@
 
   // S2-02: peak normalize favorites (toolbar buttons, Favorites menu, Normalize… dialog).
   onMount(() => initNormalize());
+
+  // S2-03: markers (M, Ctrl+0, Ctrl+Alt+→/←, and the Markers panel's list/add/rename/delete).
+  onMount(() => {
+    let disposed = false;
+    let teardown: (() => void) | null = null;
+    void initMarkers().then((cleanup) => {
+      if (disposed) {
+        cleanup();
+      } else {
+        teardown = cleanup;
+      }
+    });
+    return () => {
+      disposed = true;
+      teardown?.();
+    };
+  });
 </script>
 
 <div class="shell">

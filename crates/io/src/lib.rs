@@ -21,4 +21,7 @@ pub use encoder::{Encoder, FlacEncoder, Mp3Encoder, WavEncoder};
 pub use error::{IoError, Result};
 pub use flac::{FlacBitDepth, write_flac};
 pub use mp3::{Mp3Settings, encode_mp3, mp3_available};
-pub use wav::{BitDepth, SampleFormat, WavFormat, WavSource, WriteReport, read_wav, write_wav};
+pub use wav::{
+    BitDepth, SampleFormat, WavFormat, WavMarker, WavSource, WriteReport, read_wav,
+    read_wav_markers, write_wav, write_wav_with_markers,
+};

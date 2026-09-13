@@ -5,7 +5,10 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::document::{ClipboardInfo, DocumentInfo, EditResult, HistoryState, PasteTarget};
+use crate::document::{
+    ClipboardInfo, DocumentInfo, EditResult, HistoryState, MarkerInfo, MarkerRangeEditKind,
+    PasteTarget,
+};
 
 /// `document_changed` event payload, and the result of `document_open`/`document_save`/
 /// `document_save_as`. `name: None` means no document is open.
@@ -122,6 +125,47 @@ impl From<ClipboardInfo> for ClipboardChangedDto {
         Self {
             len_samples: c.len_samples,
             sample_rate_hz: c.sample_rate_hz,
+        }
+    }
+}
+
+/// S2-03: one marker (SPEC-009 §2.1's essential subset — no `kind`), as `markers_get` reports the
+/// list and `marker_add` reports the created marker.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct MarkerDto {
+    pub id: u64,
+    pub pos_samples: u64,
+    pub len_samples: u64,
+    pub name: String,
+}
+
+impl From<MarkerInfo> for MarkerDto {
+    fn from(m: MarkerInfo) -> Self {
+        Self {
+            id: m.id,
+            pos_samples: m.pos_samples,
+            len_samples: m.len_samples,
+            name: m.name,
+        }
+    }
+}
+
+/// S2-03: `marker_set_range`'s undo label (SPEC-009 §2.5) — Start keeps `len` (`Move`), End/
+/// Duration keep `pos` (`Resize`).
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum MarkerRangeKindDto {
+    Move,
+    Resize,
+}
+
+impl From<MarkerRangeKindDto> for MarkerRangeEditKind {
+    fn from(kind: MarkerRangeKindDto) -> Self {
+        match kind {
+            MarkerRangeKindDto::Move => MarkerRangeEditKind::Move,
+            MarkerRangeKindDto::Resize => MarkerRangeEditKind::Resize,
         }
     }
 }

@@ -32,13 +32,15 @@ function getNavigatorPlatform(): string {
  * Resolves a key event to an action id, or `null` if no default binding matches. `isMac` decides
  * which physical modifier satisfies a binding's `mod: true` (⌘ on macOS, Ctrl elsewhere) — the
  * *other* platform's primary modifier must NOT be held, so a stray ⌘ on Windows/Linux (or Ctrl on
- * macOS) doesn't accidentally satisfy a binding.
+ * macOS) doesn't accidentally satisfy a binding. A binding requires Alt held or not held exactly
+ * as its own `alt` flag says (default: not held) — S2-03's Ctrl+Alt+arrow navigation is the only
+ * binding that opts into `alt: true`; every other binding still never matches with Alt held.
  */
 export function matchBinding(event: KeyEventLike, isMac: boolean): ActionId | null {
   const modPressed = isMac ? event.metaKey : event.ctrlKey;
   const otherModPressed = isMac ? event.ctrlKey : event.metaKey;
 
-  if (otherModPressed || event.altKey) {
+  if (otherModPressed) {
     return null;
   }
 
@@ -46,7 +48,8 @@ export function matchBinding(event: KeyEventLike, isMac: boolean): ActionId | nu
     if (
       binding.code === event.code &&
       Boolean(binding.shift) === event.shiftKey &&
-      Boolean(binding.mod) === modPressed
+      Boolean(binding.mod) === modPressed &&
+      Boolean(binding.alt) === event.altKey
     ) {
       return binding.action;
     }
@@ -54,9 +57,9 @@ export function matchBinding(event: KeyEventLike, isMac: boolean): ActionId | nu
   return null;
 }
 
-/** A binding's unique key: (code, shift, mod). Two default bindings must never share one. */
+/** A binding's unique key: (code, shift, mod, alt). Two default bindings must never share one. */
 function bindingIdentity(binding: KeyBinding): string {
-  return `${binding.code}|shift=${Boolean(binding.shift)}|mod=${Boolean(binding.mod)}`;
+  return `${binding.code}|shift=${Boolean(binding.shift)}|mod=${Boolean(binding.mod)}|alt=${Boolean(binding.alt)}`;
 }
 
 /** Every duplicated (code, shift, mod) triple in the default keymap. Empty when bindings are unique. */

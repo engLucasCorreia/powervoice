@@ -13,7 +13,7 @@ export type BitDepth = "16" | "24" | "32f";
  */
 export type ClipboardChangedDto = { len_samples: number | null, sample_rate_hz: number | null, };
 
-export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_save" | "document_save_as" | "peaks_get" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak" | "history_undo" | "history_redo" | "export_formats" | "export_start" | "export_cancel";
+export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_save" | "document_save_as" | "peaks_get" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel";
 
 export type DefaultFormatDto = { sample_rate_hz: number, bit_depth: BitDepth, };
 
@@ -209,6 +209,18 @@ export type JobState = "running" | "done" | "cancelled" | "failed";
  * Localized display text: English fallback plus an optional i18n key (ADR-005 §2).
  */
 export type LocalizedTextDto = { text: string, key: string | null, };
+
+/**
+ * S2-03: one marker (SPEC-009 §2.1's essential subset — no `kind`), as `markers_get` reports the
+ * list and `marker_add` reports the created marker.
+ */
+export type MarkerDto = { id: number, pos_samples: number, len_samples: number, name: string, };
+
+/**
+ * S2-03: `marker_set_range`'s undo label (SPEC-009 §2.5) — Start keeps `len` (`Move`), End/
+ * Duration keep `pos` (`Resize`).
+ */
+export type MarkerRangeKindDto = "move" | "resize";
 
 /**
  * A module in the registry (`rack_list_modules`; the Add-module menu, grouped client-side by

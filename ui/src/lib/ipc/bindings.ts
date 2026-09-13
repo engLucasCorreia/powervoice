@@ -13,7 +13,7 @@ export type BitDepth = "16" | "24" | "32f";
  */
 export type ClipboardChangedDto = { len_samples: number | null, sample_rate_hz: number | null, };
 
-export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_save" | "document_save_as" | "peaks_get" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak" | "history_undo" | "history_redo" | "export_formats" | "export_start" | "export_cancel";
+export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_save" | "document_save_as" | "peaks_get" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak" | "history_undo" | "history_redo" | "export_formats" | "export_start" | "export_cancel";
 
 export type DefaultFormatDto = { sample_rate_hz: number, bit_depth: BitDepth, };
 
@@ -133,7 +133,7 @@ selection: [number, number] | null, playhead_samples: number, };
  */
 export type EditTargetDto = { "kind": "cursor", at_samples: number, } | { "kind": "range", start_samples: number, end_samples: number, };
 
-export type EventName = "notice" | "transport_state" | "devices_changed" | "record_state" | "document_changed" | "history_state" | "clipboard_changed" | "job_progress";
+export type EventName = "notice" | "transport_state" | "devices_changed" | "rack_changed" | "param_changed" | "rack_latency" | "record_state" | "document_changed" | "history_state" | "clipboard_changed" | "job_progress";
 
 /**
  * Export output format and its per-format settings. FLAC's `bits` rejects `"32f"` (FLAC has no
@@ -205,6 +205,17 @@ export type JobProgressDto = { job_id: number, kind: JobKind, state: JobState, f
  */
 export type JobState = "running" | "done" | "cancelled" | "failed";
 
+/**
+ * Localized display text: English fallback plus an optional i18n key (ADR-005 §2).
+ */
+export type LocalizedTextDto = { text: string, key: string | null, };
+
+/**
+ * A module in the registry (`rack_list_modules`; the Add-module menu, grouped client-side by
+ * `features`).
+ */
+export type ModuleDescriptorDto = { id: string, name: LocalizedTextDto, vendor: string, description: LocalizedTextDto, features: Array<string>, };
+
 export type MonitorMode = "off" | "dry" | "through_rack";
 
 /**
@@ -234,12 +245,78 @@ id: string | null, };
 export type NoticeLevel = "info" | "warning" | "error";
 
 /**
+ * A parameter changed (`param_changed` event): the slot's current index plus its new value.
+ */
+export type ParamChangedDto = { slot: number, id: number, value: number, normalized: number, text: string, };
+
+/**
+ * Widget-relevant flags (SPEC-012 §2.6 "Widgets from flags"): booleans rather than a raw bit
+ * set, so the UI never needs to know the bit layout.
+ */
+export type ParamFlagsDto = { automatable: boolean, stepped: boolean, boolean: boolean, read_only: boolean, hidden: boolean, bypass: boolean, };
+
+/**
+ * A parameter group (SPEC-012 §2.6 layout: a header toggle when `enable_param` is set, one
+ * nesting level via `parent`).
+ */
+export type ParamGroupDto = { id: number, key: string, name: LocalizedTextDto, parent: number | null, enable_param: number | null, collapsed_by_default: boolean, };
+
+/**
+ * One parameter's schema (SPEC-012 §2.6). `id`/`group` are the raw ids `param_set_normalized`,
+ * `param_set_text` and [`ParamGroupDto::enable_param`] address.
+ */
+export type ParamInfoDto = { id: number, key: string, name: LocalizedTextDto, group: number | null, unit: UnitDto, min: number, max: number, default: number, taper: TaperDto, step: number | null, enum_labels: Array<LocalizedTextDto>, decimals: number, smoothing_ms: number, flags: ParamFlagsDto, };
+
+/**
+ * Current value of one parameter: plain, normalized, and Rust's own display text (SPEC-012
+ * §2.6: "displayed text is always Rust's formatting").
+ */
+export type ParamValueDto = { id: number, value: number, normalized: number, text: string, };
+
+/**
  * `peaks_get`'s request (ADR-003 §2's `PeaksRequest`). `audio_rev` is the revision the UI last
  * saw; the server always answers with the document's *current* `audio_rev` regardless (in its
  * `VXPK` response header) — staleness is the caller's problem to detect (ADR-003: "the UI drops
  * any response whose `audio_rev` is not current"), not something this command refuses.
  */
 export type PeaksRequestDto = { request_id: number, audio_rev: number, spp: number, start_sample: number, count: number, };
+
+/**
+ * The rack's total latency changed (`rack_latency` event, SPEC-012 §2.5).
+ */
+export type RackLatencyDto = { latency_samples: number, };
+
+/**
+ * One rack slot: identity, status, schema and current values (`rack_get`, every mutating
+ * command's result, `rack_changed`).
+ */
+export type RackSlotDto = { 
+/**
+ * Stable within this rack's lifetime (never persisted; not the slot's position).
+ */
+uid: number, 
+/**
+ * `"id@version"`, or the stored reference verbatim for a placeholder.
+ */
+module: string, name: string, bypass: boolean, latency_samples: number, status: SlotStatusDto, params: Array<ParamInfoDto>, groups: Array<ParamGroupDto>, 
+/**
+ * Index-aligned with `params`; empty for a placeholder (no schema).
+ */
+values: Array<ParamValueDto>, };
+
+/**
+ * The rack panel's whole state (`rack_get`, every mutating command's result, and the
+ * `rack_changed` event).
+ */
+export type RackStateDto = { 
+/**
+ * Slots, top to bottom (processing order).
+ */
+slots: Array<RackSlotDto>, 
+/**
+ * Whole-rack A/B state (listening only, SPEC-012 §2.3).
+ */
+ab: boolean, latency_samples: number, };
 
 /**
  * The record panel state (SPEC-002 §2.1–§2.2, §2.7).
@@ -288,6 +365,17 @@ export type Settings = { version: number, device: DevicePrefsDto, default_format
 telemetry_rate_hz: number, memory_budget_mib: number, };
 
 /**
+ * Slot status (SPEC-012 §2.2, §2.9). `message` is pre-rendered English text shown verbatim (see
+ * the module docs) — a plugin or module name isn't something the UI can key into i18n.
+ */
+export type SlotStatusDto = { "kind": "active" } | { "kind": "missing", message: string, too_new: boolean, } | { "kind": "failed", message: string, };
+
+/**
+ * Control mapping ([`Taper`]).
+ */
+export type TaperDto = { "kind": "linear" } | { "kind": "log" } | { "kind": "db", neg_inf_at_min: boolean, };
+
+/**
  * Transport state (`transport_state` event, transport command results). While playing, the
  * moving playhead comes from `VXTM` telemetry; `playhead_samples` is then where the pass began.
  */
@@ -296,3 +384,8 @@ export type TransportStateDto = { playing: boolean, playhead_samples: number, pl
  * A document is loaded and an output device is open.
  */
 can_play: boolean, };
+
+/**
+ * Display unit ([`Unit`]); `Custom` carries the adapter-provided label.
+ */
+export type UnitDto = { "kind": "none" } | { "kind": "db" } | { "kind": "dbfs" } | { "kind": "dbtp" } | { "kind": "lufs" } | { "kind": "hz" } | { "kind": "ms" } | { "kind": "seconds" } | { "kind": "percent" } | { "kind": "ratio" } | { "kind": "samples" } | { "kind": "custom", label: string, };

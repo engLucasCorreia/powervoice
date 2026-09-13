@@ -11,9 +11,9 @@
   import EditorView from "./lib/layout/EditorView.svelte";
   import MarkersProperties from "./lib/layout/MarkersProperties.svelte";
   import MeterBridge from "./lib/layout/MeterBridge.svelte";
-  import RackPanel from "./lib/layout/RackPanel.svelte";
   import Toolbar from "./lib/layout/Toolbar.svelte";
   import FavoritesMenu from "./lib/normalize/FavoritesMenu.svelte";
+  import RackPanel from "./lib/rack/RackPanel.svelte";
   import NoticeHost from "./lib/notices/NoticeHost.svelte";
   import { initEdit } from "./lib/state/edit.svelte";
   import { initNormalize } from "./lib/state/normalize.svelte";

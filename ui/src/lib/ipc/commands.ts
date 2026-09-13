@@ -11,7 +11,9 @@ import type {
   ExportFormatsDto,
   ExportRequestDto,
   ExportStartedDto,
+  ModuleDescriptorDto,
   PeaksRequestDto,
+  RackStateDto,
   Settings,
   TransportStateDto,
 } from "./bindings";
@@ -83,6 +85,64 @@ export async function telemetrySubscribe(channel: Channel<ArrayBuffer>): Promise
 /** S1-01: the engine's app clock in ns (clock sync, ADR-003 §3). */
 export async function clockNowNs(): Promise<number> {
   return invoke<number>("clock_now_ns" satisfies CommandName);
+}
+
+/** S3-01: the modules available to add (the Add-module menu, SPEC-012 §2.1). */
+export async function rackListModules(): Promise<ModuleDescriptorDto[]> {
+  return invoke<ModuleDescriptorDto[]>("rack_list_modules" satisfies CommandName);
+}
+
+/** S3-01: the current rack state (initial load). */
+export async function rackGet(): Promise<RackStateDto> {
+  return invoke<RackStateDto>("rack_get" satisfies CommandName);
+}
+
+/** S3-01: adds a registered module at `index` (`0..=len`), live. */
+export async function rackAdd(moduleId: string, index: number): Promise<RackStateDto> {
+  return invoke<RackStateDto>("rack_add" satisfies CommandName, { moduleId, index });
+}
+
+/** S3-01: removes the slot at `slot` (index), live. */
+export async function rackRemove(slot: number): Promise<RackStateDto> {
+  return invoke<RackStateDto>("rack_remove" satisfies CommandName, { slot });
+}
+
+/** S3-01: moves the slot at `from` to `to` (drag-reorder), live. */
+export async function rackMove(from: number, to: number): Promise<RackStateDto> {
+  return invoke<RackStateDto>("rack_move" satisfies CommandName, { from, to });
+}
+
+/** S3-01: per-slot bypass toggle. */
+export async function rackBypass(slot: number, on: boolean): Promise<RackStateDto> {
+  return invoke<RackStateDto>("rack_bypass" satisfies CommandName, { slot, on });
+}
+
+/** S3-01: whole-rack A/B (listening only, SPEC-012 §2.3). */
+export async function rackAb(on: boolean): Promise<RackStateDto> {
+  return invoke<RackStateDto>("rack_ab" satisfies CommandName, { on });
+}
+
+/** S3-01: restarts a slot's instance from its committed state (Restart of a failed slot). */
+export async function rackRestart(slot: number): Promise<RackStateDto> {
+  return invoke<RackStateDto>("rack_restart" satisfies CommandName, { slot });
+}
+
+/** S3-01: sets a parameter from a normalized `[0, 1]` slider position (SPEC-012 §2.4, §2.6). */
+export async function paramSetNormalized(
+  slot: number,
+  id: number,
+  value: number,
+): Promise<RackStateDto> {
+  return invoke<RackStateDto>("param_set_normalized" satisfies CommandName, { slot, id, value });
+}
+
+/** S3-01: sets a parameter from typed text; Rust parses it (SPEC-012 §2.6). */
+export async function paramSetText(
+  slot: number,
+  id: number,
+  text: string,
+): Promise<RackStateDto> {
+  return invoke<RackStateDto>("param_set_text" satisfies CommandName, { slot, id, text });
 }
 
 /** S1-03: opens `path` as the document (SPEC-005 §2.3), replacing whatever was open. */

@@ -3,12 +3,14 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
 import App from "./App.svelte";
 import { clearActionHandlers } from "./lib/keymap";
+import { resetRackForTest } from "./lib/rack/rack.svelte";
 import { resetTransportForTest } from "./lib/state/transport.svelte";
 
 afterEach(() => {
   clearMocks();
   clearActionHandlers();
   resetTransportForTest();
+  resetRackForTest();
 });
 
 describe("App shell", () => {
@@ -46,6 +48,12 @@ describe("App shell", () => {
       }
       if (cmd === "clock_now_ns") {
         return 0;
+      }
+      if (cmd === "rack_list_modules") {
+        return [];
+      }
+      if (cmd === "rack_get") {
+        return { slots: [], ab: false, latency_samples: 0 };
       }
       // telemetry_subscribe, event listeners, …
       return null;

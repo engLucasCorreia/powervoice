@@ -28,6 +28,7 @@ mod engine;
 mod input;
 mod output;
 pub mod prefs;
+mod rack_api;
 mod reader;
 pub mod record;
 mod rt;
@@ -44,6 +45,7 @@ pub use engine::{
     PlaybackDoc,
 };
 pub use prefs::DevicePrefs;
+pub use rack_api::{RackApiError, RackCommand, RackSlot, RackSnapshot};
 pub use record::{
     LIVE_PEAKS_SPB, LiveTakePeaks, MonitorMode, RecordDone, RecordError, RecordState,
     RecordingResult, StopReason,

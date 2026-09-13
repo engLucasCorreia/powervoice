@@ -6,10 +6,11 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Runtime};
 use vox_engine::backend::cpal::CpalBackend;
 use vox_engine::{Engine, EngineConfig, EngineEvent, EngineHandle};
-use vox_rack::Registry;
+use vox_rack::{RackNotice, Registry};
 
 use crate::ipc::{
-    DevicesDto, EventName, RecordStateDto, TransportStateDto, emit_notice, notice_from_device,
+    DevicesDto, EventName, ParamChangedDto, RackLatencyDto, RackStateDto, RecordStateDto,
+    TransportStateDto, emit_notice, notice_from_device,
 };
 use crate::settings::DevicePrefsDto;
 
@@ -66,6 +67,11 @@ fn forward<R: Runtime>(app: &AppHandle<R>, event: EngineEvent) {
             tracing::info!(?notice, "audio device notice");
             emit_notice(app, notice_from_device(&notice))
         }
+        EngineEvent::Rack(notice) => forward_rack_notice(app, &notice),
+        EngineEvent::RackChanged(snapshot) => app.emit(
+            EventName::rack_changed.as_str(),
+            RackStateDto::from(&snapshot),
+        ),
         EngineEvent::Record(state) => app.emit(
             EventName::record_state.as_str(),
             RecordStateDto::from(&state),
@@ -73,5 +79,46 @@ fn forward<R: Runtime>(app: &AppHandle<R>, event: EngineEvent) {
     };
     if let Err(e) = result {
         tracing::warn!(error = %e, "emitting an engine event failed");
+    }
+}
+
+/// Maps one rack notice (S3-01, SPEC-012 §2.4–§2.5) to its lean, per-field event:
+/// `ParamChanged` → `param_changed`, `LatencyChanged` → `rack_latency`. `SlotFailed` and
+/// `SlotRestarted` carry no schema of their own (see `EngineEvent::RackChanged`'s docs) — the
+/// `rack_changed` event `forward` also emits for those already covers the UI's refresh, so they
+/// are only logged here.
+fn forward_rack_notice<R: Runtime>(app: &AppHandle<R>, notice: &RackNotice) -> tauri::Result<()> {
+    match notice {
+        RackNotice::ParamChanged {
+            index,
+            id,
+            value,
+            normalized,
+            text,
+            ..
+        } => app.emit(
+            EventName::param_changed.as_str(),
+            ParamChangedDto {
+                slot: *index,
+                id: id.0,
+                value: *value,
+                normalized: *normalized,
+                text: text.clone(),
+            },
+        ),
+        RackNotice::LatencyChanged { total_samples } => app.emit(
+            EventName::rack_latency.as_str(),
+            RackLatencyDto {
+                latency_samples: *total_samples,
+            },
+        ),
+        RackNotice::SlotFailed { index, message, .. } => {
+            tracing::warn!(slot = index, message, "rack slot failed");
+            Ok(())
+        }
+        RackNotice::SlotRestarted { index, .. } => {
+            tracing::info!(slot = index, "rack slot restarted");
+            Ok(())
+        }
     }
 }

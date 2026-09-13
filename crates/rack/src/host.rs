@@ -10,7 +10,7 @@ use rtrb::PushError;
 use serde_json::Map;
 use vox_module_api::{
     ActivateConfig, Module, ModuleDescriptor, ModuleRef, ModuleState, ParamEvent, ParamFlags,
-    ParamId, ParamInfo,
+    ParamGroup, ParamId, ParamInfo,
 };
 
 use crate::chain::PlanEntry;
@@ -102,11 +102,14 @@ pub struct SlotInfo {
     pub status: SlotStatus,
     /// Parameter schema (empty for placeholders).
     pub params: Arc<[ParamInfo]>,
+    /// Parameter groups, display order (empty for placeholders, S3-01 generic UI layout).
+    pub groups: Arc<[ParamGroup]>,
 }
 
 struct Loaded {
     descriptor: ModuleDescriptor,
     params: Arc<[ParamInfo]>,
+    groups: Arc<[ParamGroup]>,
     /// The parameter mirror, index-aligned with `params` (READ_ONLY values as reported).
     values: Vec<f64>,
     /// The committed state blob.
@@ -188,6 +191,7 @@ fn committed_state(l: &Loaded) -> ModuleState {
 
 fn loaded_from(module: Box<dyn Module>) -> Box<Loaded> {
     let params: Arc<[ParamInfo]> = module.params().into();
+    let groups: Arc<[ParamGroup]> = module.groups().into();
     let values = params
         .iter()
         .map(|p| module.param_value(p.id).unwrap_or(p.default))
@@ -196,6 +200,7 @@ fn loaded_from(module: Box<dyn Module>) -> Box<Loaded> {
     Box::new(Loaded {
         descriptor: module.descriptor().clone(),
         params,
+        groups,
         values,
         blob,
         latency: module.latency_samples(),
@@ -502,6 +507,7 @@ impl RackHost {
                     None => SlotStatus::Active,
                 },
                 params: l.params.clone(),
+                groups: l.groups.clone(),
             },
             Kind::Placeholder {
                 model,
@@ -525,6 +531,7 @@ impl RackHost {
                     }
                 },
                 params: Arc::from(Vec::new()),
+                groups: Arc::from(Vec::new()),
             },
         })
     }

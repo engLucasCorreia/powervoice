@@ -17,6 +17,8 @@ mod events;
 pub mod export_commands;
 pub mod export_dto;
 mod macros;
+mod rack_commands;
+mod rack_dto;
 mod record_commands;
 mod record_dto;
 
@@ -44,6 +46,8 @@ pub use export_dto::{
     ExportFormatDto, ExportFormatsDto, ExportRangeDto, ExportRequestDto, ExportStartedDto,
     Mp3SettingsDto,
 };
+pub use rack_commands::*;
+pub use rack_dto::{ParamChangedDto, RackLatencyDto, RackStateDto, rack_ipc_error};
 pub use record_commands::*;
 pub use record_dto::{RecordStateDto, engine_monitor_mode};
 
@@ -70,6 +74,16 @@ crate::ipc_commands!(
     transport_seek,
     telemetry_subscribe,
     clock_now_ns,
+    rack_list_modules,
+    rack_get,
+    rack_add,
+    rack_remove,
+    rack_move,
+    rack_bypass,
+    rack_ab,
+    rack_restart,
+    param_set_normalized,
+    param_set_text,
     record_get,
     record_arm,
     record_start,
@@ -110,6 +124,16 @@ crate::ipc_commands!(
     transport_seek,
     telemetry_subscribe,
     clock_now_ns,
+    rack_list_modules,
+    rack_get,
+    rack_add,
+    rack_remove,
+    rack_move,
+    rack_bypass,
+    rack_ab,
+    rack_restart,
+    param_set_normalized,
+    param_set_text,
     record_get,
     record_arm,
     record_start,

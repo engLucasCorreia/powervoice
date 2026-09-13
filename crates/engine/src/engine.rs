@@ -15,13 +15,14 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 
 use vox_project::{ChunkStore, DocSnapshot, TakeCapture};
-use vox_rack::{RackModel, Registry};
+use vox_rack::{ModuleDescriptor, RackModel, RackNotice, Registry};
 
 use crate::backend::{Backend, BufferRequest, DeviceSnapshot, HostId, app_now_ns};
 use crate::control::{self, Control, ControlMsg};
 use crate::device_state::DeviceStatus;
 use crate::devices::DeviceNotice;
 use crate::prefs::DevicePrefs;
+use crate::rack_api::{RackApiError, RackCommand, RackSnapshot};
 use crate::record::{LiveTakePeaks, MonitorMode, RecordDone, RecordError, RecordState};
 use crate::telemetry::TelemetrySink;
 use crate::transport::{TransportCommand, TransportState};
@@ -62,6 +63,15 @@ pub enum EngineEvent {
     Devices(DevicesView),
     /// A device notice (fallback, not found, lost, reconnected, …).
     Notice(DeviceNotice),
+    /// A rack notice (S3-01, SPEC-012 §2.1–§2.6): a parameter mirror echo, a latency change, a
+    /// slot failure or a restart. The app maps `ParamChanged` to `param_changed` and
+    /// `LatencyChanged` to `rack_latency`; `SlotFailed`/`SlotRestarted` also arrive as a
+    /// [`EngineEvent::RackChanged`] snapshot (built on the control thread, H-01 handoff: re-read
+    /// `slot_info` on `SlotRestarted`).
+    Rack(RackNotice),
+    /// The rack's slot list, status or latency changed: every mutating [`RackCommand`]'s result,
+    /// and any later async change (a failure, a restart). Maps to the `rack_changed` event.
+    RackChanged(RackSnapshot),
     /// The record panel state changed (S1-04).
     Record(RecordState),
 }
@@ -232,6 +242,28 @@ impl EngineHandle {
         let _ = self.call(move |c| c.set_telemetry_sink(sink));
     }
 
+    /// The registered modules (the Add-module menu; S3-01).
+    pub fn rack_registry(&self) -> Vec<ModuleDescriptor> {
+        self.call(|c| c.rack_registry()).unwrap_or_default()
+    }
+
+    /// The current rack state (S3-01).
+    pub fn rack_snapshot(&self) -> RackSnapshot {
+        self.call(|c| c.rack_snapshot()).unwrap_or_default()
+    }
+
+    /// Applies a rack edit or parameter change (S3-01); returns the resulting snapshot.
+    pub fn rack_command(&self, cmd: RackCommand) -> Result<RackSnapshot, RackApiError> {
+        self.call(move |c| c.rack_apply(cmd))
+            .unwrap_or(Err(RackApiError::Unavailable))
+    }
+
+    /// The current rack as plain data (H-08 handoff: lets export build its offline chain from the
+    /// live rack instead of `RackModel::default()`). `None` only if the engine is stopped.
+    pub fn rack_model(&self) -> Option<RackModel> {
+        self.call(|c| c.rack_model())
+    }
+
     /// Arms (opens the input stream, starts the input meter) or disarms. Locked on while
     /// recording (S1-04, SPEC-002 §2.1).
     pub fn set_armed(&self, armed: bool) -> Option<RecordState> {
@@ -337,6 +369,26 @@ impl ManualEngine {
     /// See [`EngineHandle::set_telemetry_sink`].
     pub fn set_telemetry_sink(&mut self, sink: Option<TelemetrySink>) {
         self.control.set_telemetry_sink(sink);
+    }
+
+    /// See [`EngineHandle::rack_registry`].
+    pub fn rack_registry(&self) -> Vec<ModuleDescriptor> {
+        self.control.rack_registry()
+    }
+
+    /// See [`EngineHandle::rack_snapshot`].
+    pub fn rack_snapshot(&self) -> RackSnapshot {
+        self.control.rack_snapshot()
+    }
+
+    /// See [`EngineHandle::rack_command`].
+    pub fn rack_command(&mut self, cmd: RackCommand) -> Result<RackSnapshot, RackApiError> {
+        self.control.rack_apply(cmd)
+    }
+
+    /// See [`EngineHandle::rack_model`].
+    pub fn rack_model(&self) -> RackModel {
+        self.control.rack_model()
     }
 
     /// See [`EngineHandle::set_armed`].

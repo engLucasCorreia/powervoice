@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 use rtrb::{Consumer, Producer, RingBuffer};
 use vox_project::TakeCapture;
 use vox_rack::{
-    ActivateConfig, ChannelLayout, MAX_BLOCK, ProcessMode, RackHost, RackModel, RackOptions,
-    Registry,
+    ActivateConfig, ChannelLayout, MAX_BLOCK, ModuleDescriptor, ProcessMode, RackHost, RackModel,
+    RackNotice, RackOptions, Registry,
 };
 
 use crate::backend::{
@@ -37,6 +37,7 @@ use crate::input::{
 };
 use crate::output::{OutputCb, OutputParts, PartsSlot, take_parts};
 use crate::prefs::DevicePrefs;
+use crate::rack_api::{RackApiError, RackCommand, RackSnapshot};
 use crate::reader::{self, Reader, ReaderCmd};
 use crate::record::{LiveTakePeaks, MonitorMode, RecordDone, RecordError, RecordState, StopReason};
 use crate::rt::{
@@ -507,6 +508,93 @@ impl Control {
             self.open_output(false);
         }
         self.emit_state_if_changed();
+    }
+
+    // --- Rack (S3-01, SPEC-012 §2.1–§2.6) ---------------------------------------------------
+
+    /// The registered modules (the Add-module menu; always available, even with no live rack).
+    pub(crate) fn rack_registry(&self) -> Vec<ModuleDescriptor> {
+        self.registry.descriptors().cloned().collect()
+    }
+
+    /// The current rack state, empty when there is no live rack (no output stream open).
+    pub(crate) fn rack_snapshot(&self) -> RackSnapshot {
+        self.output
+            .as_ref()
+            .map(|out| RackSnapshot::read(&out.rack))
+            .unwrap_or_default()
+    }
+
+    /// The current rack as plain data (H-08 handoff: export renders `RackModel::default()` today
+    /// — this is the getter that later wires it to the live rack instead). Reads straight from
+    /// the live host when an output stream is open (always current, unlike the `rack_model` field
+    /// this struct only refreshes on a rack notice) and falls back to the last-known model
+    /// otherwise (no live rack, e.g. no output device).
+    pub(crate) fn rack_model(&self) -> RackModel {
+        self.output
+            .as_ref()
+            .map_or_else(|| self.rack_model.clone(), |out| out.rack.model())
+    }
+
+    /// Applies one rack command and returns the resulting snapshot.
+    pub(crate) fn rack_apply(&mut self, cmd: RackCommand) -> Result<RackSnapshot, RackApiError> {
+        let (result, notices) = {
+            let Some(out) = self.output.as_mut() else {
+                return Err(RackApiError::Unavailable);
+            };
+            let host = &mut out.rack;
+            let result = match cmd {
+                RackCommand::Add { module_id, index } => {
+                    host.insert_module(index, &module_id).map(|_| ())
+                }
+                RackCommand::Remove { index } => host.remove(index),
+                RackCommand::Move { from, to } => host.move_slot(from, to),
+                RackCommand::SetBypass { index, on } => host.set_bypass(index, on),
+                RackCommand::SetAb { on } => {
+                    host.set_ab(on);
+                    Ok(())
+                }
+                RackCommand::SetParamNormalized { index, id, value } => {
+                    host.set_param_normalized(index, id, value).map(|_| ())
+                }
+                RackCommand::SetParamText { index, id, text } => {
+                    host.set_param_text(index, id, &text).map(|_| ())
+                }
+                RackCommand::Restart { index } => host.restart(index),
+            };
+            (result, host.take_notices())
+        };
+        self.handle_rack_notices(notices);
+        result.map_err(|e| RackApiError::Rack(e.to_string()))?;
+        let snapshot = self.rack_snapshot();
+        (self.events)(EngineEvent::RackChanged(snapshot.clone()));
+        Ok(snapshot)
+    }
+
+    /// Forwards rack notices (ADR-005 §7 mirror echoes, latency changes, failures, restarts),
+    /// keeps `rack_model` (the source of truth across output open/close) in sync, and — for a
+    /// failure or a restart, which can bring a new schema the per-parameter notices don't cover
+    /// (H-01 handoff) — emits a full [`EngineEvent::RackChanged`] snapshot built right here, on
+    /// the control thread (an [`EventSink`] must never call back into the engine).
+    fn handle_rack_notices(&mut self, notices: Vec<RackNotice>) {
+        if notices.is_empty() {
+            return;
+        }
+        if let Some(out) = self.output.as_ref() {
+            self.rack_model = out.rack.model();
+        }
+        let needs_refresh = notices.iter().any(|n| {
+            matches!(
+                n,
+                RackNotice::SlotFailed { .. } | RackNotice::SlotRestarted { .. }
+            )
+        });
+        for n in notices {
+            (self.events)(EngineEvent::Rack(n));
+        }
+        if needs_refresh {
+            (self.events)(EngineEvent::RackChanged(self.rack_snapshot()));
+        }
     }
 
     // --- Devices ---------------------------------------------------------------------------
@@ -1442,8 +1530,9 @@ impl Control {
         self.drain_rt();
         self.drain_input();
         self.service_recording(now);
-        if let Some(out) = self.output.as_mut() {
-            let _ = out.rack.tick();
+        let notices = self.output.as_mut().map(|out| out.rack.tick());
+        if let Some(notices) = notices {
+            self.handle_rack_notices(notices);
         }
         self.check_stream(now);
         self.relink_monitor();

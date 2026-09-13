@@ -54,6 +54,8 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-08 | Export follow-ups from S4-04: Whole file / Selection choice (range already plumbed end to end); export reads the current rack model once S3-01 lands (today renders an empty rack); SPEC-014 "Output noise only" confirmation; MP3 VBR in the dialog | S | done |
 | H-10 | Recording follow-ups from the H-05 review: document stuck after a failed take commit; input dropout detection + markers; disk-space floor / remaining time; clip lamp reset at take start; live-peaks memory cap (nr_capture test temp-dir leak: fixed on main); H-06 gaps: 88.2 kHz, Record on a non-empty document opens the dialog, kHz formatting | S | done |
 | H-11 | Disk-space floor + remaining recording time (A-010: libc statvfs / windows-sys); dropouts > 2 s → device-loss stop (A-011); dropout marks on the resampled path | S | done |
+| H-12 | Spectral view follow-ups (T-207): persist display prefs in Settings (A-014), one shared time ruler + scrollbar in EditorView (SPEC-007 §2.1 stacking), HiDPI columns, import-freeze message once import has progress state | S | todo |
+| H-13 | WebGL2 renderers (ADR-009 primary): spectrogram R8 textures + colormap shader, waveform; Canvas2D stays the fallback; FFT-size texture gating live | S+OR | todo |
 | H-09 | Normalize follow-ups from S2-02: progress via the S4-04 `job_progress` event + cancel for long files; % targets; Effects menu entry; pyramid-accelerated peak scan (SPEC-010 AC-9/AC-15); remembered dialog value | S | done |
 
 ## M0 — Foundations
@@ -78,7 +80,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-104 | App infra: tracing log, typed errors→toasts/banners, panic hook, settings, stores, keymap registry, WebKit DMA-BUF default | W1 | S | M0 | done |
 | T-105 | Engine core: control thread, RT callbacks, transport (Stop→play start), reader/prefetch, resampling, heard clock, 60 Hz telemetry | W2 | O | T-101, T-102, T-103 | → S1-01 (subset), rest hardening |
 | T-106 | Recording: crash-safe WAV, peaks stream, take → undoable edit | W3 | O | T-105 | → S1-04 (subset), rest hardening |
-| T-107 | Monitoring off/dry/through-rack, drift-corrected in→out ring | W3 | O | T-105 | todo |
+| T-107 | Monitoring off/dry/through-rack, drift-corrected in→out ring | W3 | O | T-105 | in progress |
 | T-108 | IPC layer: M1 commands/events, VXTM/VXRP channels, binary decoders + golden fixtures, clock sync | W3 | S | T-104, T-105 | → S1-01/S1-03 (subset), rest hardening |
 | T-110 | Bench harness (divan, callback-time histogram) | W3 | S | T-105 | todo |
 | T-109 | UI: device settings, transport bar, meter bridge, live recording waveform | W4 | S | T-106, T-107, T-108 | → S1-01/S1-04 (subset), rest hardening |
@@ -93,7 +95,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-204 | STFT spectrogram tile service | W1 | O | M1 | done |
 | T-205 | Waveform renderer: zoom/scroll, amplitude zoom, rulers, extrapolated playhead | W2 | S | T-203 | → S1-03 (Canvas2D subset), rest hardening |
 | T-206 | Selection model, time formats, zero-crossing snap | W3 | S | T-205 | todo |
-| T-207 | Spectrogram renderer, log/linear, split view | W3 | S | T-204, T-205 | in progress |
+| T-207 | Spectrogram renderer, log/linear, split view | W3 | S | T-204, T-205 | done |
 | T-208 | Live output analyzer: post-rack tap, FFT worker, 1/24-oct bands, VXSA, bottom-dock UI | W3 | S+OR | T-205 | todo |
 | T-209 | File menu & dialogs: Open, Save, Save As, downmix dialog, save format, clip prompt, unsaved-changes prompt, import progress | W3 | S | T-201, T-202, T-205 | → S1-03 (subset), rest hardening |
 

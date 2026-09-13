@@ -24,7 +24,9 @@ use crate::backend::{
     Backend, BackendError, BufferRequest, Direction, Enumerate, HostId, StallDetector,
     StreamHandle, StreamRequest, choose_default_host, flags,
 };
-use crate::capture::{self, CaptureHome, CaptureWriter, LivePeaks, LivePeaksHandle, take_home};
+use crate::capture::{
+    self, CaptureHome, CaptureWriter, GapHome, LivePeaks, LivePeaksHandle, take_gap_home, take_home,
+};
 use crate::device_state::{Activity, DeviceAction, DeviceEvent, DeviceStateMachine, LinkState};
 use crate::devices::{
     DEVICE_POLL_INTERVAL, DeviceList, DeviceNotice, DevicePollThread, DeviceWatcher, InputChannel,
@@ -32,9 +34,9 @@ use crate::devices::{
 };
 use crate::engine::{Clock, DevicesView, EngineConfig, EngineEvent, EventSink, PlaybackDoc};
 use crate::input::{
-    CAPTURE_RING_SECONDS, INPUT_CMD_CAPACITY, INPUT_EVENT_CAPACITY, InputCmd, InputEvent,
-    InputShared, InputSide, InputSideParts, MONITOR_RING_FRAMES, MonitorSlot, MonitorTx,
-    input_callback, stop_code, take_monitor,
+    CAPTURE_RING_SECONDS, GAP_EVENT_CAPACITY, GapEvent, INPUT_CMD_CAPACITY, INPUT_EVENT_CAPACITY,
+    InputCmd, InputEvent, InputShared, InputSide, InputSideParts, MONITOR_RING_FRAMES, MonitorSlot,
+    MonitorTx, input_callback, stop_code, take_monitor,
 };
 use crate::output::{OutputCb, OutputParts, PartsSlot, take_parts};
 use crate::prefs::DevicePrefs;
@@ -101,6 +103,11 @@ struct InputStream {
     capture_rx: Option<Consumer<f32>>,
     /// Where a finished capture-writer returns it.
     capture_home: CaptureHome,
+    /// H-10 item 4: the gap-ring consumer while no take uses it (mirrors `capture_rx`/
+    /// `capture_home` — same stream, same lifetime, `record_start` takes it only for a
+    /// non-resampled take).
+    gap_rx: Option<Consumer<GapEvent>>,
+    gap_home: GapHome,
     stall: StallDetector,
     rate_hz: u32,
     nominal_frames: Option<u32>,
@@ -1238,6 +1245,7 @@ impl Control {
         let (cmd_tx, cmd_rx) = RingBuffer::new(INPUT_CMD_CAPACITY);
         let (ev_tx, ev_rx) = RingBuffer::new(INPUT_EVENT_CAPACITY);
         let (cap_tx, cap_rx) = RingBuffer::new(rate as usize * CAPTURE_RING_SECONDS);
+        let (gap_tx, gap_rx) = RingBuffer::new(GAP_EVENT_CAPACITY);
         let shared = Arc::new(InputShared::default());
         let slot: MonitorSlot = Arc::new(Mutex::new(None));
         let monitor = self.monitor_tx.take();
@@ -1250,6 +1258,7 @@ impl Control {
             shared: shared.clone(),
             slot: slot.clone(),
             rate_hz: rate,
+            gap_events: gap_tx,
         });
         let cb = input_callback(self.in_channel.clone(), side);
         match self.backend.open_input(req, Box::new(cb)) {
@@ -1263,6 +1272,8 @@ impl Control {
                 slot,
                 capture_rx: Some(cap_rx),
                 capture_home: Arc::new(Mutex::new(None)),
+                gap_rx: Some(gap_rx),
+                gap_home: Arc::new(Mutex::new(None)),
                 rate_hz: rate,
                 monitor_gen,
             }),
@@ -1352,6 +1363,10 @@ impl Control {
             finishing: self.recording.as_ref().is_some_and(|r| r.stop_at.is_some()),
             monitor: self.monitor_mode,
             monitoring: self.monitor_active,
+            dropout_count: self
+                .recording
+                .as_ref()
+                .map_or(0, |r| r.shared.dropout_events.load(Ordering::Relaxed)),
         }
     }
 
@@ -1360,7 +1375,7 @@ impl Control {
     /// RT input callback.
     pub(crate) fn live_take_peaks(&self, start_bucket: u32, max: u32) -> Option<LiveTakePeaks> {
         let rec = self.recording.as_ref()?;
-        let (len_samples, buckets) = rec
+        let (len_samples, spb, buckets) = rec
             .peaks
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -1368,7 +1383,10 @@ impl Control {
         Some(LiveTakePeaks {
             sample_rate_hz: rec.doc_rate_hz,
             len_samples,
-            spb: crate::record::LIVE_PEAKS_SPB,
+            // H-10 item 6: `spb` doubles as `LivePeaks` decimates a multi-hour take, so it must
+            // come from the same snapshot as `buckets` — never the fixed `LIVE_PEAKS_SPB`, which
+            // is only the *starting* resolution.
+            spb,
             buckets,
         })
     }
@@ -1465,6 +1483,18 @@ impl Control {
         {
             chunk.commit_all();
         }
+        // H-10 item 4: only taken (and used) for a non-resampled take — capture resampling (H-06)
+        // stays out of this ticket's scope, so a resampled take detects dropouts live (the
+        // counter still updates, RT-side) but doesn't splice/mark them (`CaptureWriter` docs).
+        let gap_rx = if resampler.is_none() {
+            let mut gap_rx = inp.gap_rx.take().or_else(|| take_gap_home(&inp.gap_home));
+            if let Some(rx) = gap_rx.as_mut() {
+                while rx.pop().is_ok() {} // drop stale events from a previous take
+            }
+            gap_rx
+        } else {
+            None
+        };
         inp.shared.reset_take();
         let shared = inp.shared.clone();
         let peaks: LivePeaksHandle = Arc::new(Mutex::new(LivePeaks::default()));
@@ -1477,6 +1507,8 @@ impl Control {
             resampler,
             done,
             peaks.clone(),
+            gap_rx,
+            inp.gap_home.clone(),
         );
         let link = if self.threaded {
             match capture::spawn(writer) {

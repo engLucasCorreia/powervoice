@@ -22,8 +22,8 @@
     }
   });
 
-  // Ticket H-06 scope: 44.1 / 48 / 96 kHz (SPEC-002 §2.2 also offers 88.2 kHz — hardening).
-  const SAMPLE_RATES = [44_100, 48_000, 96_000] as const;
+  // SPEC-002 §2.2: {44 100, 48 000, 88 200, 96 000} Hz.
+  const SAMPLE_RATES = [44_100, 48_000, 88_200, 96_000] as const;
   const BIT_DEPTHS: BitDepth[] = ["16", "24", "32f"];
 
   async function confirm(): Promise<void> {

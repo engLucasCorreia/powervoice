@@ -39,6 +39,10 @@ const MONO_SCRATCH_FRAMES: usize = 8192;
 pub(crate) const CLIP_THRESHOLD: f32 = 0.999_90;
 /// Clip runs closer than this count as one event (SPEC-002 §3 `clip_merge_ms`).
 const CLIP_MERGE_MS: u64 = 10;
+/// H-10 item 4: the gap ring's capacity (SPEC-002 §4.3: "a small gap ring") — dropouts are rare,
+/// so a handful of pending events is plenty; a full ring drops the newest event (RT-safe, same
+/// convention as [`InputSide::emit`]).
+pub(crate) const GAP_EVENT_CAPACITY: usize = 64;
 
 /// Control → input callback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,6 +74,16 @@ pub(crate) enum InputEvent {
     CaptureEnded { samples: u64 },
 }
 
+/// H-10 item 4 (SPEC-002 §2.4/§4.3): one detected input dropout, in the ring-position numbering
+/// the capture-writer also sees draining `InputSideParts::capture` (device-rate sample count
+/// pushed to the capture ring since the take started). `take_index`: where the gap starts.
+/// `lost_frames`: the estimated number of missing device-rate frames to fill with silence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GapEvent {
+    pub(crate) take_index: u64,
+    pub(crate) lost_frames: u32,
+}
+
 /// [`InputShared::stop_reason`] values.
 pub(crate) mod stop_code {
     pub(crate) const USER: u8 = 0;
@@ -93,6 +107,10 @@ pub(crate) struct InputShared {
     pub(crate) stop_reason: AtomicU8,
     /// Clip events of the current take.
     pub(crate) clip_events: AtomicU32,
+    /// H-10 item 4: dropout events detected so far this take (SPEC-002 §2.1's live amber
+    /// counter) — incremented only for events the gap ring actually accepted, so this always
+    /// matches the number of dropout markers the capture-writer will add.
+    pub(crate) dropout_events: AtomicU32,
     /// Samples that didn't fit in the full capture ring: the take ended just before them.
     pub(crate) overflow_samples: AtomicU64,
     /// Events dropped because the event ring was full.
@@ -110,6 +128,7 @@ impl InputShared {
         self.writer_failed.store(false, Ordering::Release);
         self.stop_reason.store(stop_code::USER, Ordering::Relaxed);
         self.clip_events.store(0, Ordering::Relaxed);
+        self.dropout_events.store(0, Ordering::Relaxed);
         self.overflow_samples.store(0, Ordering::Relaxed);
     }
 }
@@ -133,6 +152,8 @@ pub(crate) struct InputSideParts {
     pub(crate) shared: Arc<InputShared>,
     pub(crate) slot: MonitorSlot,
     pub(crate) rate_hz: u32,
+    /// H-10 item 4: where detected dropouts are reported (SPEC-002 §4.3).
+    pub(crate) gap_events: Producer<GapEvent>,
 }
 
 /// The mono part of the input callback (after deinterleaving).
@@ -151,6 +172,16 @@ pub(crate) struct InputSide {
     stop_ns: Option<u64>,
     captured: u64,
     last_clip: Option<u64>,
+    /// H-10 item 4 (SPEC-002 §4.3): where dropouts are reported.
+    gap_events: Producer<GapEvent>,
+    /// The *stream-clock* capture time at the end of the last block processed while capturing
+    /// (`None`: no reference yet — reset at `StartCapture`, so a gap is never reported across the
+    /// arm/record boundary).
+    last_capture_end_ns: Option<u64>,
+    /// Frame count of the last block processed while capturing — the period estimate for the
+    /// `0.5 × period` dropout threshold (SPEC-002 §4.3); adapts to the device's actual buffer
+    /// size instead of assuming a fixed nominal one.
+    last_block_frames: u32,
 }
 
 /// Index of the first sample at or after time offset `dt_ns` in a stream at `rate_hz`.
@@ -177,6 +208,9 @@ impl InputSide {
             stop_ns: None,
             captured: 0,
             last_clip: None,
+            gap_events: p.gap_events,
+            last_capture_end_ns: None,
+            last_block_frames: 0,
         }
     }
 
@@ -194,6 +228,8 @@ impl InputSide {
                 self.stop_ns = None;
                 self.captured = 0;
                 self.last_clip = None;
+                self.last_capture_end_ns = None;
+                self.last_block_frames = 0;
             }
             InputCmd::StopCapture { stop_ns } => {
                 if self.capturing {
@@ -216,6 +252,41 @@ impl InputSide {
                     self.shared.clip_events.fetch_add(1, Ordering::Relaxed);
                 }
                 self.last_clip = Some(idx);
+            }
+        }
+    }
+
+    /// H-10 item 4 (SPEC-002 §4.3): compares this block's *stream-clock* capture time (not the
+    /// app-time-mapped `t0` — the formula is literally `capture_k`/`capture_{k+1}`, the device's
+    /// own capture timestamps, since a device/driver-side dropout can leave the app-clock mapping
+    /// undisturbed while the device's own reported position jumps) to the expected continuation
+    /// of the previous block, and reports a gap event when it slipped by at least
+    /// `max(0.5 × period, 1 ms)`. Called only while `self.capturing`, before this block's own
+    /// samples are pushed (so `self.captured` is still the position right before the gap). RT-safe:
+    /// one non-blocking ring push, no allocation.
+    fn detect_dropout(&mut self, capture_ns: u64) {
+        if let Some(expected) = self.last_capture_end_ns
+            && capture_ns > expected
+        {
+            let gap_ns = capture_ns - expected;
+            let period_ns = frames_to_ns(u64::from(self.last_block_frames.max(1)), self.rate_hz);
+            let min_gap_ns = (period_ns / 2).max(1_000_000);
+            if gap_ns >= min_gap_ns {
+                // Round to the nearest frame: (gap_ns * rate + 0.5 s worth of ns) / 1 s of ns.
+                let lost =
+                    (u128::from(gap_ns) * u128::from(self.rate_hz) + 500_000_000) / 1_000_000_000;
+                let lost_frames = u32::try_from(lost).unwrap_or(u32::MAX);
+                if lost_frames > 0
+                    && self
+                        .gap_events
+                        .push(GapEvent {
+                            take_index: self.captured,
+                            lost_frames,
+                        })
+                        .is_ok()
+                {
+                    self.shared.dropout_events.fetch_add(1, Ordering::Relaxed);
+                }
             }
         }
     }
@@ -284,6 +355,13 @@ impl InputSide {
             return;
         }
         let t0 = ts.to_app_ns(ts.capture_ns);
+        let frames = x.len() as u64;
+        if self.capturing {
+            // H-10 item 4 (SPEC-002 §4.3): detect a gap before this block's own samples advance
+            // `self.captured` — the reported `take_index` must be the position right before it.
+            // Uses the stream's own (unmapped) capture time — see `detect_dropout`'s docs.
+            self.detect_dropout(ts.capture_ns);
+        }
         let mut peak = 0.0f32;
         let mut sum_sq = 0.0f64;
         for &s in x {
@@ -299,7 +377,18 @@ impl InputSide {
         if self.capturing {
             self.capture_block(x, t0);
         }
-        let frames = x.len() as u64;
+        // H-10 item 4: the reference for the *next* block's gap check — `None` while not
+        // capturing (including just-ended-this-call, e.g. overflow/stop) so a future take starts
+        // fresh (`StartCapture` also resets this, belt and suspenders).
+        if self.capturing {
+            self.last_capture_end_ns = Some(
+                ts.capture_ns
+                    .saturating_add(frames_to_ns(frames, self.rate_hz)),
+            );
+            self.last_block_frames = frames as u32;
+        } else {
+            self.last_capture_end_ns = None;
+        }
         self.emit(InputEvent::Block {
             frames: frames as u32,
             peak,
@@ -344,11 +433,13 @@ mod tests {
         Producer<InputCmd>,
         Consumer<f32>,
         Arc<InputShared>,
+        Consumer<GapEvent>,
     ) {
         let (cmd_tx, cmd_rx) = RingBuffer::new(INPUT_CMD_CAPACITY);
         let (ev_tx, ev_rx) = RingBuffer::new(INPUT_EVENT_CAPACITY);
         drop(ev_rx); // pushes into an abandoned ring still succeed
         let (cap_tx, cap_rx) = RingBuffer::new(4096);
+        let (gap_tx, gap_rx) = RingBuffer::new(GAP_EVENT_CAPACITY);
         let shared = Arc::new(InputShared::default());
         let s = InputSide::new(InputSideParts {
             cmds: cmd_rx,
@@ -358,8 +449,9 @@ mod tests {
             shared: shared.clone(),
             slot: Arc::new(Mutex::new(None)),
             rate_hz: rate,
+            gap_events: gap_tx,
         });
-        (s, cmd_tx, cap_rx, shared)
+        (s, cmd_tx, cap_rx, shared, gap_rx)
     }
 
     fn ts(t_ns: u64) -> InputTimestamp {
@@ -373,7 +465,7 @@ mod tests {
     /// Start/stop trimming by capture time: 1 kHz stream, 1 ms per sample.
     #[test]
     fn capture_is_trimmed_to_start_and_stop_times() {
-        let (mut s, mut cmds, mut cap, shared) = side(1000);
+        let (mut s, mut cmds, mut cap, shared, _gaps) = side(1000);
         let x: Vec<f32> = (0..10).map(|i| i as f32).collect();
         cmds.push(InputCmd::StartCapture {
             start_ns: 3_500_000,
@@ -400,7 +492,7 @@ mod tests {
     /// blocks push nothing; the reason and the lost count are reported; no allocation.
     #[test]
     fn capture_ring_overflow_ends_the_take_at_the_last_sample_that_fit() {
-        let (mut s, mut cmds, mut cap, shared) = side(1000);
+        let (mut s, mut cmds, mut cap, shared, _gaps) = side(1000);
         cmds.push(InputCmd::StartCapture { start_ns: 0 }).unwrap();
         // The ring holds 4096 samples; the writer is stalled (nothing is popped).
         let x: Vec<f32> = (0..3000).map(|i| i as f32).collect();
@@ -429,7 +521,7 @@ mod tests {
     /// Clip runs closer than 10 ms merge into one event.
     #[test]
     fn clip_runs_merge_within_10_ms() {
-        let (mut s, mut cmds, _cap, shared) = side(1000);
+        let (mut s, mut cmds, _cap, shared, _gaps) = side(1000);
         cmds.push(InputCmd::StartCapture { start_ns: 0 }).unwrap();
         let mut x = vec![0.0f32; 100];
         x[5] = 1.0; // event 1
@@ -438,5 +530,84 @@ mod tests {
         x[60] = 0.9998; // below the threshold
         no_alloc(|| s.process(&x, ts(0))).unwrap();
         assert_eq!(shared.clip_events.load(Ordering::Relaxed), 2);
+    }
+
+    /// H-10 item 4 (SPEC-002 §4.3, AC-7): a 10 ms gap between two 10 ms blocks (period-based
+    /// threshold 5 ms) is reported at the take index right before it, with the lost frames
+    /// rounded from the gap duration; the live counter reflects it. No allocation.
+    #[test]
+    fn dropout_gap_reports_take_index_and_lost_frames() {
+        let (mut s, mut cmds, _cap, shared, mut gaps) = side(1000);
+        cmds.push(InputCmd::StartCapture { start_ns: 0 }).unwrap();
+        let block1: Vec<f32> = vec![0.0; 10];
+        no_alloc(|| s.process(&block1, ts(0))).unwrap();
+        assert!(
+            gaps.pop().is_err(),
+            "no gap on the first block (no reference yet)"
+        );
+
+        // Block 1 ends at 10 ms; this block starts at 20 ms — a 10 ms gap.
+        let block2: Vec<f32> = vec![0.0; 10];
+        no_alloc(|| s.process(&block2, ts(20_000_000))).unwrap();
+
+        let ev = gaps.pop().expect("the gap must be reported");
+        assert_eq!(
+            ev,
+            GapEvent {
+                take_index: 10,
+                lost_frames: 10
+            }
+        );
+        assert_eq!(shared.dropout_events.load(Ordering::Relaxed), 1);
+        assert!(gaps.pop().is_err(), "only one event for one gap");
+    }
+
+    /// A gap below `max(0.5 × period, 1 ms)` is not a dropout (SPEC-002 §4.3).
+    #[test]
+    fn dropout_below_threshold_is_not_reported() {
+        let (mut s, mut cmds, _cap, shared, mut gaps) = side(1000);
+        cmds.push(InputCmd::StartCapture { start_ns: 0 }).unwrap();
+        let block1: Vec<f32> = vec![0.0; 10]; // 10 ms block ⇒ 5 ms threshold
+        no_alloc(|| s.process(&block1, ts(0))).unwrap();
+        // Block 1 ends at 10 ms; this one starts at 13 ms — only a 3 ms gap.
+        let block2: Vec<f32> = vec![0.0; 10];
+        no_alloc(|| s.process(&block2, ts(13_000_000))).unwrap();
+
+        assert!(gaps.pop().is_err(), "below threshold: not a dropout");
+        assert_eq!(shared.dropout_events.load(Ordering::Relaxed), 0);
+    }
+
+    /// `reset_take` (called before every `StartCapture`) clears the live dropout counter, and a
+    /// fresh take starts with no gap reference from the previous one (no false positive right
+    /// after Start even if the input was armed a while before it, SPEC-002 §2.1).
+    #[test]
+    fn dropout_counter_resets_and_no_reference_carries_across_takes() {
+        let (mut s, mut cmds, _cap, shared, mut gaps) = side(1000);
+        cmds.push(InputCmd::StartCapture { start_ns: 0 }).unwrap();
+        let block: Vec<f32> = vec![0.0; 10];
+        no_alloc(|| s.process(&block, ts(0))).unwrap();
+        no_alloc(|| s.process(&block, ts(20_000_000))).unwrap(); // a real 10 ms dropout
+        assert_eq!(shared.dropout_events.load(Ordering::Relaxed), 1);
+        let _ = gaps.pop();
+
+        cmds.push(InputCmd::StopCapture {
+            stop_ns: 30_000_000,
+        })
+        .unwrap();
+        no_alloc(|| s.process(&block, ts(30_000_000))).unwrap();
+        shared.reset_take();
+        assert_eq!(shared.dropout_events.load(Ordering::Relaxed), 0);
+
+        // A new take, long after the old one's last block — no false dropout on its first block.
+        cmds.push(InputCmd::StartCapture {
+            start_ns: 5_000_000_000,
+        })
+        .unwrap();
+        no_alloc(|| s.process(&block, ts(5_000_000_000))).unwrap();
+        assert!(
+            gaps.pop().is_err(),
+            "no reference should carry across takes"
+        );
+        assert_eq!(shared.dropout_events.load(Ordering::Relaxed), 0);
     }
 }

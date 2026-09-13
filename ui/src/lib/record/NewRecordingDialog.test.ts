@@ -39,6 +39,7 @@ function recordedDto(rate: number): RecordStateDto {
     finishing: false,
     monitor: "off",
     monitoring: false,
+    dropout_count: 0,
   };
 }
 
@@ -79,6 +80,22 @@ describe("NewRecordingDialog (H-06)", () => {
     );
     expect(rateChecked?.value).toBe("96000");
     expect(bitsChecked?.value).toBe("32f");
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("H-10 item 7: offers 88.2 kHz alongside 44.1/48/96 kHz (SPEC-002 §2.2)", () => {
+    openNewRecordingPrompt({ sample_rate_hz: 48_000, bit_depth: "24" });
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(NewRecordingDialog, { target });
+    flushSync();
+
+    const rates = Array.from(
+      target.querySelectorAll<HTMLInputElement>('input[name="new-recording-rate"]'),
+    ).map((r) => r.value);
+    expect(rates).toEqual(["44100", "48000", "88200", "96000"]);
 
     unmount(app);
     target.remove();

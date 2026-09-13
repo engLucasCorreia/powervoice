@@ -1,12 +1,13 @@
 import { emit } from "@tauri-apps/api/event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DocumentDto, RecordStateDto } from "../ipc/bindings";
+import { VXTM_FLAGS, type TelemetryFrame } from "../ipc/telemetry";
 import { clearActionHandlers } from "../keymap";
 import { initDocument, openDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import { clearNotices } from "../state/notices.svelte";
-import { initRecord, resetRecordForTest } from "../state/record.svelte";
+import { initRecord, onInputTelemetry, resetRecordForTest } from "../state/record.svelte";
 import { resetSelectionForTest, selectionState } from "../state/selection.svelte";
 import WaveformView from "./WaveformView.svelte";
 
@@ -30,6 +31,46 @@ function headerOnlyVxpk(): ArrayBuffer {
   dv.setUint16(4, 1, true);
   dv.setUint16(6, 48, true);
   return buf;
+}
+
+/** A `VXPK` frame carrying `buckets` (min, max) at `samplesPerBucket` (H-10 item 6). */
+function vxpkWithBuckets(samplesPerBucket: number, buckets: Array<[number, number]>): ArrayBuffer {
+  const headerLen = 48;
+  const buf = new ArrayBuffer(headerLen + buckets.length * 8);
+  const dv = new DataView(buf);
+  dv.setUint8(0, 0x56);
+  dv.setUint8(1, 0x58);
+  dv.setUint8(2, 0x50);
+  dv.setUint8(3, 0x4b);
+  dv.setUint16(4, 1, true);
+  dv.setUint16(6, headerLen, true);
+  dv.setUint32(12, 1 << 1, true); // PARTIAL
+  dv.setUint32(32, samplesPerBucket, true);
+  dv.setUint32(36, buckets.length, true);
+  dv.setUint32(40, 48_000, true);
+  let offset = headerLen;
+  for (const [mn, mx] of buckets) {
+    dv.setFloat32(offset, mn, true);
+    dv.setFloat32(offset + 4, mx, true);
+    offset += 8;
+  }
+  return buf;
+}
+
+function frame(flags: number, playheadSample = 0): TelemetryFrame {
+  return {
+    seq: 0,
+    flags,
+    playheadSample,
+    playheadTimeNs: 0,
+    rate: 0,
+    outPeakDbfs: Number.NEGATIVE_INFINITY,
+    outRmsDbfs: Number.NEGATIVE_INFINITY,
+    inPeakDbfs: Number.NEGATIVE_INFINITY,
+    inRmsDbfs: Number.NEGATIVE_INFINITY,
+    audioRev: 0,
+    droppedRtEvents: 0,
+  };
 }
 
 describe("WaveformView (S1-03)", () => {
@@ -183,6 +224,7 @@ describe("WaveformView (S1-03)", () => {
       finishing: false,
       monitor: "off",
       monitoring: true,
+      dropout_count: 0,
     };
     mockIPC(
       (cmd, args) => {
@@ -222,6 +264,97 @@ describe("WaveformView (S1-03)", () => {
       target.remove();
       stopRecord();
       stopDocument();
+      if (widthDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, "clientWidth", widthDescriptor);
+      }
+      if (heightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, "clientHeight", heightDescriptor);
+      }
+    }
+  });
+
+  // H-10 item 6: `LivePeaks` doubles its bucket size once a multi-hour take decimates
+  // (crates/engine/src/capture.rs). The view must size its *next* request from the response's
+  // own `samplesPerBucket`, not the fixed starting constant — otherwise, once the backend has
+  // decimated, a stale (smaller) assumed bucket size would under-cover the take's current span.
+  it("sizes the next live-peaks request from the response's own bucket size, not a fixed 256", async () => {
+    const widthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => 800 });
+    const heightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 200 });
+
+    const recordingDoc: DocumentDto = {
+      name: null,
+      path: null,
+      sample_rate_hz: 48_000,
+      len_samples: 0,
+      dirty: false,
+      audio_rev: 0,
+    };
+    const recordingState: RecordStateDto = {
+      input_device: "Mic",
+      input_channel: 1,
+      input_status: "healthy",
+      armed: true,
+      input_open: true,
+      input_rate_hz: 48_000,
+      recording: true,
+      finishing: false,
+      monitor: "off",
+      monitoring: true,
+      dropout_count: 0,
+    };
+    const requests: Array<{ startBucket: number; count: number }> = [];
+    mockIPC(
+      (cmd, args) => {
+        if (cmd === "record_get") {
+          return recordingState;
+        }
+        if (cmd === "record_peaks_get") {
+          requests.push(args as { startBucket: number; count: number });
+          // A decimated take: bucket size doubled from the client's starting 256 to 512.
+          return vxpkWithBuckets(512, [[-0.5, 0.5]]);
+        }
+        return null;
+      },
+      { shouldMockEvents: true },
+    );
+
+    vi.useFakeTimers();
+    try {
+      const stopDocument = await initDocument();
+      const stopRecord = initRecord();
+      await emit("document_changed", recordingDoc);
+      await vi.advanceTimersByTimeAsync(0);
+      flushSync();
+
+      // 100 000 samples elapsed: the first request still assumes the starting 256 spb.
+      onInputTelemetry(frame(VXTM_FLAGS.RECORDING, 100_000), 0);
+      flushSync();
+
+      const target = document.createElement("div");
+      document.body.appendChild(target);
+      const app = mount(WaveformView, { target });
+      flushSync();
+      await vi.advanceTimersByTimeAsync(0);
+
+      try {
+        expect(requests.length).toBeGreaterThan(0);
+        expect(requests[0]?.count).toBe(Math.ceil(100_000 / 256) + 2);
+
+        // The next poll (100 ms later) must use the *decimated* 512 spb the response just
+        // reported — not the stale starting constant.
+        await vi.advanceTimersByTimeAsync(100);
+        const next = requests.at(-1);
+        expect(next?.count).toBe(Math.ceil(100_000 / 512) + 2);
+      } finally {
+        unmount(app);
+        target.remove();
+        stopRecord();
+        stopDocument();
+      }
+    } finally {
+      vi.useRealTimers();
       if (widthDescriptor) {
         Object.defineProperty(HTMLElement.prototype, "clientWidth", widthDescriptor);
       }

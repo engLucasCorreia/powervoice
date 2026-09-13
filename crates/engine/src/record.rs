@@ -53,6 +53,10 @@ pub struct RecordState {
     pub monitor: MonitorMode,
     /// Monitoring is audible now (armed or recording, mode ≠ off, output open).
     pub monitoring: bool,
+    /// H-10 item 4: dropout events so far this take (SPEC-002 §2.1/§2.2's live amber counter),
+    /// `0` while not recording. Read from [`crate::input::InputShared::dropout_events`] each
+    /// tick — the same count [`RecordingResult::dropouts`] reports at Stop.
+    pub dropout_count: u32,
 }
 
 /// Why a take ended.
@@ -90,6 +94,22 @@ pub struct RecordingResult {
     /// First failure appending to the take while recording ([`StopReason::WriteError`]: the
     /// recording stopped, and the rest of the take was dropped).
     pub write_error: Option<ProjectError>,
+    /// H-10 item 4 (SPEC-002 §2.4/§4.3, AC-7): dropouts filled with silence during the take, in
+    /// take order — the caller turns each into a "Dropout N ms" marker alongside the take's own
+    /// undo entry. Always empty when the capture-writer resampled (H-06 capture resampling is out
+    /// of this ticket's scope — dropouts are still counted live, via `RecordState::dropout_count`,
+    /// but not spliced/marked on that path).
+    pub dropouts: Vec<DropoutMark>,
+}
+
+/// One dropout the capture-writer filled with silence (H-10 item 4), in take-relative samples at
+/// the take's rate ([`RecordingResult::sample_rate_hz`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DropoutMark {
+    /// Where the gap starts (samples already written to the take before it).
+    pub pos_samples: u64,
+    /// How many silent samples were inserted.
+    pub len_samples: u64,
 }
 
 /// Called once, on the capture-writer thread (or inline in a `ManualEngine`), when a take is

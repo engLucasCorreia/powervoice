@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use vox_engine::record::DropoutMark;
 use vox_engine::{EngineHandle, PlaybackDoc, TransportCommand};
 use vox_project::{
     Edit, EditTarget, FinishedTake, LufsNormalizeOutcome, Marker, MarkerId, MarkerOp,
@@ -219,6 +220,15 @@ fn marker_default_number(name: &str) -> Option<u64> {
         return None;
     }
     rest.parse().ok()
+}
+
+/// H-10 item 4 (SPEC-002 §2.4/§4.3): "Dropout 12 ms" — same hardcoded-English convention as
+/// [`next_marker_name`] (SPEC-009's i18n key for generated marker names is deferred, S2-03
+/// ticket report); `len_samples` rounds to the nearest millisecond.
+fn dropout_marker_name(len_samples: u64, rate_hz: u32) -> String {
+    let rate_hz = u64::from(rate_hz.max(1));
+    let ms = (len_samples * 1000 + rate_hz / 2) / rate_hz;
+    format!("Dropout {ms} ms")
 }
 
 /// SPEC-009 §2.4's rename normalization (also SPEC-005 §4.6's cue-name reading rules): trim
@@ -644,18 +654,85 @@ impl DocumentService {
     /// S1-04: commits a finished take as one undoable "Record" edit (`Session::commit_take`;
     /// T-101 rules: retried, and on failure the take stays open for recovery) and makes the new
     /// revision the engine's playback document. `Ok(None)`: an empty take, discarded.
-    pub fn commit_take(&self, finished: &FinishedTake) -> Result<Option<DocumentInfo>, IpcError> {
+    ///
+    /// H-10 item 1: every other error (e.g. `TakeNotInStore`) leaves `doc.session.open_take`
+    /// set (`session.rs` docs) — the whole document would otherwise refuse edits, new
+    /// recordings and close until restart. Rather than leave that broken session in place, it is
+    /// swapped out for a fresh empty one at the same rate, so the app stays usable immediately.
+    /// The broken session (and its take WAV, still holding whatever the store never got) is not
+    /// deleted — it is just dropped, releasing its lock (same "leave it for a future GC pass"
+    /// idea as [`close_with_retry`]) so a later recovery pass can still offer it. The caller
+    /// still sees `Err`, so it can tell the owner a take was lost from the open document; call
+    /// [`Self::info`] afterwards to get the fresh (empty) document.
+    pub fn commit_take(
+        &self,
+        finished: &FinishedTake,
+        dropouts: &[DropoutMark],
+    ) -> Result<Option<DocumentInfo>, IpcError> {
         let mut guard = self.0.open.lock().unwrap();
         let doc = guard.as_mut().ok_or_else(no_document)?;
-        let mut outcome = doc.session.commit_take(finished, &[]);
+        // H-10 item 4 (SPEC-002 §2.4/§4.3, AC-7): every dropout the capture-writer filled with
+        // silence becomes a "Dropout N ms" marker, committed with the take's own undo entry (one
+        // undo removes the take and all its markers together, like user-added ones).
+        let rate_hz = doc.session.sample_rate_hz();
+        let markers: Vec<Marker> = dropouts
+            .iter()
+            .map(|d| {
+                let id = doc.session.new_marker_id();
+                Marker::new(
+                    id,
+                    d.pos_samples,
+                    d.len_samples,
+                    dropout_marker_name(d.len_samples, rate_hz),
+                )
+            })
+            .collect();
+        let mut outcome = doc.session.commit_take(finished, &markers);
         for _ in 1..COMMIT_ATTEMPTS {
             if outcome.is_ok() {
                 break;
             }
             std::thread::sleep(COMMIT_RETRY_DELAY);
-            outcome = doc.session.commit_take(finished, &[]);
+            outcome = doc.session.commit_take(finished, &markers);
         }
-        let Some(step) = outcome.map_err(document_error)? else {
+        let step = match outcome {
+            Ok(step) => step,
+            Err(err) => {
+                let ipc_err = document_error(err);
+                let rate_hz = doc.session.sample_rate_hz();
+                let save_bits = doc.save_bits;
+                match Session::create(&self.0.sessions_dir, SessionConfig::new(rate_hz)) {
+                    Ok(fresh) => {
+                        self.0.engine.set_document(Some(PlaybackDoc {
+                            store: Arc::clone(fresh.store()),
+                            snapshot: fresh.current(),
+                        }));
+                        *self.0.clipboard.lock().unwrap() = None;
+                        if let Some(broken) = guard.replace(OpenDocument {
+                            session: fresh,
+                            path: None,
+                            save_bits,
+                        }) {
+                            tracing::warn!(
+                                session = %broken.session.id(),
+                                "leaving a session with an uncommitted take for a future recovery pass"
+                            );
+                            drop(broken.session);
+                        }
+                    }
+                    Err(create_err) => {
+                        // Couldn't even open a replacement — leave the broken session in place
+                        // (nothing worse than before) rather than lose the open document too.
+                        tracing::error!(
+                            error = %create_err,
+                            "recovering from a failed take commit also failed; the document may stay stuck"
+                        );
+                    }
+                }
+                return Err(ipc_err);
+            }
+        };
+        let Some(step) = step else {
             return Ok(None);
         };
         self.0.engine.set_document(Some(PlaybackDoc {
@@ -1556,7 +1633,7 @@ mod tests {
         let samples = vox_testkit::signal::sine(440.0, -6.0, 0.05, 48_000).unwrap();
         capture.append(&samples).unwrap();
         let info = service
-            .commit_take(&capture.finish())
+            .commit_take(&capture.finish(), &[])
             .unwrap()
             .expect("one undoable edit");
         assert_eq!(info.len_samples, samples.len() as u64);
@@ -1589,6 +1666,100 @@ mod tests {
             service.open(&saved).unwrap().name.as_deref(),
             Some("take.wav")
         );
+    }
+
+    /// H-10 item 4 (SPEC-002 §2.4/§4.3, AC-7): dropouts the engine reports alongside a finished
+    /// take become "Dropout N ms" markers committed with the take's own undo entry — one undo
+    /// removes the take and every dropout marker together, like user-added ones (SPEC-002 §2.2).
+    #[test]
+    fn dropouts_become_markers_committed_with_the_take() {
+        let (service, _engine, _dir) = service("dropout-markers");
+        let (mut capture, _info) = service
+            .begin_recording(48_000, BitDepth::Bit24, false)
+            .unwrap();
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.2, 48_000).unwrap();
+        capture.append(&samples).unwrap();
+        let dropouts = [
+            vox_engine::record::DropoutMark {
+                pos_samples: 1_000,
+                len_samples: 480, // 10 ms @ 48 kHz
+            },
+            vox_engine::record::DropoutMark {
+                pos_samples: 5_000,
+                len_samples: 24, // 0.5 ms, rounds to the nearest ms (0 ms — still marked)
+            },
+        ];
+        let info = service
+            .commit_take(&capture.finish(), &dropouts)
+            .unwrap()
+            .expect("one undoable edit");
+        assert!(info.dirty);
+
+        let markers = service.markers_get();
+        assert_eq!(markers.len(), 2, "{markers:?}");
+        assert_eq!(markers[0].pos_samples, 1_000);
+        assert_eq!(markers[0].len_samples, 480);
+        assert_eq!(markers[0].name, "Dropout 10 ms");
+        assert_eq!(markers[1].pos_samples, 5_000);
+        assert_eq!(markers[1].len_samples, 24);
+        assert_eq!(markers[1].name, "Dropout 1 ms", "rounds to the nearest ms");
+
+        // One undo entry removes the take and both dropout markers together.
+        let history = service.history_state();
+        assert!(history.can_undo);
+        assert_eq!(history.undo_label.as_deref(), Some("history.record"));
+        service.history_undo().unwrap();
+        assert!(service.markers_get().is_empty());
+    }
+
+    /// H-10 item 1: a `commit_take` failure (e.g. `TakeNotInStore` — the chunk store never got
+    /// the take's audio) must not leave the document stuck refusing edits, new recordings and
+    /// close until restart (H-05 review finding). `DocumentService::commit_take` swaps in a
+    /// fresh empty document instead of leaving the broken session's take open.
+    #[test]
+    fn commit_take_failure_frees_the_document_instead_of_wedging_it() {
+        let (service, _engine, _dir) = service("commit-take-failure");
+        let (capture, info) = service
+            .begin_recording(48_000, BitDepth::Bit24, false)
+            .unwrap();
+        assert_eq!((info.sample_rate_hz, info.len_samples), (48_000, 0));
+        let stuck_take = capture.id();
+        drop(capture); // its WAV/chunk writers are irrelevant to this test.
+
+        // Simulate the store never getting the take's audio (`ProjectError::TakeNotInStore`,
+        // session.rs `commit_take` docs): non-zero WAV samples, empty `WrittenAudio`.
+        let finished = FinishedTake {
+            take: stuck_take,
+            audio: vox_project::WrittenAudio::default(),
+            wav_parts: Vec::new(),
+            wav_samples: 1_000,
+            error: None,
+        };
+        let err = service.commit_take(&finished, &[]).unwrap_err();
+        assert_eq!(err.key, "error.take_not_in_store");
+
+        // The document is immediately usable again: empty, at the same rate, not "recording".
+        let info = service.info();
+        assert_eq!((info.sample_rate_hz, info.len_samples), (48_000, 0));
+        assert_eq!(info.path, None);
+        assert!(!info.dirty);
+        assert!(!service.is_recording());
+
+        // A new recording can start right away — previously this failed with
+        // `error.not_while_recording` because the broken session's take never closed.
+        let (mut capture, info) = service
+            .begin_recording(48_000, BitDepth::Bit24, false)
+            .unwrap();
+        assert_eq!((info.sample_rate_hz, info.len_samples), (48_000, 0));
+
+        // And it commits normally, proving the new session is fully functional.
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.05, 48_000).unwrap();
+        capture.append(&samples).unwrap();
+        let info = service
+            .commit_take(&capture.finish(), &[])
+            .unwrap()
+            .expect("one undoable edit");
+        assert_eq!(info.len_samples, samples.len() as u64);
     }
 
     // --- S2-01: selection, cut/copy/paste/delete/trim/silence, undo/redo -------------------

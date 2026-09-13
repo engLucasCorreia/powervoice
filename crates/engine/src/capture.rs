@@ -10,6 +10,7 @@
 //!
 //! `ManualEngine` runs the same [`CaptureWriter`] inline from its tick (deterministic tests).
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
@@ -20,27 +21,47 @@ use vox_dsp::capture_resample::CaptureResampler;
 use vox_project::take::DEFAULT_TAKE_SYNC_INTERVAL;
 use vox_project::{ProjectError, TakeCapture};
 
-use crate::input::{InputShared, stop_code};
-use crate::record::{LIVE_PEAKS_SPB, RecordDone, RecordingResult, StopReason};
+use crate::input::{GapEvent, InputShared, stop_code};
+use crate::record::{DropoutMark, LIVE_PEAKS_SPB, RecordDone, RecordingResult, StopReason};
 
 /// Drain period of the writer thread (≤ 50 ms, SPEC-002 §4.1).
 pub(crate) const DRAIN_INTERVAL: Duration = Duration::from_millis(20);
 
 /// Where the writer returns the capture-ring consumer when a take is finished.
 pub(crate) type CaptureHome = Arc<Mutex<Option<Consumer<f32>>>>;
+/// Where the writer returns the gap-ring consumer when a take is finished (H-10 item 4, mirrors
+/// [`CaptureHome`]).
+pub(crate) type GapHome = Arc<Mutex<Option<Consumer<GapEvent>>>>;
 
-/// Running min/max peaks for the take being captured (H-07, bucket size [`LIVE_PEAKS_SPB`]):
-/// appended to only by the capture-writer thread as it drains the capture ring — never by the RT
-/// input callback. Read by the control thread (`EngineHandle::live_take_peaks`) through
-/// [`LivePeaksHandle`]'s lock, a lock the RT thread never touches.
+/// \[control thread\] Takes the gap-ring consumer a finished writer returned.
+pub(crate) fn take_gap_home(home: &GapHome) -> Option<Consumer<GapEvent>> {
+    home.lock().unwrap_or_else(PoisonError::into_inner).take()
+}
+
+/// H-10 item 6: once completed buckets reach this count, [`LivePeaks::decimate`] halves the
+/// array and doubles the effective samples-per-bucket, so memory stays bounded (≈ `8 ×
+/// MAX_LIVE_PEAK_BUCKETS` bytes ≈ 512 KiB) whatever the take's length — at 48 kHz an
+/// undecimated take would otherwise grow the buckets `Vec` by ~5.4 MB/h forever. Same cap as
+/// `record_commands::MAX_LIVE_PEAKS_BUCKETS`, so one request can still return the whole take.
+const MAX_LIVE_PEAK_BUCKETS: usize = 65_536;
+
+/// Running min/max peaks for the take being captured (H-07, starting bucket size
+/// [`LIVE_PEAKS_SPB`], H-10 item 6 doubles it as the take grows past
+/// [`MAX_LIVE_PEAK_BUCKETS`]): appended to only by the capture-writer thread as it drains the
+/// capture ring — never by the RT input callback. Read by the control thread
+/// (`EngineHandle::live_take_peaks`) through [`LivePeaksHandle`]'s lock, a lock the RT thread
+/// never touches.
 pub(crate) struct LivePeaks {
-    /// Completed buckets.
+    /// Completed buckets, each covering `spb` samples.
     buckets: Vec<(f32, f32)>,
     /// The in-progress bucket: running min/max and sample count.
     partial: (f32, f32),
     partial_len: u32,
     /// Samples appended so far.
     len_samples: u64,
+    /// Current samples per completed/in-progress bucket — starts at [`LIVE_PEAKS_SPB`] and
+    /// doubles every time [`Self::decimate`] runs.
+    spb: u32,
 }
 
 impl Default for LivePeaks {
@@ -50,6 +71,7 @@ impl Default for LivePeaks {
             partial: (f32::INFINITY, f32::NEG_INFINITY),
             partial_len: 0,
             len_samples: 0,
+            spb: LIVE_PEAKS_SPB,
         }
     }
 }
@@ -65,25 +87,44 @@ impl LivePeaks {
             self.partial.0 = self.partial.0.min(s);
             self.partial.1 = self.partial.1.max(s);
             self.partial_len += 1;
-            if self.partial_len == LIVE_PEAKS_SPB {
+            if self.partial_len == self.spb {
                 self.buckets.push(self.partial);
                 self.partial = (f32::INFINITY, f32::NEG_INFINITY);
                 self.partial_len = 0;
+                if self.buckets.len() >= MAX_LIVE_PEAK_BUCKETS {
+                    self.decimate();
+                }
             }
         }
         self.len_samples += samples.len() as u64;
     }
 
-    /// `(len_samples, buckets[start_bucket..start_bucket + max])`, clamped; the in-progress
-    /// bucket counts as one more (non-empty) bucket at the end.
-    pub(crate) fn snapshot(&self, start_bucket: u32, max: u32) -> (u64, Vec<(f32, f32)>) {
+    /// Halves `buckets` by merging every adjacent pair (combined min/max) and doubles `spb` —
+    /// bounded, allocating work, run only here on the capture-writer thread (never the RT
+    /// callback). A leftover unpaired bucket (not reachable at a power-of-two cap, but handled
+    /// regardless) carries over unmerged.
+    fn decimate(&mut self) {
+        let (chunks, remainder) = self.buckets.as_chunks::<2>();
+        let mut merged: Vec<(f32, f32)> = chunks
+            .iter()
+            .map(|pair| (pair[0].0.min(pair[1].0), pair[0].1.max(pair[1].1)))
+            .collect();
+        merged.extend_from_slice(remainder);
+        self.buckets = merged;
+        self.spb = self.spb.saturating_mul(2);
+    }
+
+    /// `(len_samples, spb, buckets[start_bucket..start_bucket + max])`, clamped; the in-progress
+    /// bucket counts as one more (non-empty) bucket at the end. `spb` is the bucket size *this*
+    /// snapshot's buckets use — it can grow between polls as the take decimates.
+    pub(crate) fn snapshot(&self, start_bucket: u32, max: u32) -> (u64, u32, Vec<(f32, f32)>) {
         let total = self.buckets.len() + usize::from(self.partial_len > 0);
         let start = (start_bucket as usize).min(total);
         let end = start.saturating_add(max as usize).min(total);
         let buckets = (start..end)
             .map(|i| self.buckets.get(i).copied().unwrap_or(self.partial))
             .collect();
-        (self.len_samples, buckets)
+        (self.len_samples, self.spb, buckets)
     }
 }
 
@@ -91,6 +132,10 @@ impl LivePeaks {
 pub(crate) fn take_home(home: &CaptureHome) -> Option<Consumer<f32>> {
     home.lock().unwrap_or_else(PoisonError::into_inner).take()
 }
+
+/// H-10 item 4: samples of silence appended per [`CaptureWriter::append_silence`] call — bounded,
+/// stack-allocated, so a large dropout fills in a loop rather than needing one big buffer.
+const SILENCE_CHUNK: usize = 1024;
 
 /// One take's writer state.
 pub(crate) struct CaptureWriter {
@@ -115,6 +160,18 @@ pub(crate) struct CaptureWriter {
     done: Option<RecordDone>,
     /// H-07: running min/max peaks of the samples appended to `capture` so far.
     peaks: LivePeaksHandle,
+    /// H-10 item 4 (SPEC-002 §2.4/§4.3): where the RT input callback reports dropouts, in the
+    /// same device-rate ring-position numbering as [`Self::rx`]. `None` when the take is being
+    /// resampled (H-06 capture resampling stays out of this ticket's scope, see module docs) or
+    /// the ring wasn't available — dropouts are then simply not detected for this take.
+    gap_rx: Option<Consumer<GapEvent>>,
+    gap_home: GapHome,
+    /// Raw (device-rate) ring samples consumed so far — the same numbering as `GapEvent::take_index`.
+    ring_consumed: u64,
+    /// Gap events received but not yet reached by `ring_consumed`.
+    pending_gaps: VecDeque<GapEvent>,
+    /// Dropouts filled so far, to mark once the take is committed (`RecordingResult::dropouts`).
+    dropouts: Vec<DropoutMark>,
 }
 
 impl CaptureWriter {
@@ -128,6 +185,8 @@ impl CaptureWriter {
         resampler: Option<CaptureResampler>,
         done: RecordDone,
         peaks: LivePeaksHandle,
+        gap_rx: Option<Consumer<GapEvent>>,
+        gap_home: GapHome,
     ) -> Self {
         Self {
             rx,
@@ -141,14 +200,21 @@ impl CaptureWriter {
             write_error: None,
             done: Some(done),
             peaks,
+            gap_rx,
+            gap_home,
+            ring_consumed: 0,
+            pending_gaps: VecDeque::new(),
+            dropouts: Vec::new(),
         }
     }
 
     /// Appends `part` (document-rate samples) to the take and its H-07 live peaks; a failure
     /// records [`Self::write_error`] and flags the control thread to stop the recording (H-05:
-    /// the take is kept up to the last good sample, SPEC-002 §2.5).
+    /// the take is kept up to the last good sample, SPEC-002 §2.5). A no-op once `write_error` is
+    /// already set, so callers (including the H-10 gap-splicing loop) can keep calling it after a
+    /// failure without piling on more (and overwriting) errors.
     fn append_take(&mut self, part: &[f32]) {
-        if part.is_empty() {
+        if part.is_empty() || self.write_error.is_some() {
             return;
         }
         match self.capture.append(part) {
@@ -161,6 +227,17 @@ impl CaptureWriter {
                 self.write_error = Some(e);
                 self.shared.writer_failed.store(true, Ordering::Release);
             }
+        }
+    }
+
+    /// Appends `frames` samples of digital silence, in bounded chunks (H-10 item 4: a dropout
+    /// fill). No allocation — [`SILENCE_CHUNK`] zeros are stack-local.
+    fn append_silence(&mut self, mut frames: u32) {
+        let zeros = [0.0f32; SILENCE_CHUNK];
+        while frames > 0 && self.write_error.is_none() {
+            let n = (frames as usize).min(SILENCE_CHUNK);
+            self.append_take(&zeros[..n]);
+            frames -= n as u32;
         }
     }
 
@@ -183,6 +260,41 @@ impl CaptureWriter {
             self.resample_scratch = scratch;
         } else {
             self.append_take(part);
+        }
+    }
+
+    /// Like [`Self::drain_part`], but first splices in silence for every gap event whose position
+    /// falls within `part` (H-10 item 4, SPEC-002 §2.4/§4.3) — only reached when no resampler is
+    /// active (see [`Self::gap_rx`]). `part` covers ring positions `[self.ring_consumed,
+    /// self.ring_consumed + part.len())`.
+    fn splice_gaps_and_append(&mut self, part: &[f32]) {
+        if let Some(rx) = self.gap_rx.as_mut() {
+            while let Ok(ev) = rx.pop() {
+                self.pending_gaps.push_back(ev);
+            }
+        }
+        let base = self.ring_consumed;
+        let end = base + part.len() as u64;
+        let mut cursor = 0usize;
+        while let Some(&ev) = self.pending_gaps.front() {
+            if ev.take_index >= end {
+                break; // not reached by this segment yet
+            }
+            let local = ev.take_index.saturating_sub(base).min(part.len() as u64) as usize;
+            if local > cursor {
+                self.append_take(&part[cursor..local]);
+                cursor = local;
+            }
+            let pos_samples = self.capture.samples_written();
+            self.append_silence(ev.lost_frames);
+            self.dropouts.push(DropoutMark {
+                pos_samples,
+                len_samples: u64::from(ev.lost_frames),
+            });
+            self.pending_gaps.pop_front();
+        }
+        if cursor < part.len() {
+            self.append_take(&part[cursor..]);
         }
     }
 
@@ -210,8 +322,13 @@ impl CaptureWriter {
             drained.extend_from_slice(b);
             chunk.commit_all();
             if self.write_error.is_none() {
-                self.drain_part(&drained);
+                if self.gap_rx.is_some() {
+                    self.splice_gaps_and_append(&drained);
+                } else {
+                    self.drain_part(&drained);
+                }
             }
+            self.ring_consumed = self.ring_consumed.saturating_add(drained.len() as u64);
             drained.clear();
             self.drain_scratch = drained;
         }
@@ -246,6 +363,9 @@ impl CaptureWriter {
         };
         let finished = self.capture.finish();
         *self.home.lock().unwrap_or_else(PoisonError::into_inner) = Some(self.rx);
+        if let Some(gap_rx) = self.gap_rx.take() {
+            *self.gap_home.lock().unwrap_or_else(PoisonError::into_inner) = Some(gap_rx);
+        }
         let result = RecordingResult {
             finished,
             reason,
@@ -253,6 +373,7 @@ impl CaptureWriter {
             clip_events: self.shared.clip_events.load(Ordering::Relaxed),
             overflow_samples: self.shared.overflow_samples.load(Ordering::Relaxed),
             write_error: self.write_error.take(),
+            dropouts: std::mem::take(&mut self.dropouts),
         };
         if let Some(done) = self.done.take() {
             done(result);
@@ -330,8 +451,9 @@ mod tests {
             peaks.append(chunk);
         }
         assert_eq!(peaks.len_samples, samples.len() as u64);
-        let (len, got) = peaks.snapshot(0, u32::MAX);
+        let (len, spb, got) = peaks.snapshot(0, u32::MAX);
         assert_eq!(len, samples.len() as u64);
+        assert_eq!(spb, LIVE_PEAKS_SPB, "far below the H-10 decimation cap");
         let want = brute_force(&samples, LIVE_PEAKS_SPB as usize);
         assert_eq!(got, want);
     }
@@ -342,11 +464,11 @@ mod tests {
         let samples: Vec<f32> = (0..u64::from(LIVE_PEAKS_SPB * 5) + 10).map(synth).collect();
         let mut peaks = LivePeaks::default();
         peaks.append(&samples);
-        let (_, all) = peaks.snapshot(0, 100);
+        let (_, _, all) = peaks.snapshot(0, 100);
         assert_eq!(all.len(), 6, "5 full buckets + 1 partial");
-        let (_, page) = peaks.snapshot(2, 2);
+        let (_, _, page) = peaks.snapshot(2, 2);
         assert_eq!(page, all[2..4]);
-        let (_, past_end) = peaks.snapshot(50, 10);
+        let (_, _, past_end) = peaks.snapshot(50, 10);
         assert!(past_end.is_empty());
     }
 
@@ -355,7 +477,36 @@ mod tests {
     #[test]
     fn empty_live_peaks_snapshot_is_empty() {
         let peaks = LivePeaks::default();
-        let (len, buckets) = peaks.snapshot(0, 10);
-        assert_eq!((len, buckets.len()), (0, 0));
+        let (len, spb, buckets) = peaks.snapshot(0, 10);
+        assert_eq!((len, spb, buckets.len()), (0, LIVE_PEAKS_SPB, 0));
+    }
+
+    /// H-10 item 6: once completed buckets reach the cap, they decimate (halve, `spb` doubles)
+    /// instead of growing forever — memory stays bounded for a multi-hour take. The decimated
+    /// peaks still cover every sample (brute-force min/max at the new resolution), and the take
+    /// length is unaffected.
+    #[test]
+    fn decimates_once_the_bucket_cap_is_reached() {
+        // A handful of buckets past the cap, forcing exactly one decimation pass.
+        let extra_buckets = 5u64;
+        let samples: Vec<f32> = (0..(u64::from(LIVE_PEAKS_SPB)
+            * (MAX_LIVE_PEAK_BUCKETS as u64 + extra_buckets)))
+            .map(synth)
+            .collect();
+        let mut peaks = LivePeaks::default();
+        for chunk in samples.chunks(4001) {
+            peaks.append(chunk);
+        }
+        assert_eq!(peaks.len_samples, samples.len() as u64, "no samples lost");
+        let (len, spb, got) = peaks.snapshot(0, u32::MAX);
+        assert_eq!(len, samples.len() as u64);
+        assert_eq!(spb, LIVE_PEAKS_SPB * 2, "one decimation pass doubled it");
+        assert!(
+            got.len() < MAX_LIVE_PEAK_BUCKETS,
+            "decimation must actually shrink the array: got {} buckets",
+            got.len()
+        );
+        let want = brute_force(&samples, spb as usize);
+        assert_eq!(got, want);
     }
 }

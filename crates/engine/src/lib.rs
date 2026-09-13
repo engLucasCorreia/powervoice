@@ -50,7 +50,7 @@ pub use rack_api::{
     RackSlot, RackSnapshot, ResponseCurvePoints,
 };
 pub use record::{
-    LIVE_PEAKS_SPB, LiveTakePeaks, MonitorMode, RecordDone, RecordError, RecordState,
+    DropoutMark, LIVE_PEAKS_SPB, LiveTakePeaks, MonitorMode, RecordDone, RecordError, RecordState,
     RecordingResult, StopReason,
 };
 pub use telemetry::{TelemetryFrame, TelemetrySink};

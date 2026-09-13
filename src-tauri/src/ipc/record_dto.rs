@@ -29,6 +29,9 @@ pub struct RecordStateDto {
     pub monitor: MonitorMode,
     /// Monitoring is audible now.
     pub monitoring: bool,
+    /// H-10 item 4: dropout events so far this take (SPEC-002 §2.1's live amber counter), `0`
+    /// while not recording.
+    pub dropout_count: u32,
 }
 
 impl From<&RecordState> for RecordStateDto {
@@ -47,6 +50,7 @@ impl From<&RecordState> for RecordStateDto {
                 EngineMonitorMode::Dry => MonitorMode::Dry,
             },
             monitoring: s.monitoring,
+            dropout_count: s.dropout_count,
         }
     }
 }
@@ -78,11 +82,13 @@ mod tests {
             finishing: false,
             monitor: EngineMonitorMode::Dry,
             monitoring: true,
+            dropout_count: 3,
         };
         let dto = RecordStateDto::from(&s);
         assert_eq!(dto.input_channel, 2);
         assert_eq!(dto.input_status, DeviceStatusDto::Healthy);
         assert_eq!(dto.monitor, MonitorMode::Dry);
+        assert_eq!(dto.dropout_count, 3);
         let json = serde_json::to_string(&dto).unwrap();
         assert!(json.contains("\"monitor\":\"dry\""), "{json}");
         assert_eq!(

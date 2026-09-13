@@ -76,6 +76,9 @@
   /** H-07: the last `record_peaks_get` response applied (`null`: none polled yet). */
   let liveBuckets = $state<Array<[number, number]>>([]);
   let liveStartSample = $state(0);
+  /** H-10 item 6: the response's own bucket size — `LivePeaks` doubles it as a multi-hour take
+   * decimates, so this must never be assumed to stay at `LIVE_PEAKS_SPB`. */
+  let liveSpb = $state(LIVE_PEAKS_SPB);
 
   const doc = documentState();
   const transport = transportState();
@@ -143,14 +146,15 @@
     if (!isRecording) {
       liveBuckets = [];
       liveStartSample = 0;
+      liveSpb = LIVE_PEAKS_SPB;
       return;
     }
     let disposed = false;
     const poll = async (): Promise<void> => {
-      const count = Math.min(
-        Math.ceil(rec.elapsedSamples / LIVE_PEAKS_SPB) + 2,
-        LIVE_MAX_BUCKETS,
-      );
+      // H-10 item 6: request sizing uses the last known bucket size, not always the starting
+      // `LIVE_PEAKS_SPB` — once the take has decimated, fewer (coarser) buckets cover the same
+      // span, and this still safely over-requests otherwise (the backend just returns fewer).
+      const count = Math.min(Math.ceil(rec.elapsedSamples / liveSpb) + 2, LIVE_MAX_BUCKETS);
       let buf: ArrayBuffer;
       try {
         buf = await recordPeaksGet(0, count);
@@ -164,6 +168,7 @@
       if (frame) {
         liveBuckets = frame.buckets;
         liveStartSample = frame.startSample;
+        liveSpb = frame.samplesPerBucket || LIVE_PEAKS_SPB;
       }
     };
     void poll();
@@ -222,7 +227,7 @@
       // H-07: the growing take (from record_peaks_get), plus a record-head line — never the
       // normal peaks_get state, which has nothing to show until the take is committed at Stop.
       if (liveBuckets.length > 0) {
-        drawColumns(ctx, liveBuckets, liveStartSample, LIVE_PEAKS_SPB, centerY);
+        drawColumns(ctx, liveBuckets, liveStartSample, liveSpb, centerY);
       }
       drawRecordHead(ctx, centerY);
       ctx.restore();

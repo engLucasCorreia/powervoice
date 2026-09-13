@@ -7,7 +7,12 @@ import { registerAction } from "../keymap";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { PeakBallistics } from "../record/ballistics";
 import { pushNotice } from "./notices.svelte";
+import { settingsState } from "./settings.svelte";
 import { addTelemetryListener } from "./transport.svelte";
+
+// Factory default (SPEC-002 §3) — used only if settings haven't loaded yet (mirrors
+// `DocumentMenu.svelte`'s `FALLBACK_FORMAT` for File → New Recording…).
+const FALLBACK_FORMAT: DefaultFormatDto = { sample_rate_hz: 48_000, bit_depth: "24" };
 
 /**
  * Record panel store (S1-04, SPEC-002 §2.1–§2.2, §2.7): the engine's record state
@@ -30,6 +35,7 @@ const IDLE: RecordStateDto = {
   finishing: false,
   monitor: "off",
   monitoring: false,
+  dropout_count: 0,
 };
 
 export interface InputMeterView {
@@ -156,16 +162,23 @@ export function resetMaxPeak(): void {
 }
 
 async function startRecording(replace: boolean, format?: DefaultFormatDto): Promise<void> {
-  // A lit lamp after a take always means that take clipped (SPEC-002 §2.1).
-  clipLatched = false;
-  elapsedSamples = 0;
-  await run(() => recordStart(replace, format));
+  await run(async () => {
+    const next = await recordStart(replace, format);
+    // H-10 item 2 (SPEC-002 AC-2): the lamp clears when the take actually starts, not merely
+    // when it is attempted — a `record_start` that fails (no input device, already recording,
+    // …) must not silently drop a real clip warning the input already latched.
+    clipLatched = false;
+    elapsedSamples = 0;
+    return next;
+  });
 }
 
 /**
  * Record button / Shift+R: stops a running recording; otherwise starts a new one at the current
  * default format, no dialog (SPEC-002 §2.2: "Record with no document uses the default"). A
- * document with audio is replaced after the standard unsaved-changes prompt (S1-03's guard).
+ * document with audio instead opens the New Recording dialog (H-10 item 7, SPEC-002 §2.2 parity
+ * with File → New Recording…) after the standard unsaved-changes prompt (S1-03's guard) — so the
+ * owner picks the format for the replacement take instead of it silently reusing the default.
  */
 export async function toggleRecord(): Promise<void> {
   if (state.recording) {
@@ -178,7 +191,10 @@ export async function toggleRecord(): Promise<void> {
   starting = true;
   try {
     if (documentState().current.len_samples > 0) {
-      await withUnsavedChangesGuard(() => startRecording(true));
+      await withUnsavedChangesGuard(() => {
+        openNewRecordingPrompt(settingsState().current?.default_format ?? FALLBACK_FORMAT);
+        return Promise.resolve();
+      });
     } else {
       await startRecording(false);
     }

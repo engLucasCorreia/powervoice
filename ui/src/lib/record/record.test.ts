@@ -11,7 +11,13 @@ import {
 import type { DocumentDto, RecordStateDto, TransportStateDto } from "../ipc/bindings";
 import { VXTM_FLAGS, type TelemetryFrame } from "../ipc/telemetry";
 import { attachKeymap, clearActionHandlers } from "../keymap";
-import { initRecord, onInputTelemetry, resetRecordForTest } from "../state/record.svelte";
+import {
+  cancelNewRecordingPrompt,
+  initRecord,
+  onInputTelemetry,
+  recordState,
+  resetRecordForTest,
+} from "../state/record.svelte";
 import { initTransport, resetTransportForTest } from "../state/transport.svelte";
 import { PeakBallistics } from "./ballistics";
 import { formatElapsed } from "./format";
@@ -21,6 +27,8 @@ let calls: Array<{ cmd: string; args: unknown }> = [];
 let docLen = 0;
 let recording = false;
 let inputDevice: string | null = "Mic";
+let failRecordStart = false;
+let dropoutCount = 0;
 
 function recDto(): RecordStateDto {
   return {
@@ -34,6 +42,7 @@ function recDto(): RecordStateDto {
     finishing: false,
     monitor: "off",
     monitoring: false,
+    dropout_count: dropoutCount,
   };
 }
 
@@ -73,6 +82,8 @@ beforeEach(() => {
   docLen = 0;
   recording = false;
   inputDevice = "Mic";
+  failRecordStart = false;
+  dropoutCount = 0;
   mockIPC(
     (cmd, args) => {
       calls.push({ cmd, args });
@@ -82,6 +93,9 @@ beforeEach(() => {
         case "record_set_monitor":
           return recDto();
         case "record_start":
+          if (failRecordStart) {
+            throw { code: "device_lost", key: "error.record.input_unavailable", params: {} };
+          }
           recording = true;
           return recDto();
         case "record_stop":
@@ -178,33 +192,37 @@ describe("record panel (S1-04)", () => {
     teardown();
   });
 
-  it("New Recording replaces a document with audio after the unsaved-changes prompt", async () => {
+  it("Record on a document with audio opens the New Recording dialog (H-10 item 7, SPEC-002 §2.2)", async () => {
     const stopDocument = await initDocument();
     const { el, teardown } = await setup();
-    // A saved document with audio is replaced without asking.
+    // A saved document with audio opens the format prompt directly (no unsaved-changes ask) —
+    // it no longer silently replaces at the default format.
     await emit("document_changed", docDto(96_000, false));
     await settle();
     el("record-button").click();
     await settle();
-    expect(recordCalls()).toEqual([{ cmd: "record_start", args: { replace: true } }]);
-    el("record-button").click();
-    await settle();
-    // A modified one asks first: Cancel keeps it, Don't Save replaces it.
+    expect(recordCalls()).toEqual([]);
+    expect(recordState().newRecordingPrompt).not.toBeNull();
+    cancelNewRecordingPrompt();
+
+    // A modified one asks first: Cancel keeps it, Don't Save opens the prompt.
     await emit("document_changed", docDto(96_000, true));
     await settle();
     calls = [];
     el("record-button").click();
     await settle();
     expect(documentState().unsavedPrompt).not.toBeNull();
-    expect(recordCalls()).toEqual([]);
+    expect(recordState().newRecordingPrompt).toBeNull();
     resolveUnsavedPrompt("cancel");
     await settle();
+    expect(recordState().newRecordingPrompt).toBeNull();
     expect(recordCalls()).toEqual([]);
     el("record-button").click();
     await settle();
     resolveUnsavedPrompt("discard");
     await settle();
-    expect(recordCalls()).toEqual([{ cmd: "record_start", args: { replace: true } }]);
+    expect(recordState().newRecordingPrompt).not.toBeNull();
+    expect(recordCalls()).toEqual([]);
     teardown();
     stopDocument();
   });
@@ -250,6 +268,49 @@ describe("record panel (S1-04)", () => {
     el("record-button").click();
     await settle();
     expect(lit()).toBe(false);
+    teardown();
+  });
+
+  it("H-10 item 2: a failed Record attempt keeps a real clip lamp lit (SPEC-002 AC-2)", async () => {
+    const { el, teardown } = await setup();
+    const lit = () => el("record-clip").classList.contains("lit");
+    onInputTelemetry(frame(VXTM_FLAGS.IN_CLIP), 0);
+    flushSync();
+    expect(lit()).toBe(true);
+
+    failRecordStart = true;
+    el("record-button").click();
+    await settle();
+    expect(recordCalls().map((c) => c.cmd)).toEqual(["record_start"]);
+    // The take never started, so a lamp that was genuinely lit must stay lit.
+    expect(lit()).toBe(true);
+
+    failRecordStart = false;
+    el("record-button").click();
+    await settle();
+    // Once the take actually starts, the lamp clears (SPEC-002 §2.1/AC-2).
+    expect(lit()).toBe(false);
+    teardown();
+  });
+
+  it("H-10 item 4: shows the live dropout counter only once a dropout occurred", async () => {
+    const { el, teardown } = await setup();
+    recording = true;
+    dropoutCount = 0;
+    await emit("record_state", recDto());
+    await settle();
+    expect(document.querySelector('[data-testid="record-dropouts"]')).toBeNull();
+
+    dropoutCount = 2;
+    await emit("record_state", recDto());
+    await settle();
+    expect(el("record-dropouts").textContent?.trim()).toBe("2 dropouts");
+
+    dropoutCount = 0;
+    recording = false;
+    await emit("record_state", recDto());
+    await settle();
+    expect(document.querySelector('[data-testid="record-dropouts"]')).toBeNull();
     teardown();
   });
 

@@ -10,10 +10,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use vox_engine::backend::fake::{CallbackSizes, FakeBackend, FakeDevice, FakeDirection, Signal};
+use vox_engine::backend::fake::{
+    CallbackSizes, FakeBackend, FakeDevice, FakeDirection, FakeEvent, Signal,
+};
 use vox_engine::devices::DeviceNotice;
 use vox_engine::record::{
-    LIVE_PEAKS_SPB, MonitorMode, RecordError, RecordState, RecordingResult, StopReason,
+    DropoutMark, LIVE_PEAKS_SPB, MonitorMode, RecordError, RecordState, RecordingResult, StopReason,
 };
 use vox_engine::telemetry::vxtm_flags;
 use vox_engine::{
@@ -98,6 +100,19 @@ fn mic_48k_only_tone(freq_hz: f64, amplitude: f32) -> FakeDevice {
             .callback_sizes(CallbackSizes::FULL_RANDOM)
             .latency_ns(5 * MS)
             .signals(vec![Signal::Sine { freq_hz, amplitude }]),
+    )
+}
+
+/// H-10 item 4: like [`mic`], but fixed-size callbacks — a controlled, small period estimate so
+/// an injected [`FakeEvent::InputDropout`] reliably clears the period-based dropout threshold
+/// (SPEC-002 §4.3), unlike [`mic`]'s `FULL_RANDOM` sizes (up to 4096 frames, sometimes bigger
+/// than the gap itself).
+fn mic_fixed(source: fn(u64, usize) -> f32, frames: u32) -> FakeDevice {
+    FakeDevice::new("Mic").with_input(
+        FakeDirection::new(2, &[44_100, 48_000], 48_000)
+            .callback_sizes(CallbackSizes::Fixed(frames))
+            .latency_ns(5 * MS)
+            .source(move |f, c, _| source(f, c)),
     )
 }
 
@@ -400,6 +415,87 @@ fn clips_are_flagged_and_counted() {
         .iter()
         .any(|f| f.flags & vxtm_flags::IN_CLIP != 0);
     assert!(flagged, "IN_CLIP telemetry flag");
+    assert_eq!(r.fake.rt_violations(), 0, "a callback allocated");
+}
+
+/// H-10 item 4 (SPEC-002 §2.4/§4.3, AC-7): a genuine input dropout — the fake backend really
+/// skips source frames, `FakeEvent::InputDropout` — continues the take, fills the gap with
+/// silence, keeps every later sample at its correct (post-gap) source position, and reports
+/// exactly one `DropoutMark`; the live `dropout_count` reflects it before Stop. No allocation in
+/// any callback.
+#[test]
+fn input_dropout_is_filled_with_silence_and_reported() {
+    let mut r = rig_with_mic(mic_fixed(src, 64), false, Some(1));
+    r.run_ms(20);
+    r.arm();
+    r.run_ms(50);
+    let mut session = r.session();
+    let t_rec = r.start(&mut session);
+    r.run_ms(200);
+
+    let input_id = r
+        .fake
+        .streams()
+        .iter()
+        .rev()
+        .find(|s| s.info.direction == Direction::Input)
+        .map(|s| s.info.id)
+        .expect("an input stream");
+    // A 10 ms dropout (480 frames @ 48 kHz); 64-frame callbacks (≈1.33 ms) keep the period-based
+    // threshold (≈0.67 ms) far below it.
+    r.fake
+        .schedule(r.fake.now_ns(), FakeEvent::InputDropout(input_id, 480));
+    r.run_ms(200);
+
+    // Live before Stop (SPEC-002 §2.1's amber counter): `record_state` already reports it.
+    let live = r.eng.record_state();
+    assert_eq!(live.dropout_count, 1, "{live:?}");
+
+    let t_stop = r.stop();
+    let res = r.result();
+    assert_eq!(res.reason, StopReason::User);
+    assert!(res.finished.error.is_none(), "{:?}", res.finished.error);
+    assert_eq!(res.dropouts.len(), 1, "{:?}", res.dropouts);
+    assert_eq!(res.dropouts[0].len_samples, 480);
+
+    let step = session
+        .commit_take(&res.finished, &[])
+        .unwrap()
+        .expect("one undoable edit");
+    let take = take_samples(&session, &step.snapshot);
+    let pos = res.dropouts[0].pos_samples as usize;
+    let len = res.dropouts[0].len_samples as usize;
+    assert_eq!(
+        res.dropouts[0],
+        DropoutMark {
+            pos_samples: res.dropouts[0].pos_samples,
+            len_samples: 480,
+        }
+    );
+
+    // Before the gap: a bit-exact run of the source (channel 0 — `input_channel: 1`).
+    let (k0, k1) = (r.frame_at(t_rec), r.frame_at(t_stop));
+    let before_start = locate(&take[..pos], 0, k0);
+    // The gap itself is digital silence.
+    assert!(
+        take[pos..pos + len].iter().all(|&x| x == 0.0),
+        "the dropout must be filled with exact silence"
+    );
+    // After the gap: the source resumes 480 frames further on (the frames the dropout skipped),
+    // not where an uninterrupted recording would have been — later audio stays at its spoken
+    // (post-gap) position, SPEC-002 §2.4.
+    let after_start = locate(&take[pos + len..], 0, before_start + pos as u64 + 480);
+    assert_eq!(after_start, before_start + pos as u64 + 480);
+    // The fake dropout reduces the *real* samples the ring actually receives over [t_rec, t_stop)
+    // by ~480 (a genuine loss, unlike a mere timestamp fudge); the inserted silence restores the
+    // take to its expected real-time length, so it still covers ≈ [t_rec, t_stop) (SPEC-002 §2.4:
+    // "later audio stays where it was spoken").
+    assert!(
+        (take.len() as u64).abs_diff(k1 - k0) <= 2,
+        "the take must still cover the real recording span: len={}, k1-k0={}",
+        take.len(),
+        k1 - k0
+    );
     assert_eq!(r.fake.rt_violations(), 0, "a callback allocated");
 }
 

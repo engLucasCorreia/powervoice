@@ -45,6 +45,15 @@
     {rec.state.recording ? t("record.stop") : t("record.record")}
   </button>
   <span class="elapsed" data-testid="record-elapsed" title={t("record.elapsed_title")}>{elapsed}</span>
+  {#if rec.state.dropout_count > 0}
+    <span
+      class="dropouts"
+      data-testid="record-dropouts"
+      title={t("record.dropouts_title")}
+    >
+      {t("record.dropouts", { count: String(rec.state.dropout_count) })}
+    </span>
+  {/if}
   <button
     type="button"
     data-testid="record-clip"
@@ -122,6 +131,14 @@
     background: var(--meter-red);
     border-color: var(--meter-red);
     color: var(--text-primary);
+  }
+
+  .dropouts {
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    background: var(--meter-yellow);
+    color: var(--surface-panel);
   }
 
   .monitor {

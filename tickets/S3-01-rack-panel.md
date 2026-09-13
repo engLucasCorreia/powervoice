@@ -14,5 +14,9 @@ The owner builds a voice chain in the right-hand rack panel and tweaks every par
 - Rack state persisted in the session (existing rack model) so it survives reopen within the app session; sidecar persistence is hardening (T-306).
 - Tests: Vitest with a 40-parameter schema fixture (SPEC-012 AC-12 subset), mockIPC command flows; Rust: rack commands round-trip through the engine on the fake backend.
 
+## Handoff from H-01 (merged)
+- After `SlotRestarted` the host sends `LatencyChanged` but no `ParamChanged` for the (re)created parameters → the UI must re-read `slot_info` on `SlotRestarted`.
+- `replace_state()` on a failed-at-load slot still returns `NotLoaded` (only `restart()` retries).
+
 ## Out (deferred to hardening)
 Presets (T-406), custom module panels (EQ graph, dynamics graph — come with their module tickets), filter box for > 32 params, placeholders UI polish, latency compensation of the playhead (T-401).

@@ -29,7 +29,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | S3-02 | Dynamics (compressor + limiter) + Noise Gate modules | O | T-103, H-01 | in-progress |
 | S3-03 | Parametric EQ module + EQ graph (lean SPEC-015) | O | S3-01 | todo |
 | S3-04 | Noise reduction: capture noise print + streaming NR (lean SPEC-014) | O | S3-01 | todo (ticket after SPEC-014 lands) |
-| S3-05 | True-peak limiter (lean SPEC-017) | O | T-103 | todo |
+| S3-05 | True-peak limiter (lean SPEC-017) | O | T-103 | in-progress |
 
 ### Slice 4 — Deliver
 | ID | Title | Tier | Deps | Status |
@@ -41,7 +41,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 ### Hardening & backlog
 | ID | Title | Tier | Status |
 |---|---|---|---|
-| H-01 | Rack: bypass toggle during a new instance's warm-up hold re-introduces the cold-output click (T-103 re-review #1) + restart of load-failed slots, stuck held-back restart, count dropped moved events | O | in-progress |
+| H-01 | Rack: bypass toggle during a new instance's warm-up hold re-introduces the cold-output click (T-103 re-review #1) + restart of load-failed slots, stuck held-back restart, count dropped moved events | O | done |
 
 ## M0 — Foundations
 | ID | Title | Wave | Tier | Deps | Status |

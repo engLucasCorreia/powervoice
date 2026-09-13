@@ -16,7 +16,8 @@ crate::ipc_events!(
     document_changed,
     history_state,
     clipboard_changed,
-    job_progress
+    job_progress,
+    loudness_report
 );
 
 /// A user-facing notice (ADR-003 `notice` event). Two shapes, distinguished by `persistent`:
@@ -99,6 +100,10 @@ pub enum JobKind {
     Export,
     /// S3-06: Capture Noise Print (SPEC-014 §2.3).
     NrCapture,
+    /// S4-01: the loudness analysis job (`loudness_analyze_start`) — its finished report arrives
+    /// separately as a `loudness_report` event (`job_progress`'s `fraction`/`state` alone can't
+    /// carry it).
+    LoudnessAnalyze,
 }
 
 /// `job_progress`'s lifecycle. `Running` fractions are monotonically non-decreasing in `[0, 1]`;
@@ -133,6 +138,16 @@ pub fn emit_job_progress<R: tauri::Runtime>(
 ) -> tauri::Result<()> {
     use tauri::Emitter as _;
     app.emit(EventName::job_progress.as_str(), progress)
+}
+
+/// Emits a `loudness_report` event (S4-01): the loudness analysis job's finished report, once its
+/// `job_progress` reports `JobState::Done`.
+pub fn emit_loudness_report<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    report: crate::ipc::loudness_dto::LoudnessReportDto,
+) -> tauri::Result<()> {
+    use tauri::Emitter as _;
+    app.emit(EventName::loudness_report.as_str(), report)
 }
 
 #[cfg(test)]

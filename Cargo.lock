@@ -4831,9 +4831,11 @@ dependencies = [
 name = "vox-dsp"
 version = "0.1.0"
 dependencies = [
+ "ebur128",
  "realfft",
  "rubato",
  "thiserror 2.0.20",
+ "vox-testkit",
 ]
 
 [[package]]
@@ -4894,6 +4896,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "vox-dsp",
  "vox-io",
  "vox-testkit",
 ]

@@ -16,6 +16,8 @@ mod error;
 mod events;
 pub mod export_commands;
 pub mod export_dto;
+pub mod loudness_commands;
+pub mod loudness_dto;
 mod macros;
 mod nr_capture_commands;
 mod nr_capture_dto;
@@ -41,12 +43,16 @@ pub use dto::AppInfo;
 pub use error::{IpcError, IpcErrorCode};
 pub use events::{
     EVENT_NAME_VARIANTS, EVENT_NAMES, EventName, JobKind, JobProgressDto, JobState, Notice,
-    NoticeLevel, emit_job_progress, emit_notice,
+    NoticeLevel, emit_job_progress, emit_loudness_report, emit_notice,
 };
 pub use export_commands::*;
 pub use export_dto::{
     ExportFormatDto, ExportFormatsDto, ExportRangeDto, ExportRequestDto, ExportStartedDto,
     Mp3SettingsDto,
+};
+pub use loudness_commands::*;
+pub use loudness_dto::{
+    LoudnessAnalyzeRequestDto, LoudnessAnalyzeStartedDto, LoudnessReportDto, LoudnessSourceDto,
 };
 pub use nr_capture_commands::*;
 pub use nr_capture_dto::NrCaptureStartedDto;
@@ -107,6 +113,7 @@ crate::ipc_commands!(
     edit_trim,
     edit_silence,
     edit_normalize_peak,
+    edit_normalize_lufs,
     history_undo,
     history_redo,
     markers_get,
@@ -119,6 +126,8 @@ crate::ipc_commands!(
     export_cancel,
     nr_capture_start,
     nr_capture_cancel,
+    loudness_analyze_start,
+    loudness_analyze_cancel,
 );
 
 #[cfg(feature = "spike")]
@@ -164,6 +173,7 @@ crate::ipc_commands!(
     edit_trim,
     edit_silence,
     edit_normalize_peak,
+    edit_normalize_lufs,
     history_undo,
     history_redo,
     markers_get,
@@ -176,6 +186,8 @@ crate::ipc_commands!(
     export_cancel,
     nr_capture_start,
     nr_capture_cancel,
+    loudness_analyze_start,
+    loudness_analyze_cancel,
     spike_env,
     spike_waveform_peaks,
     spike_spectrogram_texture,

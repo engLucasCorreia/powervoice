@@ -2,14 +2,27 @@
   import { t } from "../i18n";
   import { recordState } from "../state/record.svelte";
   import { canNormalize, FAVORITE_TARGETS_DB, normalizeFavorite, openNormalizeDialog } from "../state/normalize.svelte";
+  import {
+    canNormalizeLufs,
+    FAVORITE_TARGETS_LUFS,
+    normalizeLufsFavorite,
+    openNormalizeLufsDialog,
+  } from "../state/normalizeLufs.svelte";
   import NormalizeDialog from "./NormalizeDialog.svelte";
+  import NormalizeLufsDialog from "./NormalizeLufsDialog.svelte";
 
   /**
    * Favorites menu (S2-02, SPEC-010 §2.5): Normalize to −1/−0.1/−3 dB, a separator, then
-   * Normalize… — enabled with a document open (`L > 0`) and not while recording.
+   * Normalize… — enabled with a document open (`L > 0`) and not while recording. S4-01 adds the
+   * LUFS favorites (−16/−19/−23 LUFS) and Normalize (LUFS)… in the same group.
    */
   const rec = recordState();
   const enabled = $derived(canNormalize() && !rec.state.recording);
+  const lufsEnabled = $derived(canNormalizeLufs() && !rec.state.recording);
+
+  function lufsTestId(targetLufs: number): string {
+    return `favorites-normalize-lufs-${Math.abs(targetLufs).toFixed(0)}`;
+  }
 
   function testId(targetDb: number): string {
     return `favorites-normalize-${Math.abs(targetDb).toFixed(1).replace(".", "-")}db`;
@@ -38,8 +51,29 @@
   >
     {t("effects.normalize_dialog")}
   </button>
+  <span class="divider" aria-hidden="true"></span>
+  {#each FAVORITE_TARGETS_LUFS as targetLufs (targetLufs)}
+    <button
+      type="button"
+      data-testid={lufsTestId(targetLufs)}
+      disabled={!lufsEnabled}
+      title={t("favorites.normalize_lufs", { target: targetLufs.toFixed(1) })}
+      onclick={() => void normalizeLufsFavorite(targetLufs)}
+    >
+      {t("favorites.normalize_lufs", { target: targetLufs.toFixed(1) })}
+    </button>
+  {/each}
+  <button
+    type="button"
+    data-testid="favorites-normalize-lufs-custom"
+    disabled={!lufsEnabled}
+    onclick={openNormalizeLufsDialog}
+  >
+    {t("effects.normalize_lufs_dialog")}
+  </button>
 </div>
 <NormalizeDialog />
+<NormalizeLufsDialog />
 
 <style>
   .favorites-menu {

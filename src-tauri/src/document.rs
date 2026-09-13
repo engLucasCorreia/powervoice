@@ -10,10 +10,10 @@ use std::time::Duration;
 
 use vox_engine::{EngineHandle, PlaybackDoc, TransportCommand};
 use vox_project::{
-    Edit, EditTarget, FinishedTake, Marker, MarkerId, MarkerOp, NormalizeOutcome, NormalizeResult,
-    Piece, ProjectError, Range, RangeError, Session, SessionConfig, SnapshotReader, TakeCapture,
-    TakeId, TakeMode, TakeWriterOptions, edit, normalize_applied_post_edit, normalize_peak,
-    validate_range,
+    Edit, EditTarget, FinishedTake, LufsNormalizeOutcome, LufsNormalizeResult, Marker, MarkerId,
+    MarkerOp, NormalizeOutcome, NormalizeResult, Piece, ProjectError, Range, RangeError, Session,
+    SessionConfig, SnapshotReader, TakeCapture, TakeId, TakeMode, TakeWriterOptions, edit,
+    normalize_applied_post_edit, normalize_lufs, normalize_peak, validate_range,
 };
 
 use crate::ipc::{IpcError, IpcErrorCode};
@@ -33,6 +33,10 @@ const COMMIT_RETRY_DELAY: Duration = Duration::from_millis(100);
 /// S2-02: the Normalize… dialog's dB-mode range (SPEC-010 §2.4, §3 `target_db`).
 const NORMALIZE_TARGET_MIN_DB: f64 = -60.0;
 const NORMALIZE_TARGET_MAX_DB: f64 = 0.0;
+/// S4-01: the LUFS normalize dialog's custom-target range (ticket favorites −16/−19/−23 LUFS
+/// always fall inside it).
+const NORMALIZE_LUFS_TARGET_MIN_LUFS: f64 = -60.0;
+const NORMALIZE_LUFS_TARGET_MAX_LUFS: f64 = 0.0;
 
 /// The OS data dir's `sessions` subfolder (mirrors `settings::project_dirs`'s convention; no
 /// state dir on macOS/Windows, so those fall back to the data dir like `logging.rs` does).
@@ -134,6 +138,27 @@ pub enum NormalizeNotice {
 pub struct NormalizeEditResult {
     pub result: EditResult,
     pub notice: Option<NormalizeNotice>,
+}
+
+/// S4-01: why `edit_normalize_lufs` did nothing, or a heads-up alongside an applied gain —
+/// `EditResult.changed` already tells the caller whether it applied.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NormalizeLufsNotice {
+    /// The scope has no block above the BS.1770 absolute gate (silence or near-silence).
+    Silent,
+    /// The gain needed is closer to 0 dB than the 0.001 dB "already there" tolerance.
+    AlreadyNormalized,
+    /// The gain was applied (not a no-op), but the resulting true peak is predicted to exceed
+    /// −1 dBTP (ticket: "apply the gain anyway and show a notice suggesting the true-peak
+    /// limiter — don't silently limit").
+    TruePeakCeilingExceeded { predicted_true_peak_dbtp: f64 },
+}
+
+/// The result of [`DocumentService::edit_normalize_lufs`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct NormalizeLufsEditResult {
+    pub result: EditResult,
+    pub notice: Option<NormalizeLufsNotice>,
 }
 
 /// S2-03: one marker (SPEC-009 §2.1's essential subset — no `kind`, deferred with dropout
@@ -841,6 +866,71 @@ impl DocumentService {
                 result: self.apply_committed(doc, step, normalize_applied_post_edit(range)),
                 notice: None,
             }),
+        }
+    }
+
+    /// S4-01: LUFS-normalizes `[start, end)` (the frontend resolves "no selection" to the whole
+    /// file, same convention as [`Self::edit_normalize_peak`]) to `target_lufs` integrated
+    /// loudness (BS.1770/EBU R128 of the raw document samples). One undo entry
+    /// `history.normalize_lufs`; a no-op (silent/near-silent scope, or already at the target
+    /// within the 0.001 dB tolerance) reports which, like peak normalize. An applied gain whose
+    /// predicted true peak exceeds −1 dBTP still applies — the caller turns that into a notice
+    /// suggesting the true-peak limiter rather than silently limiting.
+    /// `error.normalize_non_finite` refuses a scope containing a non-finite sample.
+    pub fn edit_normalize_lufs(
+        &self,
+        start: u64,
+        end: u64,
+        target_lufs: f64,
+    ) -> Result<NormalizeLufsEditResult, IpcError> {
+        if !target_lufs.is_finite()
+            || !(NORMALIZE_LUFS_TARGET_MIN_LUFS..=NORMALIZE_LUFS_TARGET_MAX_LUFS)
+                .contains(&target_lufs)
+        {
+            return Err(IpcError::new(
+                IpcErrorCode::InvalidArgument,
+                "error.invalid_argument",
+            ));
+        }
+        let mut guard = self.0.open.lock().unwrap();
+        let doc = guard.as_mut().ok_or_else(no_document)?;
+        if doc.session.is_recording() {
+            return Err(IpcError::not_while_recording());
+        }
+        let range = Self::selected_range(doc, start, end)?;
+        match normalize_lufs(&mut doc.session, range, target_lufs).map_err(document_error)? {
+            LufsNormalizeResult::NoOp(outcome) => {
+                let snapshot = doc.session.current();
+                Ok(NormalizeLufsEditResult {
+                    result: EditResult {
+                        changed: false,
+                        audio_rev: snapshot.audio_rev,
+                        len_samples: snapshot.len_samples,
+                        selection: Some((range.start, range.end)),
+                        playhead_samples: range.start,
+                    },
+                    notice: Some(match outcome {
+                        LufsNormalizeOutcome::Silent => NormalizeLufsNotice::Silent,
+                        LufsNormalizeOutcome::AlreadyNormalized => {
+                            NormalizeLufsNotice::AlreadyNormalized
+                        }
+                    }),
+                })
+            }
+            LufsNormalizeResult::Applied {
+                step,
+                exceeds_true_peak_ceiling,
+                predicted_true_peak_dbtp,
+                ..
+            } => {
+                let result = self.apply_committed(doc, step, normalize_applied_post_edit(range));
+                let notice = exceeds_true_peak_ceiling.then_some(
+                    NormalizeLufsNotice::TruePeakCeilingExceeded {
+                        predicted_true_peak_dbtp,
+                    },
+                );
+                Ok(NormalizeLufsEditResult { result, notice })
+            }
         }
     }
 
@@ -1747,6 +1837,153 @@ mod tests {
         assert_eq!(err.code, IpcErrorCode::NotWhileRecording);
 
         service.discard_take(capture.id());
+    }
+
+    // --- S4-01: LUFS normalize favorites -------------------------------------------------------
+
+    fn read_out(service: &DocumentService) -> Vec<f32> {
+        let guard = service.0.open.lock().unwrap();
+        let doc = guard.as_ref().unwrap();
+        let snapshot = doc.session.current();
+        let mut out = vec![0.0f32; snapshot.len_samples as usize];
+        doc.session.store().read(&snapshot, 0, &mut out).unwrap();
+        out
+    }
+
+    #[test]
+    fn normalize_lufs_favorite_hits_the_target_and_adds_one_undo_entry() {
+        let samples = vox_testkit::signal::sine(1000.0, -20.0, 2.0, 48_000).unwrap();
+        let len = samples.len() as u64;
+
+        for target_lufs in [-16.0, -19.0, -23.0] {
+            let (service, _engine, dir) = service("normalize-lufs-favorite-loop");
+            open_test_doc(&service, &dir, &samples);
+            let result = service.edit_normalize_lufs(0, len, target_lufs).unwrap();
+            assert!(result.notice.is_none());
+            assert!(result.result.changed);
+            assert_eq!(
+                result.result.selection,
+                Some((0, len)),
+                "selection unchanged"
+            );
+
+            let out = read_out(&service);
+            let report = vox_dsp::loudness::measure(&out, 48_000).unwrap();
+            assert!(
+                (report.integrated_lufs - target_lufs).abs() <= 0.1,
+                "target {target_lufs}, got {} LUFS",
+                report.integrated_lufs
+            );
+
+            assert!(service.history_state().can_undo);
+            assert_eq!(
+                service.history_state().undo_label.as_deref(),
+                Some("history.normalize_lufs")
+            );
+            let undo = service.history_undo().unwrap();
+            assert!(undo.changed);
+            assert_eq!(undo.len_samples, len);
+        }
+    }
+
+    #[test]
+    fn normalize_lufs_selection_only_leaves_the_length_and_rest_untouched() {
+        let (service, _engine, dir) = service("normalize-lufs-scope");
+        let sine = vox_testkit::signal::sine(1000.0, -20.0, 1.0, 48_000).unwrap();
+        let mut samples = vec![0.02f32; 48_000];
+        samples.extend(sine);
+        samples.extend(vec![0.02f32; 48_000]);
+        open_test_doc(&service, &dir, &samples);
+        let len = samples.len() as u64;
+
+        let result = service.edit_normalize_lufs(48_000, 96_000, -19.0).unwrap();
+        assert!(result.result.changed);
+        assert_eq!(result.result.selection, Some((48_000, 96_000)));
+        assert_eq!(result.result.len_samples, len, "length preserved");
+    }
+
+    #[test]
+    fn normalize_lufs_is_a_no_op_on_silence_and_posts_a_notice() {
+        let (service, _engine, dir) = service("normalize-lufs-silent");
+        let samples = vox_testkit::signal::silence(0.5, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let len = samples.len() as u64;
+
+        let result = service.edit_normalize_lufs(0, len, -19.0).unwrap();
+        assert!(!result.result.changed);
+        assert_eq!(result.notice, Some(NormalizeLufsNotice::Silent));
+        assert!(
+            !service.history_state().can_undo,
+            "no undo entry for a no-op"
+        );
+    }
+
+    #[test]
+    fn normalize_lufs_already_at_the_target_is_a_no_op() {
+        let (service, _engine, dir) = service("normalize-lufs-already");
+        let samples = vox_testkit::signal::sine(1000.0, -20.0, 2.0, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let len = samples.len() as u64;
+
+        let first = service.edit_normalize_lufs(0, len, -19.0).unwrap();
+        assert!(
+            first.result.changed,
+            "the first normalize still applies (exactness)"
+        );
+        let second = service.edit_normalize_lufs(0, len, -19.0).unwrap();
+        assert!(!second.result.changed);
+        assert_eq!(second.notice, Some(NormalizeLufsNotice::AlreadyNormalized));
+    }
+
+    #[test]
+    fn normalize_lufs_rejects_an_out_of_range_target() {
+        let (service, _engine, dir) = service("normalize-lufs-bad-target");
+        let samples = vox_testkit::signal::sine(1000.0, -20.0, 0.5, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let len = samples.len() as u64;
+
+        for bad in [-60.01, 0.01, f64::NAN, f64::INFINITY] {
+            let err = service.edit_normalize_lufs(0, len, bad).unwrap_err();
+            assert_eq!(err.code, IpcErrorCode::InvalidArgument);
+        }
+    }
+
+    #[test]
+    fn normalize_lufs_is_refused_while_recording() {
+        let (service, _engine, dir) = service("normalize-lufs-recording");
+        open_test_doc(
+            &service,
+            &dir,
+            &vox_testkit::signal::silence(0.05, 48_000).unwrap(),
+        );
+        let (mut capture, _info) = service
+            .begin_recording(48_000, BitDepth::Bit24, true)
+            .unwrap();
+        capture.append(&[0.0; 100]).unwrap();
+
+        let err = service.edit_normalize_lufs(0, 10, -19.0).unwrap_err();
+        assert_eq!(err.code, IpcErrorCode::NotWhileRecording);
+
+        service.discard_take(capture.id());
+    }
+
+    /// Ticket AC: normalizing up to a target that would push the true peak past −1 dBTP still
+    /// applies the gain and posts a notice (no silent limiting).
+    #[test]
+    fn normalize_lufs_posts_a_true_peak_ceiling_notice_but_still_applies() {
+        let (service, _engine, dir) = service("normalize-lufs-tp");
+        let samples = vox_testkit::signal::sine(1000.0, -0.5, 2.0, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let len = samples.len() as u64;
+
+        let result = service.edit_normalize_lufs(0, len, 0.0).unwrap();
+        assert!(result.result.changed, "the gain is applied regardless");
+        match result.notice {
+            Some(NormalizeLufsNotice::TruePeakCeilingExceeded {
+                predicted_true_peak_dbtp,
+            }) => assert!(predicted_true_peak_dbtp > -1.0),
+            other => panic!("expected a true-peak ceiling notice, got {other:?}"),
+        }
     }
 
     // --- S2-03: markers -----------------------------------------------------------------------

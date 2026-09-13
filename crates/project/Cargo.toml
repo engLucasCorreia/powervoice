@@ -13,6 +13,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 # ADR-001 §2 allows `project -> io` (S1-02: WAV import/save through vox-io's reader/writer).
 vox-io = { path = "../io" }
+# ADR-001 §4 allows `project -> dsp` ("edit ops incl. normalize gain computation" owns LUFS
+# normalize too, S4-01): BS.1770 loudness measurement for the scan pass.
+vox-dsp = { path = "../dsp" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

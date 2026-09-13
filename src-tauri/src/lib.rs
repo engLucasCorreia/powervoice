@@ -8,6 +8,7 @@ pub mod document;
 pub mod export;
 pub mod ipc;
 pub mod logging;
+pub mod loudness;
 pub mod nr_capture;
 pub mod recording;
 pub mod settings;
@@ -53,11 +54,19 @@ pub fn run() {
                 engine.handle().clone(),
                 documents.clone(),
             )?;
+            // S4-01: the loudness analysis job service ("processed" mode reads the live rack via
+            // `EngineHandle::rack_model()`).
+            let loudness = loudness::start(
+                app.handle().clone(),
+                documents.clone(),
+                engine.handle().clone(),
+            )?;
             app.manage(documents);
             app.manage(recording);
             app.manage(engine);
             app.manage(export);
             app.manage(nr_capture);
+            app.manage(loudness);
             Ok(())
         })
         .invoke_handler(ipc::invoke_handler())

@@ -11,6 +11,14 @@ rubato.workspace = true
 # S3-04
 realfft.workspace = true
 thiserror.workspace = true
+# S4-01: BS.1770/EBU R128 loudness measurement (production; `precision-true-peak` for 4x
+# oversampled true peak, MEMORY.md gotcha). `vox-testkit` wraps the same crate independently as
+# its own reference (ADR-001 §3).
+ebur128.workspace = true
+
+[dev-dependencies]
+# S4-01: cross-checking `loudness::measure` against known BS.1770 reference values (docs/references.md).
+vox-testkit = { path = "../testkit" }
 
 [lints]
 workspace = true

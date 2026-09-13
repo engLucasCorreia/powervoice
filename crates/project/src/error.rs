@@ -80,6 +80,10 @@ pub enum ProjectError {
     /// should never hold one. `error.normalize_non_finite`.
     #[error("the scope contains a non-finite sample")]
     NonFiniteSample,
+    /// The BS.1770 loudness scan failed (S4-01, LUFS normalize): only reachable with a bad
+    /// channel/rate configuration, which never happens here (mono, the document's own rate).
+    #[error("loudness measurement failed: {0}")]
+    Loudness(#[from] vox_dsp::loudness::LoudnessError),
 }
 
 impl ProjectError {
@@ -116,6 +120,7 @@ impl ProjectError {
             | ProjectError::NoSuchTake(_)
             | ProjectError::TakeAlreadyOpen
             | ProjectError::InvalidTakeFile(_)
+            | ProjectError::Loudness(_)
             | ProjectError::Json(_) => "error.internal",
             ProjectError::Wav(_) => "error.io",
         }

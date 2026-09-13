@@ -12,6 +12,8 @@
   import MarkersProperties from "./lib/layout/MarkersProperties.svelte";
   import MeterBridge from "./lib/layout/MeterBridge.svelte";
   import Toolbar from "./lib/layout/Toolbar.svelte";
+  import LoudnessPanel from "./lib/loudness/LoudnessPanel.svelte";
+  import { initLoudness } from "./lib/loudness/loudness.svelte";
   import FavoritesMenu from "./lib/normalize/FavoritesMenu.svelte";
   import EffectsMenu from "./lib/rack/EffectsMenu.svelte";
   import RackPanel from "./lib/rack/RackPanel.svelte";
@@ -20,6 +22,7 @@
   import { initMarkers } from "./lib/markers/markers.svelte";
   import { initEdit } from "./lib/state/edit.svelte";
   import { initNormalize } from "./lib/state/normalize.svelte";
+  import { initNormalizeLufs } from "./lib/state/normalizeLufs.svelte";
   import { initNotices } from "./lib/state/notices.svelte";
   import { initRecord } from "./lib/state/record.svelte";
   import { loadSettings } from "./lib/state/settings.svelte";
@@ -115,6 +118,12 @@
   // S2-02: peak normalize favorites (toolbar buttons, Favorites menu, Normalize… dialog).
   onMount(() => initNormalize());
 
+  // S4-01: LUFS normalize favorites (toolbar buttons, Favorites menu, Normalize (LUFS)… dialog).
+  onMount(() => initNormalizeLufs());
+
+  // S4-01: the Loudness panel's analysis job (job_progress/loudness_report events).
+  onMount(() => initLoudness());
+
   // S2-03: markers (M, Ctrl+0, Ctrl+Alt+→/←, and the Markers panel's list/add/rename/delete).
   onMount(() => {
     let disposed = false;
@@ -146,6 +155,7 @@
     <EditorView />
     <RackPanel />
   </div>
+  <LoudnessPanel />
   <MeterBridge />
 </div>
 <NoticeHost />
@@ -156,7 +166,7 @@
 <style>
   .shell {
     display: grid;
-    grid-template-rows: auto auto auto auto 1fr auto;
+    grid-template-rows: auto auto auto auto 1fr auto auto;
     height: 100vh;
   }
 

@@ -11,6 +11,8 @@ import type {
   ExportFormatsDto,
   ExportRequestDto,
   ExportStartedDto,
+  LoudnessAnalyzeRequestDto,
+  LoudnessAnalyzeStartedDto,
   MarkerDto,
   MarkerRangeKindDto,
   ModuleDescriptorDto,
@@ -301,4 +303,39 @@ export async function nrCaptureStart(
 /** S3-06: cancels a running capture job (best-effort). */
 export async function nrCaptureCancel(jobId: number): Promise<void> {
   return invoke<void>("nr_capture_cancel" satisfies CommandName, { jobId });
+}
+
+/**
+ * S4-01: LUFS-normalizes `[startSamples, endSamples)` to `targetLufs` integrated loudness
+ * (BS.1770/EBU R128). Callers resolve "no selection" to the whole file before calling, same
+ * convention as `editNormalizePeak`.
+ */
+export async function editNormalizeLufs(
+  startSamples: number,
+  endSamples: number,
+  targetLufs: number,
+): Promise<EditResultDto> {
+  return invoke<EditResultDto>("edit_normalize_lufs" satisfies CommandName, {
+    startSamples,
+    endSamples,
+    targetLufs,
+  });
+}
+
+/**
+ * S4-01: starts a loudness analysis job (integrated/short-term/momentary loudness, LRA, sample
+ * and true peak); progress arrives as `job_progress` events and the finished report as a
+ * `loudness_report` event, both tagged with the returned `job_id`.
+ */
+export async function loudnessAnalyzeStart(
+  request: LoudnessAnalyzeRequestDto,
+): Promise<LoudnessAnalyzeStartedDto> {
+  return invoke<LoudnessAnalyzeStartedDto>("loudness_analyze_start" satisfies CommandName, {
+    request,
+  });
+}
+
+/** S4-01: cancels a running loudness analysis job (best-effort). */
+export async function loudnessAnalyzeCancel(jobId: number): Promise<void> {
+  return invoke<void>("loudness_analyze_cancel" satisfies CommandName, { jobId });
 }

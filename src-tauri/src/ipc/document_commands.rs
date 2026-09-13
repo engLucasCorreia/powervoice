@@ -43,13 +43,16 @@ fn emit_clipboard_changed<R: Runtime>(app: &AppHandle<R>, doc: &DocumentService)
 
 /// Common tail of every S2-01 command: `document_changed` (`audio_rev`/`len_samples`/dirty for
 /// the waveform and title bar) and `history_state` (the Edit menu).
-fn after_edit<R: Runtime>(app: &AppHandle<R>, doc: &DocumentService) {
+/// `pub(crate)`: also used by `loudness_commands::edit_normalize_lufs` (S4-01), which is the same
+/// shape of command as every other S2-01/S2-02 edit here.
+pub(crate) fn after_edit<R: Runtime>(app: &AppHandle<R>, doc: &DocumentService) {
     let info: DocumentDto = doc.info().into();
     emit_document_changed(app, &info);
     emit_history_state(app, doc);
 }
 
-async fn run_blocking<T: Send + 'static>(
+/// `pub(crate)`: see [`after_edit`].
+pub(crate) async fn run_blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, IpcError> + Send + 'static,
 ) -> Result<T, IpcError> {
     tauri::async_runtime::spawn_blocking(f)

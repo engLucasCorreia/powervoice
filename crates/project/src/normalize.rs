@@ -6,6 +6,10 @@
 //! Gain computation and the write live in `project` (ADR-001 §4: "`project` owns edit ops incl.
 //! normalize gain computation"). Pyramid-accelerated scanning (§4's "optional acceleration"),
 //! cancellation and job progress are deferred (S2-02 ticket scope: "Out").
+//!
+//! [`normalize_lufs`] (S4-01) is the same shape, driven by a streamed BS.1770 loudness scan
+//! ([`vox_dsp::loudness::LoudnessMeter`]) instead of a peak scan, reusing [`write_gained`] for the
+//! write-back so silence pieces, undo and marker behaviour match exactly.
 
 use std::sync::Arc;
 
@@ -231,6 +235,130 @@ pub fn normalize_peak(
             Ok(NormalizeResult::Applied(step))
         }
     }
+}
+
+/// Undo label key for LUFS normalize favorites (S4-01; en: "Normalize (LUFS)").
+pub const LABEL_NORMALIZE_LUFS: &str = "history.normalize_lufs";
+
+/// BS.1770's absolute gate (docs/references.md: "absolute gate −70 LUFS"): an integrated loudness
+/// at or below this means no block in the scope was above the gate (ebur128 reports a very
+/// negative/`-inf` sentinel for a scope with no audio above it) — treated as silent, mirroring
+/// [`MIN_PEAK_DBFS`]'s role for peak normalize.
+pub const MIN_INTEGRATED_LUFS: f64 = -70.0;
+
+/// The true-peak ceiling LUFS normalize warns about without limiting (S4-01 ticket: "if the
+/// resulting true peak would exceed −1 dBTP, apply the gain anyway and show a notice suggesting
+/// the true-peak limiter — don't silently limit").
+pub const TRUE_PEAK_WARN_CEILING_DBTP: f64 = -1.0;
+
+/// Why a LUFS normalize command did nothing (mirrors [`NormalizeOutcome`]); `EditResult.changed`
+/// is `false` either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LufsNormalizeOutcome {
+    /// The scope has no block above the BS.1770 absolute gate (silence or near-silence).
+    Silent,
+    /// `|target_lufs - measured_integrated_lufs| < `[`ALREADY_TOL_DB`].
+    AlreadyNormalized,
+}
+
+/// The result of [`normalize_lufs`].
+#[derive(Clone, Debug)]
+pub enum LufsNormalizeResult {
+    /// Nothing changed: no commit, no undo entry.
+    NoOp(LufsNormalizeOutcome),
+    /// The scope was gained and committed as one undoable edit.
+    Applied {
+        step: HistoryStep,
+        /// The gain applied, in dB (`target_lufs - measured_integrated_lufs`).
+        gain_db: f64,
+        /// The measured true peak shifted by exactly `gain_db` (a linear gain) — predicts the
+        /// scope's post-gain true peak without a second scan.
+        predicted_true_peak_dbtp: f64,
+        /// `predicted_true_peak_dbtp > `[`TRUE_PEAK_WARN_CEILING_DBTP`] — the gain is applied
+        /// anyway; the caller shows a notice suggesting the true-peak limiter (S4-01 ticket, no
+        /// silent limiting).
+        exceeds_true_peak_ceiling: bool,
+    },
+}
+
+/// Pass 1 for LUFS normalize (mirrors [`scan_peak`]): streams `range` through a
+/// [`vox_dsp::loudness::LoudnessMeter`] and returns its report. `Silence` pieces contribute
+/// digital-silence samples and cost no I/O, exactly like [`scan_peak`]. Any non-finite sample
+/// aborts with [`ProjectError::NonFiniteSample`] — defensive, since the store should never hold
+/// one (checked here, before ever handing a sample to `ebur128`, rather than relying on the
+/// meter's own non-finite handling, which is meant for renderer output, not the store's
+/// invariants).
+pub fn scan_loudness(
+    store: &ChunkStore,
+    snapshot: &DocSnapshot,
+    range: Range,
+    sample_rate_hz: u32,
+) -> Result<vox_dsp::loudness::LoudnessReport> {
+    let mut meter = vox_dsp::loudness::LoudnessMeter::new(sample_rate_hz)?;
+    let mut buf = vec![0.0f32; IO_BUF_SAMPLES.min(range.len_samples().max(1) as usize)];
+    let mut pos = range.start;
+    while pos < range.end {
+        let want = ((range.end - pos) as usize).min(buf.len());
+        let n = read_range(store, snapshot, pos, &mut buf[..want], &mut None)?;
+        if n == 0 {
+            break;
+        }
+        for &s in &buf[..n] {
+            if !s.is_finite() {
+                return Err(ProjectError::NonFiniteSample);
+            }
+        }
+        meter.push(&buf[..n])?;
+        pos += n as u64;
+    }
+    Ok(meter.finish()?)
+}
+
+/// Runs the S4-01 LUFS normalize end to end against `session`'s current snapshot: measures
+/// `range`'s integrated loudness (BS.1770/EBU R128 of the raw document samples — the same scope
+/// peak normalize would scan, not the rack-processed signal the loudness analysis job can show),
+/// decides per the table above, and — unless it's a no-op — gains the scope by `target_lufs -
+/// measured` and commits it as one undoable edit labelled [`LABEL_NORMALIZE_LUFS`], reusing
+/// [`write_gained`] so it behaves exactly like [`normalize_peak`] (SPEC-010's write path). Refused
+/// while recording ([`ProjectError::NotWhileRecording`], checked by [`Session::commit_edit`]) —
+/// callers that must refuse before doing any I/O should check [`Session::is_recording`] first, as
+/// `DocumentService::edit_normalize_lufs` (S4-01) does.
+pub fn normalize_lufs(
+    session: &mut Session,
+    range: Range,
+    target_lufs: f64,
+) -> Result<LufsNormalizeResult> {
+    let snapshot = session.current();
+    let store = Arc::clone(session.store());
+    let sample_rate_hz = session.sample_rate_hz();
+    let report = scan_loudness(&store, &snapshot, range, sample_rate_hz)?;
+
+    if report.integrated_lufs <= MIN_INTEGRATED_LUFS {
+        return Ok(LufsNormalizeResult::NoOp(LufsNormalizeOutcome::Silent));
+    }
+    let gain_db = target_lufs - report.integrated_lufs;
+    if gain_db.abs() < ALREADY_TOL_DB {
+        return Ok(LufsNormalizeResult::NoOp(
+            LufsNormalizeOutcome::AlreadyNormalized,
+        ));
+    }
+    let gain = 10f64.powf(gain_db / 20.0);
+    let writer = session.chunk_writer();
+    let new_pieces = write_gained(&store, &snapshot, sample_rate_hz, range, gain, writer)?;
+    let edit = Edit::new(LABEL_NORMALIZE_LUFS).replace_with(
+        range.start,
+        range.len_samples(),
+        new_pieces,
+        MarkerMapping::Identity,
+    );
+    let step = session.commit_edit(edit)?;
+    let predicted_true_peak_dbtp = report.true_peak_dbtp + gain_db;
+    Ok(LufsNormalizeResult::Applied {
+        step,
+        gain_db,
+        predicted_true_peak_dbtp,
+        exceeds_true_peak_ceiling: predicted_true_peak_dbtp > TRUE_PEAK_WARN_CEILING_DBTP,
+    })
 }
 
 #[cfg(test)]
@@ -479,6 +607,166 @@ mod tests {
         assert!(
             out[48_000..].iter().all(|&s| s == 0.0),
             "the silent second reads back as +0.0"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- S4-01: LUFS normalize ----------------------------------------------------------------
+
+    #[test]
+    fn normalize_lufs_hits_the_three_favorites_within_a_tenth_lu() {
+        for target_lufs in [-16.0, -19.0, -23.0] {
+            let samples = vox_testkit::signal::sine(1000.0, -20.0, 2.0, 48_000).unwrap();
+            let (mut session, dir) = session_with("lufs-favorite", &samples);
+            let len = session.current().len_samples;
+            let range = validate_range(0, len, len).unwrap();
+            let result = normalize_lufs(&mut session, range, target_lufs).unwrap();
+            let LufsNormalizeResult::Applied { .. } = result else {
+                panic!("expected the favorite to apply a gain");
+            };
+            let snapshot = session.current();
+            let report = scan_loudness(session.store(), &snapshot, range, 48_000).unwrap();
+            assert!(
+                (report.integrated_lufs - target_lufs).abs() < 0.1,
+                "target {target_lufs}, got {} LUFS",
+                report.integrated_lufs
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn normalize_lufs_is_a_no_op_on_silence_and_leaves_no_undo_entry() {
+        let samples = vec![0.0f32; 48_000];
+        let (mut session, dir) = session_with("lufs-silent", &samples);
+        let before_rev = session.current().audio_rev;
+        let range = validate_range(0, 48_000, 48_000).unwrap();
+        let result = normalize_lufs(&mut session, range, -19.0).unwrap();
+        assert!(matches!(
+            result,
+            LufsNormalizeResult::NoOp(LufsNormalizeOutcome::Silent)
+        ));
+        assert_eq!(session.current().audio_rev, before_rev);
+        assert_eq!(session.history().undo_depth(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn normalize_lufs_is_a_no_op_when_already_at_the_target() {
+        let samples = vox_testkit::signal::sine(1000.0, -20.0, 2.0, 48_000).unwrap();
+        let (mut session, dir) = session_with("lufs-already", &samples);
+        let len = session.current().len_samples;
+        let range = validate_range(0, len, len).unwrap();
+        let first = normalize_lufs(&mut session, range, -19.0).unwrap();
+        assert!(
+            matches!(first, LufsNormalizeResult::Applied { .. }),
+            "the first normalize still applies (exactness)"
+        );
+        let second = normalize_lufs(&mut session, range, -19.0).unwrap();
+        assert!(matches!(
+            second,
+            LufsNormalizeResult::NoOp(LufsNormalizeOutcome::AlreadyNormalized)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn normalize_lufs_refuses_non_finite_input_and_changes_nothing() {
+        let samples = vec![0.1, f32::NAN, 0.3];
+        let (mut session, dir) = session_with("lufs-nan", &samples);
+        let before = session.current().clone();
+        let range = validate_range(0, 3, 3).unwrap();
+        let err = normalize_lufs(&mut session, range, -19.0).unwrap_err();
+        assert!(matches!(err, ProjectError::NonFiniteSample));
+        assert_eq!(session.current().audio_rev, before.audio_rev);
+        assert_eq!(session.history().undo_depth(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn normalize_lufs_selection_only_leaves_the_rest_bit_identical() {
+        let sine = vox_testkit::signal::sine(1000.0, -20.0, 1.0, 48_000).unwrap();
+        let mut samples = vec![0.02f32; 48_000];
+        samples.extend(sine);
+        samples.extend(vec![0.02f32; 48_000]);
+        let (mut session, dir) = session_with("lufs-selection", &samples);
+        let before = read_all(&session);
+        let range = validate_range(48_000, 96_000, samples.len() as u64).unwrap();
+        let result = normalize_lufs(&mut session, range, -19.0).unwrap();
+        let LufsNormalizeResult::Applied { .. } = result else {
+            panic!("expected a gain over this selection");
+        };
+        let after = read_all(&session);
+        assert_eq!(after.len(), before.len());
+        assert_eq!(&after[..48_000], &before[..48_000], "before the selection");
+        assert_eq!(&after[96_000..], &before[96_000..], "after the selection");
+        let snapshot = session.current();
+        let report = scan_loudness(session.store(), &snapshot, range, 48_000).unwrap();
+        assert!((report.integrated_lufs - (-19.0)).abs() < 0.1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Ticket AC: "if the resulting true peak would exceed −1 dBTP, apply the gain anyway and
+    /// show a notice" — a sine already peaking near 0 dBFS, normalized to a much louder target,
+    /// still applies (no silent limiting) and flags the ceiling exceedance.
+    #[test]
+    fn normalize_lufs_flags_a_predicted_true_peak_ceiling_exceedance_but_still_applies() {
+        let samples = vox_testkit::signal::sine(1000.0, -0.5, 2.0, 48_000).unwrap();
+        let (mut session, dir) = session_with("lufs-tp", &samples);
+        let len = session.current().len_samples;
+        let range = validate_range(0, len, len).unwrap();
+        let result = normalize_lufs(&mut session, range, 0.0).unwrap();
+        let LufsNormalizeResult::Applied {
+            exceeds_true_peak_ceiling,
+            gain_db,
+            ..
+        } = result
+        else {
+            panic!("expected a gain");
+        };
+        assert!(
+            gain_db > 0.0,
+            "0 LUFS is louder than this sine's integrated loudness"
+        );
+        assert!(
+            exceeds_true_peak_ceiling,
+            "a sine near 0 dBFS normalized up to 0 LUFS should exceed -1 dBTP"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn normalize_lufs_preserves_silence_pieces() {
+        let samples = vox_testkit::signal::sine(1000.0, -20.0, 2.0, 48_000).unwrap();
+        let dir = tmp_dir("lufs-silence-run");
+        let mut config = SessionConfig::new(48_000);
+        config.store = StoreOptions::with_memory_budget(64 * 1024 * 1024);
+        let mut session = Session::create(&dir, config).unwrap();
+        let mut writer = session.chunk_writer();
+        writer.append(&samples).unwrap();
+        let mut audio = writer.finish().unwrap();
+        audio.pieces.extend(Piece::silence_run(48_000));
+        audio.len_samples += 48_000;
+        session.set_floor(&audio, Vec::new()).unwrap();
+
+        let len = session.current().len_samples;
+        let range = validate_range(0, len, len).unwrap();
+        normalize_lufs(&mut session, range, -19.0).unwrap();
+
+        let snapshot = session.current();
+        let silence_piece_still_silence = snapshot
+            .pieces
+            .iter()
+            .any(|p| matches!(p.source, Source::Silence) && p.len_samples() >= 40_000);
+        assert!(
+            silence_piece_still_silence,
+            "the inserted Silence run is still a Silence piece: {:?}",
+            &*snapshot.pieces
+        );
+        let out = read_all(&session);
+        assert!(
+            out[samples.len()..].iter().all(|&s| s == 0.0),
+            "the silent tail reads back as +0.0"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

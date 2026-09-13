@@ -2,16 +2,27 @@
   import { t } from "../i18n";
   import { recordState } from "../state/record.svelte";
   import { canNormalize, FAVORITE_TARGETS_DB, normalizeFavorite } from "../state/normalize.svelte";
+  import {
+    canNormalizeLufs,
+    FAVORITE_TARGETS_LUFS,
+    normalizeLufsFavorite,
+  } from "../state/normalizeLufs.svelte";
 
   /**
    * Toolbar "Normalize" button group (S2-02, SPEC-010 §2.5): three compact one-click favorites,
-   * in PROMPT §3.3 order. Same enablement as the Favorites menu.
+   * in PROMPT §3.3 order. Same enablement as the Favorites menu. S4-01 adds the LUFS favorites
+   * (−16/−19/−23 LUFS) in the same group.
    */
   const rec = recordState();
   const enabled = $derived(canNormalize() && !rec.state.recording);
+  const lufsEnabled = $derived(canNormalizeLufs() && !rec.state.recording);
 
   function testId(targetDb: number): string {
     return `toolbar-normalize-${Math.abs(targetDb).toFixed(1).replace(".", "-")}db`;
+  }
+
+  function lufsTestId(targetLufs: number): string {
+    return `toolbar-normalize-lufs-${Math.abs(targetLufs).toFixed(0)}`;
   }
 </script>
 
@@ -25,6 +36,17 @@
       onclick={() => void normalizeFavorite(targetDb)}
     >
       {t("toolbar.normalize.button", { target: targetDb.toFixed(1) })}
+    </button>
+  {/each}
+  {#each FAVORITE_TARGETS_LUFS as targetLufs (targetLufs)}
+    <button
+      type="button"
+      data-testid={lufsTestId(targetLufs)}
+      disabled={!lufsEnabled}
+      title={t("toolbar.normalize_lufs.tooltip", { target: targetLufs.toFixed(1) })}
+      onclick={() => void normalizeLufsFavorite(targetLufs)}
+    >
+      {t("toolbar.normalize_lufs.button", { target: targetLufs.toFixed(1) })}
     </button>
   {/each}
 </div>

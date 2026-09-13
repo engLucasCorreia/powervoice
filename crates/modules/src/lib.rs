@@ -1,5 +1,5 @@
-//! Built-in rack modules: gain (M1); gate, noise reduction, EQ, dynamics, true-peak limiter
-//! (M4/M5).
+//! Built-in rack modules: gain (M1); dynamics (compressor + limiter) and noise gate (S3-02);
+//! noise reduction, EQ, true-peak limiter (later slices).
 //!
 //! This crate knows nothing about the rack: the composition roots (`cli`, `src-tauri`) register
 //! [`builtin_factories`] into the rack's module registry (SPEC-012 §2.10).
@@ -8,11 +8,20 @@ use std::sync::Arc;
 
 use vox_module_api::ModuleFactory;
 
+mod dynamics;
 mod gain;
+mod noise_gate;
+mod schema;
 
+pub use dynamics::{Dynamics, DynamicsFactory};
 pub use gain::{Gain, GainFactory};
+pub use noise_gate::{NoiseGate, NoiseGateFactory};
 
 /// Factories of every built-in module, for the composition roots to register.
 pub fn builtin_factories() -> Vec<Arc<dyn ModuleFactory>> {
-    vec![Arc::new(GainFactory::new())]
+    vec![
+        Arc::new(GainFactory::new()),
+        Arc::new(DynamicsFactory::new()),
+        Arc::new(NoiseGateFactory::new()),
+    ]
 }

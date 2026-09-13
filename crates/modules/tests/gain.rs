@@ -51,8 +51,11 @@ fn gain_schema_and_identity() {
     assert_eq!(p.smoothing_ms, 20.0);
     assert_eq!(p.value_to_text(-60.0), "-inf dB");
     assert_eq!(p.value_to_text(-6.0), "-6.0 dB");
-    assert_eq!(builtin_factories().len(), 1);
-    ModuleTestHost::from_factory(builtin_factories().remove(0))
+    let gain = builtin_factories()
+        .into_iter()
+        .find(|f| f.descriptor().id == Gain::ID)
+        .expect("Gain is a built-in");
+    ModuleTestHost::from_factory(gain)
         .blocks(16)
         .check_schema()
         .unwrap();

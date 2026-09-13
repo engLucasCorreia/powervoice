@@ -41,6 +41,18 @@ fn legal_values(p: &ParamInfo) -> Vec<f64> {
     }
 }
 
+/// One unit of the last digit shown in `text`, in plain units (×1000 after the Hz → kHz /
+/// ms → s display switch, which shows 2 decimals).
+fn displayed_resolution(p: &ParamInfo, text: &str) -> f64 {
+    let number = text.split_whitespace().next().unwrap_or("");
+    let decimals = number.split_once('.').map_or(0, |(_, frac)| {
+        frac.chars().take_while(char::is_ascii_digit).count()
+    });
+    let switched = text.ends_with(" kHz") || (p.unit == Unit::Ms && text.ends_with(" s"));
+    let scale = if switched { 1000.0 } else { 1.0 };
+    scale * 10f64.powi(-(decimals as i32))
+}
+
 fn assert_exact_roundtrip(p: &ParamInfo) {
     p.validate().unwrap();
     for v in legal_values(p) {
@@ -93,8 +105,8 @@ fn builtin_parameters_round_trip() {
                     let v = p.from_normalized(rng.unit_f64());
                     let text = p.value_to_text(v);
                     let back = p.text_to_value(&text).unwrap();
-                    // Half a unit of the last displayed digit.
-                    let half = 0.5 * 10f64.powi(-i32::from(p.decimals)) * (1.0 + 1e-9);
+                    // Half a unit of the last displayed digit (kHz / s after the unit switch).
+                    let half = 0.5 * displayed_resolution(p, &text) * (1.0 + 1e-9);
                     assert!(
                         (back - v).abs() <= half || (v <= p.min && back <= p.min),
                         "`{}` {v} → {text:?} → {back}",

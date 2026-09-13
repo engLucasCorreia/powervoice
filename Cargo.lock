@@ -4698,6 +4698,7 @@ dependencies = [
 name = "vox-modules"
 version = "0.1.0"
 dependencies = [
+ "vox-dsp",
  "vox-module-api",
 ]
 

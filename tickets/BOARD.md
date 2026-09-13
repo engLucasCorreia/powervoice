@@ -26,7 +26,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | ID | Title | Tier | Deps | Status |
 |---|---|---|---|---|
 | S3-01 | Rack panel + generic parameter UI end-to-end | S | S1-01, H-01 | todo |
-| S3-02 | Dynamics (compressor + limiter) + Noise Gate modules | O | T-103, H-01 | todo |
+| S3-02 | Dynamics (compressor + limiter) + Noise Gate modules | O | T-103, H-01 | in-progress |
 | S3-03 | Parametric EQ module + EQ graph (lean SPEC-015) | O | S3-01 | todo |
 | S3-04 | Noise reduction: capture noise print + streaming NR (lean SPEC-014) | O | S3-01 | todo (ticket after SPEC-014 lands) |
 | S3-05 | True-peak limiter (lean SPEC-017) | O | T-103 | todo |

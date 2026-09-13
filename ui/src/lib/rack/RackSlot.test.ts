@@ -1,8 +1,15 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
-import type { LocalizedTextDto, ParamGroupDto, ParamInfoDto, RackSlotDto } from "../ipc/bindings";
-import { resetRackForTest } from "./rack.svelte";
+import type {
+  LocalizedTextDto,
+  ParamGroupDto,
+  ParamInfoDto,
+  RackSlotDto,
+  TelemetryChannelDto,
+} from "../ipc/bindings";
+import { VXMT_FIXTURE_HEX } from "../ipc/vxmt_fixture";
+import { onModuleTelemetry, resetRackForTest } from "./rack.svelte";
 import RackSlot from "./RackSlot.svelte";
 
 /**
@@ -128,6 +135,7 @@ function slotFixture(): RackSlotDto {
     values: params.map((pp) => ({ id: pp.id, value: pp.default, normalized: 0, text: String(pp.default) })),
     noise_profile: null,
     curve_handles: null,
+    telemetry: [],
   };
 }
 
@@ -267,6 +275,51 @@ describe("EQ graph section (S3-07)", () => {
     expect(
       graph!.compareDocumentPosition(firstParamNode!) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+    teardown();
+  });
+});
+
+// H-03 (SPEC-017 §2.3 "Meter"): a module telemetry channel of kind `gain_reduction` placed in the
+// header (`group` null) renders as a gain-reduction meter, fed by `VXMT` frames through the store.
+describe("gain-reduction meter (H-03)", () => {
+  const grChannel: TelemetryChannelDto = {
+    id: 0,
+    key: "gain_reduction_db",
+    name: text("Gain reduction"),
+    unit: { kind: "db" },
+    min: -24,
+    max: 0,
+    kind: "gain_reduction",
+    group: null,
+  };
+
+  function hexToBuffer(hex: string): ArrayBuffer {
+    const bytes = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = parseInt(hex.slice(2 * i, 2 * i + 2), 16);
+    }
+    return bytes.buffer as ArrayBuffer;
+  }
+
+  it("is absent without a header gain-reduction channel", () => {
+    for (const telemetry of [[], [{ ...grChannel, group: 1 }], [{ ...grChannel, kind: "level" as const }]]) {
+      const { target, teardown } = render({ ...slotFixture(), telemetry });
+      expect(target.querySelector('[data-testid="rack-slot-gr-meter"]')).toBeNull();
+      teardown();
+    }
+  });
+
+  it("shows the slot's value from the latest VXMT frame", () => {
+    // The golden fixture carries slot uid 3 at −6.5 dB.
+    const { target, teardown } = render({ ...slotFixture(), uid: 3, telemetry: [grChannel] });
+    const value = () => target.querySelector('[data-testid="rack-slot-gr-value"]')?.textContent;
+    expect(value()).toBe("0.0");
+    onModuleTelemetry(hexToBuffer(VXMT_FIXTURE_HEX));
+    flushSync();
+    expect(value()).toBe("-6.5");
+    expect(target.querySelector("header [role=meter]")?.getAttribute("aria-label")).toContain(
+      "Gain reduction",
+    );
     teardown();
   });
 });

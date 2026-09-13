@@ -99,6 +99,19 @@ fn ac10_offline_render_is_time_aligned_and_same_length() {
     assert_eq!(y.iter().filter(|s| **s != 0.0).count(), 1);
 }
 
+/// H-03 regression: when the latency flush runs past a block boundary after the input's end, a
+/// block starts beyond `input.len()` (4 000 samples + 480 latency: the second 4 096 block starts at
+/// 4 096) — the render must not slice the input there.
+#[test]
+fn ac10_short_input_whose_latency_flush_crosses_a_block_boundary() {
+    let x = signal::impulse(0.0, 1000, 4_000.0 / 48_000.0, 48_000).unwrap();
+    assert_eq!(x.len(), 4_000);
+    let y = render(&registry(), &model(vec![delay_slot(480)]), SR, &x).unwrap();
+    assert_eq!(y.len(), 4_000);
+    assert_eq!(y[1000], 1.0);
+    assert_eq!(y.iter().filter(|s| **s != 0.0).count(), 1);
+}
+
 #[test]
 fn ac3_offline_bypassed_slot_equals_the_rack_without_it() {
     let x = white(1, 48_000);

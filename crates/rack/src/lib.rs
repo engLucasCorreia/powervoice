@@ -41,7 +41,7 @@ mod shim;
 mod slot;
 
 pub use chain::Chain;
-pub use host::{NoiseProfileStatus, RackHost, RackNotice, SlotInfo, SlotStatus};
+pub use host::{NoiseProfileStatus, RackHost, RackNotice, SlotInfo, SlotStatus, SlotTelemetry};
 pub use live::{LiveRack, RackCommand};
 pub use mix::xfade_gain;
 pub use model::{RackModel, SlotModel};
@@ -51,11 +51,13 @@ pub use shim::DualMonoShim;
 /// direct `module-api` edge, ADR-001 §2). `NoiseProfile` (S3-06): the noise-print capture
 /// extension a target slot's [`RackHost::noise_profile_extension`] returns. `ResponseCurve` /
 /// `CurveHandle` (S3-07): the EQ-graph extension a target slot's
-/// [`RackHost::response_curve_extension`] returns.
+/// [`RackHost::response_curve_extension`] returns. `Telemetry` / `TelemetryInfo` /
+/// `TelemetryKind` (H-03): the per-slot meter channels ([`SlotInfo::telemetry`],
+/// [`RackHost::read_telemetry`]).
 pub use vox_module_api::{
     ActivateConfig, ChannelLayout, CurveHandle, GroupId, LocalizedText, ModuleDescriptor,
     ModuleError, ModuleFactory, NoiseProfile, ParamFlags, ParamGroup, ParamId, ParamInfo,
-    ProcessMode, ResponseCurve, Taper, Transport, Unit,
+    ProcessMode, ResponseCurve, Taper, Telemetry, TelemetryInfo, TelemetryKind, Transport, Unit,
 };
 
 use vox_module_api::{DEFAULT_EVENT_CAPACITY, EventListError, SchemaError, StateError};

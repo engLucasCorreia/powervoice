@@ -3,7 +3,8 @@
 //! parses parameter text and formats it back (`param_set_text`, SPEC-012 §2.6).
 
 use tauri::State;
-use vox_engine::RackCommand;
+use tauri::ipc::{Channel, InvokeResponseBody};
+use vox_engine::{ModuleTelemetryFrame, RackCommand};
 use vox_rack::ParamId;
 
 use crate::audio::AudioEngine;
@@ -175,4 +176,23 @@ pub async fn rack_response_curve(
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
     Ok(result.map_err(rack_ipc_error)?.into())
+}
+
+/// Streams binary `VXMT` module-telemetry frames (H-03, SPEC-016 §4.12: every slot's
+/// `Telemetry` values, e.g. the true-peak limiter's gain reduction) at the telemetry rate over
+/// `channel`, replacing any previous subscriber. Frames flow while at least one slot has the
+/// extension; channel descriptions are in `RackSlotDto::telemetry`.
+#[tauri::command]
+pub async fn module_telemetry_subscribe(
+    engine: State<'_, AudioEngine>,
+    channel: Channel,
+) -> Result<(), IpcError> {
+    let handle = engine.handle().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        handle.set_module_telemetry_sink(Some(Box::new(move |frame: &ModuleTelemetryFrame| {
+            let _ = channel.send(InvokeResponseBody::Raw(frame.encode()));
+        })));
+    })
+    .await
+    .map_err(|e| IpcError::internal(e.to_string()))
 }

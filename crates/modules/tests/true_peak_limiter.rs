@@ -1,13 +1,23 @@
-//! True-Peak Limiter, SPEC-017 lean slice: AC-1, AC-2, AC-3 (48 kHz, ceiling −1, input gains
-//! 0/+12) with the AC-4 ebur128 cross-check, AC-6, AC-8, AC-9 (ticket: 1 kHz pushed 6 dB in),
-//! AC-10 (100 ms), AC-11 (ceiling and input gain, offline), AC-13, AC-14, AC-15.
+//! True-Peak Limiter, SPEC-017 (S3-05 lean slice + H-03 hardening): AC-1, AC-2, AC-3/AC-4 (a
+//! representative subset here; the full 44.1/48/96 kHz × ceilings × input gains × look-ahead /
+//! release matrix is `ac3_ac4_full_matrix`, `#[ignore]`d, run by `just test-big` in release),
+//! AC-6, AC-7, AC-8, AC-9, AC-10, AC-11 (offline and realtime), AC-12, AC-13, AC-14, AC-15,
+//! AC-16 (short timing run here; 60 s in `ac16_full_timing`, `#[ignore]`d). AC-17 is
+//! `just bench` (`benches/true_peak_limiter.rs`).
 //!
 //! Run with `--nocapture` to see the measured numbers.
 
 #![allow(clippy::float_cmp, clippy::needless_range_loop)] // exact values, indexed by sample time
 
 use std::ops::Range;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 
+use vox_dsp::true_peak::{
+    DETECTOR_DELAY, REQUIREMENT_DELAY, TruePeakDetector, TruePeakLimiterCore, lookahead_samples,
+    release_coeff,
+};
 use vox_module_api::test_util::{
     ModuleTestHost, TestRng, ZIPPER_CHANGE_AT, ZIPPER_DRAG_EVENTS, ZIPPER_DRAG_INTERVAL_MS,
     ZIPPER_FREQ_HZ, ZIPPER_LEN, ZIPPER_SAMPLE_RATE, ZipperMove, ZipperReport, ZipperTest,
@@ -162,13 +172,30 @@ fn rms_normalize(x: &[f32], rms_dbfs: f64) -> Vec<f32> {
 }
 
 /// 19.5 kHz Kaiser low-pass (1 kHz transition, 110 dB): content ≤ 20 kHz.
+fn band_limit_at(x: &[f32], rate: u32) -> Vec<f32> {
+    kaiser_lowpass(x, 19_500.0, 1_000.0, 110.0, rate).unwrap()
+}
+
 fn band_limit(x: &[f32]) -> Vec<f32> {
-    kaiser_lowpass(x, 19_500.0, 1_000.0, 110.0, SR).unwrap()
+    band_limit_at(x, SR)
 }
 
 /// 5 ms fades and 50 ms of silence on each side (SPEC-017 §5).
+fn prep_at(x: &[f32], rate: u32) -> Vec<f32> {
+    fade_and_pad(x, 5.0, 50.0, rate)
+}
+
 fn prep(x: &[f32]) -> Vec<f32> {
-    fade_and_pad(x, 5.0, 50.0, SR)
+    prep_at(x, SR)
+}
+
+fn db_to_lin(db: f64) -> f64 {
+    10f64.powf(db / 20.0)
+}
+
+/// The fs/4 pattern `+a +a −a −a` (true peak a·√2).
+fn fs4_square(a: f32, len: usize) -> Vec<f32> {
+    (0..len).map(|i| if i % 4 < 2 { a } else { -a }).collect()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -263,16 +290,17 @@ fn ac1_passes_module_test_host() {
 
 #[test]
 fn ac2_latency_is_exact_and_an_impulse_stays_aligned() {
+    // L + D + 1 (SPEC-017 Amendment 2).
     let table = [
-        (44_100.0, 1.0, 60),
-        (44_100.0, 5.0, 238),
-        (44_100.0, 10.0, 458),
-        (48_000.0, 1.0, 64),
-        (48_000.0, 5.0, 256),
-        (48_000.0, 10.0, 496),
-        (96_000.0, 1.0, 112),
-        (96_000.0, 5.0, 496),
-        (96_000.0, 10.0, 976),
+        (44_100.0, 1.0, 61),
+        (44_100.0, 5.0, 239),
+        (44_100.0, 10.0, 459),
+        (48_000.0, 1.0, 65),
+        (48_000.0, 5.0, 257),
+        (48_000.0, 10.0, 497),
+        (96_000.0, 1.0, 113),
+        (96_000.0, 5.0, 497),
+        (96_000.0, 10.0, 977),
     ];
     for (rate, ms, latency) in table {
         let mut m = limiter(rate, &[(LOOKAHEAD, ms)]);
@@ -296,35 +324,124 @@ fn ac2_latency_is_exact_and_an_impulse_stays_aligned() {
 // AC-3 / AC-4 ceiling guarantee on the stress set (48 kHz, ceiling −1, input gain 0 and +12)
 // ---------------------------------------------------------------------------------------------
 
-/// Renders `x` at input gains 0 and +12 dB and checks the output against the 16× reference, the
-/// plain 4× reading, the sample peak and ebur128.
-fn check_ceiling(name: &str, x: &[f32]) {
-    let c = 10f64.powf(CEILING_DBTP / 20.0);
+/// One AC-3/AC-4 run's settings: ceiling (dBTP), input gain (dB), release and look-ahead (ms).
+#[derive(Clone, Copy, Debug)]
+struct Setting {
+    ceiling: f64,
+    gain: f64,
+    release: f64,
+    lookahead: f64,
+}
+
+impl Setting {
+    /// Default release and look-ahead.
+    const fn new(ceiling: f64, gain: f64) -> Self {
+        Self::with(ceiling, gain, 100.0, 5.0)
+    }
+
+    const fn with(ceiling: f64, gain: f64, release: f64, lookahead: f64) -> Self {
+        Self {
+            ceiling,
+            gain,
+            release,
+            lookahead,
+        }
+    }
+}
+
+/// Output peaks of one run.
+#[derive(Clone, Copy, Debug)]
+struct Measured {
+    /// 16× reference true peak, dBTP.
+    reference: f64,
+    /// Plain 4× reading, dBTP.
+    four: f64,
+    /// Sample peak, linear.
+    sample_peak: f32,
+    /// ebur128's true peak (44.1/48 kHz only), dBTP.
+    ebur: Option<f64>,
+    /// Every output sample is finite.
+    finite: bool,
+}
+
+fn measure_run(rate: u32, x: &[f32], s: Setting) -> Measured {
+    let mut m = limiter(
+        f64::from(rate),
+        &[
+            (INPUT, s.gain),
+            (CEILING, s.ceiling),
+            (RELEASE, s.release),
+            (LOOKAHEAD, s.lookahead),
+        ],
+    );
+    let y = offline(&mut *m, x, &[]);
+    Measured {
+        reference: true_peak_reference_dbtp(&y),
+        four: true_peak_4x_dbtp(&y),
+        sample_peak: sample_peak(&y),
+        ebur: (rate != 96_000).then(|| loudness(&y, 1, rate).unwrap().true_peak_dbtp),
+        finite: y.iter().all(|v| v.is_finite()),
+    }
+}
+
+/// AC-3 (reference and plain 4× ≤ ceiling + 0.10 dB, sample peak ≤ ceiling + 1 f32 ULP) and
+/// AC-4 (ebur128 ≤ ceiling + 0.25 dB) violations of one run.
+fn violations(rate: u32, name: &str, s: Setting, m: &Measured) -> Vec<String> {
+    let c = db_to_lin(s.ceiling);
     let sample_bound = f32::from_bits((c as f32).to_bits() + 1);
-    let input_4x = true_peak_4x_dbtp(x);
+    let tag = format!("{rate} Hz {name} {s:?}");
+    let mut v = Vec::new();
+    if !m.finite {
+        v.push(format!("{tag}: non-finite output"));
+    }
+    if m.reference > s.ceiling + 0.10 {
+        v.push(format!("{tag}: reference {}", m.reference));
+    }
+    if m.four > s.ceiling + 0.10 {
+        v.push(format!("{tag}: 4x {}", m.four));
+    }
+    if m.sample_peak > sample_bound {
+        v.push(format!("{tag}: sample peak {}", m.sample_peak));
+    }
+    if let Some(e) = m.ebur
+        && e > s.ceiling + 0.25
+    {
+        v.push(format!("{tag}: ebur128 {e}"));
+    }
+    v
+}
+
+fn print_run(rate: u32, name: &str, s: Setting, m: &Measured) {
+    let ebur = m
+        .ebur
+        .map_or(String::new(), |e| format!(" ebur128 {e:+.4}"));
+    println!(
+        "AC-3 {rate} Hz {name:<22} c {:+5.1} g {:+3} rel {:>4} la {:>4} | out ref {:+.4} \
+         (+{:.4}) 4x {:+.4} sample {:+.4}{ebur} dBTP",
+        s.ceiling,
+        s.gain,
+        s.release,
+        s.lookahead,
+        m.reference,
+        m.reference - s.ceiling,
+        m.four,
+        db(f64::from(m.sample_peak)),
+    );
+}
+
+/// Renders `x` at `rate` with `s` and asserts AC-3/AC-4.
+fn check_run(rate: u32, name: &str, x: &[f32], s: Setting) -> Measured {
+    let m = measure_run(rate, x, s);
+    print_run(rate, name, s, &m);
+    let v = violations(rate, name, s, &m);
+    assert!(v.is_empty(), "{v:#?}");
+    m
+}
+
+/// The lean-slice check: 48 kHz, ceiling −1, input gains 0 and +12.
+fn check_ceiling(name: &str, x: &[f32]) {
     for gain in [0.0, 12.0] {
-        let mut m = limiter(FS, &[(INPUT, gain)]);
-        let y = offline(&mut *m, x, &[]);
-        let reference = true_peak_reference_dbtp(&y);
-        let four = true_peak_4x_dbtp(&y);
-        let sp = sample_peak(&y);
-        let ebur = loudness(&y, 1, SR).unwrap().true_peak_dbtp;
-        println!(
-            "AC-3 {name:<22} +{gain:>2} dB | in 4x {:+7.3} | out ref {reference:+.4} 4x {four:+.4} \
-             sample {:+.4} ebur128 {ebur:+.4} dBTP",
-            input_4x + gain,
-            db(f64::from(sp)),
-        );
-        assert!(
-            reference <= CEILING_DBTP + 0.10,
-            "{name} +{gain}: reference {reference}"
-        );
-        assert!(four <= CEILING_DBTP + 0.10, "{name} +{gain}: 4x {four}");
-        assert!(sp <= sample_bound, "{name} +{gain}: sample peak {sp}");
-        assert!(
-            ebur <= CEILING_DBTP + 0.25,
-            "{name} +{gain}: ebur128 {ebur}"
-        );
+        check_run(SR, name, x, Setting::new(CEILING_DBTP, gain));
     }
 }
 
@@ -540,10 +657,12 @@ fn thd_n_db(y: &[f32], f: f64, fs: f64, range: Range<usize>) -> f64 {
     10.0 * (residual / fundamental).log10()
 }
 
-fn limited_thd(rate: u32, f: f64, gain: f64) -> f64 {
+fn limited_thd(rate: u32, f: f64, gain: f64, extra: &[(ParamId, f64)]) -> f64 {
     let fs = f64::from(rate);
     let x = signal::sine(f, -6.0, 2.0, rate).unwrap();
-    let mut m = limiter(fs, &[(INPUT, gain)]);
+    let mut overrides = vec![(INPUT, gain)];
+    overrides.extend_from_slice(extra);
+    let mut m = limiter(fs, &overrides);
     let latency = m.latency_samples() as usize;
     let y = offline(&mut *m, &x, &[]);
     let range = (0.5 * fs) as usize + latency..(1.9 * fs) as usize;
@@ -555,15 +674,22 @@ fn ac9_thd_n_of_a_tone_pushed_into_the_limiter() {
     for rate in [44_100u32, 48_000, 96_000] {
         for f in [997.0, 1_000.0] {
             for gain in [6.0, 18.0] {
-                let thd = limited_thd(rate, f, gain);
+                let thd = limited_thd(rate, f, gain, &[]);
                 println!("AC-9 {rate} Hz, {f} Hz −6 dBFS +{gain} dB: THD+N {thd:.1} dB");
                 assert!(thd <= -80.0, "{rate} Hz / {f} Hz / +{gain} dB: {thd}");
             }
         }
+        let bass = limited_thd(rate, 80.0, 6.0, &[]);
+        println!("AC-9 {rate} Hz, 80 Hz −6 dBFS +6 dB: THD+N {bass:.1} dB");
+        assert!(bass <= -55.0, "{rate} Hz, 80 Hz: {bass}");
     }
-    let bass = limited_thd(48_000, 80.0, 6.0);
-    println!("AC-9 48000 Hz, 80 Hz −6 dBFS +6 dB: THD+N {bass:.1} dB");
-    assert!(bass <= -55.0, "80 Hz: {bass}");
+    // Informative (printed, not gated).
+    let hum = limited_thd(48_000, 50.0, 6.0, &[]);
+    let fast = limited_thd(48_000, 100.0, 6.0, &[(LOOKAHEAD, 1.0), (RELEASE, 10.0)]);
+    println!(
+        "AC-9 informative, 48000 Hz: 50 Hz +6 dB {hum:.1} dB (spec sim −44); 100 Hz +6 dB with \
+         look-ahead 1 ms / release 10 ms {fast:.1} dB (spec sim −28)"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -572,53 +698,70 @@ fn ac9_thd_n_of_a_tone_pushed_into_the_limiter() {
 
 #[test]
 fn ac10_release_is_twelve_db_per_release_time_and_returns_to_unity() {
-    let gain_db = 12.0;
-    let g_in = 10f64.powf(gain_db / 20.0);
-    let drop = SR as usize; // 1 s loud, then −40 dBFS
-    let total = (2.5 * FS) as usize;
-    let w = std::f64::consts::TAU * 997.0 / FS;
-    let amp = |n: usize| if n < drop { 1.0 } else { 0.01 };
-    let x: Vec<f32> = (0..total)
-        .map(|n| (amp(n) * (w * n as f64).sin()) as f32)
-        .collect();
-    let mut m = limiter(FS, &[(INPUT, gain_db)]);
-    let latency = m.latency_samples() as usize;
-    let l = latency - 16;
-    let y = offline(&mut *m, &x, &[]);
-    // Applied gain (dB) at output samples whose delayed input is not near a zero crossing.
-    let gains: Vec<(usize, f64)> = (latency..total)
-        .filter_map(|n| {
-            let src = n - latency;
-            let u = g_in * f64::from(x[src]);
-            (f64::from(x[src]).abs() >= 0.5 * amp(src)).then(|| (n, db(f64::from(y[n]) / u)))
-        })
-        .collect();
-    let release_start = drop + latency;
-    let held: Vec<f64> = gains
-        .iter()
-        .filter(|(n, _)| (release_start - 4_800..release_start - l).contains(n))
-        .map(|&(_, g)| g)
-        .collect();
-    let held_max = held.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let crossing = |level: f64| {
-        let i = gains
+    // (release, accepted −12.5 → −0.5 dB time in ms): release ± 2 %; 10 ms → 10.0–12.0 ms.
+    for (release, lo, hi) in [
+        (100.0, 98.0, 102.0),
+        (1_000.0, 980.0, 1_020.0),
+        (10.0, 10.0, 12.0),
+    ] {
+        let gain_db = 12.0;
+        let g_in = db_to_lin(gain_db);
+        let drop = SR as usize; // 1 s loud, then −40 dBFS
+        let total = drop + (FS * (release / 1000.0 * 1.25 + 0.6)) as usize;
+        let w = std::f64::consts::TAU * 997.0 / FS;
+        let amp = |n: usize| if n < drop { 1.0 } else { 0.01 };
+        let x: Vec<f32> = (0..total)
+            .map(|n| (amp(n) * (w * n as f64).sin()) as f32)
+            .collect();
+        let mut m = limiter(FS, &[(INPUT, gain_db), (RELEASE, release)]);
+        let latency = m.latency_samples() as usize;
+        let l = latency - REQUIREMENT_DELAY;
+        let y = offline(&mut *m, &x, &[]);
+        // Applied gain (dB) at output samples whose delayed input is not near a zero crossing.
+        let gains: Vec<(usize, f64)> = (latency..total)
+            .filter_map(|n| {
+                let src = n - latency;
+                let u = g_in * f64::from(x[src]);
+                (f64::from(x[src]).abs() >= 0.5 * amp(src)).then(|| (n, db(f64::from(y[n]) / u)))
+            })
+            .collect();
+        let release_start = drop + latency;
+        let held_max = gains
             .iter()
-            .position(|&(n, g)| n >= release_start - l && g >= level)
-            .unwrap();
-        let ((n0, g0), (n1, g1)) = (gains[i - 1], gains[i]);
-        n0 as f64 + (level - g0) / (g1 - g0) * (n1 - n0) as f64
-    };
-    let t = (crossing(-0.5) - crossing(-12.5)) / FS * 1000.0;
-    println!("AC-10 held GR {held_max:+.3} dB, −12.5 → −0.5 dB in {t:.2} ms (release 100 ms)");
-    assert!(
-        held_max <= -12.5,
-        "gain rose before the look-ahead passed the last peak"
-    );
-    assert!((t / 100.0 - 1.0).abs() <= 0.02, "release took {t} ms");
-    // Back to exactly unity: the output is the delayed (input-gained) input, bit for bit.
-    for n in total - (0.5 * FS) as usize..total {
-        let want = (g_in * f64::from(x[n - latency])) as f32;
-        assert_eq!(y[n].to_bits(), want.to_bits(), "sample {n}");
+            .filter(|(n, _)| (release_start - 4_800..release_start - l).contains(n))
+            .map(|&(_, g)| g)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let crossing = |level: f64| {
+            let i = gains
+                .iter()
+                .position(|&(n, g)| n >= release_start - l && g >= level)
+                .unwrap();
+            let ((n0, g0), (n1, g1)) = (gains[i - 1], gains[i]);
+            n0 as f64 + (level - g0) / (g1 - g0) * (n1 - n0) as f64
+        };
+        let (from, to) = (crossing(-12.5), crossing(-0.5));
+        let t = (to - from) / FS * 1000.0;
+        println!(
+            "AC-10 release {release} ms: held GR {held_max:+.3} dB, −12.5 → −0.5 dB in {t:.2} ms"
+        );
+        assert!(
+            held_max <= -12.5,
+            "release {release}: gain rose before the look-ahead passed the last peak"
+        );
+        assert!((lo..=hi).contains(&t), "release {release}: took {t} ms");
+        // Exactly unity no later than release/12 + look-ahead after the −0.5 dB crossing: from
+        // there on the output is the delayed, input-gained input, bit for bit (AC-8).
+        let unity_from =
+            to.ceil() as usize + ((release / 12.0 + 5.0) / 1000.0 * FS).ceil() as usize;
+        assert!(unity_from + 4_800 < total);
+        for n in unity_from..total {
+            let want = (g_in * f64::from(x[n - latency])) as f32;
+            assert_eq!(
+                y[n].to_bits(),
+                want.to_bits(),
+                "release {release}: sample {n}"
+            );
+        }
     }
 }
 
@@ -627,10 +770,11 @@ fn ac10_release_is_twelve_db_per_release_time_and_returns_to_unity() {
 // ---------------------------------------------------------------------------------------------
 
 /// A §4.3 run of `param` on a 997 Hz tone at `level_dbfs` (the standard −20 dBFS, or a
-/// limiting-active substitute). The change window is widened by the look-ahead L: the
-/// ceiling/gain move reaches the output between S (the gain computer anticipates) and
-/// end + L + T_s (the moved sample itself), in latency-shifted time.
-fn zipper(param: ParamId, level_dbfs: f64, mv: ZipperMove) -> ZipperReport {
+/// limiting-active substitute), offline or realtime (random blocks, 0-length flushes). The
+/// change window is widened by the latency: the ceiling/gain move reaches the output between S
+/// (the gain computer anticipates) and end + latency + T_s (the moved sample itself: the ceiling
+/// is attached at k + L + 1, the input gain applied at k + latency), in latency-shifted time.
+fn zipper(param: ParamId, level_dbfs: f64, mv: ZipperMove, mode: ProcessMode) -> ZipperReport {
     let proto = TruePeakLimiter::new();
     let p = proto
         .params()
@@ -642,7 +786,12 @@ fn zipper(param: ParamId, level_dbfs: f64, mv: ZipperMove) -> ZipperReport {
         ZipperMove::Up | ZipperMove::Drag => (0.25, 0.75),
         ZipperMove::Down => (0.75, 0.25),
     };
-    let mut m = limiter(ZIPPER_SAMPLE_RATE, &[(param, p.from_normalized(from))]);
+    let mut m = limiter_in(
+        ZIPPER_SAMPLE_RATE,
+        &[(param, p.from_normalized(from))],
+        mode,
+        1024,
+    );
     let events: Vec<(usize, ParamId, f64)> = match mv {
         ZipperMove::Up | ZipperMove::Down => {
             vec![(ZIPPER_CHANGE_AT, param, p.from_normalized(to))]
@@ -662,24 +811,38 @@ fn zipper(param: ParamId, level_dbfs: f64, mv: ZipperMove) -> ZipperReport {
     let x: Vec<f32> = (0..ZIPPER_LEN)
         .map(|i| (amp * (w * i as f64).sin()) as f32)
         .collect();
-    let y = offline(&mut *m, &x, &events);
+    let y = match mode {
+        ProcessMode::Offline => offline(&mut *m, &x, &events),
+        _ => {
+            let mut blocks = TestRng::new(0x2199 ^ u64::from(param.0));
+            render_with(&mut *m, &x, &events, || match blocks.below(8) {
+                0 => 0,
+                1 => 1,
+                _ => blocks.range_u32(1, 1024) as usize,
+            })
+        }
+    };
     let latency = m.latency_samples() as usize;
     let window = ZipperWindow {
         start: ZIPPER_CHANGE_AT,
-        end: events.last().unwrap().0 + (latency - 16),
+        end: events.last().unwrap().0 + latency,
         t_s_ms: f64::from(p.smoothing_ms),
     };
     analyze_zipper(&y, latency, ZIPPER_SAMPLE_RATE, window).unwrap()
 }
 
+const MODES: [ProcessMode; 2] = [ProcessMode::Offline, ProcessMode::Realtime];
+
 #[test]
 fn ac11_ceiling_changes_are_click_free() {
     let mut failed = Vec::new();
-    for mv in [ZipperMove::Up, ZipperMove::Down, ZipperMove::Drag] {
-        let r = zipper(CEILING, 0.0, mv);
-        println!("AC-11 ceiling @ 0 dBFS {mv:?}: {r}");
-        if !r.pass {
-            failed.push(format!("{mv:?}: {r}"));
+    for mode in MODES {
+        for mv in [ZipperMove::Up, ZipperMove::Down, ZipperMove::Drag] {
+            let r = zipper(CEILING, 0.0, mv, mode);
+            println!("AC-11 ceiling @ 0 dBFS {mode:?} {mv:?}: {r}");
+            if !r.pass {
+                failed.push(format!("{mode:?} {mv:?}: {r}"));
+            }
         }
     }
     assert!(failed.is_empty(), "{failed:#?}");
@@ -688,12 +851,14 @@ fn ac11_ceiling_changes_are_click_free() {
 #[test]
 fn ac11_input_gain_changes_are_click_free() {
     let mut failed = Vec::new();
-    for level in [-20.0, -6.0, 0.0] {
-        for mv in [ZipperMove::Up, ZipperMove::Down, ZipperMove::Drag] {
-            let r = zipper(INPUT, level, mv);
-            println!("AC-11 input gain @ {level} dBFS {mv:?}: {r}");
-            if !r.pass {
-                failed.push(format!("{level} dBFS {mv:?}: {r}"));
+    for mode in MODES {
+        for level in [-20.0, -6.0, 0.0] {
+            for mv in [ZipperMove::Up, ZipperMove::Down, ZipperMove::Drag] {
+                let r = zipper(INPUT, level, mv, mode);
+                println!("AC-11 input gain @ {level} dBFS {mode:?} {mv:?}: {r}");
+                if !r.pass {
+                    failed.push(format!("{level} dBFS {mode:?} {mv:?}: {r}"));
+                }
             }
         }
     }
@@ -730,7 +895,7 @@ fn ac13_lookahead_change_requests_restart_and_leaves_the_live_instance() {
     assert!(block(&mut *a, &x, &mut ya, &[ev], 0, &mut oe));
     assert!(!block(&mut *b, &x, &mut yb, &[], 0, &mut oe));
     assert!(ya.iter().zip(&yb).all(|(p, q)| p.to_bits() == q.to_bits()));
-    assert_eq!(a.latency_samples(), 256);
+    assert_eq!(a.latency_samples(), 257);
     assert_eq!(a.param_value(LOOKAHEAD), Some(10.0));
     // The active value again: no restart.
     let same = ParamEvent {
@@ -751,7 +916,7 @@ fn ac13_lookahead_change_requests_restart_and_leaves_the_live_instance() {
             layout: ChannelLayout::MONO,
         })
         .unwrap();
-    assert_eq!(fresh.latency_samples(), 496);
+    assert_eq!(fresh.latency_samples(), 497);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -801,4 +966,430 @@ fn ac15_realtime_equals_offline_and_renders_are_deterministic() {
     println!("AC-15 realtime vs offline: max |diff| {max_diff:e}, bit-exact {bit_exact}");
     assert!(max_diff <= 1e-6);
     assert!(bit_exact, "the limiter is block-independent by design");
+}
+
+// ---------------------------------------------------------------------------------------------
+// AC-3 / AC-4: representative subset across rates, ceilings, gains, look-ahead and release
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn ac3_subset_across_rates_ceilings_and_lookahead() {
+    let mut rng = Pcg32::new(0x0AC3_005B, 7);
+    // 44.1 kHz: dense clicks and a 19.9 kHz sine at extreme ceilings and gains.
+    let r = 44_100;
+    let clicks = prep_at(
+        &bandlimited_clicks(0x3A, 2_000, 0.5, 1.0, 19_500.0, 1.0, r).unwrap(),
+        r,
+    );
+    check_run(r, "clicks dense (2000)", &clicks, Setting::new(-0.1, 24.0));
+    check_run(r, "clicks dense (2000)", &clicks, Setting::new(-12.0, 6.0));
+    let phase = 360.0 * rng.next_f64();
+    let sine = signal::sine_with_phase(19_900.0, 0.0, phase, 0.5, r).unwrap();
+    check_run(
+        r,
+        "sine 19900 Hz",
+        &prep_at(&sine, r),
+        Setting::new(-3.0, 12.0),
+    );
+    // 96 kHz: a sweep pushed hard; fs/4 at the loosest ceiling.
+    let r = 96_000;
+    let sweep = signal::log_sweep(20.0, 20_000.0, 0.0, 1.0, r).unwrap();
+    check_run(
+        r,
+        "log sweep 20-20k",
+        &prep_at(&sweep, r),
+        Setting::new(-1.0, 24.0),
+    );
+    let square = prep_at(&fs4_square(1.0, 24_000), r);
+    check_run(r, "fs/4 square a=1", &square, Setting::new(-0.1, 0.0));
+    // 48 kHz: look-ahead 1 and 10 ms, release 10 and 1 000 ms, at ceiling −1.
+    let white = signal::white_noise(0x3B, -6.0, 1.0, SR).unwrap();
+    let white = prep(&rms_normalize(&band_limit(&white), -6.0));
+    for s in [
+        Setting::with(CEILING_DBTP, 12.0, 100.0, 1.0),
+        Setting::with(CEILING_DBTP, 24.0, 10.0, 1.0),
+        Setting::with(CEILING_DBTP, 12.0, 1_000.0, 10.0),
+    ] {
+        check_run(SR, "white -6 dBFS RMS", &white, s);
+    }
+    let bursts = signal::tone_bursts(0x3C, 997.0, 0.0, None, 0.05, 0.05, 1.0, SR).unwrap();
+    let bursts = prep(&band_limit(&bursts));
+    check_run(
+        SR,
+        "997 Hz bursts",
+        &bursts,
+        Setting::with(CEILING_DBTP, 24.0, 10.0, 1.0),
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// AC-7 attack before the peak (the DSP core's per-sample G is the test hook)
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn ac7_attack_starts_exactly_l_samples_before_the_first_over_ceiling_interval() {
+    let c = db_to_lin(CEILING_DBTP);
+    for rate in [44_100.0, 48_000.0, 96_000.0] {
+        let l = lookahead_samples(5.0, rate);
+        let onset = 4_000;
+        let w = std::f64::consts::TAU * 997.0 / rate;
+        let amp = db_to_lin(6.0);
+        // Digital silence, then a +6 dBFS 997 Hz burst (f32 input, as the module sees it).
+        let u: Vec<f64> = (0..onset + 12_000)
+            .map(|n| {
+                if n < onset {
+                    0.0
+                } else {
+                    f64::from((amp * (w * (n - onset) as f64).sin()) as f32)
+                }
+            })
+            .collect();
+        // The first over-ceiling interval (a, a + 1) as the detector reads it: its reading at
+        // push t is the interval (t − D − 1, t − D).
+        let mut det = TruePeakDetector::new();
+        let q: Vec<f64> = u.iter().map(|&x| det.push(x)).collect();
+        let a = (0..q.len()).find(|&t| q[t] > c).unwrap() - DETECTOR_DELAY - 1;
+        let mut core = TruePeakLimiterCore::new(l, release_coeff(100.0, rate), c);
+        let latency = core.latency();
+        let g: Vec<f64> = u.iter().map(|&x| core.process(x, c).1).collect();
+        // Gain applied to input sample s (output at s + latency).
+        let gain_of = |s: usize| g[s + latency];
+        // The burst's first peak: the largest |u| in its first half period.
+        let half = (rate / 997.0 / 2.0) as usize;
+        let p = (onset..onset + half)
+            .max_by(|&i, &j| u[i].abs().total_cmp(&u[j].abs()))
+            .unwrap();
+        println!(
+            "AC-7 {rate} Hz: first over-ceiling interval ({a}, {}), onset {onset}, first peak \
+             {p}, L {l}: G first drops at sample {} ({:.6}), G at the peak {:+.3} dB",
+            a + 1,
+            a - l,
+            gain_of(a - l),
+            db(gain_of(p)),
+        );
+        assert!(
+            (0..a - l).all(|s| gain_of(s) == 1.0),
+            "{rate} Hz: G moved before a − L"
+        );
+        assert!(gain_of(a - l) < 1.0, "{rate} Hz: G didn't drop at a − L");
+        for s in a - l..p {
+            assert!(
+                gain_of(s + 1) <= gain_of(s),
+                "{rate} Hz: attack not monotonic at sample {s}"
+            );
+        }
+        assert!(gain_of(p) * u[p].abs() <= c * (1.0 + 1e-12));
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// AC-12 parameter timing and ceiling changes
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn ac12_an_event_changes_nothing_before_event_plus_latency() {
+    let voice = signal::voice_like(0x12, 200.0, -3.0, 20.0, 0.2, 0.1, 1.0, SR).unwrap();
+    let settings = [(INPUT, 12.0)];
+    let k = 20_011;
+    let base = offline(&mut *limiter(FS, &settings), &voice, &[]);
+    let latency = limiter(FS, &settings).latency_samples() as usize;
+    for (param, value) in [
+        (INPUT, -6.0),
+        (INPUT, 24.0),
+        (CEILING, -9.0),
+        (CEILING, 0.0),
+        (RELEASE, 10.0),
+        (RELEASE, 1_000.0),
+        (LOOKAHEAD, 10.0),
+    ] {
+        let y = offline(&mut *limiter(FS, &settings), &voice, &[(k, param, value)]);
+        let first = y
+            .iter()
+            .zip(&base)
+            .position(|(a, b)| a.to_bits() != b.to_bits());
+        println!(
+            "AC-12 {param:?} → {value}: first changed output sample {first:?} (event {k}, \
+             latency {latency})"
+        );
+        match first {
+            Some(n) => assert!(n >= k + latency, "{param:?} → {value}: changed at {n}"),
+            None => assert_eq!(param, LOOKAHEAD, "{param:?} → {value} never took effect"),
+        }
+    }
+}
+
+#[test]
+fn ac12_ceiling_change_travels_with_the_audio() {
+    let x = signal::sine_with_phase(997.0, 0.0, 0.0, 1.0, SR).unwrap();
+    let k = 20_000;
+    let mut m = limiter(FS, &[]);
+    let latency = m.latency_samples() as usize;
+    let l = latency - REQUIREMENT_DELAY;
+    let y = offline(&mut *m, &x, &[(k, CEILING, -6.0)]);
+    let ramp = (0.020 * FS).round() as usize;
+    // Settled: from k + L + 20 ms + latency on, the reference true peak is ≤ −5.9 dBTP.
+    let from = k + l + ramp + latency;
+    let settled = true_peak_reference_range_dbtp(&y, from..x.len() - 200);
+    // Each input sample's attached ceiling: −1 until k + L + 1, then the 20 ms ramp in dB.
+    let attach = k + l + 1;
+    let ceiling_db = |s: usize| {
+        if s < attach {
+            -1.0
+        } else {
+            -1.0 - 5.0 * ((s - attach + 1) as f64 / ramp as f64).min(1.0)
+        }
+    };
+    let mut worst_sample = f64::NEG_INFINITY;
+    for n in latency..x.len() {
+        let c = ceiling_db(n - latency);
+        let bound = f32::from_bits((db_to_lin(c) as f32).to_bits() + 1);
+        assert!(y[n].abs() <= bound, "output {n}: {} > {bound}", y[n]);
+        worst_sample = worst_sample.max(db(f64::from(y[n].abs())) - c);
+    }
+    // During the ramp, each 1 ms window's true peak stays ≤ the highest ceiling attached to its
+    // samples + 0.10 dB.
+    let mut worst_window = f64::NEG_INFINITY;
+    for start in (k + latency..from + 4_800).step_by(48) {
+        let tp = true_peak_reference_range_dbtp(&y, start..start + 48);
+        let c = (start..=start + 48)
+            .map(|n| ceiling_db(n - latency))
+            .fold(f64::NEG_INFINITY, f64::max);
+        worst_window = worst_window.max(tp - c);
+        assert!(
+            tp <= c + 0.10,
+            "window at {start}: {tp} dBTP vs ceiling {c}"
+        );
+    }
+    println!(
+        "AC-12 ceiling −1 → −6 dBTP: settled {settled:+.4} dBTP; worst sample {worst_sample:+.4} \
+         dB, worst 1 ms window {worst_window:+.4} dB relative to its own ceiling"
+    );
+    assert!(settled <= -5.9, "settled {settled}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// AC-16 robustness (FTZ/DAZ off: test threads never enable them)
+// ---------------------------------------------------------------------------------------------
+
+/// Median `process()` time of 256-frame blocks for white noise, f32 subnormal input (1e-40) and
+/// digital silence, interleaved block by block so load affects all three alike. Also checks the
+/// outputs: silence gives exact zeros; the subnormal DC is below the ceiling, so it passes
+/// bit-exactly delayed (AC-8). Returns (subnormal / noise, silence / noise).
+fn ac16_timing(seconds: f64) -> (f64, f64) {
+    let n = (seconds * FS) as usize;
+    let noise = signal::white_noise(0x16, -6.0, seconds, SR).unwrap();
+    let sub = vec![1e-40f32; n];
+    assert!(sub[0].is_subnormal());
+    let silence = vec![0.0f32; n];
+    let inputs = [&noise[..n], &sub[..], &silence[..]];
+    let mut modules: Vec<Box<dyn Module>> = (0..3)
+        .map(|_| limiter_in(FS, &[], ProcessMode::Realtime, 256))
+        .collect();
+    let latency = modules[0].latency_samples() as usize;
+    let mut outs = vec![vec![0.0f32; n]; 3];
+    let mut times: Vec<Vec<f64>> = (0..3).map(|_| Vec::with_capacity(n / 256 + 1)).collect();
+    let mut oe = OutputEvents::with_capacity(8);
+    let mut pos = 0;
+    while pos < n {
+        let len = 256.min(n - pos);
+        for k in 0..3 {
+            let started = Instant::now();
+            block(
+                &mut *modules[k],
+                &inputs[k][pos..pos + len],
+                &mut outs[k][pos..pos + len],
+                &[],
+                pos,
+                &mut oe,
+            );
+            times[k].push(started.elapsed().as_nanos() as f64);
+        }
+        pos += len;
+    }
+    assert!(outs[2].iter().all(|v| v.to_bits() == 0), "silence → zeros");
+    assert!(outs[1][..latency].iter().all(|v| v.to_bits() == 0));
+    assert!(
+        outs[1][latency..]
+            .iter()
+            .all(|v| v.to_bits() == 1e-40f32.to_bits()),
+        "subnormal DC passes bit-exactly"
+    );
+    let mut median = |k: usize| {
+        times[k].sort_by(f64::total_cmp);
+        times[k][times[k].len() / 2]
+    };
+    let (noise_ns, sub_ns, silence_ns) = (median(0), median(1), median(2));
+    println!(
+        "AC-16 {seconds} s, 256-frame blocks, FTZ/DAZ off: median block noise {noise_ns:.0} ns, \
+         subnormal {sub_ns:.0} ns, silence {silence_ns:.0} ns"
+    );
+    (sub_ns / noise_ns, silence_ns / noise_ns)
+}
+
+#[test]
+fn ac16_extreme_input_and_subnormals_without_ftz() {
+    // ±4.0 squares (the fs/4 pattern at a = 4, true peak +15 dBFS) with +24 dB input gain.
+    let squares = prep(&fs4_square(4.0, 24_000));
+    check_run(
+        SR,
+        "fs/4 square a=4",
+        &squares,
+        Setting::new(CEILING_DBTP, 24.0),
+    );
+    // A naive (not band-limited) 1 kHz ±4 square: content above 20 kHz has no well-defined
+    // true peak (SPEC-017 §2.4), so only finiteness and the sample peak are gated here.
+    let naive: Vec<f32> = (0..24_000)
+        .map(|i| if (i / 24) % 2 == 0 { 4.0 } else { -4.0 })
+        .collect();
+    let s = Setting::new(CEILING_DBTP, 24.0);
+    let m = measure_run(SR, &prep(&naive), s);
+    print_run(SR, "naive 1 kHz square a=4", s, &m);
+    assert!(m.finite);
+    assert!(m.sample_peak <= f32::from_bits((db_to_lin(CEILING_DBTP) as f32).to_bits() + 1));
+    let (sub, silence) = ac16_timing(3.0);
+    assert!(sub <= 1.5, "subnormal / noise = {sub}");
+    assert!(silence <= 1.5, "silence / noise = {silence}");
+}
+
+#[test]
+#[ignore = "60 s AC-16 timing run: `just test-big` (release)"]
+fn ac16_full_timing() {
+    let (sub, silence) = ac16_timing(60.0);
+    println!("AC-16 60 s: subnormal / noise {sub:.3}, silence / noise {silence:.3}");
+    assert!(sub <= 1.5, "subnormal / noise = {sub}");
+    assert!(silence <= 1.5, "silence / noise = {silence}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// AC-3 / AC-4 full matrix (`just test-big`)
+// ---------------------------------------------------------------------------------------------
+
+/// SPEC-017 §5 stress set S at `rate` (all content ≤ 20 kHz, 5 ms fades, 50 ms padding).
+fn stress_set(rate: u32) -> Vec<(String, Vec<f32>)> {
+    let fs = f64::from(rate);
+    let mut rng = Pcg32::new(0x5E17_0017, u64::from(rate));
+    let mut set = vec![(
+        "fs/4 square a=1".to_owned(),
+        prep_at(&fs4_square(1.0, rate as usize / 2), rate),
+    )];
+    for f in [
+        997.0,
+        5_000.0,
+        10_000.0,
+        fs / 4.0,
+        15_000.0,
+        18_000.0,
+        19_900.0,
+    ] {
+        let phase = 360.0 * rng.next_f64();
+        let x = signal::sine_with_phase(f, 0.0, phase, 1.0, rate).unwrap();
+        set.push((format!("sine {f} Hz"), prep_at(&x, rate)));
+    }
+    let sweep = signal::log_sweep(20.0, 20_000.0, 0.0, 5.0, rate).unwrap();
+    set.push(("log sweep 20-20k 5 s".into(), prep_at(&sweep, rate)));
+    let white = signal::white_noise(0x17, -6.0, 3.0, rate).unwrap();
+    let white = rms_normalize(&band_limit_at(&white, rate), -6.0);
+    set.push(("white -6 dBFS RMS".into(), prep_at(&white, rate)));
+    let sparse = bandlimited_clicks(0x19, 40, 0.5, 1.0, 19_500.0, 2.0, rate).unwrap();
+    set.push(("clicks sparse (40)".into(), prep_at(&sparse, rate)));
+    let dense = bandlimited_clicks(0x1A, 2_000, 0.5, 1.0, 19_500.0, 2.0, rate).unwrap();
+    set.push(("clicks dense (2000)".into(), prep_at(&dense, rate)));
+    let bursts = signal::tone_bursts(0x1B, 997.0, 0.0, None, 0.05, 0.05, 2.0, rate).unwrap();
+    set.push((
+        "997 Hz bursts".into(),
+        prep_at(&band_limit_at(&bursts, rate), rate),
+    ));
+    let voice = signal::voice_like(0x1C, 220.0, -6.0, 20.0, 0.25, 0.15, 3.0, rate).unwrap();
+    let voice = peak_normalize(&band_limit_at(&voice, rate), -6.0);
+    set.push(("voice_like -6 dBFS pk".into(), prep_at(&voice, rate)));
+    let pink = signal::pink_noise(0x18, -14.0, 3.0, rate).unwrap();
+    let pink = rms_normalize(&band_limit_at(&pink, rate), -14.0);
+    set.push(("pink -14 dBFS RMS".into(), prep_at(&pink, rate)));
+    set
+}
+
+/// Ceilings × input gains at the defaults, plus look-ahead 1/10 ms and release 10/1 000 ms at
+/// ceiling −1 (every input gain).
+fn matrix_settings() -> Vec<Setting> {
+    let gains = [0.0, 6.0, 12.0, 24.0];
+    let mut v = Vec::new();
+    for ceiling in [-12.0, -3.0, -1.0, -0.1] {
+        for gain in gains {
+            v.push(Setting::new(ceiling, gain));
+        }
+    }
+    for (release, lookahead) in [(100.0, 1.0), (100.0, 10.0), (10.0, 5.0), (1_000.0, 5.0)] {
+        for gain in gains {
+            v.push(Setting::with(CEILING_DBTP, gain, release, lookahead));
+        }
+    }
+    v
+}
+
+#[test]
+#[ignore = "full SPEC-017 AC-3/AC-4 matrix (1 440 renders): `just test-big` (release)"]
+fn ac3_ac4_full_matrix() {
+    let started = Instant::now();
+    let rates = [44_100u32, 48_000, 96_000];
+    let jobs: Vec<(u32, String, Vec<f32>)> = rates
+        .iter()
+        .flat_map(|&r| stress_set(r).into_iter().map(move |(n, x)| (r, n, x)))
+        .collect();
+    let settings = matrix_settings();
+    let next = AtomicUsize::new(0);
+    let results: Mutex<Vec<(u32, String, Setting, Measured)>> = Mutex::new(Vec::new());
+    let threads = std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get);
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                while let Some((rate, name, x)) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    for &s in &settings {
+                        let m = measure_run(*rate, x, s);
+                        results.lock().unwrap().push((*rate, name.clone(), s, m));
+                    }
+                }
+            });
+        }
+    });
+    let mut results = results.into_inner().unwrap();
+    // Job order; each job's settings were pushed in order by one thread (stable sort keeps it).
+    results.sort_by(|a, b| {
+        (a.0, jobs.iter().position(|j| j.0 == a.0 && j.1 == a.1))
+            .cmp(&(b.0, jobs.iter().position(|j| j.0 == b.0 && j.1 == b.1)))
+    });
+    let mut failures = Vec::new();
+    for (rate, name, s, m) in &results {
+        print_run(*rate, name, *s, m);
+        failures.extend(violations(*rate, name, *s, m));
+    }
+    for rate in rates {
+        let (mut reference, mut four, mut sample, mut ebur) = (
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        );
+        let mut runs = 0;
+        for (_, _, s, m) in results.iter().filter(|r| r.0 == rate) {
+            runs += 1;
+            reference = reference.max(m.reference - s.ceiling);
+            four = four.max(m.four - s.ceiling);
+            sample = sample.max(db(f64::from(m.sample_peak)) - s.ceiling);
+            if let Some(e) = m.ebur {
+                ebur = ebur.max(e - s.ceiling);
+            }
+        }
+        println!(
+            "AC-3 summary {rate} Hz ({runs} runs): worst over the ceiling — reference \
+             {reference:+.4} dB, plain 4x {four:+.4} dB, sample peak {sample:+.5} dB; ebur128 \
+             {ebur:+.4} dB (AC-4, 44.1/48 kHz)"
+        );
+    }
+    println!(
+        "AC-3/AC-4 full matrix: {} runs in {:.1} s",
+        results.len(),
+        started.elapsed().as_secs_f64()
+    );
+    assert_eq!(results.len(), jobs.len() * settings.len());
+    assert!(failures.is_empty(), "{failures:#?}");
 }

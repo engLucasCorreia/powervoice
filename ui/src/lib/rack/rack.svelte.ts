@@ -1,3 +1,4 @@
+import { Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   EventName,
@@ -8,6 +9,7 @@ import type {
   RackStateDto,
 } from "../ipc/bindings";
 import {
+  moduleTelemetrySubscribe,
   paramSetNormalized,
   paramSetPlain,
   paramSetText,
@@ -20,6 +22,8 @@ import {
   rackRemove,
   rackRestart,
 } from "../ipc/commands";
+import { decodeVxmt } from "../ipc/moduleTelemetry";
+import { toArrayBuffer } from "../ipc/telemetry";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { pushNotice } from "../state/notices.svelte";
 
@@ -41,6 +45,9 @@ let unavailable = $state(false);
 /** S3-06: the last rack slot whose panel had focus (SPEC-014 §2.3 "last-focused NR slot" — the
  * backend validates it actually has a `NoiseProfile` extension, so this is tracked generically). */
 let lastFocusedSlot: number | null = null;
+/** H-03: the latest module-telemetry values per slot uid (`VXMT`), each in its slot's
+ * `telemetry` channel order. Replaced wholesale per frame (60 Hz), so not deeply reactive. */
+let meters = $state.raw<Record<number, readonly number[]>>({});
 
 /** Read-only accessor for components. */
 export function rackState(): {
@@ -127,6 +134,26 @@ export function noteSlotFocused(index: number): void {
 /** The last-focused slot's index, or `null` (nothing focused yet this session). */
 export function lastFocusedSlotIndex(): number | null {
   return lastFocusedSlot;
+}
+
+/** H-03: slot `uid`'s telemetry values from the latest `VXMT` frame (in its `telemetry` channel
+ * order), or `undefined` before any frame carried it. */
+export function slotTelemetry(uid: number): readonly number[] | undefined {
+  return meters[uid];
+}
+
+/** Handles one module-telemetry channel message (`VXMT`, SPEC-016 §4.12). */
+export function onModuleTelemetry(message: unknown): void {
+  const buf = toArrayBuffer(message);
+  const frame = buf ? decodeVxmt(buf) : null;
+  if (!frame) {
+    return;
+  }
+  const next: Record<number, readonly number[]> = {};
+  for (const record of frame.records) {
+    next[record.slotUid] = record.values;
+  }
+  meters = next;
 }
 
 /**
@@ -307,6 +334,11 @@ export async function loadRack(): Promise<() => void> {
   } catch {
     // Same fallback.
   }
+  try {
+    await moduleTelemetrySubscribe(new Channel<ArrayBuffer>((message) => onModuleTelemetry(message)));
+  } catch {
+    // Without module telemetry the slot meters stay at rest.
+  }
 
   return () => {
     for (const cleanup of cleanups) {
@@ -324,6 +356,7 @@ export async function loadRack(): Promise<() => void> {
       cancelFrame(pending.frame);
     }
     pendingPlainDrags.clear();
+    meters = {};
   };
 }
 
@@ -334,6 +367,7 @@ export function resetRackForTest(): void {
   loading = true;
   unavailable = false;
   lastFocusedSlot = null;
+  meters = {};
   for (const pending of pendingDrags.values()) {
     cancelFrame(pending.frame);
   }

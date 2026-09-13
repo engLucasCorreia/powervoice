@@ -16,7 +16,10 @@ test:
 
 # T-101 big-document tests (60-min fixture, SPEC-004 AC-5; real 4 GiB take rollover). Release build,
 # ~5 GB scratch under target/big-tests. Uses fixtures/generated/long-60min-48k-mono.wav if present.
+# H-03: first the full SPEC-017 true-peak limiter matrix (AC-3/AC-4, 44.1/48/96 kHz × ceilings ×
+# input gains × look-ahead/release, multi-threaded) and the 60 s AC-16 timing run.
 test-big:
+    cargo test --release -p vox-modules --test true_peak_limiter -- --ignored --nocapture --test-threads=1
     mkdir -p target/big-tests
     POWERVOICE_TEST_TMP="{{justfile_directory()}}/target/big-tests" \
         cargo test --release -p vox-project --test big -- --ignored --nocapture --test-threads=1

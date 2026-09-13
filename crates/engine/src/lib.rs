@@ -10,7 +10,8 @@
 //! Playback (S1-01, SPEC-003, ADR-002):
 //! - [`Engine`] / [`EngineHandle`] / [`ManualEngine`]: the facade over the control thread.
 //! - [`transport`]: the transport state machine and its commands.
-//! - [`telemetry`]: `VXTM` frames (playhead anchor + output meter) at 60 Hz.
+//! - [`telemetry`]: `VXTM` frames (playhead anchor + output meter) at 60 Hz, and `VXMT` module
+//!   telemetry (the rack slots' meters, e.g. gain reduction; H-03).
 //! - Internals: `control` (16.7 ms tick, device handling), `output` (the RT output callback),
 //!   `reader` (prefetch + resampling), `rt` (ring element types).
 //!
@@ -53,7 +54,9 @@ pub use record::{
     DropoutMark, LIVE_PEAKS_SPB, LiveTakePeaks, MonitorMode, RecordDone, RecordError, RecordState,
     RecordingResult, StopReason,
 };
-pub use telemetry::{TelemetryFrame, TelemetrySink};
+pub use telemetry::{
+    ModuleTelemetryFrame, ModuleTelemetryRecord, ModuleTelemetrySink, TelemetryFrame, TelemetrySink,
+};
 pub use transport::{TransportCommand, TransportState};
 
 // Unit tests of RT wrappers run under the allocation checker.

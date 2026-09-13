@@ -7,8 +7,11 @@ vox_module_api::install_test_allocator!();
 use std::sync::{Arc, Mutex};
 
 use vox_engine::backend::fake::{FakeBackend, FakeDevice, FakeDirection};
-use vox_engine::{EngineConfig, EngineEvent, HostId, ManualEngine, RackApiError, RackCommand};
-use vox_modules::{Gain, NoiseGate, ParametricEq};
+use vox_engine::{
+    EngineConfig, EngineEvent, HostId, ManualEngine, ModuleTelemetryFrame, RackApiError,
+    RackCommand,
+};
+use vox_modules::{Gain, NoiseGate, ParametricEq, TruePeakLimiter};
 use vox_rack::{RackNotice, Registry, SlotStatus};
 
 fn dev() -> FakeDirection {
@@ -31,6 +34,50 @@ fn rig() -> (ManualEngine, Arc<Mutex<Vec<EngineEvent>>>) {
     let mut eng = ManualEngine::new(cfg);
     eng.poll_devices();
     (eng, events)
+}
+
+/// H-03 (SPEC-016 §4.12 `VXMT`): with a module-telemetry sink installed, every control tick
+/// publishes the values of the slots that have a `Telemetry` extension, keyed by slot uid in
+/// the snapshot's channel order — and nothing while no slot has one.
+#[test]
+fn module_telemetry_frames_carry_the_slots_with_telemetry() {
+    let (mut eng, _events) = rig();
+    let frames: Arc<Mutex<Vec<ModuleTelemetryFrame>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = frames.clone();
+    eng.set_module_telemetry_sink(Some(Box::new(move |f: &ModuleTelemetryFrame| {
+        sink.lock().unwrap().push(f.clone());
+    })));
+    eng.tick();
+    assert!(
+        frames.lock().unwrap().is_empty(),
+        "no slot has telemetry yet"
+    );
+
+    let snap = eng
+        .rack_command(RackCommand::Add {
+            module_id: TruePeakLimiter::ID.into(),
+            index: 0,
+        })
+        .unwrap();
+    let info = &snap.slots[0].info;
+    assert_eq!(info.telemetry.len(), 1);
+    assert_eq!(info.telemetry[0].key, "gain_reduction_db");
+    let uid = info.uid.0;
+    eng.tick();
+    eng.tick();
+    let frames = frames.lock().unwrap();
+    assert!(frames.len() >= 2, "{} frames", frames.len());
+    let last = frames.last().unwrap();
+    assert_eq!(last.seq, frames.len() as u32 - 1);
+    let record = last
+        .records
+        .iter()
+        .find(|r| r.slot_uid == uid)
+        .expect("the limiter's record");
+    assert_eq!(record.values.len(), 1);
+    assert!(record.values[0] <= 0.0 && record.values[0] >= -24.0);
+    let bytes = last.encode();
+    assert_eq!(&bytes[0..4], b"VXMT");
 }
 
 /// Before any output device is open there is no live rack: an empty snapshot and every command

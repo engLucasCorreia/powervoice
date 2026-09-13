@@ -177,9 +177,147 @@ impl InputMeter {
     }
 }
 
+/// Header length of a `VXMT` frame (SPEC-016 §4.12, version 1).
+pub const VXMT_HEADER_LEN: usize = 32;
+
+/// One slot's values in a [`ModuleTelemetryFrame`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModuleTelemetryRecord {
+    /// The slot's stable id (the rack DTO's `uid`; encoded as `u32`).
+    pub slot_uid: u64,
+    /// One value per telemetry channel, in the slot's channel order (Min/Max channels: the
+    /// extreme since the previous frame, e.g. the deepest gain reduction).
+    pub values: Vec<f32>,
+}
+
+/// Module telemetry (`VXMT`, SPEC-016 §4.12): the values of every rack slot with a `Telemetry`
+/// extension (e.g. the true-peak limiter's gain reduction), built by the control thread at the
+/// telemetry rate.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModuleTelemetryFrame {
+    /// Frame counter (restarts at 0 for a new subscriber).
+    pub seq: u32,
+    /// App-clock time of the read.
+    pub frame_time_ns: u64,
+    /// One record per slot with telemetry, rack order.
+    pub records: Vec<ModuleTelemetryRecord>,
+}
+
+impl ModuleTelemetryFrame {
+    /// Little-endian `VXMT` v1 encoding: a 32-byte header (`"VXMT"`, version 1, header_len 32,
+    /// seq, flags 0, frame_time_ns, record count, reserved 0), then per record
+    /// `{u32 slot_uid, u16 count, u16 reserved, f32[count]}`.
+    pub fn encode(&self) -> Vec<u8> {
+        let body: usize = self.records.iter().map(|r| 8 + 4 * r.values.len()).sum();
+        let mut b = Vec::with_capacity(VXMT_HEADER_LEN + body);
+        b.extend_from_slice(b"VXMT");
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&(VXMT_HEADER_LEN as u16).to_le_bytes());
+        b.extend_from_slice(&self.seq.to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b.extend_from_slice(&self.frame_time_ns.to_le_bytes());
+        b.extend_from_slice(
+            &u32::try_from(self.records.len())
+                .unwrap_or(u32::MAX)
+                .to_le_bytes(),
+        );
+        b.extend_from_slice(&0u32.to_le_bytes());
+        for r in &self.records {
+            let count = u16::try_from(r.values.len()).unwrap_or(u16::MAX);
+            b.extend_from_slice(&u32::try_from(r.slot_uid).unwrap_or(u32::MAX).to_le_bytes());
+            b.extend_from_slice(&count.to_le_bytes());
+            b.extend_from_slice(&0u16.to_le_bytes());
+            for v in r.values.iter().take(usize::from(count)) {
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        b
+    }
+}
+
+/// Receives module-telemetry frames on the control thread (must not block for long).
+pub type ModuleTelemetrySink = Box<dyn FnMut(&ModuleTelemetryFrame) + Send>;
+
+/// Publishes module telemetry at the telemetry rate: the single reader of every slot's
+/// `Telemetry` handle (ADR-005 §11). Nothing is read while nobody subscribes.
+#[derive(Default)]
+pub(crate) struct ModuleTelemetryPublisher {
+    sink: Option<ModuleTelemetrySink>,
+    seq: u32,
+}
+
+impl ModuleTelemetryPublisher {
+    pub(crate) fn set_sink(&mut self, sink: Option<ModuleTelemetrySink>) {
+        self.sink = sink;
+        self.seq = 0;
+    }
+
+    /// One frame from `rack`'s slots, only while a subscriber exists and at least one slot has
+    /// the extension (SPEC-016 §4.12).
+    pub(crate) fn publish(&mut self, rack: Option<&vox_rack::RackHost>, now_ns: u64) {
+        let (Some(sink), Some(rack)) = (self.sink.as_mut(), rack) else {
+            return;
+        };
+        let records: Vec<ModuleTelemetryRecord> = rack
+            .read_telemetry()
+            .into_iter()
+            .map(|s| ModuleTelemetryRecord {
+                slot_uid: s.uid.0,
+                values: s.values,
+            })
+            .collect();
+        if records.is_empty() {
+            return;
+        }
+        let frame = ModuleTelemetryFrame {
+            seq: self.seq,
+            frame_time_ns: now_ns,
+            records,
+        };
+        self.seq = self.seq.wrapping_add(1);
+        sink(&frame);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vxmt_layout() {
+        let f = ModuleTelemetryFrame {
+            seq: 9,
+            frame_time_ns: 123_456_789_000,
+            records: vec![
+                ModuleTelemetryRecord {
+                    slot_uid: 3,
+                    values: vec![-3.5],
+                },
+                ModuleTelemetryRecord {
+                    slot_uid: 7,
+                    values: vec![0.0, -12.25],
+                },
+            ],
+        };
+        let b = f.encode();
+        let u16_at = |o: usize| u16::from_le_bytes([b[o], b[o + 1]]);
+        let u32_at = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        let f32_at = |o: usize| f32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        assert_eq!(b.len(), 32 + (8 + 4) + (8 + 8));
+        assert_eq!(&b[0..4], b"VXMT");
+        assert_eq!((u16_at(4), u16_at(6)), (1, 32));
+        assert_eq!((u32_at(8), u32_at(12)), (9, 0));
+        assert_eq!(
+            u64::from_le_bytes(b[16..24].try_into().unwrap()),
+            123_456_789_000
+        );
+        assert_eq!((u32_at(24), u32_at(28)), (2, 0));
+        assert_eq!((u32_at(32), u16_at(36), u16_at(38)), (3, 1, 0));
+        assert_eq!(f32_at(40).to_bits(), (-3.5f32).to_bits());
+        assert_eq!((u32_at(44), u16_at(48)), (7, 2));
+        assert_eq!(f32_at(52).to_bits(), 0.0f32.to_bits());
+        assert_eq!(f32_at(56).to_bits(), (-12.25f32).to_bits());
+    }
 
     /// A sine with peak −20 dBFS reads −23.0 dB RMS (SPEC-002 §2.1); the window slides.
     #[test]

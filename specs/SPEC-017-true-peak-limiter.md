@@ -403,3 +403,30 @@ gain-reduction history graph.
   interval misses only the last averaging tap (weight 1/(L/2+1)²). The sample-peak bound is exact; the
   true-peak bound is measured at ceiling + 0.011 dB worst (limit + 0.10 dB). Accepted for v1; an exact
   construction costs one more sample of latency — tracked as backlog H-03.
+
+## Amendment 2 — H-03 hardening (2026-09-14, autonomous)
+- **Exact interval-endpoint coverage (supersedes Amendment 1's measured bound).** Input sample n
+  bounds two intervals, (n − 1, n) and (n, n + 1). The gain computer is fed the per-sample
+  requirement ρ[n] = min(r(n − 1, n), r(n, n + 1)), known one sample after the second interval's
+  detector reading. Every output sample's gain is then ≤ the requirement of both intervals it
+  bounds, by construction (on the detector's estimate: what remains is the 4× + parabola
+  detector's own under-read, §4.2).
+- **Latency = L + D + 1** (§3 derived constants, §4.1 "delay L + D + 1", AC-2): 61/239/459 samples
+  at 44.1 kHz, 65/257/497 at 48 kHz, 113/497/977 at 96 kHz for look-ahead 1/5/10 ms; the §4.5
+  delay line is ≤ 977 samples at 96 kHz.
+- **Event timing (§4.4, Amendment 1):** the ceiling is attached to the input sample at k + L + 1;
+  input gain and release apply at k + latency (= k + L + D + 1). Nothing changes before output
+  sample k + latency.
+- **AC-7:** G first drops exactly L samples before the first endpoint of the burst's first
+  over-ceiling interval.
+- **Measured (H-03):** full AC-3/AC-4 matrix (`just test-big`, 1 440 runs): reference true peak
+  worst +0.0245 dB over the ceiling at 44.1 kHz, +0.0167 dB at 48 kHz, +0.0028 dB at 96 kHz; plain
+  4× +0.014 dB; sample peak exact; ebur128 +0.138 dB. AC-16 (60 s, FTZ/DAZ off): subnormal and
+  silence blocks take 0.76× the noise block time. AC-17 (`just bench`): 0.23–0.27 % of one core at
+  48 kHz, 256-frame blocks.
+- **Gain-reduction meter (§2.3, T-410's generic part):** module telemetry channel descriptions
+  travel with the rack state (`RackSlotDto.telemetry`); values arrive in `VXMT` frames (SPEC-016
+  §4.12 layout) via `module_telemetry_subscribe`, read by the control thread at the telemetry rate.
+  The slot header renders every `GainReduction` channel with `group: None` as a meter on the
+  channel's own scale (limiter 0 … −24 dB), so Dynamics' total GR and the Noise Gate's gain show
+  there too.

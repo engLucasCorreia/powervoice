@@ -91,6 +91,11 @@ export async function telemetrySubscribe(channel: Channel<ArrayBuffer>): Promise
   return invoke<void>("telemetry_subscribe" satisfies CommandName, { channel });
 }
 
+/** H-03: binary `VXMT` module-telemetry frames (the rack slots' meters, SPEC-016 §4.12) on `channel`. */
+export async function moduleTelemetrySubscribe(channel: Channel<ArrayBuffer>): Promise<void> {
+  return invoke<void>("module_telemetry_subscribe" satisfies CommandName, { channel });
+}
+
 /** S1-01: the engine's app clock in ns (clock sync, ADR-003 §3). */
 export async function clockNowNs(): Promise<number> {
   return invoke<number>("clock_now_ns" satisfies CommandName);

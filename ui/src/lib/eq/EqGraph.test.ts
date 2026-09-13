@@ -84,6 +84,7 @@ function slotFixture(): RackSlotDto {
     values: params.map((p) => ({ id: p.id, value: p.default, normalized: 0.5, text: String(p.default) })),
     noise_profile: null,
     curve_handles: handles,
+    telemetry: [],
   };
 }
 

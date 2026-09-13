@@ -49,7 +49,10 @@ use crate::record::{LiveTakePeaks, MonitorMode, RecordDone, RecordError, RecordS
 use crate::rt::{
     AUDIO_CMD_CAPACITY, AudioCmd, PLAYBACK_RING_PACKETS, RT_EVENT_CAPACITY, RtCounters, RtEvent,
 };
-use crate::telemetry::{InputMeter, Meter, TelemetryFrame, TelemetrySink, vxtm_flags};
+use crate::telemetry::{
+    InputMeter, Meter, ModuleTelemetryPublisher, ModuleTelemetrySink, TelemetryFrame,
+    TelemetrySink, vxtm_flags,
+};
 use crate::transport::{Action, Transport, TransportCommand, TransportState};
 
 /// Control tick = telemetry period (60 Hz, ADR-009).
@@ -204,6 +207,8 @@ pub(crate) struct Control {
     xrun: bool,
     telemetry: Option<TelemetrySink>,
     seq: u32,
+    /// Module telemetry (`VXMT`, H-03): the rack slots' meters.
+    module_telemetry: ModuleTelemetryPublisher,
     last_state: Option<TransportState>,
     // --- Input / recording (S1-04) ---
     /// Capture-writer on its own thread (`Engine`) or inline in the tick (`ManualEngine`).
@@ -301,6 +306,7 @@ impl Control {
             xrun: false,
             telemetry: None,
             seq: 0,
+            module_telemetry: ModuleTelemetryPublisher::default(),
             last_state: None,
             threaded,
             in_device_id: None,
@@ -1737,6 +1743,8 @@ impl Control {
         self.check_stream(now);
         self.relink_monitor();
         self.emit_telemetry(now);
+        self.module_telemetry
+            .publish(self.output.as_ref().map(|out| &out.rack), now);
         self.emit_state_if_changed();
         self.emit_record_if_changed();
     }
@@ -1904,6 +1912,10 @@ impl Control {
     pub(crate) fn set_telemetry_sink(&mut self, sink: Option<TelemetrySink>) {
         self.telemetry = sink;
         self.seq = 0;
+    }
+
+    pub(crate) fn set_module_telemetry_sink(&mut self, sink: Option<ModuleTelemetrySink>) {
+        self.module_telemetry.set_sink(sink);
     }
 }
 

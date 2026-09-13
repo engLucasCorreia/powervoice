@@ -14,16 +14,20 @@
 //! | 2 | `release_ms` | 10 … 1000 ms (log) | 100 | — (12 dB per release time) |
 //! | 3 | `lookahead_ms` | 1 … 10 ms, step 0.5 | 5 | — (a change requests `Restart`) |
 //!
-//! Latency = L + 16 with L = look-ahead in samples rounded up to even (256 at 48 kHz / 5 ms).
+//! Latency = L + 17 (SPEC-017 Amendment 2: the detector's D = 16 plus one sample so that every
+//! output sample's gain covers both intervals it bounds exactly), with L = look-ahead in samples
+//! rounded up to even (257 at 48 kHz / 5 ms).
 //!
 //! **Parameter timing (latency-aware, SPEC-017 §4.4).** An event at offset k changes nothing
 //! before output sample k + latency. Events wait in preallocated queues (1024 per parameter;
 //! on overflow the newest overwrites the last queued entry):
-//! - `ceiling_dbtp` is attached to the input sample at k + L and travels with the audio;
-//! - `input_gain_db` is applied to the input sample at k + L + D (not k + L: the detector's
-//!   interpolator reads 16 samples ahead, so a gain applied at k + L would move the gain
-//!   computer 16 samples before k + latency);
-//! - `release_ms` reaches the gain computer at k + L + D;
+//! - `ceiling_dbtp` is attached to the input sample at k + L + 1 and travels with the audio
+//!   (a sample's ceiling first reaches the gain computer through the requirement of the sample
+//!   before it, D samples later);
+//! - `input_gain_db` is applied to the input sample at k + latency (the detector's interpolator
+//!   reads 16 samples ahead, and the per-sample requirement one more, so an earlier gain would
+//!   move the gain computer before k + latency);
+//! - `release_ms` reaches the gain computer at k + latency;
 //! - `lookahead_ms` never changes the live instance: a new value requests
 //!   `HostRequest::Restart` and the replacement is activated with it.
 //!
@@ -33,7 +37,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use vox_dsp::true_peak::{DETECTOR_DELAY, TruePeakLimiterCore, lookahead_samples, release_coeff};
+use vox_dsp::true_peak::{
+    REQUIREMENT_DELAY, TruePeakLimiterCore, lookahead_samples, release_coeff,
+};
 use vox_module_api::{
     ActivateConfig, ChannelLayout, Extension, ExtensionId, Hold, HostRequest, LocalizedText,
     MODULE_API_VERSION, Module, ModuleDescriptor, ModuleError, ModuleFactory, ModuleState,
@@ -440,7 +446,7 @@ impl Module for TruePeakLimiter {
         let frames = ctx.frames as usize;
         let base = self.t;
         let l = self.lookahead;
-        let d = DETECTOR_DELAY as u64;
+        let latency = l + REQUIREMENT_DELAY as u64;
         for ev in ctx.events {
             let Some(i) = Self::index_of(ev.id) else {
                 continue;
@@ -449,9 +455,9 @@ impl Module for TruePeakLimiter {
             self.values[i] = v;
             let at = base + u64::from(ev.offset);
             match i {
-                INPUT => self.pending[INPUT].push(at + l + d, v),
-                CEILING => self.pending[CEILING].push(at + l, v),
-                RELEASE => self.pending[RELEASE].push(at + l + d, v),
+                INPUT => self.pending[INPUT].push(at + latency, v),
+                CEILING => self.pending[CEILING].push(at + l + 1, v),
+                RELEASE => self.pending[RELEASE].push(at + latency, v),
                 _ => {
                     if (v - self.active_lookahead_ms).abs() > 1e-9 {
                         ctx.request(HostRequest::Restart);

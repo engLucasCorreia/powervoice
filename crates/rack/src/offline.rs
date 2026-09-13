@@ -190,7 +190,10 @@ pub fn render_with_automation(
             }
         }
         let avail = input.len().saturating_sub(pos).min(n);
-        inbuf[..avail].copy_from_slice(&input[pos..pos + avail]);
+        // Past the input (flushing the latency) a block can start beyond `input.len()`.
+        if avail > 0 {
+            inbuf[..avail].copy_from_slice(&input[pos..pos + avail]);
+        }
         inbuf[avail..n].fill(0.0);
         chain.process(
             Transport {

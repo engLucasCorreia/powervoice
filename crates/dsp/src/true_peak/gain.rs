@@ -124,8 +124,8 @@ impl LookaheadGain {
         self.ma2.reset();
     }
 
-    /// Pushes the requirement of the newest interval and returns the gain for the sample
-    /// `L` samples older. RT-safe, O(1) amortized.
+    /// Pushes the requirement of the newest sample and returns the gain for the sample `L`
+    /// samples older. RT-safe, O(1) amortized.
     #[inline]
     pub fn push(&mut self, r: f64) -> f64 {
         let cap = self.dq_index.len();

@@ -86,6 +86,7 @@ function slotFixture(overrides: Partial<RackSlotDto> = {}): RackSlotDto {
     values: params.map((p) => ({ id: p.id, value: p.default, normalized: 0.5, text: "0.0 dB" })),
     noise_profile: null,
     curve_handles: null,
+    telemetry: [],
     ...overrides,
   };
 }
@@ -118,7 +119,9 @@ describe("loadRack", () => {
     );
     const teardown = await loadRack();
     const rs = rackState();
-    expect(calls).toEqual(["rack_list_modules", "rack_get"]);
+    // H-03: the slot meters' module-telemetry channel (`VXMT`) is subscribed last; an unmocked
+    // (failing) subscription leaves the meters at rest without disturbing the load.
+    expect(calls).toEqual(["rack_list_modules", "rack_get", "module_telemetry_subscribe"]);
     expect(rs.loading).toBe(false);
     expect(rs.modules.map((m) => m.id)).toEqual(["org.powervoice.gain"]);
     expect(rs.state.slots).toHaveLength(1);

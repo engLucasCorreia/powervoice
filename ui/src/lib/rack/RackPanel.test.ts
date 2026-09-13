@@ -34,6 +34,7 @@ function slotFixture(uid: number): RackSlotDto {
     values: [],
     noise_profile: null,
     curve_handles: null,
+    telemetry: [],
   };
 }
 

@@ -14,5 +14,10 @@ vox-module-api = { path = "../module-api", features = ["test-util"] }
 vox-testkit = { path = "../testkit" }
 serde_json.workspace = true
 
+# SPEC-017 AC-17: `just bench` (plain `main`, no bench framework dependency).
+[[bench]]
+name = "true_peak_limiter"
+harness = false
+
 [lints]
 workspace = true

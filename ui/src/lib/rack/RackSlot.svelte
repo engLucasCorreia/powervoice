@@ -2,9 +2,11 @@
   import EqGraph from "../eq/EqGraph.svelte";
   import { t } from "../i18n";
   import type { ParamInfoDto, RackSlotDto } from "../ipc/bindings";
+  import GainReductionMeter from "./GainReductionMeter.svelte";
+  import { localized } from "./localized";
   import NoiseReductionSection from "./NoiseReductionSection.svelte";
   import ParamGroupSection from "./ParamGroupSection.svelte";
-  import { noteSlotFocused, removeSlot, restartSlot, setBypass } from "./rack.svelte";
+  import { noteSlotFocused, removeSlot, restartSlot, setBypass, slotTelemetry } from "./rack.svelte";
 
   /**
    * One rack slot (SPEC-012 §2.1): header (bypass, name, latency, menu, collapse) and the
@@ -65,6 +67,17 @@
   );
   const ungrouped = $derived(slot.params.filter((p) => p.group === null && shown(p)));
 
+  // H-03 (SPEC-017 §2.3 "Meter", SPEC-016 §4.12): every `gain_reduction` telemetry channel the
+  // module places in its header (`group` null) is a meter here, fed by `VXMT` frames through the
+  // rack store. Generic: any module with such a channel gets one (the true-peak limiter's GR,
+  // Dynamics' total GR, the Noise Gate's gain).
+  const headerMeters = $derived(
+    (slot.telemetry ?? [])
+      .map((channel, index) => ({ channel, index }))
+      .filter(({ channel }) => channel.kind === "gain_reduction" && channel.group === null),
+  );
+  const meterValues = $derived(slotTelemetry(slot.uid));
+
   function closeMenu(): void {
     menuOpen = false;
   }
@@ -112,6 +125,16 @@
     <span class="name" data-testid="rack-slot-name">{slot.name}</span>
     {#if latencyLabel}
       <span class="latency">{latencyLabel}</span>
+    {/if}
+    {#if slot.status.kind === "active"}
+      {#each headerMeters as { channel, index } (channel.id)}
+        <GainReductionMeter
+          value={meterValues?.[index]}
+          min={channel.min}
+          max={channel.max}
+          name={localized(channel.name)}
+        />
+      {/each}
     {/if}
     <div class="menu-wrap">
       <button

@@ -10,8 +10,8 @@ use rtrb::PushError;
 use serde_json::Map;
 use vox_module_api::{
     ActivateConfig, CurveHandle, Module, ModuleDescriptor, ModuleError, ModuleRef, ModuleState,
-    NoiseProfile, ParamEvent, ParamFlags, ParamGroup, ParamId, ParamInfo, ResponseCurve,
-    noise_profile, response_curve,
+    NoiseProfile, ParamEvent, ParamFlags, ParamGroup, ParamId, ParamInfo, ResponseCurve, Telemetry,
+    TelemetryInfo, noise_profile, response_curve, telemetry,
 };
 
 use crate::chain::PlanEntry;
@@ -128,6 +128,20 @@ pub struct SlotInfo {
     /// panel only renders when this is `Some`. `Some(handles)` even when `handles` is empty (a
     /// `ResponseCurve` with no draggable nodes is still drawable).
     pub curve_handles: Option<Vec<CurveHandle>>,
+    /// The module's [`Telemetry`] channel descriptions (H-03; SPEC-016 §4.12: descriptions
+    /// travel once, with the rack state): empty when the module has none, and for placeholders.
+    /// The values come from [`RackHost::read_telemetry`], in this order.
+    pub telemetry: Arc<[TelemetryInfo]>,
+}
+
+/// One slot's current [`Telemetry`] values ([`RackHost::read_telemetry`]), in the order of its
+/// [`SlotInfo::telemetry`] channels.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SlotTelemetry {
+    /// The slot.
+    pub uid: SlotUid,
+    /// One value per channel, in the channel's unit.
+    pub values: Vec<f32>,
 }
 
 struct Loaded {
@@ -152,6 +166,22 @@ struct Loaded {
     /// (module docs), safe to call from the control thread regardless of which instance is
     /// currently live.
     response_curve: Option<Arc<dyn ResponseCurve>>,
+    /// The [`Telemetry`] handle of the newest instance (H-03). Unlike the pure-function
+    /// extensions above, telemetry values belong to one instance, so this is refreshed on every
+    /// replacement ([`RackHost::replace_state`]/restart). The host is its single reader
+    /// (ADR-005 §11, [`RackHost::read_telemetry`]).
+    telemetry: Option<Arc<dyn Telemetry>>,
+    /// `telemetry`'s channel descriptions (empty without the extension).
+    telemetry_channels: Arc<[TelemetryInfo]>,
+}
+
+/// A module's [`Telemetry`] handle and its channel descriptions.
+fn telemetry_of(module: &dyn Module) -> (Option<Arc<dyn Telemetry>>, Arc<[TelemetryInfo]>) {
+    let handle = telemetry(module);
+    let channels = handle
+        .as_deref()
+        .map_or_else(|| Arc::from(Vec::new()), |t| Arc::from(t.channels()));
+    (handle, channels)
 }
 
 enum Kind {
@@ -254,6 +284,7 @@ fn loaded_from(module: Box<dyn Module>) -> Box<Loaded> {
     let blob = module.save_state().ok().and_then(|s| s.blob);
     let profile = noise_profile(module.as_ref());
     let curve = response_curve(module.as_ref());
+    let (telemetry, telemetry_channels) = telemetry_of(module.as_ref());
     Box::new(Loaded {
         descriptor: module.descriptor().clone(),
         params,
@@ -265,6 +296,8 @@ fn loaded_from(module: Box<dyn Module>) -> Box<Loaded> {
         fresh: Some(module),
         noise_profile: profile,
         response_curve: curve,
+        telemetry,
+        telemetry_channels,
     })
 }
 
@@ -569,6 +602,7 @@ impl RackHost {
                 groups: l.groups.clone(),
                 noise_profile: noise_profile_status(l.noise_profile.as_deref(), l.blob.as_deref()),
                 curve_handles: l.response_curve.as_deref().map(|c| c.handles().to_vec()),
+                telemetry: l.telemetry_channels.clone(),
             },
             Kind::Placeholder {
                 model,
@@ -595,6 +629,7 @@ impl RackHost {
                 groups: Arc::from(Vec::new()),
                 noise_profile: None,
                 curve_handles: None,
+                telemetry: Arc::from(Vec::new()),
             },
         })
     }
@@ -1096,6 +1131,7 @@ impl RackHost {
             }
         }
         l.blob = m.save_state().ok().and_then(|s| s.blob).or(state.blob);
+        (l.telemetry, l.telemetry_channels) = telemetry_of(m.as_ref());
         if let Some(mut old) = l.fresh.replace(m) {
             old.deactivate();
         }
@@ -1139,6 +1175,29 @@ impl RackHost {
             Kind::Loaded(l) => l.response_curve.clone(),
             Kind::Placeholder { .. } => None,
         }
+    }
+
+    // --- Telemetry (H-03, SPEC-016 §4.12 module telemetry) ----------------------------------
+
+    /// Reads every running slot's [`Telemetry`] values, in rack order: the control thread's meter
+    /// publisher calls this at the telemetry rate. The host is the single reader of each handle
+    /// (ADR-005 §11), so a read ends the channels' Min/Max hold period. Slots without the
+    /// extension, failed slots and placeholders are left out. Wait-free on the audio side (the
+    /// module writes atomics once per block).
+    pub fn read_telemetry(&self) -> Vec<SlotTelemetry> {
+        self.slots
+            .iter()
+            .filter_map(|hs| match &hs.kind {
+                Kind::Loaded(l) if l.failed.is_none() => {
+                    let t = l.telemetry.as_ref()?;
+                    Some(SlotTelemetry {
+                        uid: hs.uid,
+                        values: (0..l.telemetry_channels.len()).map(|i| t.read(i)).collect(),
+                    })
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// The first slot exposing [`NoiseProfile`] that matches `hint` (Capture Noise Print's

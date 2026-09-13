@@ -26,7 +26,7 @@ use crate::rack_api::{
     NrCapturePrep, RackApiError, RackCommand, RackSnapshot, ResponseCurvePoints,
 };
 use crate::record::{LiveTakePeaks, MonitorMode, RecordDone, RecordError, RecordState};
-use crate::telemetry::TelemetrySink;
+use crate::telemetry::{ModuleTelemetrySink, TelemetrySink};
 use crate::transport::{TransportCommand, TransportState};
 
 /// The app clock (ns since the process epoch); tests pass the fake backend's simulated time.
@@ -244,6 +244,13 @@ impl EngineHandle {
         let _ = self.call(move |c| c.set_telemetry_sink(sink));
     }
 
+    /// Installs (or removes) the module-telemetry sink (H-03, `VXMT`): the rack slots' meter
+    /// values (e.g. the true-peak limiter's gain reduction), one frame per telemetry tick while
+    /// at least one slot has a `Telemetry` extension.
+    pub fn set_module_telemetry_sink(&self, sink: Option<ModuleTelemetrySink>) {
+        let _ = self.call(move |c| c.set_module_telemetry_sink(sink));
+    }
+
     /// The registered modules (the Add-module menu; S3-01).
     pub fn rack_registry(&self) -> Vec<ModuleDescriptor> {
         self.call(|c| c.rack_registry()).unwrap_or_default()
@@ -402,6 +409,11 @@ impl ManualEngine {
     /// See [`EngineHandle::set_telemetry_sink`].
     pub fn set_telemetry_sink(&mut self, sink: Option<TelemetrySink>) {
         self.control.set_telemetry_sink(sink);
+    }
+
+    /// See [`EngineHandle::set_module_telemetry_sink`].
+    pub fn set_module_telemetry_sink(&mut self, sink: Option<ModuleTelemetrySink>) {
+        self.control.set_module_telemetry_sink(sink);
     }
 
     /// See [`EngineHandle::rack_registry`].

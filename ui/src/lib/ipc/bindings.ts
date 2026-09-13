@@ -35,7 +35,7 @@ export type BitDepth = "16" | "24" | "32f";
  */
 export type ClipboardChangedDto = { len_samples: number | null, sample_rate_hz: number | null, };
 
-export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_save" | "document_save_as" | "peaks_get" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check";
+export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "module_telemetry_subscribe" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_save" | "document_save_as" | "peaks_get" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check";
 
 /**
  * One draggable EQ-graph node (S3-07, SPEC-015 §3 "ResponseCurve components"): the band's
@@ -418,7 +418,13 @@ noise_profile: NoiseProfileStatusDto | null,
  * `Some` only for a module with the `ResponseCurve` extension (S3-07): the EQ graph panel
  * only renders when this is present, generic to any future module that exposes a curve.
  */
-curve_handles: Array<CurveHandleDto> | null, };
+curve_handles: Array<CurveHandleDto> | null, 
+/**
+ * The module's telemetry channels (H-03): empty without the `Telemetry` extension (and for
+ * placeholders). The slot header shows the `gain_reduction` channels whose `group` is `null`
+ * as meters, fed by `VXMT` frames.
+ */
+telemetry: Array<TelemetryChannelDto>, };
 
 /**
  * The rack panel's whole state (`rack_get`, every mutating command's result, and the
@@ -505,6 +511,26 @@ export type SlotStatusDto = { "kind": "active" } | { "kind": "missing", message:
  * Control mapping ([`Taper`]).
  */
 export type TaperDto = { "kind": "linear" } | { "kind": "log" } | { "kind": "db", neg_inf_at_min: boolean, };
+
+/**
+ * One module telemetry channel (H-03, SPEC-016 §4.12 "channel descriptions travel once, with
+ * the rack state"). Its values arrive in binary `VXMT` frames (`module_telemetry_subscribe`),
+ * keyed by the slot's `uid`, in [`RackSlotDto::telemetry`] order.
+ */
+export type TelemetryChannelDto = { id: number, key: string, name: LocalizedTextDto, unit: UnitDto, 
+/**
+ * Display range.
+ */
+min: number, max: number, kind: TelemetryKindDto, 
+/**
+ * Group whose header shows the meter; `null` = the slot header.
+ */
+group: number | null, };
+
+/**
+ * What a module telemetry channel's value means ([`TelemetryKind`], ADR-005 §11).
+ */
+export type TelemetryKindDto = "gain_reduction" | "level" | "indicator" | "value";
 
 /**
  * Transport state (`transport_state` event, transport command results). While playing, the

@@ -1,24 +1,92 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it } from "vitest";
-import type { ExportRequestDto, JobProgressDto } from "../ipc/bindings";
+import type { ExportRequestDto, JobProgressDto, ParamInfoDto, RackSlotDto, RackStateDto } from "../ipc/bindings";
+import { loadRack, resetRackForTest } from "../rack/rack.svelte";
 import { clearNotices } from "../state/notices.svelte";
 import {
   applyJobProgress,
   cancelExportDialog,
   cancelExportJob,
+  cancelNoiseOnlyExport,
   confirmExport,
+  continueNoiseOnlyExport,
   dismissExportJob,
   exportState,
   extensionFor,
   openExportDialog,
+  rackHasNoiseOnlyOn,
   resetExportStateForTest,
+  slotIsNoiseOnly,
 } from "./export.svelte";
 
 afterEach(() => {
   clearMocks();
   clearNotices();
   resetExportStateForTest();
+  resetRackForTest();
 });
+
+function noiseOnlyParam(overrides: Partial<ParamInfoDto> = {}): ParamInfoDto {
+  return {
+    id: 2,
+    key: "noise_only",
+    name: { text: "Output noise only", key: null },
+    group: null,
+    unit: { kind: "none" },
+    min: 0,
+    max: 1,
+    default: 0,
+    taper: { kind: "linear" },
+    step: 1,
+    enum_labels: [],
+    decimals: 0,
+    smoothing_ms: 0,
+    flags: {
+      automatable: true,
+      stepped: true,
+      boolean: true,
+      read_only: false,
+      hidden: false,
+      bypass: false,
+    },
+    ...overrides,
+  };
+}
+
+/** An `org.powervoice.noise-reduction` slot, "Output noise only" on by default. */
+function nrSlotFixture(overrides: Partial<RackSlotDto> = {}): RackSlotDto {
+  const params = overrides.params ?? [noiseOnlyParam()];
+  return {
+    uid: 1,
+    module: "org.powervoice.noise-reduction@1.0.0",
+    name: "Noise Reduction",
+    bypass: false,
+    latency_samples: 0,
+    status: { kind: "active" },
+    params,
+    groups: [],
+    values: params.map((p) => ({ id: p.id, value: 1, normalized: 1, text: "On" })),
+    noise_profile: "loaded",
+    ...overrides,
+  };
+}
+
+/** Seeds the live rack store (`rackState()`) via a mocked `loadRack()` — the way `confirmExport`
+ * reads it for the SPEC-014 §2.6 noise-only check. */
+async function seedRack(slots: RackSlotDto[]): Promise<void> {
+  const state: RackStateDto = { slots, ab: false, latency_samples: 0 };
+  mockIPC((cmd) => {
+    if (cmd === "rack_list_modules") {
+      return [];
+    }
+    if (cmd === "rack_get") {
+      return state;
+    }
+    throw new Error(`unmocked command: ${cmd}`);
+  });
+  await loadRack();
+  clearMocks();
+}
 
 describe("openExportDialog / cancelExportDialog", () => {
   it("opens the prompt and fetches MP3 availability", async () => {
@@ -182,5 +250,160 @@ describe("dismissExportJob / cancelExportJob", () => {
     cancelExportJob();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(cancelledId).toBe(5);
+  });
+});
+
+describe("confirmExport with a selection range (H-08)", () => {
+  it("sends the range through to export_start unchanged", async () => {
+    let savedArgs: unknown;
+    mockIPC((cmd, args) => {
+      if (cmd === "plugin:dialog|save") {
+        return "/home/user/out.wav";
+      }
+      if (cmd === "export_start") {
+        savedArgs = args;
+        return { job_id: 9 };
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    openExportDialog("take");
+    await confirmExport({ kind: "wav", bits: "24" }, 48_000, { start_sample: 100, end_sample: 200 });
+
+    const expected: { request: ExportRequestDto } = {
+      request: {
+        path: "/home/user/out.wav",
+        format: { kind: "wav", bits: "24" },
+        sample_rate_hz: 48_000,
+        range: { start_sample: 100, end_sample: 200 },
+      },
+    };
+    expect(savedArgs).toEqual(expected);
+  });
+});
+
+describe("slotIsNoiseOnly / rackHasNoiseOnlyOn (SPEC-014 §2.6)", () => {
+  it("is true for a non-bypassed NR slot with noise_only on", () => {
+    const slot = nrSlotFixture();
+    expect(slotIsNoiseOnly(slot)).toBe(true);
+    expect(rackHasNoiseOnlyOn([slot])).toBe(true);
+  });
+
+  it("is false when the slot is bypassed", () => {
+    const slot = nrSlotFixture({ bypass: true });
+    expect(slotIsNoiseOnly(slot)).toBe(false);
+    expect(rackHasNoiseOnlyOn([slot])).toBe(false);
+  });
+
+  it("is false when noise_only is off", () => {
+    const param = noiseOnlyParam();
+    const slot = nrSlotFixture({
+      params: [param],
+      values: [{ id: param.id, value: 0, normalized: 0, text: "Off" }],
+    });
+    expect(slotIsNoiseOnly(slot)).toBe(false);
+    expect(rackHasNoiseOnlyOn([slot])).toBe(false);
+  });
+
+  it("is false for a slot with no noise_only parameter at all", () => {
+    const gainParam = noiseOnlyParam({ id: 0, key: "gain_db" });
+    const slot = nrSlotFixture({
+      module: "org.powervoice.gain@1.0.0",
+      params: [gainParam],
+      values: [{ id: gainParam.id, value: -6, normalized: 0.5, text: "-6.0 dB" }],
+    });
+    expect(slotIsNoiseOnly(slot)).toBe(false);
+    expect(rackHasNoiseOnlyOn([slot])).toBe(false);
+  });
+
+  it("is true when any slot in the rack has it on", () => {
+    const clean = nrSlotFixture({
+      uid: 2,
+      values: [{ id: 2, value: 0, normalized: 0, text: "Off" }],
+    });
+    const noisy = nrSlotFixture({ uid: 3 });
+    expect(rackHasNoiseOnlyOn([clean, noisy])).toBe(true);
+  });
+});
+
+describe("confirmExport noise-only confirmation (SPEC-014 §2.6)", () => {
+  it("shows the confirmation instead of the native dialog when a live NR slot outputs noise only", async () => {
+    await seedRack([nrSlotFixture()]);
+    let saveDialogCalled = false;
+    mockIPC((cmd) => {
+      if (cmd === "export_formats") {
+        return { mp3_available: false };
+      }
+      if (cmd === "plugin:dialog|save") {
+        saveDialogCalled = true;
+        return "/home/user/should-not-be-used.wav";
+      }
+      throw new Error(`unexpected command: ${cmd}`);
+    });
+
+    openExportDialog("take");
+    await confirmExport({ kind: "wav", bits: "24" }, 48_000);
+
+    expect(saveDialogCalled).toBe(false);
+    expect(exportState().prompt).toBeNull();
+    expect(exportState().noiseOnlyConfirm).toEqual({
+      format: { kind: "wav", bits: "24" },
+      sampleRateHz: 48_000,
+      range: null,
+    });
+    expect(exportState().job).toBeNull();
+  });
+
+  it("cancelNoiseOnlyExport drops the pending export without starting a job", async () => {
+    await seedRack([nrSlotFixture()]);
+    openExportDialog("take");
+    await confirmExport({ kind: "wav", bits: "24" }, 48_000);
+
+    cancelNoiseOnlyExport();
+    expect(exportState().noiseOnlyConfirm).toBeNull();
+    expect(exportState().job).toBeNull();
+  });
+
+  it("continueNoiseOnlyExport proceeds to the native dialog and starts the job", async () => {
+    await seedRack([nrSlotFixture()]);
+    let startArgs: unknown;
+    mockIPC((cmd, args) => {
+      if (cmd === "plugin:dialog|save") {
+        return "/home/user/noise-only.wav";
+      }
+      if (cmd === "export_start") {
+        startArgs = args;
+        return { job_id: 11 };
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+
+    openExportDialog("take");
+    await confirmExport({ kind: "wav", bits: "24" }, 48_000);
+    expect(exportState().noiseOnlyConfirm).not.toBeNull();
+
+    await continueNoiseOnlyExport();
+
+    expect(exportState().noiseOnlyConfirm).toBeNull();
+    expect(startArgs).toMatchObject({ request: { path: "/home/user/noise-only.wav" } });
+    expect(exportState().job).toEqual({ jobId: 11, fraction: 0, state: "running" });
+  });
+
+  it("does not show the confirmation when the only NR slot is bypassed", async () => {
+    await seedRack([nrSlotFixture({ bypass: true })]);
+    mockIPC((cmd) => {
+      if (cmd === "plugin:dialog|save") {
+        return "/home/user/out.wav";
+      }
+      if (cmd === "export_start") {
+        return { job_id: 4 };
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+
+    openExportDialog("take");
+    await confirmExport({ kind: "wav", bits: "24" }, 48_000);
+
+    expect(exportState().noiseOnlyConfirm).toBeNull();
+    expect(exportState().job).toEqual({ jobId: 4, fraction: 0, state: "running" });
   });
 });

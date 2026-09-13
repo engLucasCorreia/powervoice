@@ -1,27 +1,25 @@
-//! Export job (S4-04): renders the rack over the whole document or a sample range through
+//! Export job (S4-04, H-08): renders the **live rack** (`EngineHandle::rack_model()`, snapshotted
+//! synchronously in [`ExportService::start_job`] before the job thread spawns — later rack edits
+//! never affect a running export) over the whole document or a sample range through
 //! `vox_rack::offline` (SPEC-012 §2.8, time-aligned), converts sample rate
 //! (`vox_dsp::resample::resample_offline`, f64) and bit depth/format via S4-02's encoders
 //! (`vox_io`), and writes atomically. Runs as a cancellable job on its own thread, reporting
 //! `job_progress` (ADR-003) at each rack-render block plus phase boundaries; never touches the
 //! document (D-019 — only Save/Save As write it).
 //!
-//! **Deviation (ticket report):** there is no rack UI/IPC yet — the rack panel (S3-01) is paused
-//! and no ticket persists a `RackModel` the app can read back (`Session::append_state` is
-//! write-only, MEMORY.md). Export therefore always renders `RackModel::default()` (no slots): the
-//! architecture is in place (every export goes through `offline::render`-equivalent code, D-019),
-//! but it is a passthrough until a later ticket wires a live/persisted rack model in here. The
-//! same gap means SPEC-014's "Output noise only" pre-export confirmation has nothing to check yet
-//! and is deferred with it.
-//!
-//! **Deviation:** the export dialog only offers "whole file" (no selection model exists yet
-//! either — S2-01 is concurrent, unmerged). The command/job plumbing already accepts an optional
-//! sample range end to end, so wiring the UI's selection through is additive once S2-01 lands.
+//! **H-08:** the rack panel (S3-01) and selection (S2-01) have both landed, so the "rack is
+//! always empty" / "whole file only" deviations this module used to carry are resolved: the
+//! dialog's Whole file/Selection choice sends `range` through unchanged (it was already plumbed
+//! end to end), and SPEC-014's "Output noise only" pre-export confirmation is UI-side
+//! (`ui/src/lib/export/export.svelte.ts`), reading the same live `RackStateDto` the rack panel
+//! shows.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Runtime};
+use vox_engine::EngineHandle;
 use vox_project::{CHUNK_SAMPLES, SnapshotReader};
 use vox_rack::{RackModel, Registry};
 
@@ -63,6 +61,9 @@ struct JobHandle {
 
 struct Inner {
     documents: DocumentService,
+    /// H-08: the live rack snapshot source (`EngineHandle::rack_model()`), read synchronously in
+    /// `start_job` — the render never talks to the audio thread.
+    engine: EngineHandle,
     registry: Arc<Registry>,
     emit: ExportEmitter,
     next_id: AtomicU32,
@@ -78,11 +79,13 @@ pub struct ExportService(Arc<Inner>);
 pub fn start<R: Runtime>(
     app: AppHandle<R>,
     documents: DocumentService,
+    engine: EngineHandle,
 ) -> anyhow::Result<ExportService> {
     let registry = Arc::new(Registry::with_factories(vox_modules::builtin_factories())?);
     let emit: ExportEmitter = Arc::new(move |event| forward(&app, event));
     Ok(ExportService(Arc::new(Inner {
         documents,
+        engine,
         registry,
         emit,
         next_id: AtomicU32::new(1),
@@ -107,12 +110,17 @@ impl ExportService {
         vox_io::mp3_available()
     }
 
-    /// `export_start`: validates the range against the current document, then runs the job on its
-    /// own thread. Returns the job id immediately; `job_progress` events (tagged with it) report
-    /// progress and the final state.
+    /// `export_start`: validates the range against the current document, snapshots the **live
+    /// rack** (`EngineHandle::rack_model()`, H-08) synchronously — before the job thread spawns,
+    /// so a rack edit made after this call returns never reaches the running export — then runs
+    /// the job on its own thread. Returns the job id immediately; `job_progress` events (tagged
+    /// with it) report progress and the final state.
     pub fn start_job(&self, request: ExportRequest) -> Result<u32, IpcError> {
         let source = self.0.documents.export_source()?;
         let (start, end) = resolve_range(request.range, source.len_samples)?;
+        // `None` only if the engine's control thread is already gone (app shutdown) — falls back
+        // to an empty rack rather than failing the export outright.
+        let model = self.0.engine.rack_model().unwrap_or_default();
         let job_id = self.0.next_id.fetch_add(1, Ordering::Relaxed);
         let cancel = Arc::new(AtomicBool::new(false));
         self.0.jobs.lock().unwrap().insert(
@@ -129,6 +137,7 @@ impl ExportService {
                     inner,
                     job_id,
                     source,
+                    model,
                     start,
                     end,
                     request.path,
@@ -212,6 +221,7 @@ fn run_job(
     inner: Arc<Inner>,
     job_id: u32,
     source: ExportSource,
+    model: RackModel,
     start: u64,
     end: u64,
     path: PathBuf,
@@ -223,6 +233,7 @@ fn run_job(
     let result = run_pipeline(
         &inner.registry,
         &source,
+        &model,
         start,
         end,
         &path,
@@ -352,14 +363,15 @@ fn render_with_progress(
     Ok(out)
 }
 
-/// Read → render (rack) → resample → encode, in that order (SPEC-005 §2.12's "rack → resample →
-/// dither/quantize last → encode"; the encoders quantize internally). Reports coarse progress:
-/// 0-70% the rack render (per-block, see [`render_with_progress`]), 90% after resampling, 100%
-/// after the encoder returns (encoders don't report progress mid-encode).
+/// Read → render (the live rack, H-08) → resample → encode, in that order (SPEC-005 §2.12's
+/// "rack → resample → dither/quantize last → encode"; the encoders quantize internally). Reports
+/// coarse progress: 0-70% the rack render (per-block, see [`render_with_progress`]), 90% after
+/// resampling, 100% after the encoder returns (encoders don't report progress mid-encode).
 #[allow(clippy::too_many_arguments)]
 fn run_pipeline(
     registry: &Registry,
     source: &ExportSource,
+    model: &RackModel,
     start: u64,
     end: u64,
     path: &Path,
@@ -374,7 +386,7 @@ fn run_pipeline(
     check_cancelled(cancel)?;
     let rendered = render_with_progress(
         registry,
-        &RackModel::default(),
+        model,
         f64::from(source.sample_rate_hz),
         &samples,
         cancel,
@@ -413,10 +425,14 @@ fn run_pipeline(
 mod tests {
     use std::process::Command;
     use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
 
     use std::collections::BTreeMap;
 
+    use vox_engine::backend::fake::{FakeBackend, FakeDevice, FakeDirection};
+    use vox_engine::{Engine, EngineConfig, HostId, RackCommand};
     use vox_module_api::{ModuleRef, ModuleState, Version};
+    use vox_modules::Gain;
     use vox_project::{ChunkStore, DocSnapshot, StoreOptions};
     use vox_rack::{RackModel, SlotModel};
 
@@ -482,6 +498,7 @@ mod tests {
         run_pipeline(
             registry,
             source,
+            &RackModel::default(),
             0,
             source.len_samples,
             path,
@@ -741,6 +758,7 @@ mod tests {
         let err = run_pipeline(
             &reg,
             &source,
+            &RackModel::default(),
             0,
             source.len_samples,
             &out_path,
@@ -752,6 +770,164 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.code, IpcErrorCode::Cancelled);
         assert!(!out_path.exists());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Ticket AC: "a selection export has exactly the selection's length".
+    #[test]
+    fn selection_export_has_exactly_the_selections_length() {
+        let dir = tmp_dir("selection-length");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 1.0, 48_000).unwrap();
+        let source = source_from(&dir, &samples, 48_000);
+        let reg = registry();
+        let out_path = dir.join("out.wav");
+        let (start, end) = (10_000u64, 30_000u64);
+
+        run_pipeline(
+            &reg,
+            &source,
+            &RackModel::default(),
+            start,
+            end,
+            &out_path,
+            ExportFormat::Wav(vox_io::BitDepth::Float32),
+            48_000,
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+
+        let (decoded, _info) = vox_testkit::wav::read_wav_file(&out_path).unwrap();
+        assert_eq!(decoded.len() as u64, end - start);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A live engine (fake backend, real output device) with a Gain -6 dB slot: for tests that
+    /// exercise `ExportService::start_job` against a real `EngineHandle::rack_model()`, retried
+    /// like `nr_capture.rs`'s `live_engine_with_nr_slot` because the fake output opens
+    /// asynchronously (its own device-poll thread).
+    fn live_engine_with_gain_minus_6_db() -> (
+        Engine,
+        vox_engine::EngineHandle,
+        vox_engine::backend::fake::FakeDriver,
+    ) {
+        let fake = FakeBackend::new(1);
+        fake.plug(
+            HostId::Alsa,
+            FakeDevice::new("DAC").with_output(
+                FakeDirection::new(2, &[48_000], 48_000)
+                    .default_buffer(256)
+                    .record_output(),
+            ),
+        );
+        let driver = fake.spawn_driver(Duration::from_millis(1));
+        let engine_registry =
+            Arc::new(Registry::with_factories(vox_modules::builtin_factories()).unwrap());
+        let engine = Engine::start(EngineConfig::new(Arc::new(fake), engine_registry)).unwrap();
+        let handle = engine.handle();
+        let mut opened = false;
+        for _ in 0..500 {
+            if handle
+                .rack_command(RackCommand::Add {
+                    module_id: Gain::ID.into(),
+                    index: 0,
+                })
+                .is_ok()
+            {
+                opened = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(opened, "the fake output device never opened a live rack");
+        handle
+            .rack_command(RackCommand::SetParamText {
+                index: 0,
+                id: Gain::GAIN_DB,
+                text: "-6.0".into(),
+            })
+            .unwrap();
+        (engine, handle, driver)
+    }
+
+    /// Ticket ACs: "a live rack with Gain -6 dB -> exported peak is 6.00 +/- 0.01 dB lower than
+    /// with an empty rack" and "the exported rack is the one live at export start (later rack
+    /// edits don't change a running export)" — end to end through `ExportService::start_job`
+    /// against a real `EngineHandle`: the Gain slot is removed right after the job starts, and
+    /// the export must still show its -6 dB (H-08: `start_job` snapshots `rack_model()`
+    /// synchronously, before the job thread spawns).
+    #[test]
+    fn export_renders_the_rack_live_at_start_ignoring_a_later_edit() {
+        let dir = tmp_dir("live-rack-snapshot");
+        let (_engine, handle, _driver) = live_engine_with_gain_minus_6_db();
+
+        let wav_path = dir.join("in.wav");
+        let samples = vox_testkit::signal::sine(1000.0, -20.0, 0.5, 48_000).unwrap();
+        vox_testkit::wav::write_wav_file(
+            &wav_path,
+            &samples,
+            1,
+            48_000,
+            vox_testkit::wav::BitDepth::Float32,
+        )
+        .unwrap();
+        let documents = DocumentService::new(dir.join("sessions"), handle.clone());
+        documents.open(&wav_path).unwrap();
+
+        let done: Arc<Mutex<Option<JobState>>> = Arc::new(Mutex::new(None));
+        let done_for_emit = Arc::clone(&done);
+        let emit: ExportEmitter = Arc::new(move |event| {
+            if let ExportEvent::Progress(dto) = event
+                && !matches!(dto.state, JobState::Running)
+            {
+                *done_for_emit.lock().unwrap() = Some(dto.state);
+            }
+        });
+        let inner = Arc::new(Inner {
+            documents,
+            engine: handle.clone(),
+            registry: Arc::new(registry()),
+            emit,
+            next_id: AtomicU32::new(1),
+            jobs: Mutex::new(std::collections::HashMap::new()),
+        });
+        let service = ExportService(inner);
+
+        let out_path = dir.join("out.wav");
+        service
+            .start_job(ExportRequest {
+                path: out_path.clone(),
+                format: ExportFormat::Wav(vox_io::BitDepth::Int24),
+                sample_rate_hz: 48_000,
+                range: None,
+            })
+            .unwrap();
+
+        // The "later rack edit": remove the Gain slot right after the job started. `start_job`
+        // already captured `rack_model()` synchronously before this point, so it must not reach
+        // the running export.
+        handle
+            .rack_command(RackCommand::Remove { index: 0 })
+            .unwrap();
+
+        let mut state = None;
+        for _ in 0..500 {
+            state = *done.lock().unwrap();
+            if state.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(state, Some(JobState::Done), "export job did not finish");
+
+        let (decoded, _info) = vox_testkit::wav::read_wav_file(&out_path).unwrap();
+        let peak = vox_testkit::measure::peak_dbfs(&decoded);
+        assert!(
+            (peak - (-26.0)).abs() <= 0.01,
+            "peak {peak} dBFS, expected -26.00 +/- 0.01 (empty-rack peak would be -20.00)"
+        );
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

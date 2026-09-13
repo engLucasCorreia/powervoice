@@ -1,47 +1,63 @@
 <script lang="ts">
   import { documentState } from "../document/document.svelte";
   import { t } from "../i18n";
-  import type { BitDepth, ExportFormatDto } from "../ipc/bindings";
+  import type { BitDepth, ExportFormatDto, ExportRangeDto, Mp3SettingsDto } from "../ipc/bindings";
+  import { hasSelection, selectionState } from "../state/selection.svelte";
   import {
     cancelExportDialog,
     cancelExportJob,
+    cancelNoiseOnlyExport,
     confirmExport,
+    continueNoiseOnlyExport,
     dismissExportJob,
     exportState,
   } from "./export.svelte";
 
   /**
-   * Export dialog (S4-04): format (WAV/FLAC/MP3), rate, bit depth/bitrate, an ACX preset button,
-   * and destination via the native save dialog. Ticket deviation: range is always "whole file" —
-   * there is no selection model in the app yet (see `export.svelte.ts`'s module doc).
+   * Export dialog (S4-04, H-08): format (WAV/FLAC/MP3), rate, bit depth/bitrate (or MP3
+   * CBR/VBR), an ACX preset button, a Whole file / Selection range choice, and destination via
+   * the native save dialog. The "Output noise only" confirmation (SPEC-014 §2.6) is a second,
+   * separate dialog driven by `exp.noiseOnlyConfirm` (see `export.svelte.ts`).
    */
   const doc = documentState();
   const exp = exportState();
+  const sel = selectionState();
 
   type Kind = "wav" | "flac" | "mp3";
+  type Mp3Mode = "cbr" | "vbr";
+  type Range = "whole_file" | "selection";
   const RATES = [44_100, 48_000, 88_200, 96_000];
   const WAV_BITS: BitDepth[] = ["16", "24", "32f"];
   const FLAC_BITS: BitDepth[] = ["16", "24"];
   const MP3_KBPS = [128, 160, 192, 224, 256, 320];
+  const VBR_QUALITIES = [0, 1, 2, 3, 4];
 
   let kind = $state<Kind>("wav");
   let bits = $state<BitDepth>("24");
+  let mp3Mode = $state<Mp3Mode>("cbr");
   let kbps = $state(192);
+  let vbrQuality = $state(2);
   let rateHz = $state(48_000);
+  let range = $state<Range>("whole_file");
 
   $effect(() => {
     if (exp.prompt) {
       kind = "wav";
       bits = "24";
+      mp3Mode = "cbr";
       kbps = 192;
+      vbrQuality = 2;
       rateHz = doc.current.sample_rate_hz || 48_000;
+      range = "whole_file";
     }
   });
 
   const bitsForKind = $derived(kind === "flac" ? FLAC_BITS : WAV_BITS);
+  const canExportSelection = $derived(hasSelection());
 
   function applyAcxPreset(): void {
     kind = "mp3";
+    mp3Mode = "cbr";
     kbps = 192;
     rateHz = 44_100;
   }
@@ -53,7 +69,20 @@
     if (kind === "flac") {
       return { kind: "flac", bits: bits === "32f" ? "24" : bits };
     }
-    return { kind: "mp3", settings: { kind: "cbr", kbps } };
+    const settings: Mp3SettingsDto =
+      mp3Mode === "cbr" ? { kind: "cbr", kbps } : { kind: "vbr", quality: vbrQuality };
+    return { kind: "mp3", settings };
+  }
+
+  function currentRange(): ExportRangeDto | null {
+    if (range !== "selection") {
+      return null;
+    }
+    const current = sel.current;
+    if (!current) {
+      return null;
+    }
+    return { start_sample: current.startSample, end_sample: current.endSample };
   }
 
   function onKeydown(event: KeyboardEvent): void {
@@ -109,13 +138,39 @@
 
       {#if kind === "mp3"}
         <fieldset>
-          <legend>{t("dialog.export.bitrate")}</legend>
-          <select data-testid="export-bitrate" bind:value={kbps}>
-            {#each MP3_KBPS as rate (rate)}
-              <option value={rate}>{rate} kbps</option>
-            {/each}
-          </select>
+          <legend>{t("dialog.export.bitrate_mode")}</legend>
+          {#each (["cbr", "vbr"] as const) as m (m)}
+            <label>
+              <input
+                type="radio"
+                name="export-mp3-mode"
+                value={m}
+                checked={mp3Mode === m}
+                onchange={() => (mp3Mode = m)}
+              />
+              {t(`dialog.export.bitrate_mode.${m}` as const)}
+            </label>
+          {/each}
         </fieldset>
+        {#if mp3Mode === "cbr"}
+          <fieldset>
+            <legend>{t("dialog.export.bitrate")}</legend>
+            <select data-testid="export-bitrate" bind:value={kbps}>
+              {#each MP3_KBPS as rate (rate)}
+                <option value={rate}>{rate} kbps</option>
+              {/each}
+            </select>
+          </fieldset>
+        {:else}
+          <fieldset>
+            <legend>{t("dialog.export.vbr_quality")}</legend>
+            <select data-testid="export-vbr-quality" bind:value={vbrQuality}>
+              {#each VBR_QUALITIES as q (q)}
+                <option value={q}>V{q}</option>
+              {/each}
+            </select>
+          </fieldset>
+        {/if}
       {:else}
         <fieldset>
           <legend>{t("dialog.export.bit_depth")}</legend>
@@ -134,7 +189,22 @@
         </fieldset>
       {/if}
 
-      <p class="range">{t("dialog.export.range_whole_file")}</p>
+      <fieldset>
+        <legend>{t("dialog.export.range")}</legend>
+        {#each (["whole_file", "selection"] as const) as r (r)}
+          <label>
+            <input
+              type="radio"
+              name="export-range"
+              value={r}
+              checked={range === r}
+              disabled={r === "selection" && !canExportSelection}
+              onchange={() => (range = r)}
+            />
+            {t(`dialog.export.range.${r}` as const)}
+          </label>
+        {/each}
+      </fieldset>
 
       <div class="actions">
         <button type="button" data-testid="export-acx" onclick={applyAcxPreset} disabled={!exp.mp3Available}>
@@ -148,9 +218,46 @@
           type="button"
           class="primary"
           data-testid="export-choose"
-          onclick={() => void confirmExport(currentFormat(), rateHz)}
+          onclick={() => void confirmExport(currentFormat(), rateHz, currentRange())}
         >
           {t("dialog.export.choose_location")}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if exp.noiseOnlyConfirm}
+  <div class="backdrop">
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div
+      class="dialog"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="export-noise-only-title"
+      data-testid="export-noise-only-confirm"
+      tabindex="-1"
+      onkeydown={(event) => {
+        event.stopPropagation();
+        if (event.key === "Escape") {
+          cancelNoiseOnlyExport();
+        }
+      }}
+    >
+      <h2 id="export-noise-only-title">{t("dialog.export.noise_only_confirm.title")}</h2>
+      <p>{t("dialog.export.noise_only_confirm.message")}</p>
+      <div class="actions">
+        <span class="spacer"></span>
+        <button type="button" data-testid="export-noise-only-cancel" onclick={cancelNoiseOnlyExport}>
+          {t("dialog.export.noise_only_confirm.cancel")}
+        </button>
+        <button
+          type="button"
+          class="primary"
+          data-testid="export-noise-only-continue"
+          onclick={() => void continueNoiseOnlyExport()}
+        >
+          {t("dialog.export.noise_only_confirm.continue")}
         </button>
       </div>
     </div>
@@ -238,12 +345,6 @@
   .hint {
     color: var(--text-disabled);
     font-size: 0.85em;
-  }
-
-  .range {
-    margin: 0;
-    color: var(--text-secondary);
-    font-size: 0.9em;
   }
 
   .actions {

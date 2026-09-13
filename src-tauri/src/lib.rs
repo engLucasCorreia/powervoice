@@ -45,9 +45,14 @@ pub fn run() {
                 documents.clone(),
                 &settings,
             );
-            // S4-04: the export job service (its own registry instance — modules are stateless
-            // per-instance, so sharing the engine's would only save one small allocation).
-            let export = export::start(app.handle().clone(), documents.clone())?;
+            // S4-04/H-08: the export job service (its own registry instance — modules are
+            // stateless per-instance, so sharing the engine's would only save one small
+            // allocation) renders the live rack via `EngineHandle::rack_model()`.
+            let export = export::start(
+                app.handle().clone(),
+                documents.clone(),
+                engine.handle().clone(),
+            )?;
             // S3-06: the Capture Noise Print job service.
             let nr_capture = nr_capture::start(
                 app.handle().clone(),

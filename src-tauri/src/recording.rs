@@ -11,7 +11,7 @@
 
 use std::sync::{Arc, Weak};
 
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use vox_engine::EngineHandle;
 use vox_engine::record::{LiveTakePeaks, RecordDone, RecordError, RecordingResult, StopReason};
 
@@ -20,7 +20,7 @@ use crate::ipc::{
     DocumentDto, EventName, IpcError, IpcErrorCode, Notice, NoticeLevel, RecordStateDto,
     emit_notice, engine_monitor_mode,
 };
-use crate::settings::{BitDepth, MonitorMode, Settings};
+use crate::settings::{DefaultFormatDto, MonitorMode, Settings, SettingsStore};
 
 /// What the service tells the UI.
 pub enum RecordingEvent {
@@ -33,11 +33,15 @@ pub enum RecordingEvent {
 /// Emits [`RecordingEvent`]s (built by [`start`] from the app handle).
 pub type RecordingEmitter = Arc<dyn Fn(RecordingEvent) + Send + Sync>;
 
+/// Reads the current default recording format fresh from the settings store (H-06: New Recording
+/// or File → New Recording… can change it any time — the service must not cache a stale value
+/// from startup).
+type DefaultFormatFn = Box<dyn Fn() -> DefaultFormatDto + Send + Sync>;
+
 struct Inner {
     engine: EngineHandle,
     documents: DocumentService,
-    preferred_rate_hz: u32,
-    save_bits: BitDepth,
+    default_format: DefaultFormatFn,
     emit: RecordingEmitter,
 }
 
@@ -53,6 +57,9 @@ pub fn start<R: Runtime>(
     documents: DocumentService,
     settings: &Settings,
 ) -> RecordingService {
+    let format_app = app.clone();
+    let default_format: DefaultFormatFn =
+        Box::new(move || format_app.state::<SettingsStore>().get().default_format);
     let app = app.clone();
     let emit: RecordingEmitter = Arc::new(move |event| {
         let result = match event {
@@ -69,8 +76,7 @@ pub fn start<R: Runtime>(
     RecordingService::new(
         engine,
         documents,
-        settings.default_format.sample_rate_hz,
-        settings.default_format.bit_depth,
+        default_format,
         settings.monitor_mode,
         emit,
     )
@@ -158,18 +164,16 @@ impl RecordingService {
     pub fn new(
         engine: EngineHandle,
         documents: DocumentService,
-        preferred_rate_hz: u32,
-        save_bits: BitDepth,
+        default_format: DefaultFormatFn,
         monitor: MonitorMode,
         emit: RecordingEmitter,
     ) -> Self {
-        engine.set_record_rate(preferred_rate_hz);
+        engine.set_record_rate(default_format().sample_rate_hz);
         let _ = engine.set_monitor_mode(engine_monitor_mode(monitor));
         Self(Arc::new(Inner {
             engine,
             documents,
-            preferred_rate_hz,
-            save_bits,
+            default_format,
             emit,
         }))
     }
@@ -205,9 +209,19 @@ impl RecordingService {
     }
 
     /// New recording (SPEC-002 §2.2): into the current document when it is empty, else into a
-    /// new untitled one replacing it (only with `replace`: the UI ran the unsaved-changes prompt).
-    pub fn start(&self, replace: bool) -> Result<RecordStateDto, IpcError> {
+    /// new untitled one replacing it (only with `replace`: the UI ran the unsaved-changes
+    /// prompt). `format`: the New Recording dialog's choice (H-06); `None` uses the current
+    /// default format (Record with no document, no dialog).
+    pub fn start(
+        &self,
+        replace: bool,
+        format: Option<DefaultFormatDto>,
+    ) -> Result<RecordStateDto, IpcError> {
         let inner = &self.0;
+        let format = format.unwrap_or_else(|| (inner.default_format)());
+        // The input opens at the chosen rate when the device supports it; if it can't, the
+        // capture-writer resamples instead of refusing to record (H-06, SPEC-002 §2.2).
+        inner.engine.set_record_rate(format.sample_rate_hz);
         let st = inner.engine.set_armed(true).ok_or_else(engine_stopped)?;
         if st.recording || st.finishing {
             return Err(IpcError::not_while_recording());
@@ -215,12 +229,13 @@ impl RecordingService {
         if st.input_device.is_none() {
             return Err(record_error(RecordError::NoInputDevice));
         }
-        let rate = st
-            .input_rate_hz
-            .ok_or_else(|| record_error(RecordError::InputNotOpen))?;
-        let (capture, info) = inner
-            .documents
-            .begin_recording(rate, inner.save_bits, replace)?;
+        if !st.input_open {
+            return Err(record_error(RecordError::InputNotOpen));
+        }
+        let (capture, info) =
+            inner
+                .documents
+                .begin_recording(format.sample_rate_hz, format.bit_depth, replace)?;
         let take = capture.id();
         let weak: Weak<Inner> = Arc::downgrade(&self.0);
         let done: RecordDone = Box::new(move |result| {
@@ -228,13 +243,18 @@ impl RecordingService {
                 on_take_finished(&inner, result);
             }
         });
-        match inner.engine.record_start(rate, capture, done) {
+        match inner
+            .engine
+            .record_start(format.sample_rate_hz, capture, done)
+        {
             Ok(st) => {
-                if rate != inner.preferred_rate_hz {
+                if let Some(input_hz) = st.input_rate_hz
+                    && input_hz != format.sample_rate_hz
+                {
                     (inner.emit)(RecordingEvent::Notice(
-                        Notice::toast(NoticeLevel::Warning, "notice.record.rate_changed")
-                            .with_param("rate", rate.to_string())
-                            .with_param("preferred", inner.preferred_rate_hz.to_string()),
+                        Notice::toast(NoticeLevel::Info, "notice.record.resampled")
+                            .with_param("input", input_hz.to_string())
+                            .with_param("document", format.sample_rate_hz.to_string()),
                     ));
                 }
                 (inner.emit)(RecordingEvent::DocumentChanged(info));

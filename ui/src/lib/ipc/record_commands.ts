@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CommandName, MonitorMode, RecordStateDto } from "./bindings";
+import type { CommandName, DefaultFormatDto, MonitorMode, RecordStateDto } from "./bindings";
 
 /**
  * S1-04 recording commands: typed `invoke` wrappers (ADR-003) using generated types only. Kept
@@ -16,9 +16,16 @@ export async function recordArm(armed: boolean): Promise<RecordStateDto> {
   return invoke<RecordStateDto>("record_arm" satisfies CommandName, { armed });
 }
 
-/** Starts a new recording; `replace` = the user confirmed replacing a document with audio. */
-export async function recordStart(replace: boolean): Promise<RecordStateDto> {
-  return invoke<RecordStateDto>("record_start" satisfies CommandName, { replace });
+/**
+ * Starts a new recording; `replace` = the user confirmed replacing a document with audio.
+ * `format` (H-06, the New Recording dialog): the chosen sample rate / bit depth — omitted, Record
+ * with no document uses the current default format without showing the dialog (SPEC-002 §2.2).
+ */
+export async function recordStart(replace: boolean, format?: DefaultFormatDto): Promise<RecordStateDto> {
+  return invoke<RecordStateDto>(
+    "record_start" satisfies CommandName,
+    format ? { replace, format } : { replace },
+  );
 }
 
 /** Stops the recording (the take becomes the document once committed). */

@@ -13,7 +13,7 @@ use vox_project::{VxpkHeader, encode_vxpk};
 use crate::ipc::error::IpcError;
 use crate::ipc::record_dto::RecordStateDto;
 use crate::recording::RecordingService;
-use crate::settings::{MonitorMode, SettingsStore};
+use crate::settings::{DefaultFormatDto, MonitorMode, SettingsStore};
 
 /// ADR-003 §2's request cap, same as `document_commands::peaks_get`.
 const MAX_LIVE_PEAKS_BUCKETS: u32 = 65_536;
@@ -44,13 +44,16 @@ pub async fn record_arm(
 }
 
 /// Starts a new recording. `replace`: the user confirmed replacing a document that has audio.
+/// `format`: the New Recording dialog's chosen sample rate / bit depth (H-06); `None` uses the
+/// current default format — Record with no document skips the dialog entirely (SPEC-002 §2.2).
 #[tauri::command]
 pub async fn record_start(
     rec: State<'_, RecordingService>,
     replace: bool,
+    format: Option<DefaultFormatDto>,
 ) -> Result<RecordStateDto, IpcError> {
     let rec = rec.inner().clone();
-    blocking(move || rec.start(replace)).await
+    blocking(move || rec.start(replace, format)).await
 }
 
 /// Stops the recording; the take becomes the document when it is committed.

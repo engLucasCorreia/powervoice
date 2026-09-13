@@ -79,7 +79,8 @@ pub struct RecordingResult {
     pub finished: FinishedTake,
     /// Why it ended.
     pub reason: StopReason,
-    /// The take's sample rate (= the input stream's rate).
+    /// The take's sample rate (= the document rate it was started with; the capture-writer
+    /// resamples when the input stream ran at a different rate, H-06).
     pub sample_rate_hz: u32,
     /// Clip events during the take (runs < 10 ms apart count once, SPEC-002 §2.1).
     pub clip_events: u32,
@@ -130,8 +131,12 @@ pub enum RecordError {
     /// The input stream could not be opened.
     #[error("the input stream is not open")]
     InputNotOpen,
-    /// The take's document rate differs from the input stream's rate (resampling: hardening).
-    #[error("the input runs at {input_hz} Hz, the document at {doc_hz} Hz")]
+    /// The capture-writer's resampler couldn't be built for the input and document rates (H-06:
+    /// mismatched rates are otherwise resampled on the capture-writer thread, never rejected —
+    /// this is a construction failure, e.g. an unsupported rate).
+    #[error(
+        "the input runs at {input_hz} Hz, the document at {doc_hz} Hz, and no resampler could be built"
+    )]
     RateMismatch {
         /// Input stream rate.
         input_hz: u32,

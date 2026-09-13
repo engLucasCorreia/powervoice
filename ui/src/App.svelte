@@ -20,6 +20,7 @@
   import { initNrCapture } from "./lib/rack/nrCapture.svelte";
   import NoticeHost from "./lib/notices/NoticeHost.svelte";
   import { initMarkers } from "./lib/markers/markers.svelte";
+  import NewRecordingDialog from "./lib/record/NewRecordingDialog.svelte";
   import { initEdit } from "./lib/state/edit.svelte";
   import { initNormalize } from "./lib/state/normalize.svelte";
   import { initNormalizeLufs } from "./lib/state/normalizeLufs.svelte";

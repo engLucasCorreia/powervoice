@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { documentState, withUnsavedChangesGuard } from "../document/document.svelte";
-import type { EventName, IpcError, MonitorMode, RecordStateDto } from "../ipc/bindings";
+import type { DefaultFormatDto, EventName, IpcError, MonitorMode, RecordStateDto } from "../ipc/bindings";
 import { recordArm, recordGet, recordSetMonitor, recordStart, recordStop } from "../ipc/record_commands";
 import { VXTM_FLAGS, type TelemetryFrame } from "../ipc/telemetry";
 import { registerAction } from "../keymap";
@@ -13,6 +13,10 @@ import { addTelemetryListener } from "./transport.svelte";
  * Record panel store (S1-04, SPEC-002 §2.1–§2.2, §2.7): the engine's record state
  * (`record_state` event + command results), the input meter with UI ballistics, the clip latch
  * and the elapsed take time (from `VXTM` telemetry). Registers the Record action (Shift+R).
+ *
+ * H-06: also owns the New Recording dialog's prompt state (`NewRecordingDialog.svelte`, opened
+ * from `DocumentMenu`'s "New Recording…") — sample rate / bit depth, prefilled from the current
+ * default format, become the new document's format and the engine's default format going forward.
  */
 
 const IDLE: RecordStateDto = {
@@ -52,6 +56,8 @@ let clipLatched = $state(false);
 let elapsedSamples = $state(0);
 /** A Record press is being handled (prompt open or start in flight). */
 let starting = false;
+/** The New Recording dialog's prompt (H-06); `null` when closed. */
+let newRecordingPrompt = $state<DefaultFormatDto | null>(null);
 const ballistics = new PeakBallistics();
 
 /** Read-only accessor for components. */
@@ -60,6 +66,7 @@ export function recordState(): {
   readonly meter: InputMeterView;
   readonly clipLatched: boolean;
   readonly elapsedSamples: number;
+  readonly newRecordingPrompt: DefaultFormatDto | null;
 } {
   return {
     get state() {
@@ -73,6 +80,9 @@ export function recordState(): {
     },
     get elapsedSamples() {
       return elapsedSamples;
+    },
+    get newRecordingPrompt() {
+      return newRecordingPrompt;
     },
   };
 }
@@ -145,16 +155,17 @@ export function resetMaxPeak(): void {
   meter = { ...meter, maxDbfs: Number.NEGATIVE_INFINITY };
 }
 
-async function startRecording(replace: boolean): Promise<void> {
+async function startRecording(replace: boolean, format?: DefaultFormatDto): Promise<void> {
   // A lit lamp after a take always means that take clipped (SPEC-002 §2.1).
   clipLatched = false;
   elapsedSamples = 0;
-  await run(() => recordStart(replace));
+  await run(() => recordStart(replace, format));
 }
 
 /**
- * Record button / Shift+R: stops a running recording; otherwise starts a new one. A document with
- * audio is replaced after the standard unsaved-changes prompt (SPEC-002 §2.2, S1-03's guard).
+ * Record button / Shift+R: stops a running recording; otherwise starts a new one at the current
+ * default format, no dialog (SPEC-002 §2.2: "Record with no document uses the default"). A
+ * document with audio is replaced after the standard unsaved-changes prompt (S1-03's guard).
  */
 export async function toggleRecord(): Promise<void> {
   if (state.recording) {
@@ -171,6 +182,37 @@ export async function toggleRecord(): Promise<void> {
     } else {
       await startRecording(false);
     }
+  } finally {
+    starting = false;
+  }
+}
+
+/**
+ * File → New Recording…: opens the format prompt (`NewRecordingDialog`), prefilled from the
+ * current default format.
+ */
+export function openNewRecordingPrompt(defaultFormat: DefaultFormatDto): void {
+  newRecordingPrompt = defaultFormat;
+}
+
+export function cancelNewRecordingPrompt(): void {
+  newRecordingPrompt = null;
+}
+
+/**
+ * Confirms the New Recording dialog: replaces the document (after the unsaved-changes guard, like
+ * the Record button) with a fresh one at the chosen format and starts recording into it. Saving
+ * the format as the new default (SPEC-002 §2.2 "remembered in settings") is the dialog's job —
+ * see `NewRecordingDialog.svelte`, which calls `saveSettings` before this.
+ */
+export async function confirmNewRecordingPrompt(format: DefaultFormatDto): Promise<void> {
+  newRecordingPrompt = null;
+  if (state.recording || state.finishing || starting) {
+    return;
+  }
+  starting = true;
+  try {
+    await withUnsavedChangesGuard(() => startRecording(true, format));
   } finally {
     starting = false;
   }
@@ -218,5 +260,11 @@ export function resetRecordForTest(): void {
   clipLatched = false;
   elapsedSamples = 0;
   starting = false;
+  newRecordingPrompt = null;
   ballistics.reset();
+}
+
+/** Test helper: sets the record state directly, without going through the engine/events. */
+export function applyRecordStateForTest(patch: Partial<RecordStateDto>): void {
+  state = { ...state, ...patch };
 }

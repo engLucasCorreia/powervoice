@@ -4,12 +4,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { DocumentDto } from "../ipc/bindings";
 import { openDocument, resetDocumentStateForTest } from "./document.svelte";
 import { clearNotices } from "../state/notices.svelte";
+import { applyRecordStateForTest, recordState, resetRecordForTest } from "../state/record.svelte";
 import DocumentMenu from "./DocumentMenu.svelte";
 
 afterEach(() => {
   clearMocks();
   clearNotices();
   resetDocumentStateForTest();
+  resetRecordForTest();
 });
 
 describe("DocumentMenu (S1-03)", () => {
@@ -68,6 +70,34 @@ describe("DocumentMenu (S1-03)", () => {
       target.querySelector<HTMLButtonElement>('[data-testid="menu-export"]')?.disabled,
     ).toBe(false);
 
+    unmount(app);
+    target.remove();
+  });
+
+  it("New Recording… opens the format prompt (H-06), disabled while recording", () => {
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(DocumentMenu, { target });
+    flushSync();
+
+    expect(recordState().newRecordingPrompt).toBeNull();
+    target.querySelector<HTMLButtonElement>('[data-testid="menu-new-recording"]')!.click();
+    flushSync();
+    expect(recordState().newRecordingPrompt).not.toBeNull();
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("New Recording… is disabled while a take is recording or finishing", () => {
+    applyRecordStateForTest({ recording: true });
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(DocumentMenu, { target });
+    flushSync();
+    expect(
+      target.querySelector<HTMLButtonElement>('[data-testid="menu-new-recording"]')?.disabled,
+    ).toBe(true);
     unmount(app);
     target.remove();
   });

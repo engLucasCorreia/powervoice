@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use vox_engine::backend::fake::{CallbackSizes, FakeBackend, FakeDevice, FakeDirection};
+use vox_engine::backend::fake::{CallbackSizes, FakeBackend, FakeDevice, FakeDirection, Signal};
 use vox_engine::devices::DeviceNotice;
 use vox_engine::record::{
     LIVE_PEAKS_SPB, MonitorMode, RecordError, RecordState, RecordingResult, StopReason,
@@ -89,6 +89,18 @@ fn mic(source: fn(u64, usize) -> f32) -> FakeDevice {
     )
 }
 
+/// H-06: a mono mic that only ever offers 48 kHz (unlike [`mic`]'s 44.1/48 kHz pair), carrying a
+/// steady tone at `freq_hz`/`amplitude` — for AC-4-style "input rate != document rate" tests,
+/// where the capture-writer must resample.
+fn mic_48k_only_tone(freq_hz: f64, amplitude: f32) -> FakeDevice {
+    FakeDevice::new("Mic").with_input(
+        FakeDirection::new(1, &[48_000], 48_000)
+            .callback_sizes(CallbackSizes::FULL_RANDOM)
+            .latency_ns(5 * MS)
+            .signals(vec![Signal::Sine { freq_hz, amplitude }]),
+    )
+}
+
 fn dac() -> FakeDevice {
     FakeDevice::new("DAC").with_output(
         FakeDirection::new(2, &[44_100, 48_000], 48_000)
@@ -113,6 +125,12 @@ struct Rig {
 /// A manual engine with a 2-channel "Mic" (recording `channel`, `None` = no input device) and,
 /// optionally, a "DAC" output.
 fn rig(source: fn(u64, usize) -> f32, with_output: bool, channel: Option<u16>) -> Rig {
+    rig_with_mic(mic(source), with_output, channel)
+}
+
+/// [`rig`], but with a caller-supplied mic device (H-06: a mic offering a different rate than
+/// [`mic`]'s 44.1/48 kHz pair).
+fn rig_with_mic(mic: FakeDevice, with_output: bool, channel: Option<u16>) -> Rig {
     assert!(
         alloc_checks_active(),
         "the allocation checker must be installed"
@@ -121,7 +139,7 @@ fn rig(source: fn(u64, usize) -> f32, with_output: bool, channel: Option<u16>) -
     if with_output {
         fake.plug(HostId::Alsa, dac());
     }
-    fake.plug(HostId::Alsa, mic(source));
+    fake.plug(HostId::Alsa, mic);
     fake.set_rt_guard(|f| match no_alloc(f) {
         Ok(()) => 0,
         Err(n) => n,
@@ -259,6 +277,20 @@ fn take_samples(session: &Session, snap: &DocSnapshot) -> Vec<f32> {
     let n = session.store().read(snap, 0, &mut buf).unwrap();
     assert_eq!(n, buf.len());
     buf
+}
+
+/// Mean frequency from rising zero crossings (linearly interpolated) — H-06's resampling test.
+fn frequency_hz(x: &[f32], rate_hz: u32) -> f64 {
+    let mut crossings = Vec::new();
+    for i in 1..x.len() {
+        let (a, b) = (f64::from(x[i - 1]), f64::from(x[i]));
+        if a < 0.0 && b >= 0.0 {
+            crossings.push((i - 1) as f64 + a / (a - b));
+        }
+    }
+    let n = crossings.len() - 1;
+    let span = crossings[n] - crossings[0];
+    n as f64 * f64::from(rate_hz) / span
 }
 
 /// The source frame the take starts at: the whole take must be a bit-exact run of channel `ch`
@@ -519,34 +551,49 @@ fn refusals_and_space_stops_the_recording() {
     assert_eq!(err, RecordError::NoInputDevice);
     session.discard_take(id).unwrap();
 
-    // The input opens at the preferred record rate; a document at another rate is refused.
+    // The input opens at the preferred record rate; a document at another rate now resamples
+    // instead of being refused (H-06 — see `resamples_when_the_input_rate_differs_from_the_document_rate`
+    // for the full frequency/level/length checks).
     let mut r = rig(src, true, Some(1));
     r.run_ms(20);
     r.arm();
     let mut session = r.session();
-    let cap = session
-        .begin_take(TakeMode::New, TakeWriterOptions::default())
-        .unwrap();
-    let id = cap.id();
-    let err = r
-        .eng
-        .record_start(44_100, cap, Box::new(|_| {}))
-        .expect_err("rate mismatch");
-    assert_eq!(
-        err,
-        RecordError::RateMismatch {
-            input_hz: 48_000,
-            doc_hz: 44_100
+    {
+        let cap = session
+            .begin_take(TakeMode::New, TakeWriterOptions::default())
+            .unwrap();
+        let resampled_id = cap.id();
+        let done: DoneSlot = Arc::new(Mutex::new(None));
+        let done2 = done.clone();
+        let st = r
+            .eng
+            .record_start(
+                44_100,
+                cap,
+                Box::new(move |res| *done2.lock().unwrap() = Some(res)),
+            )
+            .expect("H-06: a rate mismatch resamples instead of being refused");
+        assert!(st.recording, "{st:?}");
+        r.run_ms(50);
+        r.eng.record_stop();
+        let mut resampled = None;
+        for _ in 0..2_000 {
+            if let Some(res) = done.lock().unwrap().take() {
+                resampled = Some(res);
+                break;
+            }
+            r.run_ms(1);
         }
-    );
-    session.discard_take(id).unwrap();
-    r.eng.set_record_rate(44_100);
-    r.eng.set_armed(false);
-    let st = r.eng.set_armed(true);
-    assert_eq!(st.input_rate_hz, Some(44_100));
-    r.eng.set_armed(false);
-    r.eng.set_record_rate(RATE);
-    r.arm();
+        let resampled = resampled.expect("the resampled take finished");
+        assert_eq!(
+            resampled.sample_rate_hz, 44_100,
+            "the take is at the document rate"
+        );
+        // Discarded rather than committed: `session.current()` stays empty for the checks below
+        // (the take was still finished — its data written — so `discard_take` closes it out the
+        // same way a refused take does).
+        session.discard_take(resampled_id).unwrap();
+    }
 
     // Double start is refused; Space (play/pause) stops the recording; disarm is refused while
     // recording.
@@ -569,6 +616,98 @@ fn refusals_and_space_stops_the_recording() {
     let res = r.result();
     assert!(res.finished.audio.len_samples > 4_000);
     assert_eq!(r.fake.rt_violations(), 0);
+}
+
+/// H-06 (SPEC-002 §2.2, ticket H-06 test plan): a fake input that only ever offers 48 kHz records
+/// a 1 kHz, -20 dBFS tone into a 44.1 kHz document. The capture-writer resamples on its own
+/// thread (never the RT input callback — no allocation there either way): the tone keeps its
+/// frequency within 0.05 % and its level within 0.1 dB, and the take length matches wall time
+/// within one processing block (the resampler's own priming delay is compensated, so the take's
+/// start isn't shifted).
+#[test]
+fn resamples_when_the_input_rate_differs_from_the_document_rate() {
+    const DOC_RATE: u32 = 44_100;
+    const SECS: f64 = 3.0;
+    let mic = mic_48k_only_tone(1_000.0, 10f32.powf(-20.0 / 20.0));
+    let mut r = rig_with_mic(mic, false, Some(1));
+    r.run_ms(20);
+    let st = r.eng.set_armed(true);
+    assert!(st.armed && st.input_open, "{st:?}");
+    assert_eq!(
+        st.input_rate_hz,
+        Some(48_000),
+        "the only rate this fake mic offers"
+    );
+    r.run_ms(50);
+
+    let mut session = Session::create(
+        &r.dir.0,
+        SessionConfig {
+            sample_rate_hz: DOC_RATE,
+            source: None,
+            store: StoreOptions::with_memory_budget(64 << 20),
+        },
+    )
+    .unwrap();
+    let capture = session
+        .begin_take(TakeMode::New, TakeWriterOptions::default())
+        .unwrap();
+    let done = r.done.clone();
+    let st = r
+        .eng
+        .record_start(
+            DOC_RATE,
+            capture,
+            Box::new(move |res| *done.lock().unwrap() = Some(res)),
+        )
+        .expect("a rate mismatch resamples instead of being refused (H-06)");
+    assert!(st.recording, "{st:?}");
+    r.run_ms((SECS * 1000.0) as u64);
+    r.eng.record_stop();
+    let res = r.result();
+    assert_eq!(res.reason, StopReason::User);
+    assert!(res.finished.error.is_none(), "{:?}", res.finished.error);
+    assert!(res.write_error.is_none());
+    assert_eq!(
+        res.sample_rate_hz, DOC_RATE,
+        "the take is at the document rate, not the input's"
+    );
+
+    let step = session
+        .commit_take(&res.finished, &[])
+        .unwrap()
+        .expect("one undoable edit");
+    let take = take_samples(&session, &step.snapshot);
+
+    // Length matches wall time within one processing block (`CaptureResampler::CHUNK_IN` device
+    // frames converted to document-rate frames).
+    let expected_len = (SECS * f64::from(DOC_RATE)).round() as usize;
+    let block = (1024.0 * f64::from(DOC_RATE) / 48_000.0).ceil() as usize;
+    assert!(
+        take.len().abs_diff(expected_len) <= block,
+        "got {}, expected {expected_len} +/- {block}",
+        take.len()
+    );
+
+    // The tone keeps its frequency and level, measured on the back half and clear of the very
+    // end: `finish()`'s zero-padded flush of the last partial chunk isn't real signal, so the
+    // last `block`-ish samples are excluded (same reasoning as the length tolerance above).
+    let tail = &take[take.len() / 2..take.len().saturating_sub(block)];
+    let f = frequency_hz(tail, DOC_RATE);
+    let rel_err = (f - 1_000.0).abs() / 1_000.0;
+    assert!(
+        rel_err <= 0.0005,
+        "measured {f} Hz ({}% off)",
+        rel_err * 100.0
+    );
+    let peak = tail.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+    let level_dbfs = 20.0 * f64::from(peak).log10();
+    assert!(
+        (level_dbfs - (-20.0)).abs() <= 0.1,
+        "level {level_dbfs} dBFS"
+    );
+
+    assert_eq!(r.fake.rt_violations(), 0, "a callback allocated");
 }
 
 /// The threaded engine: real capture-writer and sync threads; the done callback runs on the

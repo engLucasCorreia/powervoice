@@ -13,6 +13,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use rtrb::{Consumer, Producer, RingBuffer};
+use vox_dsp::capture_resample::CaptureResampler;
 use vox_project::TakeCapture;
 use vox_rack::{
     ActivateConfig, ChannelLayout, MAX_BLOCK, ModuleDescriptor, ProcessMode, RackHost, RackModel,
@@ -121,7 +122,12 @@ enum WriterLink {
 struct Recording {
     link: WriterLink,
     shared: Arc<InputShared>,
+    /// The input stream's rate: pairs with `captured` (both counted by the RT input callback, in
+    /// device-rate frames) for the telemetry anchor while recording.
     rate_hz: u32,
+    /// The take's rate (H-06: may differ from `rate_hz` — the capture-writer resamples then).
+    /// `LivePeaks` (H-07) are recorded post-resample, so this is what `live_take_peaks` reports.
+    doc_rate_hz: u32,
     /// Take samples captured so far, reached at app time `anchor_ns`.
     captured: u64,
     anchor_ns: u64,
@@ -1360,7 +1366,7 @@ impl Control {
             .unwrap_or_else(PoisonError::into_inner)
             .snapshot(start_bucket, max);
         Some(LiveTakePeaks {
-            sample_rate_hz: rec.rate_hz,
+            sample_rate_hz: rec.doc_rate_hz,
             len_samples,
             spb: crate::record::LIVE_PEAKS_SPB,
             buckets,
@@ -1428,12 +1434,23 @@ impl Control {
             self.emit_record_if_changed();
             return Err(RecordError::InputNotOpen);
         };
-        if inp.rate_hz != doc_rate_hz {
-            return Err(RecordError::RateMismatch {
-                input_hz: inp.rate_hz,
-                doc_hz: doc_rate_hz,
-            });
-        }
+        let in_rate_hz = inp.rate_hz;
+        // H-06 (SPEC-002 §2.2): the input can run at a different rate than the document — the
+        // capture-writer resamples, never the RT input callback. A resampler that fails to build
+        // (an unsupported rate combination) is the only remaining rejection.
+        let resampler = if in_rate_hz != doc_rate_hz {
+            match CaptureResampler::new(in_rate_hz, doc_rate_hz) {
+                Ok(r) => Some(r),
+                Err(_) => {
+                    return Err(RecordError::RateMismatch {
+                        input_hz: in_rate_hz,
+                        doc_hz: doc_rate_hz,
+                    });
+                }
+            }
+        } else {
+            None
+        };
         let Some(mut rx) = inp
             .capture_rx
             .take()
@@ -1449,7 +1466,6 @@ impl Control {
             chunk.commit_all();
         }
         inp.shared.reset_take();
-        let rate_hz = inp.rate_hz;
         let shared = inp.shared.clone();
         let peaks: LivePeaksHandle = Arc::new(Mutex::new(LivePeaks::default()));
         let writer = CaptureWriter::new(
@@ -1457,7 +1473,8 @@ impl Control {
             capture,
             shared.clone(),
             inp.capture_home.clone(),
-            rate_hz,
+            doc_rate_hz,
+            resampler,
             done,
             peaks.clone(),
         );
@@ -1486,7 +1503,8 @@ impl Control {
         self.recording = Some(Recording {
             link,
             shared,
-            rate_hz,
+            rate_hz: in_rate_hz,
+            doc_rate_hz,
             captured: 0,
             anchor_ns: now,
             stop_at: None,

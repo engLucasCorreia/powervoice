@@ -16,6 +16,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use rtrb::Consumer;
+use vox_dsp::capture_resample::CaptureResampler;
 use vox_project::take::DEFAULT_TAKE_SYNC_INTERVAL;
 use vox_project::{ProjectError, TakeCapture};
 
@@ -97,7 +98,19 @@ pub(crate) struct CaptureWriter {
     capture: TakeCapture,
     shared: Arc<InputShared>,
     home: CaptureHome,
+    /// The take's rate (= the document rate `capture` was created at).
     rate_hz: u32,
+    /// `Some` when the input stream runs at a different rate than the take (H-06, SPEC-002 §2.2
+    /// "If the input device can't run at the document rate"): converts device-rate samples
+    /// drained from `rx` to `rate_hz` before they reach `capture`. Never touched by the RT input
+    /// callback — only this (non-RT) writer thread runs it.
+    resampler: Option<CaptureResampler>,
+    /// Reused scratch for one resampler `push`/`finish` call (grows once, then stays warm).
+    resample_scratch: Vec<f32>,
+    /// Reused scratch holding one `read_chunk`'s two slices concatenated (needed so `chunk` — a
+    /// borrow of `rx` — can be committed and dropped before `drain_part` borrows `self` as a
+    /// whole; grows once, then stays warm).
+    drain_scratch: Vec<f32>,
     write_error: Option<ProjectError>,
     done: Option<RecordDone>,
     /// H-07: running min/max peaks of the samples appended to `capture` so far.
@@ -105,12 +118,14 @@ pub(crate) struct CaptureWriter {
 }
 
 impl CaptureWriter {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         rx: Consumer<f32>,
         capture: TakeCapture,
         shared: Arc<InputShared>,
         home: CaptureHome,
         rate_hz: u32,
+        resampler: Option<CaptureResampler>,
         done: RecordDone,
         peaks: LivePeaksHandle,
     ) -> Self {
@@ -120,9 +135,54 @@ impl CaptureWriter {
             shared,
             home,
             rate_hz,
+            resampler,
+            resample_scratch: Vec::new(),
+            drain_scratch: Vec::new(),
             write_error: None,
             done: Some(done),
             peaks,
+        }
+    }
+
+    /// Appends `part` (document-rate samples) to the take and its H-07 live peaks; a failure
+    /// records [`Self::write_error`] and flags the control thread to stop the recording (H-05:
+    /// the take is kept up to the last good sample, SPEC-002 §2.5).
+    fn append_take(&mut self, part: &[f32]) {
+        if part.is_empty() {
+            return;
+        }
+        match self.capture.append(part) {
+            Ok(()) => self
+                .peaks
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .append(part),
+            Err(e) => {
+                self.write_error = Some(e);
+                self.shared.writer_failed.store(true, Ordering::Release);
+            }
+        }
+    }
+
+    /// Runs one drained ring segment (device-rate samples) through the resampler when one is
+    /// configured, then appends whatever it produced; without one, appends `part` directly.
+    fn drain_part(&mut self, part: &[f32]) {
+        if part.is_empty() {
+            return;
+        }
+        if self.resampler.is_some() {
+            let mut scratch = std::mem::take(&mut self.resample_scratch);
+            scratch.clear();
+            if let Some(r) = self.resampler.as_mut() {
+                r.push(part, &mut scratch);
+            }
+            if !scratch.is_empty() {
+                self.append_take(&scratch);
+            }
+            scratch.clear();
+            self.resample_scratch = scratch;
+        } else {
+            self.append_take(part);
         }
     }
 
@@ -140,27 +200,20 @@ impl CaptureWriter {
         if n > 0
             && let Ok(chunk) = self.rx.read_chunk(n)
         {
+            // Copy out of the ring and commit it before touching `self` as a whole below: `chunk`
+            // borrows `self.rx`, so it must be gone before `drain_part` (a `&mut self` method,
+            // needed for the resampler path) can run.
+            let mut drained = std::mem::take(&mut self.drain_scratch);
+            drained.clear();
             let (a, b) = chunk.as_slices();
-            if self.write_error.is_none() {
-                for part in [a, b] {
-                    if part.is_empty() {
-                        continue;
-                    }
-                    match self.capture.append(part) {
-                        Ok(()) => self
-                            .peaks
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .append(part),
-                        Err(e) => {
-                            self.write_error = Some(e);
-                            self.shared.writer_failed.store(true, Ordering::Release);
-                            break;
-                        }
-                    }
-                }
-            }
+            drained.extend_from_slice(a);
+            drained.extend_from_slice(b);
             chunk.commit_all();
+            if self.write_error.is_none() {
+                self.drain_part(&drained);
+            }
+            drained.clear();
+            self.drain_scratch = drained;
         }
         complete && self.rx.is_empty()
     }
@@ -170,8 +223,20 @@ impl CaptureWriter {
         let _ = self.capture.sync();
     }
 
-    /// Finishes the take, returns the ring consumer home, then calls the done callback.
+    /// Finishes the take, returns the ring consumer home, then calls the done callback. Flushes
+    /// the resampler's tail first (H-06: the last, possibly partial, chunk of device-rate samples
+    /// still buffered) — unless a write error already stopped appends for good.
     pub(crate) fn finish(mut self) {
+        if self.write_error.is_none()
+            && let Some(r) = self.resampler.take()
+        {
+            let mut scratch = std::mem::take(&mut self.resample_scratch);
+            scratch.clear();
+            r.finish(&mut scratch);
+            if !scratch.is_empty() {
+                self.append_take(&scratch);
+            }
+        }
         let reason = match self.shared.stop_reason.load(Ordering::Relaxed) {
             stop_code::INPUT_LOST => StopReason::InputLost,
             stop_code::SHUTDOWN => StopReason::Shutdown,

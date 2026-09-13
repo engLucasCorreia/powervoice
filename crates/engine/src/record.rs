@@ -87,6 +87,28 @@ pub struct RecordingResult {
 /// finished. May call the `EngineHandle`.
 pub type RecordDone = Box<dyn FnOnce(RecordingResult) + Send>;
 
+/// Bucket size for [`crate::EngineHandle::live_take_peaks`] (H-07): fixed, and small enough for a
+/// responsive waveform while recording. Computed only on the capture-writer thread as it drains
+/// the capture ring — never in the RT input callback (CLAUDE.md real-time rules). It matches one
+/// of `vox_project`'s pyramid levels, so the UI can reduce it into pixel columns the same way.
+pub const LIVE_PEAKS_SPB: u32 = 256;
+
+/// A snapshot of the take being captured's running min/max peaks (H-07,
+/// [`crate::EngineHandle::live_take_peaks`]). `buckets[0]` covers take samples
+/// `[start_bucket * spb, (start_bucket + 1) * spb)`; the last bucket may be partial (covers only
+/// the samples appended to it so far).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiveTakePeaks {
+    /// The take's sample rate.
+    pub sample_rate_hz: u32,
+    /// Samples appended to the take so far.
+    pub len_samples: u64,
+    /// Samples per bucket ([`LIVE_PEAKS_SPB`]).
+    pub spb: u32,
+    /// `(min, max)` per bucket, starting at the requested `start_bucket`.
+    pub buckets: Vec<(f32, f32)>,
+}
+
 /// Why `record_start` was refused. The take the caller began is **not** used: discard it
 /// (`Session::discard_take`).
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]

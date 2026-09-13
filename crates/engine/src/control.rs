@@ -8,7 +8,7 @@
 
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -23,7 +23,7 @@ use crate::backend::{
     Backend, BackendError, BufferRequest, Direction, Enumerate, HostId, StallDetector,
     StreamHandle, StreamRequest, choose_default_host, flags,
 };
-use crate::capture::{self, CaptureHome, CaptureWriter, take_home};
+use crate::capture::{self, CaptureHome, CaptureWriter, LivePeaks, LivePeaksHandle, take_home};
 use crate::device_state::{Activity, DeviceAction, DeviceEvent, DeviceStateMachine, LinkState};
 use crate::devices::{
     DEVICE_POLL_INTERVAL, DeviceList, DeviceNotice, DevicePollThread, DeviceWatcher, InputChannel,
@@ -38,7 +38,7 @@ use crate::input::{
 use crate::output::{OutputCb, OutputParts, PartsSlot, take_parts};
 use crate::prefs::DevicePrefs;
 use crate::reader::{self, Reader, ReaderCmd};
-use crate::record::{MonitorMode, RecordDone, RecordError, RecordState, StopReason};
+use crate::record::{LiveTakePeaks, MonitorMode, RecordDone, RecordError, RecordState, StopReason};
 use crate::rt::{
     AUDIO_CMD_CAPACITY, AudioCmd, PLAYBACK_RING_PACKETS, RT_EVENT_CAPACITY, RtCounters, RtEvent,
 };
@@ -123,6 +123,8 @@ struct Recording {
     anchor_ns: u64,
     /// App time Stop was requested (`Some`: finishing).
     stop_at: Option<u64>,
+    /// H-07: the take's running min/max peaks, updated by the capture-writer thread.
+    peaks: LivePeaksHandle,
 }
 
 /// Latest heard position reported by the output callback.
@@ -1135,6 +1137,24 @@ impl Control {
         }
     }
 
+    /// H-07: a snapshot of the take being captured's running peaks (`None`: no take is being
+    /// captured). Reads a lock only the capture-writer thread and this call ever take — never the
+    /// RT input callback.
+    pub(crate) fn live_take_peaks(&self, start_bucket: u32, max: u32) -> Option<LiveTakePeaks> {
+        let rec = self.recording.as_ref()?;
+        let (len_samples, buckets) = rec
+            .peaks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .snapshot(start_bucket, max);
+        Some(LiveTakePeaks {
+            sample_rate_hz: rec.rate_hz,
+            len_samples,
+            spb: crate::record::LIVE_PEAKS_SPB,
+            buckets,
+        })
+    }
+
     fn emit_record_if_changed(&mut self) {
         let state = self.record_state();
         if self.last_record.as_ref() != Some(&state) {
@@ -1219,6 +1239,7 @@ impl Control {
         inp.shared.reset_take();
         let rate_hz = inp.rate_hz;
         let shared = inp.shared.clone();
+        let peaks: LivePeaksHandle = Arc::new(Mutex::new(LivePeaks::default()));
         let writer = CaptureWriter::new(
             rx,
             capture,
@@ -1226,6 +1247,7 @@ impl Control {
             inp.capture_home.clone(),
             rate_hz,
             done,
+            peaks.clone(),
         );
         let link = if self.threaded {
             match capture::spawn(writer) {
@@ -1256,6 +1278,7 @@ impl Control {
             captured: 0,
             anchor_ns: now,
             stop_at: None,
+            peaks,
         });
         self.engine_stop();
         self.update_monitor();

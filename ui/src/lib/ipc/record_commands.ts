@@ -30,3 +30,11 @@ export async function recordStop(): Promise<RecordStateDto> {
 export async function recordSetMonitor(mode: MonitorMode): Promise<RecordStateDto> {
   return invoke<RecordStateDto>("record_set_monitor" satisfies CommandName, { mode });
 }
+
+/**
+ * H-07: `count` `(min, max)` buckets of the take being captured, from bucket `startBucket`, as
+ * raw `VXPK` bytes (decode with `decodeVxpk`; zero buckets while no take is being captured).
+ */
+export async function recordPeaksGet(startBucket: number, count: number): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>("record_peaks_get" satisfies CommandName, { startBucket, count });
+}

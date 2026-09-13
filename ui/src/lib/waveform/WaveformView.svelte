@@ -3,8 +3,10 @@
   import { documentState, hasDocument } from "../document/document.svelte";
   import { t } from "../i18n";
   import { peaksGet } from "../ipc/commands";
+  import { recordPeaksGet } from "../ipc/record_commands";
   import { registerAction } from "../keymap";
   import { formatTime } from "../transport/playhead";
+  import { recordState } from "../state/record.svelte";
   import { seek, transportState } from "../state/transport.svelte";
   import {
     clampSamplesPerPixel,
@@ -21,16 +23,32 @@
     zoomFullSamplesPerPixel,
     zoomStep,
   } from "./coords";
+  import { decodeVxpk } from "./vxpk";
   import { PeaksRequester } from "./peaksRequester";
 
   /**
-   * The waveform view (S1-03, SPEC-006 essential subset): Canvas2D min/max fill and raw-sample
-   * polyline (ADR-009's WebGL2 primary / Canvas2D fallback choice is deferred — this ticket
-   * starts with Canvas2D, per its own scope note), horizontal zoom/scroll, a timecode ruler, the
-   * shared playhead (SPEC-003 §2.2's extrapolation, read from the transport store — never
-   * re-derived here), and click-to-seek. HiDPI aware. Selection, vertical zoom, markers and the
-   * overview strip are deferred to hardening/Slice 2 (ticket's "Out" list).
+   * The waveform view (S1-03, SPEC-006 essential subset; H-07 adds the live view while recording):
+   * Canvas2D min/max fill and raw-sample polyline (ADR-009's WebGL2 primary / Canvas2D fallback
+   * choice is deferred — this ticket starts with Canvas2D, per its own scope note), horizontal
+   * zoom/scroll, a timecode ruler, the shared playhead (SPEC-003 §2.2's extrapolation, read from
+   * the transport store — never re-derived here), and click-to-seek. HiDPI aware. Selection,
+   * vertical zoom, markers and the overview strip are deferred to hardening/Slice 2 (ticket's
+   * "Out" list).
+   *
+   * H-07: while `recordState` is recording, the document has no committed audio yet (S1-04: an
+   * open take's document is empty until Stop), so instead of the normal `peaks_get` path this
+   * view polls `record_peaks_get` at [`LIVE_POLL_MS`] and draws the growing take, zoomed to fit
+   * (at least [`LIVE_MIN_WINDOW_SECONDS`]), plus a record-head line at the take's current length.
    */
+
+  /** Must match `vox_engine::record::LIVE_PEAKS_SPB` (H-07). */
+  const LIVE_PEAKS_SPB = 256;
+  /** The live view never zooms in tighter than this many seconds of the take. */
+  const LIVE_MIN_WINDOW_SECONDS = 10;
+  /** Live take peaks poll rate (H-07 ticket: "~10 Hz"). */
+  const LIVE_POLL_MS = 100;
+  /** Same cap as `document_commands::peaks_get`'s `MAX_BUCKETS`. */
+  const LIVE_MAX_BUCKETS = 65_536;
 
   let containerEl: HTMLDivElement | undefined = $state();
   let canvasEl: HTMLCanvasElement | undefined = $state();
@@ -40,14 +58,19 @@
   let samplesPerPixel = $state(1);
   let fittedForAudio = $state<string | null>(null);
   let pointerDownClientX: number | null = null;
+  /** H-07: the last `record_peaks_get` response applied (`null`: none polled yet). */
+  let liveBuckets = $state<Array<[number, number]>>([]);
+  let liveStartSample = $state(0);
 
   const doc = documentState();
   const transport = transportState();
+  const rec = recordState();
   const requester = new PeaksRequester(peaksGet);
 
   const lenSamples = $derived(doc.current.len_samples);
   const rateHz = $derived(doc.current.sample_rate_hz);
   const isOpen = $derived(hasDocument(doc.current));
+  const isRecording = $derived(rec.state.recording);
 
   // Zoom-full the first time a newly opened document's audio (rate + length — not just its path,
   // so Save As to a new path/format doesn't re-fit the still-unchanged audio) gets a known
@@ -84,6 +107,54 @@
       const count = Math.min(Math.ceil((viewportPx * spp) / level) + 1, 65_536);
       void requester.request(fetchStart, count, spp);
     }
+  });
+
+  // H-07: while recording, keep the whole growing take zoomed to fit (floored at
+  // LIVE_MIN_WINDOW_SECONDS so a very short take doesn't start over-zoomed).
+  $effect(() => {
+    if (!isRecording || viewportPx <= 0 || rateHz <= 0) {
+      return;
+    }
+    const windowSamples = Math.max(rec.elapsedSamples, LIVE_MIN_WINDOW_SECONDS * rateHz);
+    samplesPerPixel = zoomFullSamplesPerPixel(windowSamples, viewportPx);
+    startSample = 0;
+  });
+
+  // H-07: polls record_peaks_get at ~10 Hz while recording (the document has no committed audio
+  // yet, so the normal peaks_get effect above never fires: lenSamples stays 0 until Stop).
+  $effect(() => {
+    if (!isRecording) {
+      liveBuckets = [];
+      liveStartSample = 0;
+      return;
+    }
+    let disposed = false;
+    const poll = async (): Promise<void> => {
+      const count = Math.min(
+        Math.ceil(rec.elapsedSamples / LIVE_PEAKS_SPB) + 2,
+        LIVE_MAX_BUCKETS,
+      );
+      let buf: ArrayBuffer;
+      try {
+        buf = await recordPeaksGet(0, count);
+      } catch {
+        return; // keep showing the last good buckets; the next poll retries
+      }
+      if (disposed) {
+        return;
+      }
+      const frame = decodeVxpk(buf);
+      if (frame) {
+        liveBuckets = frame.buckets;
+        liveStartSample = frame.startSample;
+      }
+    };
+    void poll();
+    const id = setInterval(() => void poll(), LIVE_POLL_MS);
+    return () => {
+      disposed = true;
+      clearInterval(id);
+    };
   });
 
   const maxStart = $derived(Math.max(0, lenSamples - samplesPerPixel * viewportPx));
@@ -130,6 +201,16 @@
     ctx.fillRect(0, 0, viewportPx, heightPx);
 
     const centerY = heightPx / 2;
+    if (isRecording) {
+      // H-07: the growing take (from record_peaks_get), plus a record-head line — never the
+      // normal peaks_get state, which has nothing to show until the take is committed at Stop.
+      if (liveBuckets.length > 0) {
+        drawColumns(ctx, liveBuckets, liveStartSample, LIVE_PEAKS_SPB, centerY);
+      }
+      drawRecordHead(ctx, centerY);
+      ctx.restore();
+      return;
+    }
     const state = requester.state;
     const level = pickLevel(samplesPerPixel);
     if (state && state.level === level && state.buckets.length > 0) {
@@ -222,6 +303,17 @@
       return;
     }
     ctx.strokeStyle = colorToken("--wave-playhead", "#ffb454");
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(px + 0.5, 0);
+    ctx.lineTo(px + 0.5, centerY * 2);
+    ctx.stroke();
+  }
+
+  /** H-07: a line at the take's current length (the view is always zoomed so it's on-screen). */
+  function drawRecordHead(ctx: CanvasRenderingContext2D, centerY: number): void {
+    const px = pixelAtSample(rec.elapsedSamples, startSample, samplesPerPixel);
+    ctx.strokeStyle = colorToken("--wave-record-head", "#ff5c5c");
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(px + 0.5, 0);

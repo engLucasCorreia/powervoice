@@ -13,7 +13,7 @@ use std::sync::{Arc, Weak};
 
 use tauri::{AppHandle, Emitter, Runtime};
 use vox_engine::EngineHandle;
-use vox_engine::record::{RecordDone, RecordError, RecordingResult};
+use vox_engine::record::{LiveTakePeaks, RecordDone, RecordError, RecordingResult};
 
 use crate::document::{DocumentInfo, DocumentService};
 use crate::ipc::{
@@ -176,6 +176,12 @@ impl RecordingService {
     pub fn stop(&self) -> Result<RecordStateDto, IpcError> {
         let st = self.0.engine.record_stop().ok_or_else(engine_stopped)?;
         Ok(RecordStateDto::from(&st))
+    }
+
+    /// H-07: a snapshot of the take being captured's running peaks (`None`: not recording). Thin
+    /// forward to `EngineHandle::live_take_peaks` — `record_peaks_get` encodes the `VXPK` frame.
+    pub fn live_peaks(&self, start_bucket: u32, count: u32) -> Option<LiveTakePeaks> {
+        self.0.engine.live_take_peaks(start_bucket, count)
     }
 
     /// New recording (SPEC-002 §2.2): into the current document when it is empty, else into a

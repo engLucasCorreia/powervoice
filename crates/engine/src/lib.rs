@@ -44,7 +44,10 @@ pub use engine::{
     PlaybackDoc,
 };
 pub use prefs::DevicePrefs;
-pub use record::{MonitorMode, RecordDone, RecordError, RecordState, RecordingResult, StopReason};
+pub use record::{
+    LIVE_PEAKS_SPB, LiveTakePeaks, MonitorMode, RecordDone, RecordError, RecordState,
+    RecordingResult, StopReason,
+};
 pub use telemetry::{TelemetryFrame, TelemetrySink};
 pub use transport::{TransportCommand, TransportState};
 

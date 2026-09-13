@@ -10,7 +10,9 @@ use std::time::Duration;
 
 use vox_engine::backend::fake::{CallbackSizes, FakeBackend, FakeDevice, FakeDirection};
 use vox_engine::devices::DeviceNotice;
-use vox_engine::record::{MonitorMode, RecordError, RecordState, RecordingResult, StopReason};
+use vox_engine::record::{
+    LIVE_PEAKS_SPB, MonitorMode, RecordError, RecordState, RecordingResult, StopReason,
+};
 use vox_engine::telemetry::vxtm_flags;
 use vox_engine::{
     DeviceKey, DevicePrefs, Direction, Engine, EngineConfig, EngineEvent, HostId, ManualEngine,
@@ -640,4 +642,55 @@ fn threaded_engine_records_through_the_writer_thread() {
     drop(driver);
     drop(engine);
     assert_eq!(fake.rt_violations(), 0, "a callback allocated");
+}
+
+/// H-07: `EngineHandle::live_take_peaks` mirrors the take's growing content — `None` before a
+/// take starts and once it is finished, then `(min, max)` buckets of exactly the samples appended
+/// so far, computed off the capture-writer thread (never the RT input callback: the `rt_violations`
+/// assertions elsewhere in this file already guard that; this test only checks correctness).
+#[test]
+fn live_take_peaks_matches_the_appended_samples() {
+    let mut r = rig(src, true, Some(1));
+    r.run_ms(20);
+    assert!(r.eng.live_take_peaks(0, 8).is_none(), "no take yet");
+    r.arm();
+    r.run_ms(50);
+    let mut session = r.session();
+    r.start(&mut session);
+    r.run_ms(300);
+
+    let snap = r
+        .eng
+        .live_take_peaks(0, 1_000_000)
+        .expect("a take is being captured");
+    assert_eq!(snap.sample_rate_hz, RATE);
+    assert_eq!(snap.spb, LIVE_PEAKS_SPB);
+    assert!(snap.len_samples > 0);
+    // Paging: the first two buckets of a wider request equal a narrower one starting at 0.
+    let page = r.eng.live_take_peaks(0, 2).unwrap();
+    assert_eq!(&page.buckets[..], &snap.buckets[..2]);
+
+    r.stop();
+    let res = r.result();
+    let step = session.commit_take(&res.finished, &[]).unwrap().unwrap();
+    let take = take_samples(&session, &step.snapshot);
+
+    let spb = snap.spb as usize;
+    let full_buckets = (snap.len_samples as usize) / spb;
+    assert!(
+        full_buckets >= 4,
+        "the take ran long enough for several full buckets"
+    );
+    for (b, &(mn, mx)) in snap.buckets.iter().take(full_buckets).enumerate() {
+        let (want_mn, want_mx) = take[b * spb..(b + 1) * spb]
+            .iter()
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(mn, mx), &s| {
+                (mn.min(s), mx.max(s))
+            });
+        assert_eq!((mn, mx), (want_mn, want_mx), "bucket {b}");
+    }
+
+    // Once the take is finished, there is no recording to query anymore.
+    assert!(r.eng.live_take_peaks(0, 8).is_none());
+    assert_eq!(r.fake.rt_violations(), 0, "a callback allocated");
 }

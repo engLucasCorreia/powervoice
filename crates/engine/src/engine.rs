@@ -22,7 +22,7 @@ use crate::control::{self, Control, ControlMsg};
 use crate::device_state::DeviceStatus;
 use crate::devices::DeviceNotice;
 use crate::prefs::DevicePrefs;
-use crate::record::{MonitorMode, RecordDone, RecordError, RecordState};
+use crate::record::{LiveTakePeaks, MonitorMode, RecordDone, RecordError, RecordState};
 use crate::telemetry::TelemetrySink;
 use crate::transport::{TransportCommand, TransportState};
 
@@ -270,6 +270,14 @@ impl EngineHandle {
     pub fn record_state(&self) -> Option<RecordState> {
         self.call(|c| c.record_state())
     }
+
+    /// H-07: a snapshot of the take being captured's running peaks (`None`: the engine is
+    /// stopped, or no take is being captured). `start_bucket`/`max` page through
+    /// [`crate::record::LIVE_PEAKS_SPB`]-sample buckets.
+    pub fn live_take_peaks(&self, start_bucket: u32, max: u32) -> Option<LiveTakePeaks> {
+        self.call(move |c| c.live_take_peaks(start_bucket, max))
+            .flatten()
+    }
 }
 
 /// The engine without threads (deterministic tests, benches): the reader runs inline, devices are
@@ -365,6 +373,11 @@ impl ManualEngine {
     /// See [`EngineHandle::record_state`].
     pub fn record_state(&self) -> RecordState {
         self.control.record_state()
+    }
+
+    /// See [`EngineHandle::live_take_peaks`].
+    pub fn live_take_peaks(&self, start_bucket: u32, max: u32) -> Option<LiveTakePeaks> {
+        self.control.live_take_peaks(start_bucket, max)
     }
 }
 

@@ -11,6 +11,7 @@
 4. **Input dropout detection** (SPEC-002 §2.4/§4.3, AC-7): detect callback gaps, fill with silence to keep timing, add a dropout marker, and post a notice.
 5. **Disk-space floor + remaining recording time** (SPEC-002 §2.5, AC-13): stop and keep the take before the disk is full; show remaining time in the record panel.
 6. **Live-peaks memory cap:** decimate or cap the H-07 peak list for multi-hour takes (today ~5.4 MB/h at 48 kHz).
+7. **H-06 gaps (SPEC-002 §2.2 parity):** offer 88.2 kHz in the New Recording dialog; Record on a document that already has audio opens the New Recording dialog (after the unsaved-changes prompt) instead of replacing at the default format; `notice.record.resampled` shows "44.1 kHz"-style rates, not raw Hz.
 
 ## Tests
 One regression test per item (fake backend; hold `fake.spawn_driver(..)` in live-engine tests), RT input callback still no-alloc.

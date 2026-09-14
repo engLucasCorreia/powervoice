@@ -26,6 +26,10 @@ pub enum IoError {
     /// `flacenc` rejected the encoder configuration or failed mid-encode (S4-02).
     #[error("FLAC encode error: {0}")]
     FlacEncode(String),
+    /// Verify-before-rename (SPEC-005 §2.11, H-14): decoding the freshly written FLAC temp file
+    /// did not reproduce the quantized samples exactly. The target file is left untouched.
+    #[error("FLAC verify-before-rename failed: {0}")]
+    FlacVerifyFailed(String),
     /// No `libmp3lame` shared library could be loaded (ADR-007 §4, D-013): MP3 export is
     /// unavailable, and the app should show a message rather than crash.
     #[error("MP3 export unavailable: no libmp3lame could be loaded ({0})")]

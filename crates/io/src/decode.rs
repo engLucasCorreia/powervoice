@@ -36,18 +36,14 @@
 //! ([`IoError::ChainedStreamChanged`], SPEC-005 §2.5), and a mid-stream `ResetRequired` (rate/
 //! channel change symphonia itself detects while decoding) maps to the same error.
 //!
-//! ⚠ **T-202 finding (reported for hardening/H-02 follow-up):** `crate::flac::write_flac`'s own
-//! output (`flacenc` 0.5.1) currently cannot be probed by this module at all
-//! (`DecodeSource::open` fails with `IoError::Io(UnexpectedEof)`, isolated by tracing every read
-//! symphonia issues) — `symphonia-bundle-flac` cross-checks the demuxed sample count against
-//! STREAMINFO's declared total, and `flacenc`'s already-known frame-numbering quirk (MEMORY.md
-//! S4-02: `flac -t` warns "frame number does not increase correctly… might not be seekable")
-//! makes that check come up short, turning a clean end-of-stream into a hard error. The reference
-//! `flac` CLI's output decodes fine through this exact same code (see
-//! `crates/io/tests/codec_decode.rs`), which rules out a bug in this decoder. **A document
-//! PowerVoice saves as FLAC therefore cannot currently be re-opened by PowerVoice's own import**
-//! — SPEC-005 §2.11's FLAC verify-before-rename (already deferred pending this decoder, MEMORY.md)
-//! needs this fixed or worked around first.
+//! **T-202/H-14 history:** `crate::flac::write_flac`'s own output used to be unprobeable by this
+//! module (`DecodeSource::open` failing with `IoError::Io(UnexpectedEof)` on
+//! `symphonia-bundle-flac`'s sample-count cross-check). H-14 root-caused this to `flacenc` folding
+//! the final, shorter frame's block size into STREAMINFO's `min_block_size` instead of leaving it
+//! pinned at the configured block size (see `crate::flac`'s module docs for the full analysis);
+//! `write_flac` now corrects that field before writing, and this module decodes PowerVoice's own
+//! FLAC exports the same as any other FLAC file. `write_flac` also verifies every export through
+//! this exact decode path before the atomic rename (SPEC-005 §2.11).
 
 use std::fs::File;
 use std::path::Path;

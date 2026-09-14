@@ -24,43 +24,59 @@
   disabled={disabled}
   onclick={onSelect}
 >
-  <span class="check" aria-hidden="true">{checked ? "●" : ""}</span>
+  <span class="check" aria-hidden="true">{#if checked}<span class="dot"></span>{/if}</span>
   <span class="label">{label}</span>
 </button>
 
 <style>
+  /* H-25: calm 24 px menu rows — a neutral highlight (not a full accent fill), quiet shortcuts. */
   button {
     display: flex;
     align-items: center;
+    gap: var(--pv-space-2);
     width: 100%;
-    gap: 0.5rem;
-    background: none;
-    color: var(--text-primary);
+    min-height: var(--pv-control-h-sm);
+    padding: 0 var(--pv-space-2);
     border: none;
-    border-radius: 4px;
-    padding: 0.35rem 0.6rem;
+    border-radius: var(--pv-radius-sm);
+    background: none;
+    color: var(--pv-text-primary);
+    font-family: var(--pv-font-sans);
+    font-size: var(--pv-text-md);
     text-align: left;
-    font-size: inherit;
+    cursor: default;
   }
 
   button:hover:not(:disabled),
   button:focus-visible {
-    background: var(--accent);
-    color: var(--text-on-accent);
+    background: var(--pv-control-bg-active);
+    outline: none;
   }
 
   button:disabled {
-    color: var(--text-disabled);
-  }
-
-  .check {
-    width: 1em;
-    text-align: center;
-    font-size: 0.7em;
+    color: var(--pv-text-disabled);
   }
 
   .label {
     flex: 1;
     white-space: nowrap;
+  }
+
+
+
+  .check {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: var(--pv-icon-sm);
+    color: var(--pv-accent-text);
+  }
+
+  .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: var(--pv-radius-full);
+    background: currentColor;
   }
 </style>

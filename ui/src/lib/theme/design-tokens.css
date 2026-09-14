@@ -1,0 +1,256 @@
+/*
+ * PowerVoice design tokens (H-25, docs/design/design-system.md, A-017).
+ *
+ * Role-based tokens, all prefixed `--pv-` so this file is purely additive next to the legacy
+ * `tokens.css` names (`--surface-*`, `--text-*`, `--accent`, `--wave-*`, `--meter-*`, …). Phase 2
+ * maps the legacy names onto these roles (e.g. `--surface-panel: var(--pv-bg-panel)`) and moves
+ * every component onto `--pv-*`; until then importing this file changes nothing on screen.
+ *
+ * Themes: dark is the default on `:root`; `data-theme="light"` (on <html> or any subtree — the
+ * component gallery renders both side by side) switches every role. Components never read a raw
+ * hex value — only these roles — so a theme is exactly one block below.
+ *
+ * Contrast: `contrast.test.ts` parses this file and checks every text/background role pair and
+ * every non-text indicator against WCAG AA in both themes. Change a value → run the test.
+ */
+
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* ── Surfaces (darkest → lightest). The audio canvas sits in `inset`; chrome recedes. ── */
+  --pv-bg-inset: #0c0e11; /* wells: waveform/spectrogram/meter tracks, text fields */
+  --pv-bg-app: #111317; /* window background, gaps between panels */
+  --pv-bg-panel: #17191d; /* docked panels, toolbar, menu bar */
+  --pv-bg-raised: #1d2025; /* cards inside panels (rack slots), table headers */
+  --pv-bg-overlay: #22252b; /* menus, popovers, dialogs, tooltips */
+  --pv-bg-backdrop: rgba(5, 6, 8, 0.6); /* modal scrim */
+
+  /* ── Controls ── */
+  --pv-control-bg: #23262c;
+  --pv-control-bg-hover: #2b2f36;
+  --pv-control-bg-active: #33373f;
+  --pv-control-bg-selected: #373c46; /* selected segment / tab pill */
+  --pv-control-track: #0c0e11; /* segmented/switch/slider tracks */
+  --pv-field-bg: #0c0e11; /* text/number entry: a recessed well in dark */
+
+  /* ── Borders ── */
+  --pv-border-subtle: #22252b; /* dividers inside one surface */
+  --pv-border: #2f333a; /* panel edges, cards, menus */
+  --pv-border-strong: #434852; /* hover emphasis */
+  --pv-border-control: #6c727d; /* text fields/selects — ≥ 3:1 boundary (WCAG 1.4.11) */
+
+  /* ── Text ── */
+  --pv-text-primary: #e6e8ec;
+  --pv-text-secondary: #a4aab4;
+  --pv-text-tertiary: #8a909b; /* units, meta, axis labels — still AA on every surface */
+  --pv-text-disabled: #5d626b; /* disabled only (exempt from AA); never for hints */
+  --pv-text-on-accent: #ffffff;
+  --pv-text-on-record: #ffffff;
+  --pv-text-on-danger: #ffffff;
+  --pv-text-on-warning: #1a1300;
+  --pv-text-on-success: #0b1a10;
+
+  /* ── Accent: ONE colour for primary action, selection, focus, active state ── */
+  --pv-accent: #4da3ff; /* indicators: selected border, slider fill, switch on, focus */
+  --pv-accent-text: #6cb2ff; /* accent-coloured text/icons on any surface */
+  --pv-accent-fill: #2a68c8; /* primary button background (white text ≥ 4.5:1) */
+  --pv-accent-fill-hover: #2f70d3;
+  --pv-accent-fill-active: #245db4;
+  --pv-accent-soft: #1b2a3d; /* pressed toggle / selected row background */
+
+  /* ── Semantic: used only for meaning, never decoration ── */
+  --pv-record: #ff4f56; /* the on-air lamp: record dot, tally line, recording time */
+  --pv-record-text: #ff6a70;
+  --pv-record-fill: #d7262e; /* Record button while recording */
+  --pv-record-fill-hover: #c92029;
+  --pv-record-soft: #3a1a1d;
+  --pv-danger-text: #ff6b70;
+  --pv-danger-fill: #c7282f; /* destructive buttons */
+  --pv-danger-fill-hover: #b8222a;
+  --pv-danger-soft: #3a1a1d;
+  --pv-warning: #f2b544;
+  --pv-warning-text: #f2b544;
+  --pv-warning-fill: #f2b544;
+  --pv-warning-soft: #3a2e14;
+  --pv-success: #3fcf78;
+  --pv-success-text: #3fcf78;
+  --pv-success-fill: #3fcf78;
+  --pv-success-soft: #16301f;
+
+  /* ── Audio content (the hero). Values match tokens.css so the look the owner likes stays. ── */
+  --pv-meter-safe: #35c46a;
+  --pv-meter-caution: #e0c93f;
+  --pv-meter-over: #e5484d;
+  --pv-meter-track: #0c0e11;
+  --pv-clip: #e5484d;
+  --pv-playhead: #ffb454;
+  --pv-waveform: #7fc8ff;
+  --pv-selection-fill: rgba(77, 163, 255, 0.22);
+  --pv-selection-border: #4da3ff;
+
+  /* ── Focus ── */
+  --pv-focus-ring: #6cb2ff;
+
+  /* ── Elevation (borders do most of the work in dark; shadows only separate floating layers) ── */
+  --pv-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --pv-shadow-2: 0 6px 16px rgba(0, 0, 0, 0.45);
+  --pv-shadow-3: 0 16px 40px rgba(0, 0, 0, 0.55);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  --pv-bg-inset: #e4e7eb;
+  --pv-bg-app: #eceef1;
+  --pv-bg-panel: #f7f8fa;
+  --pv-bg-raised: #ffffff;
+  --pv-bg-overlay: #ffffff;
+  --pv-bg-backdrop: rgba(16, 20, 28, 0.35);
+
+  --pv-control-bg: #ffffff;
+  --pv-control-bg-hover: #eef0f3;
+  --pv-control-bg-active: #e2e5ea;
+  --pv-control-bg-selected: #ffffff;
+  --pv-control-track: #e4e7eb;
+  --pv-field-bg: #ffffff; /* white entry fields in light (grey reads as disabled) */
+
+  --pv-border-subtle: #e6e8ec;
+  --pv-border: #d3d7de;
+  --pv-border-strong: #aab1bb;
+  --pv-border-control: #858c97;
+
+  --pv-text-primary: #1a1d22;
+  --pv-text-secondary: #525964;
+  --pv-text-tertiary: #5f6671;
+  --pv-text-disabled: #a3a9b2;
+  --pv-text-on-accent: #ffffff;
+  --pv-text-on-record: #ffffff;
+  --pv-text-on-danger: #ffffff;
+  --pv-text-on-warning: #1a1300;
+  --pv-text-on-success: #0b1a10;
+
+  --pv-accent: #1f6fe0;
+  --pv-accent-text: #1a64cc;
+  --pv-accent-fill: #1a64cc;
+  --pv-accent-fill-hover: #1f6fe0;
+  --pv-accent-fill-active: #1759b8;
+  --pv-accent-soft: #e3eefc;
+
+  --pv-record: #e0262e;
+  --pv-record-text: #c4212a;
+  --pv-record-fill: #d11f27;
+  --pv-record-fill-hover: #bd1b22;
+  --pv-record-soft: #fde6e7;
+  --pv-danger-text: #c4262d;
+  --pv-danger-fill: #c4262d;
+  --pv-danger-fill-hover: #ad2027;
+  --pv-danger-soft: #fde6e7;
+  --pv-warning: #b07800;
+  --pv-warning-text: #8a5a00;
+  --pv-warning-fill: #f2b544;
+  --pv-warning-soft: #fdf1d8;
+  --pv-success: #1f9d55;
+  --pv-success-text: #157a3b;
+  --pv-success-fill: #3fcf78;
+  --pv-success-soft: #e2f5e9;
+
+  --pv-meter-safe: #35c46a;
+  --pv-meter-caution: #e0c93f;
+  --pv-meter-over: #e5484d;
+  --pv-meter-track: #dfe2e7;
+  --pv-clip: #e5484d;
+  --pv-playhead: #e08a00;
+  --pv-waveform: #1f6fe0;
+  --pv-selection-fill: rgba(31, 111, 224, 0.18);
+  --pv-selection-border: #1f6fe0;
+
+  --pv-focus-ring: #1a64cc;
+
+  --pv-shadow-1: 0 1px 2px rgba(16, 24, 40, 0.08);
+  --pv-shadow-2: 0 6px 16px rgba(16, 24, 40, 0.12);
+  --pv-shadow-3: 0 16px 40px rgba(16, 24, 40, 0.18);
+}
+
+/* Theme-independent scales. */
+:root {
+  /* Typography: system font stack (A-017 — no bundled font). */
+  --pv-font-sans:
+    system-ui, -apple-system, "Segoe UI", Cantarell, "Noto Sans", Ubuntu, Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  --pv-font-mono:
+    ui-monospace, "SFMono-Regular", "Cascadia Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace;
+  --pv-text-xs: 11px; /* axis labels, meta, badges, kbd */
+  --pv-text-sm: 12px; /* field labels, panel titles, secondary controls */
+  --pv-text-md: 13px; /* default UI text and controls */
+  --pv-text-lg: 15px; /* dialog titles */
+  --pv-text-xl: 20px; /* transport time, empty-state title */
+  --pv-leading-xs: 16px;
+  --pv-leading-sm: 16px;
+  --pv-leading-md: 18px;
+  --pv-leading-lg: 20px;
+  --pv-leading-xl: 28px;
+  --pv-weight-regular: 400;
+  --pv-weight-medium: 500;
+  --pv-weight-semibold: 600;
+
+  /* Spacing: 4 px grid (8 px rhythm; 2 px only for optical nudges). */
+  --pv-space-half: 2px;
+  --pv-space-1: 4px;
+  --pv-space-2: 8px;
+  --pv-space-3: 12px;
+  --pv-space-4: 16px;
+  --pv-space-5: 20px;
+  --pv-space-6: 24px;
+  --pv-space-8: 32px;
+
+  /* Radii: size follows the element (small chips < controls < floating surfaces). */
+  --pv-radius-sm: 4px;
+  --pv-radius-md: 6px;
+  --pv-radius-lg: 8px;
+  --pv-radius-full: 999px;
+
+  /* Sizes. */
+  --pv-control-h-sm: 24px;
+  --pv-control-h-md: 28px;
+  --pv-control-h-lg: 32px;
+  --pv-control-px-sm: 8px;
+  --pv-control-px-md: 10px;
+  --pv-control-px-lg: 12px;
+  --pv-icon-sm: 14px;
+  --pv-icon-md: 16px;
+  --pv-icon-lg: 20px;
+  --pv-hit-min: 24px;
+  --pv-menubar-h: 28px;
+  --pv-toolbar-h: 44px;
+  --pv-panel-header-h: 32px;
+  --pv-statusbar-h: 24px;
+  --pv-border-width: 1px;
+
+  /* Focus. */
+  --pv-focus-width: 2px;
+  --pv-focus-offset: 2px;
+
+  /* Motion (answers an action; never decorative). */
+  --pv-duration-fast: 120ms;
+  --pv-duration-base: 160ms;
+  --pv-duration-slow: 200ms;
+  --pv-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --pv-ease-exit: cubic-bezier(0.4, 0, 1, 1);
+
+  /* Layers. */
+  --pv-z-dropdown: 100;
+  --pv-z-sticky: 200;
+  --pv-z-overlay: 900;
+  --pv-z-dialog: 1000;
+  --pv-z-toast: 1100;
+  --pv-z-tooltip: 1200;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --pv-duration-fast: 0ms;
+    --pv-duration-base: 0ms;
+    --pv-duration-slow: 0ms;
+  }
+}

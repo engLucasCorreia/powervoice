@@ -26,7 +26,7 @@
     display: flex;
     flex-direction: column;
     pointer-events: none;
-    z-index: 1000;
+    z-index: var(--pv-z-toast);
   }
 
   .banners {
@@ -43,8 +43,8 @@
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    gap: 0.5rem;
-    padding: 0.75rem;
+    gap: var(--pv-space-2);
+    padding: var(--pv-space-3);
   }
 
   .toasts :global(.toast) {

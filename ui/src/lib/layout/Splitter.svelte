@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from "../ui/Icon.svelte";
   /**
    * A draggable, keyboard-accessible splitter (H-24 items 1/2): resizes a column (vertical
    * divider, drags horizontally) or the bottom dock (horizontal divider, drags vertically).
@@ -113,22 +114,32 @@
       }}
     >
       {#if orientation === "vertical"}
-        {collapsed ? "›" : "‹"}
+        <Icon name={collapsed ? "chevronRight" : "chevronLeft"} size={12} />
       {:else}
-        {collapsed ? "▴" : "▾"}
+        <Icon name={collapsed ? "chevronUp" : "chevronDown"} size={12} />
       {/if}
     </button>
   {/if}
 </div>
 
 <style>
+  /* H-25: a 1 px hairline drawn inside a 6 px hit area; it lights up in the accent while hovered,
+     dragged or focused. The collapse tab is a small pill that sits on the line. */
   .splitter {
     flex: none;
     position: relative;
-    background: var(--surface-border);
     display: flex;
     align-items: center;
     justify-content: center;
+    background: var(--pv-bg-app);
+    outline: none;
+  }
+
+  .splitter::before {
+    content: "";
+    position: absolute;
+    background: var(--pv-border);
+    transition: background-color var(--pv-duration-fast) var(--pv-ease-standard);
   }
 
   .splitter.vertical {
@@ -136,34 +147,68 @@
     cursor: col-resize;
   }
 
+  .splitter.vertical::before {
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 1px;
+    transform: translateX(-50%);
+  }
+
   .splitter.horizontal {
     height: 6px;
     cursor: row-resize;
   }
 
-  .splitter:hover,
-  .splitter:focus-visible {
-    background: var(--accent);
+  .splitter.horizontal::before {
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 1px;
+    transform: translateY(-50%);
+  }
+
+  .splitter:hover::before,
+  .splitter:focus-visible::before,
+  .splitter:active::before {
+    background: var(--pv-accent);
+  }
+
+  .splitter.vertical:hover::before,
+  .splitter.vertical:focus-visible::before {
+    width: 2px;
+  }
+
+  .splitter.horizontal:hover::before,
+  .splitter.horizontal:focus-visible::before {
+    height: 2px;
   }
 
   .collapse-toggle {
     position: absolute;
-    width: 14px;
-    height: 28px;
+    z-index: 1;
     display: flex;
     align-items: center;
     justify-content: center;
-    background: var(--surface-panel-raised);
-    color: var(--text-secondary);
-    border: 1px solid var(--surface-border);
-    border-radius: 3px;
-    font-size: 0.7rem;
-    line-height: 1;
+    width: 16px;
+    height: 32px;
+    padding: 0;
+    border: var(--pv-border-width) solid var(--pv-border);
+    border-radius: var(--pv-radius-sm);
+    background: var(--pv-bg-overlay);
+    color: var(--pv-text-secondary);
+    box-shadow: var(--pv-shadow-1);
+    cursor: default;
     pointer-events: auto;
   }
 
+  .collapse-toggle:hover {
+    color: var(--pv-text-primary);
+    border-color: var(--pv-border-strong);
+  }
+
   .splitter.horizontal .collapse-toggle {
-    width: 28px;
-    height: 14px;
+    width: 32px;
+    height: 16px;
   }
 </style>

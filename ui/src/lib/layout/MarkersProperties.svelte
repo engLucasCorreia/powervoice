@@ -1,6 +1,8 @@
 <script lang="ts">
   import { documentState, hasDocument } from "../document/document.svelte";
   import { t } from "../i18n";
+  import { shortcutLabelForAction } from "../keymap/shortcutLabel";
+  import { EmptyState, IconButton, PanelHeader } from "../ui";
   import {
     addMarker,
     deleteSelectedMarker,
@@ -69,35 +71,36 @@
 
 <aside class="markers-properties" data-testid="markers-properties">
   <section class="markers-panel">
-    <div class="panel-header">
-      <h2>{t("panel.markers.title")}</h2>
-      <div class="panel-actions">
-        <button
-          type="button"
-          data-testid="markers-add"
-          title={t("markers.panel.add_title")}
+    <PanelHeader title={t("panel.markers.title")}>
+      {#snippet actions()}
+        {#if markers.list.length > 0}
+          <span class="count" data-testid="markers-count">
+            {t("markers.panel.count", { count: markers.list.length })}
+          </span>
+        {/if}
+        <IconButton
+          icon="add"
+          label={t("markers.panel.add_label")}
+          shortcut={shortcutLabelForAction("marker.add")}
+          size="sm"
+          testid="markers-add"
           disabled={!isOpen}
           onclick={() => void addMarker()}
-        >
-          {t("markers.panel.add")}
-        </button>
-        <button
-          type="button"
-          data-testid="markers-delete"
-          title={t("markers.panel.delete_title")}
+        />
+        <IconButton
+          icon="delete"
+          label={t("markers.panel.delete_label")}
+          shortcut={shortcutLabelForAction("marker.delete_selected")}
+          size="sm"
+          testid="markers-delete"
           disabled={markers.selectedId === null}
           onclick={() => void deleteSelectedMarker()}
-        >
-          {t("markers.panel.delete")}
-        </button>
-      </div>
-    </div>
+        />
+      {/snippet}
+    </PanelHeader>
     {#if markers.list.length === 0}
-      <p class="empty" data-testid="markers-empty">{t("markers.panel.empty")}</p>
+      <EmptyState icon="marker" title={t("markers.panel.empty")} size="sm" level={3} testid="markers-empty" />
     {:else}
-      <span class="count" data-testid="markers-count">
-        {t("markers.panel.count", { count: markers.list.length })}
-      </span>
       <ul class="marker-list" data-testid="marker-list">
         {#each markers.list as marker (marker.id)}
           <li>
@@ -137,103 +140,76 @@
       </ul>
     {/if}
   </section>
-  <h2>{t("panel.properties.title")}</h2>
 </aside>
 
 <style>
+  /* H-25: the Markers panel — panel header with count and add/delete keys, 28 px rows, the
+     selection in the accent tint, times in tabular tertiary text. */
   .markers-properties {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
-    background: var(--surface-panel);
-    border-right: 1px solid var(--surface-border);
-    padding: 0.75rem;
-    overflow-y: auto;
+    min-height: 0;
+    background: var(--pv-bg-panel);
+    font-family: var(--pv-font-sans);
   }
 
   .markers-panel {
     display: flex;
+    flex: 1;
     flex-direction: column;
-    gap: 0.4rem;
     min-height: 0;
   }
 
-  h2 {
-    font-size: 0.8rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--text-secondary);
-    margin: 0;
-  }
-
-  .panel-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
-  }
-
-  .panel-actions {
-    display: flex;
-    gap: 0.25rem;
-  }
-
-  .panel-actions button {
-    background: var(--surface-panel-raised);
-    color: var(--text-primary);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    padding: 0.1rem 0.4rem;
-    font-size: 0.75rem;
-  }
-
-  .panel-actions button:disabled {
-    color: var(--text-disabled);
-  }
-
   .count {
-    font-size: 0.7rem;
-    color: var(--text-secondary);
-  }
-
-  .empty {
-    font-size: 0.8rem;
-    color: var(--text-secondary);
-    margin: 0;
+    margin-right: var(--pv-space-1);
+    color: var(--pv-text-tertiary);
+    font-size: var(--pv-text-xs);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
 
   .marker-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
     display: flex;
+    flex: 1;
     flex-direction: column;
     gap: 1px;
+    min-height: 0;
+    margin: 0;
+    padding: var(--pv-space-1);
     overflow-y: auto;
+    list-style: none;
   }
 
   .marker-row {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: var(--pv-space-2);
     width: 100%;
-    background: transparent;
-    color: var(--text-primary);
+    height: var(--pv-control-h-md);
+    padding: 0 var(--pv-space-2);
     border: none;
-    border-radius: 3px;
-    padding: 0.2rem 0.3rem;
-    text-align: left;
-    font-size: 0.75rem;
+    border-radius: var(--pv-radius-sm);
+    background: transparent;
+    color: var(--pv-text-primary);
+    font-family: inherit;
+    font-size: var(--pv-text-sm);
     font-variant-numeric: tabular-nums;
+    text-align: left;
+    cursor: default;
   }
 
   .marker-row:hover {
-    background: var(--surface-panel-raised);
+    background: var(--pv-control-bg-hover);
   }
 
   .marker-row.selected {
-    background: var(--accent);
-    color: var(--surface-panel);
+    background: var(--pv-accent-soft);
+    color: var(--pv-accent-text);
+  }
+
+  .marker-row:focus-visible {
+    outline: var(--pv-focus-width) solid var(--pv-focus-ring);
+    outline-offset: -2px;
   }
 
   .marker-name {
@@ -246,8 +222,13 @@
 
   .marker-time,
   .marker-duration {
+    color: var(--pv-text-tertiary);
+    font-size: var(--pv-text-xs);
+  }
+
+  .marker-row.selected .marker-time,
+  .marker-row.selected .marker-duration {
     color: inherit;
-    opacity: 0.8;
   }
 
   .marker-row.renaming,
@@ -257,12 +238,18 @@
 
   .rename-input {
     width: 100%;
-    box-sizing: border-box;
-    background: var(--surface-panel-raised);
-    color: var(--text-primary);
-    border: 1px solid var(--accent);
-    border-radius: 3px;
-    padding: 0.2rem 0.3rem;
-    font-size: 0.75rem;
+    height: var(--pv-control-h-md);
+    padding: 0 var(--pv-space-2);
+    border: var(--pv-border-width) solid var(--pv-accent);
+    border-radius: var(--pv-radius-sm);
+    background: var(--pv-field-bg);
+    color: var(--pv-text-primary);
+    font-family: inherit;
+    font-size: var(--pv-text-sm);
+  }
+
+  .rename-input:focus-visible {
+    outline: var(--pv-focus-width) solid var(--pv-focus-ring);
+    outline-offset: 0;
   }
 </style>

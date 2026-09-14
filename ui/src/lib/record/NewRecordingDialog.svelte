@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { BitDepth, DefaultFormatDto } from "../ipc/bindings";
   import { t } from "../i18n";
+  import { Button, Dialog } from "../ui";
   import { cancelNewRecordingPrompt, confirmNewRecordingPrompt, recordState } from "../state/record.svelte";
   import { saveSettings } from "../state/settings.svelte";
 
@@ -46,22 +47,17 @@
 </script>
 
 {#if rec.newRecordingPrompt}
-  <div class="backdrop">
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div
-      class="dialog"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="new-recording-title"
-      data-testid="new-recording-dialog"
-      tabindex="-1"
-      onkeydown={onKeydown}
-    >
-      <h2 id="new-recording-title">{t("dialog.new_recording.title")}</h2>
-      <fieldset>
-        <legend>{t("dialog.new_recording.sample_rate")}</legend>
+  <Dialog
+    title={t("dialog.new_recording.title")}
+    titleId="new-recording-title"
+    testid="new-recording-dialog"
+    onkeydown={onKeydown}
+  >
+    <fieldset>
+      <legend>{t("dialog.new_recording.sample_rate")}</legend>
+      <div class="options">
         {#each SAMPLE_RATES as rate (rate)}
-          <label>
+          <label class="option">
             <input
               type="radio"
               name="new-recording-rate"
@@ -72,11 +68,13 @@
             {t(`dialog.new_recording.sample_rate.${rate}` as const)}
           </label>
         {/each}
-      </fieldset>
-      <fieldset>
-        <legend>{t("dialog.new_recording.bit_depth")}</legend>
+      </div>
+    </fieldset>
+    <fieldset>
+      <legend>{t("dialog.new_recording.bit_depth")}</legend>
+      <div class="options">
         {#each BIT_DEPTHS as depth (depth)}
-          <label>
+          <label class="option">
             <input
               type="radio"
               name="new-recording-bits"
@@ -87,94 +85,15 @@
             {t(`dialog.new_recording.bit_depth.${depth}` as const)}
           </label>
         {/each}
-      </fieldset>
-      <div class="actions">
-        <button type="button" data-testid="new-recording-cancel" onclick={cancelNewRecordingPrompt}>
-          {t("dialog.new_recording.cancel")}
-        </button>
-        <button
-          type="button"
-          class="primary"
-          data-testid="new-recording-confirm"
-          disabled={busy}
-          onclick={() => void confirm()}
-        >
-          {t("dialog.new_recording.record")}
-        </button>
       </div>
-    </div>
-  </div>
+    </fieldset>
+    {#snippet footer()}
+      <Button testid="new-recording-cancel" onclick={cancelNewRecordingPrompt}>
+        {t("dialog.new_recording.cancel")}
+      </Button>
+      <Button variant="primary" icon="record" testid="new-recording-confirm" loading={busy} onclick={() => void confirm()}>
+        {t("dialog.new_recording.record")}
+      </Button>
+    {/snippet}
+  </Dialog>
 {/if}
-
-<style>
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: rgba(0, 0, 0, 0.45);
-    z-index: 1000;
-  }
-
-  .dialog {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    min-width: 24rem;
-    max-width: 90vw;
-    padding: 1rem 1.25rem;
-    background: var(--surface-panel);
-    border: 1px solid var(--surface-border);
-    border-radius: 6px;
-    color: var(--text-primary);
-  }
-
-  h2 {
-    margin: 0;
-    font-size: 1rem;
-  }
-
-  fieldset {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    padding: 0.5rem 0.75rem;
-  }
-
-  legend {
-    color: var(--text-secondary);
-    padding: 0 0.25rem;
-  }
-
-  label {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-  }
-
-  .actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 0.5rem;
-  }
-
-  button {
-    background: var(--surface-panel-raised);
-    color: var(--text-primary);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    padding: 0.25rem 0.75rem;
-  }
-
-  button.primary {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  button:disabled {
-    color: var(--text-disabled);
-  }
-</style>

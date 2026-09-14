@@ -11,6 +11,9 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    // H-25: Vitest stubs every CSS import (even `?raw`) to "" unless it is listed here. The
+    // design-tokens contrast test reads the real stylesheet text.
+    css: { include: [/(design-tokens|tokens|theme-bridge)\.css/] },
     include: ["src/**/*.test.ts"],
   },
 });

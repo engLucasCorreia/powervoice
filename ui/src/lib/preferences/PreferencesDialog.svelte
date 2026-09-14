@@ -5,6 +5,9 @@
   import { recordState, refreshOffset, setRecordPrefs } from "../state/record.svelte";
   import { saveSettings, settingsState } from "../state/settings.svelte";
   import { t, tDynamic } from "../i18n";
+  import type { ThemePref } from "../ipc/bindings";
+  import { applyThemePref } from "../theme/theme.svelte";
+  import { Button, Dialog, SegmentedControl, type SegmentOption } from "../ui";
   import { closePreferences, preferencesState } from "./preferences.svelte";
 
   /**
@@ -19,6 +22,17 @@
    * stored per device setup (each can be forgotten). Locked while recording, like the panel.
    */
   const pref = preferencesState();
+  // H-25: Appearance → Theme applies at once and persists in Settings.
+  const THEMES: SegmentOption<ThemePref>[] = [
+    { value: "dark", label: t("preferences.theme.dark"), testid: "preferences-theme-dark" },
+    { value: "light", label: t("preferences.theme.light"), testid: "preferences-theme-light" },
+    { value: "system", label: t("preferences.theme.system"), testid: "preferences-theme-system" },
+  ];
+
+  function chooseTheme(theme: ThemePref): void {
+    applyThemePref(theme);
+    void saveSettings({ theme });
+  }
   const settings = settingsState();
   const rec = recordState();
   const prefs = $derived(rec.prefs);
@@ -86,23 +100,26 @@
 </script>
 
 {#if pref.open}
-  <div class="backdrop">
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div
-      class="dialog"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="preferences-title"
-      data-testid="preferences-dialog"
-      tabindex="-1"
-      onkeydown={onKeydown}
-    >
-      <h2 id="preferences-title">{t("preferences.title")}</h2>
-
-      <section>
-        <h3>{t("preferences.section.storage")}</h3>
-        <label class="field" for="preferences-memory-budget">
-          <span>{t("preferences.memory_budget")}</span>
+  <Dialog size="lg" title={t("preferences.title")} titleId="preferences-title" testid="preferences-dialog" onkeydown={onKeydown}>
+    <section data-testid="preferences-appearance">
+      <h3>{t("preferences.section.appearance")}</h3>
+      <div class="row">
+        <span class="label">{t("preferences.theme")}</span>
+        <SegmentedControl
+          options={THEMES}
+          value={settings.current?.theme ?? "dark"}
+          label={t("preferences.theme")}
+          size="sm"
+          onchange={chooseTheme}
+        />
+      </div>
+      <p class="hint">{t("preferences.theme.hint")}</p>
+    </section>
+    <section>
+      <h3>{t("preferences.section.storage")}</h3>
+      <div class="row">
+        <label for="preferences-memory-budget">{t("preferences.memory_budget")}</label>
+        <div class="range">
           <input
             id="preferences-memory-budget"
             type="range"
@@ -117,18 +134,19 @@
           <span class="value" data-testid="preferences-memory-budget-value">
             {formatBytes(draftMib * 1024 * 1024)}
           </span>
-        </label>
-        <p class="hint">{t("preferences.memory_budget.hint")}</p>
-      </section>
-
-      <section data-testid="preferences-recording">
-        <h3>{t("preferences.section.recording")}</h3>
-        {#if locked}
-          <p class="hint" data-testid="preferences-recording-locked">{t("preferences.recording.locked")}</p>
-        {/if}
-        <div class="choice" role="radiogroup" aria-label={t("record.mode")} title={t("record.mode_title")}>
-          <span>{t("record.mode")}</span>
-          <label>
+        </div>
+      </div>
+      <p class="hint">{t("preferences.memory_budget.hint")}</p>
+    </section>
+    <section data-testid="preferences-recording">
+      <h3>{t("preferences.section.recording")}</h3>
+      {#if locked}
+        <p class="hint" data-testid="preferences-recording-locked">{t("preferences.recording.locked")}</p>
+      {/if}
+      <div class="row" role="radiogroup" aria-label={t("record.mode")} title={t("record.mode_title")}>
+        <span class="label">{t("record.mode")}</span>
+        <div class="options">
+          <label class="option">
             <input
               type="radio"
               name="preferences-record-mode"
@@ -139,7 +157,7 @@
             />
             {t("record.mode.insert")}
           </label>
-          <label>
+          <label class="option">
             <input
               type="radio"
               name="preferences-record-mode"
@@ -151,7 +169,63 @@
             {t("record.mode.overwrite")}
           </label>
         </div>
-        <label class="check">
+      </div>
+      <div class="row">
+        <label for="preferences-preroll-input">{t("preferences.recording.preroll_s")}</label>
+        <input
+          id="preferences-preroll-input"
+          class="number"
+          type="number"
+          min="0"
+          max={ROLL_MAX_S}
+          step="0.1"
+          data-testid="preferences-preroll"
+          value={prefs.preroll_s}
+          disabled={locked}
+          onchange={(e) => {
+            const v = numberFrom(e, ROLL_MAX_S);
+            if (v !== null) void setRecordPrefs({ preroll_s: v });
+          }}
+        />
+      </div>
+      <div class="row">
+        <label for="preferences-postroll-input">{t("preferences.recording.postroll_s")}</label>
+        <input
+          id="preferences-postroll-input"
+          class="number"
+          type="number"
+          min="0"
+          max={ROLL_MAX_S}
+          step="0.1"
+          data-testid="preferences-postroll"
+          value={prefs.postroll_s}
+          disabled={locked}
+          onchange={(e) => {
+            const v = numberFrom(e, ROLL_MAX_S);
+            if (v !== null) void setRecordPrefs({ postroll_s: v });
+          }}
+        />
+      </div>
+      <div class="row">
+        <label for="preferences-xfade-input">{t("preferences.recording.xfade_ms")}</label>
+        <input
+          id="preferences-xfade-input"
+          class="number"
+          type="number"
+          min="0"
+          max={XFADE_MAX_MS}
+          step="1"
+          data-testid="preferences-xfade"
+          value={prefs.punch_xfade_ms}
+          disabled={locked}
+          onchange={(e) => {
+            const v = numberFrom(e, XFADE_MAX_MS);
+            if (v !== null) void setRecordPrefs({ punch_xfade_ms: v });
+          }}
+        />
+      </div>
+      <div class="checks">
+        <label class="option">
           <input
             type="checkbox"
             data-testid="preferences-punch-on-selection"
@@ -161,39 +235,7 @@
           />
           {t("record.punch_on_selection")}
         </label>
-        <label class="number">
-          <span>{t("preferences.recording.preroll_s")}</span>
-          <input
-            type="number"
-            min="0"
-            max={ROLL_MAX_S}
-            step="0.1"
-            data-testid="preferences-preroll"
-            value={prefs.preroll_s}
-            disabled={locked}
-            onchange={(e) => {
-              const v = numberFrom(e, ROLL_MAX_S);
-              if (v !== null) void setRecordPrefs({ preroll_s: v });
-            }}
-          />
-        </label>
-        <label class="number">
-          <span>{t("preferences.recording.postroll_s")}</span>
-          <input
-            type="number"
-            min="0"
-            max={ROLL_MAX_S}
-            step="0.1"
-            data-testid="preferences-postroll"
-            value={prefs.postroll_s}
-            disabled={locked}
-            onchange={(e) => {
-              const v = numberFrom(e, ROLL_MAX_S);
-              if (v !== null) void setRecordPrefs({ postroll_s: v });
-            }}
-          />
-        </label>
-        <label class="check">
+        <label class="option">
           <input
             type="checkbox"
             data-testid="preferences-preroll-at-cursor"
@@ -203,7 +245,7 @@
           />
           {t("record.preroll_at_cursor")}
         </label>
-        <label class="check">
+        <label class="option">
           <input
             type="checkbox"
             data-testid="preferences-hear-original"
@@ -213,197 +255,143 @@
           />
           {t("record.hear_original")}
         </label>
-        <label class="number">
-          <span>{t("preferences.recording.xfade_ms")}</span>
-          <input
-            type="number"
-            min="0"
-            max={XFADE_MAX_MS}
-            step="1"
-            data-testid="preferences-xfade"
-            value={prefs.punch_xfade_ms}
-            disabled={locked}
-            onchange={(e) => {
-              const v = numberFrom(e, XFADE_MAX_MS);
-              if (v !== null) void setRecordPrefs({ punch_xfade_ms: v });
-            }}
-          />
-        </label>
-
-        <h4>{t("preferences.recording.offsets")}</h4>
-        <p class="current">
-          <span>{t("record.offset.label")}</span>
-          <span class="value" data-testid="preferences-offset-current">
-            {tDynamic(currentOffset.key, currentOffset.params)}
-          </span>
-        </p>
-        {#if offsets.length === 0}
-          <p class="hint" data-testid="preferences-offsets-empty">{t("preferences.recording.offsets_empty")}</p>
-        {:else}
-          <ul class="offsets">
-            {#each offsets as entry (`${entry.host}|${entry.input_device}|${entry.output_device}|${entry.device_rate_hz}`)}
-              <li data-testid="preferences-offset-entry">
-                <span>
-                  {t("preferences.recording.offset_entry", {
-                    input: entry.input_device,
-                    output: entry.output_device,
-                    host: entry.host,
-                    rate: String(entry.device_rate_hz / 1000),
-                  })}
-                </span>
-                <span class="value">
-                  {entry.source === "manual"
-                    ? t("preferences.recording.offset_manual", { ms: offsetMs(entry.offset_ms) })
-                    : t("preferences.recording.offset_calibrated", {
-                        ms: offsetMs(entry.offset_ms),
-                        date: offsetDate(entry.updated_unix_ms),
-                      })}
-                </span>
-                <button
-                  type="button"
-                  data-testid="preferences-offset-remove"
-                  title={t("preferences.recording.offset_remove_title")}
-                  disabled={locked}
-                  onclick={() => void removeOffset(entry)}
-                >
-                  {t("preferences.recording.offset_remove")}
-                </button>
-              </li>
-            {/each}
-          </ul>
-        {/if}
-      </section>
-
-      <div class="footer">
-        <button type="button" data-testid="preferences-close" onclick={closePreferences}>
-          {t("preferences.close")}
-        </button>
       </div>
-    </div>
-  </div>
+      <h3>{t("preferences.recording.offsets")}</h3>
+      <div class="row">
+        <span class="label">{t("record.offset.label")}</span>
+        <span class="value" data-testid="preferences-offset-current">
+          {tDynamic(currentOffset.key, currentOffset.params)}
+        </span>
+      </div>
+      {#if offsets.length === 0}
+        <p class="hint" data-testid="preferences-offsets-empty">{t("preferences.recording.offsets_empty")}</p>
+      {:else}
+        <ul class="offsets">
+          {#each offsets as entry (`${entry.host}|${entry.input_device}|${entry.output_device}|${entry.device_rate_hz}`)}
+            <li data-testid="preferences-offset-entry">
+              <span class="devices">
+                {t("preferences.recording.offset_entry", {
+                  input: entry.input_device,
+                  output: entry.output_device,
+                  host: entry.host,
+                  rate: String(entry.device_rate_hz / 1000),
+                })}
+              </span>
+              <span class="value">
+                {entry.source === "manual"
+                  ? t("preferences.recording.offset_manual", { ms: offsetMs(entry.offset_ms) })
+                  : t("preferences.recording.offset_calibrated", {
+                      ms: offsetMs(entry.offset_ms),
+                      date: offsetDate(entry.updated_unix_ms),
+                    })}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                icon="delete"
+                testid="preferences-offset-remove"
+                title={t("preferences.recording.offset_remove_title")}
+                disabled={locked}
+                onclick={() => void removeOffset(entry)}
+              >
+                {t("preferences.recording.offset_remove")}
+              </Button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </section>
+    {#snippet footer()}
+      <Button variant="primary" testid="preferences-close" onclick={closePreferences}>
+        {t("preferences.close")}
+      </Button>
+    {/snippet}
+  </Dialog>
 {/if}
 
 <style>
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: rgba(0, 0, 0, 0.45);
-    z-index: 900;
-  }
-
-  .dialog {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    width: min(28rem, 90vw);
-    max-height: 85vh;
-    overflow: auto;
-    padding: 1rem 1.25rem;
-    background: var(--surface-panel);
-    border: 1px solid var(--surface-border);
-    border-radius: 6px;
-    color: var(--text-primary);
-  }
-
-  h2 {
-    margin: 0;
-    font-size: 1rem;
-  }
-
-  h3 {
-    margin: 0 0 0.5rem;
-    font-size: 0.9rem;
-    color: var(--text-secondary);
-  }
-
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-  }
-
-  .field input[type="range"] {
-    width: 100%;
-  }
-
-  .value {
-    color: var(--text-secondary);
-    font-size: 0.85em;
-  }
-
-  .hint {
-    margin: 0.35rem 0 0;
-    color: var(--text-secondary);
-    font-size: 0.85em;
-  }
-
-  section + section {
-    border-top: 1px solid var(--surface-border);
-    padding-top: 0.75rem;
-  }
-
   section {
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
+    gap: var(--pv-space-2);
   }
 
-  h4 {
-    margin: 0.5rem 0 0;
-    font-size: 0.85rem;
-    color: var(--text-secondary);
+  section + section {
+    padding-top: var(--pv-space-4);
+    border-top: var(--pv-border-width) solid var(--pv-border-subtle);
   }
 
-  .choice,
-  .check,
-  .current {
+  section > h3:first-child {
+    margin-top: 0;
+  }
+
+  /* One setting per row: label on the left (fixed column), control on the right. */
+  .row {
+    display: grid;
+    grid-template-columns: 11rem minmax(0, 1fr);
+    align-items: center;
+    gap: var(--pv-space-3);
+    min-height: var(--pv-control-h-md);
+  }
+
+  .row > label,
+  .row > .label {
+    color: var(--pv-text-secondary);
+    font-size: var(--pv-text-sm);
+  }
+
+  .range {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    margin: 0;
+    gap: var(--pv-space-3);
+  }
+
+  .range input {
+    flex: 1;
   }
 
   .number {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
+    width: 6rem;
+    text-align: right;
   }
 
-  .number input {
-    width: 5.5rem;
+  .value {
+    color: var(--pv-text-primary);
+    font-size: var(--pv-text-sm);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .checks {
+    display: flex;
+    flex-direction: column;
+    gap: var(--pv-space-1);
+    padding-left: calc(11rem + var(--pv-space-3));
   }
 
   .offsets {
-    list-style: none;
-    margin: 0;
-    padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.35rem;
+    gap: var(--pv-space-1);
+    margin: 0;
+    padding: 0;
+    list-style: none;
   }
 
   .offsets li {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
+    gap: var(--pv-space-2) var(--pv-space-3);
+    padding: var(--pv-space-2) var(--pv-space-3);
+    border-radius: var(--pv-radius-md);
+    background: var(--pv-bg-raised);
   }
 
-  .footer {
-    display: flex;
-    justify-content: flex-end;
-  }
-
-  button {
-    background: var(--surface-panel-raised);
-    color: var(--text-primary);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    padding: 0.25rem 0.75rem;
+  .devices {
+    flex: 1;
+    min-width: 12rem;
+    color: var(--pv-text-secondary);
+    font-size: var(--pv-text-sm);
   }
 </style>

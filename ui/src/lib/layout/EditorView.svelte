@@ -198,6 +198,7 @@
     min-width: 0;
     min-height: 0;
     flex: 1;
+    background: var(--pv-bg-inset);
   }
 
   .waveform-pane,
@@ -208,51 +209,107 @@
     overflow: hidden;
   }
 
+  /* H-25: the waveform/spectral divider is a hairline inside a 6 px hit area, like the splitters. */
   .divider {
+    position: relative;
     flex: none;
     height: 6px;
+    background: var(--pv-bg-app);
     cursor: ns-resize;
-    background: var(--surface-border);
   }
 
-  .divider:hover {
-    background: var(--accent);
+  .divider::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 1px;
+    background: var(--pv-border);
+    transform: translateY(-50%);
+  }
+
+  .divider:hover::before {
+    height: 2px;
+    background: var(--pv-accent);
   }
 
   .ruler {
     position: relative;
     height: 20px;
     flex: none;
-    border-bottom: 1px solid var(--wave-ruler-grid);
-    background: var(--surface-panel);
+    border-bottom: var(--pv-border-width) solid var(--pv-border-subtle);
+    background: var(--pv-bg-panel);
     overflow: hidden;
   }
 
-  /* H-24 item 7: a visual placeholder matching the width of both panes' left gutter
-   * (`WaveformView`'s amplitude ruler, `SpectralView`'s frequency ruler) — the ticks themselves
-   * are already offset past it (`RULER_GUTTER_PX` added to every tick's `left`, SPEC-006 §2.1:
-   * "spanning the same horizontal extent as the waveform canvas, not the amplitude gutter"). */
+  /* H-24 item 7: matches both panes' 48 px left gutter; ticks are offset past it. */
   .ruler-gutter {
     position: absolute;
     top: 0;
     bottom: 0;
     left: 0;
     width: 48px;
-    border-right: 1px solid var(--wave-ruler-grid);
+    border-right: var(--pv-border-width) solid var(--pv-border-subtle);
   }
 
   .tick {
     position: absolute;
-    top: 2px;
-    color: var(--wave-ruler-text);
-    font-size: 0.7rem;
+    top: 3px;
+    color: var(--pv-text-tertiary);
+    font-family: var(--pv-font-sans);
+    font-size: 10px;
+    line-height: 14px;
+    font-variant-numeric: tabular-nums;
     white-space: nowrap;
     transform: translateX(2px);
   }
 
+  /* H-25: the horizontal scroll control drawn as a slim scrollbar, not a volume slider. */
   .scrollbar {
     flex: none;
     width: 100%;
+    height: 12px;
     margin: 0;
+    appearance: none;
+    border-top: var(--pv-border-width) solid var(--pv-border-subtle);
+    background: var(--pv-bg-panel);
+    cursor: default;
+  }
+
+  .scrollbar::-webkit-slider-runnable-track {
+    height: 11px;
+    background: transparent;
+  }
+
+  .scrollbar::-webkit-slider-thumb {
+    width: 56px;
+    height: 6px;
+    margin-top: 2.5px;
+    appearance: none;
+    border-radius: var(--pv-radius-full);
+    background: var(--pv-border-strong);
+  }
+
+  .scrollbar:hover::-webkit-slider-thumb {
+    background: var(--pv-text-tertiary);
+  }
+
+  .scrollbar::-moz-range-track {
+    height: 11px;
+    background: transparent;
+  }
+
+  .scrollbar::-moz-range-thumb {
+    width: 56px;
+    height: 6px;
+    border: none;
+    border-radius: var(--pv-radius-full);
+    background: var(--pv-border-strong);
+  }
+
+  .scrollbar:focus-visible {
+    outline: var(--pv-focus-width) solid var(--pv-focus-ring);
+    outline-offset: -2px;
   }
 </style>

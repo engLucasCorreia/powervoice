@@ -48,17 +48,17 @@
   .gr {
     display: inline-flex;
     align-items: center;
-    gap: 0.25rem;
+    gap: var(--pv-space-1);
   }
 
   .track {
     position: relative;
     width: 3.5rem;
-    height: 0.4rem;
-    background: var(--surface-inset);
-    border: 1px solid var(--surface-border);
-    border-radius: 2px;
+    height: 6px;
     overflow: hidden;
+    border-radius: var(--pv-radius-full);
+    background: var(--pv-meter-track);
+    box-shadow: inset 0 0 0 var(--pv-border-width) var(--pv-border);
   }
 
   .fill {
@@ -66,14 +66,14 @@
     top: 0;
     right: 0;
     bottom: 0;
-    background: var(--meter-yellow);
+    background: var(--pv-meter-caution);
   }
 
   .readout {
-    color: var(--text-secondary);
-    font-size: 0.75rem;
+    min-width: 2.4rem;
+    color: var(--pv-text-tertiary);
+    font-size: var(--pv-text-xs);
     font-variant-numeric: tabular-nums;
-    min-width: 2.2rem;
     text-align: right;
   }
 </style>

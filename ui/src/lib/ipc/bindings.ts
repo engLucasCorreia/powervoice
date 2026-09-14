@@ -950,7 +950,12 @@ save_dither: SaveDitherPref,
  * H-24: the app shell's resizable layout (column widths, dock height, collapsed panels,
  * active dock tab). Additive field — the settings version stays 1.
  */
-layout: LayoutPrefsDto, };
+layout: LayoutPrefsDto, 
+/**
+ * H-25: the UI colour theme (Preferences → Appearance). Additive field — the settings
+ * version stays 1.
+ */
+theme: ThemePref, };
 
 /**
  * Slot status (SPEC-012 §2.2, §2.9; T-802: `restarting` for a sandboxed plugin whose automatic
@@ -1025,6 +1030,12 @@ group: number | null, };
  * What a module telemetry channel's value means ([`TelemetryKind`], ADR-005 §11).
  */
 export type TelemetryKindDto = "gain_reduction" | "level" | "indicator" | "value";
+
+/**
+ * The UI colour theme (H-25 design system, docs/design/design-system.md §15). Dark is the
+ * factory default (the design is dark-first); `System` follows the OS light/dark preference.
+ */
+export type ThemePref = "dark" | "light" | "system";
 
 /**
  * Transport state (`transport_state` event, transport command results). While playing, the

@@ -201,16 +201,20 @@
   }
 
   button[data-menu-trigger] {
-    background: none;
-    color: var(--text-primary);
+    height: var(--pv-control-h-sm);
+    padding: 0 var(--pv-space-2);
     border: none;
-    border-radius: 4px;
-    padding: 0.3rem 0.6rem;
+    border-radius: var(--pv-radius-sm);
+    background: none;
+    color: var(--pv-text-primary);
+    font-family: var(--pv-font-sans);
+    font-size: var(--pv-text-md);
+    cursor: default;
   }
 
   button[data-menu-trigger]:hover,
   button[data-menu-trigger][aria-expanded="true"] {
-    background: var(--surface-panel-raised);
+    background: var(--pv-control-bg-active);
   }
 
   u {
@@ -221,16 +225,16 @@
     position: absolute;
     top: 100%;
     left: 0;
-    z-index: 100;
+    z-index: var(--pv-z-dropdown);
     display: flex;
     flex-direction: column;
     min-width: 14rem;
-    margin-top: 0.15rem;
-    padding: 0.25rem;
-    background: var(--surface-panel);
-    border: 1px solid var(--surface-border);
-    border-radius: 6px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+    margin-top: var(--pv-space-half);
+    padding: var(--pv-space-1);
+    border: var(--pv-border-width) solid var(--pv-border);
+    border-radius: var(--pv-radius-md);
+    background: var(--pv-bg-overlay);
+    box-shadow: var(--pv-shadow-2);
   }
 
   .submenu-popup {

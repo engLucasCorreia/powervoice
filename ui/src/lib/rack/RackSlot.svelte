@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Button, Icon, IconButton } from "../ui";
   import EqGraph from "../eq/EqGraph.svelte";
   import { t } from "../i18n";
   import type { ParamInfoDto, PresetEntryDto, RackSlotDto } from "../ipc/bindings";
@@ -197,25 +198,22 @@
   onfocusin={() => noteSlotFocused(index)}
 >
   <header>
-    <button
-      type="button"
-      class="power"
-      class:on={!slot.bypass}
-      aria-pressed={!slot.bypass}
-      title={t("rack.slot.bypass")}
-      data-testid="rack-slot-bypass"
+    <span class="grip" aria-hidden="true"><Icon name="drag" size="sm" /></span>
+    <IconButton
+      icon="bypass"
+      label={t("rack.slot.bypass")}
+      size="sm"
+      pressed={!slot.bypass}
+      testid="rack-slot-bypass"
       onclick={() => void setBypass(index, !slot.bypass)}
-    >
-      ⏻
-    </button>
-    <button
-      type="button"
-      class="collapse"
-      title={collapsed ? t("rack.slot.expand") : t("rack.slot.collapse")}
+    />
+    <IconButton
+      icon={collapsed ? "chevronRight" : "chevronDown"}
+      label={collapsed ? t("rack.slot.expand") : t("rack.slot.collapse")}
+      size="sm"
+      aria-expanded={!collapsed}
       onclick={() => (collapsed = !collapsed)}
-    >
-      {collapsed ? "▸" : "▾"}
-    </button>
+    />
     <span class="name" data-testid="rack-slot-name">{slot.name}</span>
     {#if statusBadge}
       <span class="status-badge {statusBadge.kind}" data-testid="rack-slot-badge" data-badge={statusBadge.kind}
@@ -236,20 +234,19 @@
       {/each}
     {/if}
     <div class="menu-wrap">
-      <button
-        type="button"
-        class="menu-button"
-        aria-label={t("rack.slot.menu")}
-        data-testid="rack-slot-menu"
+      <IconButton
+        icon="more"
+        label={t("rack.slot.menu")}
+        size="sm"
+        testid="rack-slot-menu"
+        aria-expanded={menuOpen}
         onclick={() => {
           menuOpen = !menuOpen;
           if (!menuOpen) {
             closeMenu();
           }
         }}
-      >
-        ⋯
-      </button>
+      />
       {#if menuOpen}
         <div class="menu" role="menu">
           <button
@@ -283,7 +280,8 @@
               aria-expanded={presetsOpen}
               onclick={() => (presetsOpen ? (presetsOpen = false) : void openPresetsSubmenu())}
             >
-              {t("rack.slot.menu.presets")} ▸
+              <span class="grow">{t("rack.slot.menu.presets")}</span>
+              <Icon name={presetsOpen ? "chevronDown" : "chevronRight"} size="sm" />
             </button>
             {#if presetsOpen}
               <div class="submenu" data-testid="rack-slot-presets-submenu">
@@ -310,8 +308,9 @@
                           title={t("rack.slot.preset.delete")}
                           data-testid="rack-slot-preset-delete-{entry.key}"
                           onclick={(e) => void deletePreset(entry, e)}
+                          aria-label={t("rack.slot.preset.delete")}
                         >
-                          ×
+                          <Icon name="close" size="sm" />
                         </button>
                       {/if}
                     </div>
@@ -336,16 +335,17 @@
                       </label>
                     {/if}
                     <div class="save-actions">
-                      <button
-                        type="button"
-                        data-testid="rack-slot-preset-save-confirm"
+                      <Button size="sm" onclick={() => (savingPreset = false)}>
+                        {t("rack.slot.preset.cancel_button")}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        testid="rack-slot-preset-save-confirm"
                         onclick={() => void confirmSavePreset()}
                       >
                         {t("rack.slot.preset.save_button")}
-                      </button>
-                      <button type="button" onclick={() => (savingPreset = false)}>
-                        {t("rack.slot.preset.cancel_button")}
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 {:else}
@@ -380,9 +380,9 @@
     <div class="status-row">
       <p class="status-message" data-testid="rack-slot-status">{slot.status.message}</p>
       {#if canRetry}
-        <button type="button" class="retry" data-testid="rack-slot-retry" onclick={() => void restartSlot(index)}>
+        <Button size="sm" testid="rack-slot-retry" onclick={() => void restartSlot(index)}>
           {t("rack.slot.retry")}
-        </button>
+        </Button>
       {/if}
     </div>
   {/if}
@@ -411,117 +411,161 @@
 </section>
 
 <style>
+  /* H-25: a slot is a raised card — header (grip, power, disclosure, name, status, latency, gain
+     reduction, more) over its body. Bypassed dims the body only; the header stays readable so
+     the power key that brings it back is never faded. */
   .slot {
-    background: var(--surface-panel-raised);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    margin-bottom: 0.4rem;
-    padding: 0.4rem 0.5rem;
+    border: var(--pv-border-width) solid var(--pv-border);
+    border-radius: var(--pv-radius-md);
+    background: var(--pv-bg-raised);
+    font-family: var(--pv-font-sans);
+    transition: border-color var(--pv-duration-fast) var(--pv-ease-standard);
   }
 
   .slot.drag-over {
-    border-color: var(--accent);
+    border-color: var(--pv-accent);
+    box-shadow: 0 0 0 1px var(--pv-accent);
   }
 
-  .slot.bypassed {
-    opacity: 0.6;
+  .slot.bypassed .body {
+    opacity: 0.45;
+  }
+
+  .slot.bypassed .name {
+    color: var(--pv-text-secondary);
   }
 
   header {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: var(--pv-space-1);
+    min-height: var(--pv-panel-header-h);
+    padding: 0 var(--pv-space-1);
   }
 
-  .power {
-    background: var(--surface-inset);
-    color: var(--text-disabled);
-    border: 1px solid var(--surface-border);
-    border-radius: 50%;
-    width: 1.4rem;
-    height: 1.4rem;
-    line-height: 1;
-    padding: 0;
-  }
-
-  .power.on {
-    color: var(--meter-green);
-  }
-
-  .collapse {
-    background: transparent;
-    border: none;
-    color: var(--text-secondary);
+  .grip {
+    display: inline-flex;
+    color: var(--pv-text-tertiary);
+    cursor: grab;
   }
 
   .name {
-    font-weight: 600;
     flex: 1;
+    min-width: 0;
+    margin-left: var(--pv-space-1);
     overflow: hidden;
+    color: var(--pv-text-primary);
+    font-size: var(--pv-text-md);
+    font-weight: var(--pv-weight-semibold);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .latency {
-    color: var(--text-secondary);
-    font-size: 0.75rem;
+    color: var(--pv-text-tertiary);
+    font-size: var(--pv-text-xs);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  /* T-802 status: soft tone chips with the word (never colour alone). */
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    height: 18px;
+    padding-inline: var(--pv-space-1);
+    border-radius: var(--pv-radius-sm);
+    background: var(--pv-control-bg);
+    color: var(--pv-text-secondary);
+    font-size: var(--pv-text-xs);
+    font-weight: var(--pv-weight-medium);
+    white-space: nowrap;
+  }
+
+  .status-badge.running {
+    background: var(--pv-success-soft);
+    color: var(--pv-success-text);
+  }
+
+  .status-badge.restarting {
+    background: var(--pv-warning-soft);
+    color: var(--pv-warning-text);
+  }
+
+  .status-badge.failed,
+  .status-badge.not_installed {
+    background: var(--pv-danger-soft);
+    color: var(--pv-danger-text);
   }
 
   .menu-wrap {
     position: relative;
-  }
-
-  .menu-button {
-    background: transparent;
-    border: none;
-    color: var(--text-secondary);
-    padding: 0.1rem 0.3rem;
+    display: inline-flex;
   }
 
   .menu {
     position: absolute;
+    top: calc(100% + var(--pv-space-1));
     right: 0;
-    top: 100%;
-    z-index: 10;
-    background: var(--surface-panel);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
+    z-index: var(--pv-z-dropdown);
     display: flex;
     flex-direction: column;
-    min-width: 8rem;
+    min-width: 12rem;
+    padding: var(--pv-space-1);
+    border: var(--pv-border-width) solid var(--pv-border);
+    border-radius: var(--pv-radius-md);
+    background: var(--pv-bg-overlay);
+    box-shadow: var(--pv-shadow-2);
   }
 
-  .menu button {
-    background: transparent;
+  .menu button[role="menuitem"],
+  .preset-name {
+    display: flex;
+    align-items: center;
+    gap: var(--pv-space-2);
+    height: var(--pv-control-h-sm);
+    padding: 0 var(--pv-space-2);
     border: none;
-    color: var(--text-primary);
+    border-radius: var(--pv-radius-sm);
+    background: transparent;
+    color: var(--pv-text-primary);
+    font-family: inherit;
+    font-size: var(--pv-text-md);
     text-align: left;
-    padding: 0.3rem 0.6rem;
+    white-space: nowrap;
+    cursor: default;
   }
 
-  .menu button:hover {
-    background: var(--surface-panel-raised);
+  .menu button[role="menuitem"]:hover,
+  .menu button[role="menuitem"]:focus-visible,
+  .preset-name:hover {
+    background: var(--pv-control-bg-active);
+    outline: none;
+  }
+
+  .grow {
+    flex: 1;
   }
 
   .menu hr {
-    border: none;
-    border-top: 1px solid var(--surface-border);
-    margin: 0.2rem 0;
     width: 100%;
+    margin: var(--pv-space-1) 0;
+    border: none;
+    border-top: var(--pv-border-width) solid var(--pv-border-subtle);
   }
 
   .submenu {
     display: flex;
     flex-direction: column;
-    padding-left: 0.4rem;
-    border-left: 2px solid var(--surface-border);
-    margin: 0.15rem 0 0.15rem 0.6rem;
+    margin: var(--pv-space-half) 0 var(--pv-space-half) var(--pv-space-3);
+    padding-left: var(--pv-space-1);
+    border-left: var(--pv-border-width) solid var(--pv-border);
   }
 
   .preset-empty {
-    color: var(--text-secondary);
-    font-size: 0.8rem;
-    padding: 0.2rem 0.6rem;
+    padding: var(--pv-space-1) var(--pv-space-2);
+    color: var(--pv-text-tertiary);
+    font-size: var(--pv-text-sm);
   }
 
   .preset-row {
@@ -531,94 +575,90 @@
 
   .preset-name {
     flex: 1;
-    text-align: left;
-    background: transparent;
-    border: none;
-    color: var(--text-primary);
-    padding: 0.3rem 0.6rem;
-  }
-
-  .preset-name:hover {
-    background: var(--surface-panel-raised);
   }
 
   .preset-delete {
-    background: transparent;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--pv-control-h-sm);
+    height: var(--pv-control-h-sm);
+    padding: 0;
     border: none;
-    color: var(--text-secondary);
-    padding: 0 0.4rem;
+    border-radius: var(--pv-radius-sm);
+    background: transparent;
+    color: var(--pv-text-tertiary);
+    cursor: default;
   }
 
   .preset-delete:hover {
-    color: var(--meter-yellow);
+    background: var(--pv-danger-soft);
+    color: var(--pv-danger-text);
   }
 
   .save-form {
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
-    padding: 0.3rem 0.6rem;
+    gap: var(--pv-space-2);
+    padding: var(--pv-space-2);
   }
 
   .save-form input[type="text"] {
-    background: var(--surface-inset);
-    border: 1px solid var(--surface-border);
-    color: var(--text-primary);
-    border-radius: 3px;
-    padding: 0.2rem 0.4rem;
+    height: var(--pv-control-h-sm);
+    padding: 0 var(--pv-space-2);
+    border: var(--pv-border-width) solid var(--pv-border-control);
+    border-radius: var(--pv-radius-sm);
+    background: var(--pv-field-bg);
+    color: var(--pv-text-primary);
+    font-family: inherit;
+    font-size: var(--pv-text-sm);
   }
 
   .checkbox-row {
     display: flex;
     align-items: center;
-    gap: 0.3rem;
-    font-size: 0.8rem;
-    color: var(--text-secondary);
+    gap: var(--pv-space-2);
+    color: var(--pv-text-secondary);
+    font-size: var(--pv-text-sm);
+  }
+
+  .checkbox-row input {
+    accent-color: var(--pv-accent);
   }
 
   .save-actions {
     display: flex;
     justify-content: flex-end;
-    gap: 0.4rem;
+    gap: var(--pv-space-2);
   }
 
   .status-row {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-  }
-
-  .retry {
-    background: var(--surface-panel-raised);
-    color: var(--text-primary);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    padding: 0.1rem 0.6rem;
-    flex: none;
-  }
-
-  .status-badge {
-    font-size: 0.7rem;
-    border: 1px solid var(--surface-border);
-    border-radius: 999px;
-    padding: 0 0.45rem;
-    color: var(--text-secondary);
-    white-space: nowrap;
-  }
-
-  .status-badge.failed,
-  .status-badge.not_installed {
-    color: var(--text-primary);
-    border-color: currentColor;
+    gap: var(--pv-space-2);
+    padding: 0 var(--pv-space-3) var(--pv-space-3);
   }
 
   .status-message {
-    color: var(--meter-yellow);
-    font-size: 0.8rem;
-    margin: 0.3rem 0 0;
+    flex: 1;
+    margin: 0;
+    color: var(--pv-text-secondary);
+    font-size: var(--pv-text-sm);
+    line-height: var(--pv-leading-sm);
+  }
+
+  .slot[data-status="failed"] .status-message,
+  .slot[data-status="not_installed"] .status-message {
+    color: var(--pv-danger-text);
   }
 
   .body {
-    margin-top: 0.3rem;
+    display: flex;
+    flex-direction: column;
+    gap: var(--pv-space-2);
+    padding: var(--pv-space-1) var(--pv-space-3) var(--pv-space-3);
+    border-top: var(--pv-border-width) solid var(--pv-border-subtle);
+    padding-top: var(--pv-space-2);
+    transition: opacity var(--pv-duration-fast) var(--pv-ease-standard);
   }
 </style>

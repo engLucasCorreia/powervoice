@@ -1,6 +1,7 @@
 <script lang="ts">
   import { documentState } from "../document/document.svelte";
   import { t } from "../i18n";
+  import { Button, Dialog } from "../ui";
   import type { BitDepth, ExportFormatDto, ExportRangeDto, Mp3SettingsDto } from "../ipc/bindings";
   import { hasSelection, selectionState } from "../state/selection.svelte";
   import {
@@ -94,23 +95,12 @@
 </script>
 
 {#if exp.prompt}
-  <div class="backdrop">
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div
-      class="dialog"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="export-title"
-      data-testid="export-dialog"
-      tabindex="-1"
-      onkeydown={onKeydown}
-    >
-      <h2 id="export-title">{t("dialog.export.title")}</h2>
-
-      <fieldset>
-        <legend>{t("dialog.export.format")}</legend>
+  <Dialog title={t("dialog.export.title")} titleId="export-title" testid="export-dialog" onkeydown={onKeydown}>
+    <fieldset>
+      <legend>{t("dialog.export.format")}</legend>
+      <div class="options">
         {#each (["wav", "flac", "mp3"] as const) as k (k)}
-          <label>
+          <label class="option">
             <input
               type="radio"
               name="export-kind"
@@ -125,8 +115,9 @@
             {/if}
           </label>
         {/each}
-      </fieldset>
-
+      </div>
+    </fieldset>
+    <div class="columns">
       <fieldset>
         <legend>{t("dialog.export.sample_rate")}</legend>
         <select data-testid="export-rate" bind:value={rateHz}>
@@ -135,23 +126,7 @@
           {/each}
         </select>
       </fieldset>
-
       {#if kind === "mp3"}
-        <fieldset>
-          <legend>{t("dialog.export.bitrate_mode")}</legend>
-          {#each (["cbr", "vbr"] as const) as m (m)}
-            <label>
-              <input
-                type="radio"
-                name="export-mp3-mode"
-                value={m}
-                checked={mp3Mode === m}
-                onchange={() => (mp3Mode = m)}
-              />
-              {t(`dialog.export.bitrate_mode.${m}` as const)}
-            </label>
-          {/each}
-        </fieldset>
         {#if mp3Mode === "cbr"}
           <fieldset>
             <legend>{t("dialog.export.bitrate")}</legend>
@@ -171,11 +146,32 @@
             </select>
           </fieldset>
         {/if}
-      {:else}
-        <fieldset>
-          <legend>{t("dialog.export.bit_depth")}</legend>
+      {/if}
+    </div>
+    {#if kind === "mp3"}
+      <fieldset>
+        <legend>{t("dialog.export.bitrate_mode")}</legend>
+        <div class="options">
+          {#each (["cbr", "vbr"] as const) as m (m)}
+            <label class="option">
+              <input
+                type="radio"
+                name="export-mp3-mode"
+                value={m}
+                checked={mp3Mode === m}
+                onchange={() => (mp3Mode = m)}
+              />
+              {t(`dialog.export.bitrate_mode.${m}` as const)}
+            </label>
+          {/each}
+        </div>
+      </fieldset>
+    {:else}
+      <fieldset>
+        <legend>{t("dialog.export.bit_depth")}</legend>
+        <div class="options">
           {#each bitsForKind as depth (depth)}
-            <label>
+            <label class="option">
               <input
                 type="radio"
                 name="export-bits"
@@ -186,13 +182,14 @@
               {t(`dialog.save_as.bit_depth.${depth}` as const)}
             </label>
           {/each}
-        </fieldset>
-      {/if}
-
-      <fieldset>
-        <legend>{t("dialog.export.range")}</legend>
+        </div>
+      </fieldset>
+    {/if}
+    <fieldset>
+      <legend>{t("dialog.export.range")}</legend>
+      <div class="options">
         {#each (["whole_file", "selection"] as const) as r (r)}
-          <label>
+          <label class="option">
             <input
               type="radio"
               name="export-range"
@@ -204,178 +201,83 @@
             {t(`dialog.export.range.${r}` as const)}
           </label>
         {/each}
-      </fieldset>
-
-      <div class="actions">
-        <button type="button" data-testid="export-acx" onclick={applyAcxPreset} disabled={!exp.mp3Available}>
-          {t("dialog.export.acx_preset")}
-        </button>
-        <span class="spacer"></span>
-        <button type="button" data-testid="export-cancel" onclick={cancelExportDialog}>
-          {t("dialog.export.cancel")}
-        </button>
-        <button
-          type="button"
-          class="primary"
-          data-testid="export-choose"
-          onclick={() => void confirmExport(currentFormat(), rateHz, currentRange())}
-        >
-          {t("dialog.export.choose_location")}
-        </button>
       </div>
-    </div>
-  </div>
+    </fieldset>
+    {#snippet footer()}
+      <Button variant="ghost" testid="export-acx" disabled={!exp.mp3Available} onclick={applyAcxPreset}>
+        {t("dialog.export.acx_preset")}
+      </Button>
+      <span class="spacer"></span>
+      <Button testid="export-cancel" onclick={cancelExportDialog}>
+        {t("dialog.export.cancel")}
+      </Button>
+      <Button
+        variant="primary"
+        testid="export-choose"
+        onclick={() => void confirmExport(currentFormat(), rateHz, currentRange())}
+      >
+        {t("dialog.export.choose_location")}
+      </Button>
+    {/snippet}
+  </Dialog>
 {/if}
 
 {#if exp.noiseOnlyConfirm}
-  <div class="backdrop">
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div
-      class="dialog"
-      role="alertdialog"
-      aria-modal="true"
-      aria-labelledby="export-noise-only-title"
-      data-testid="export-noise-only-confirm"
-      tabindex="-1"
-      onkeydown={(event) => {
-        event.stopPropagation();
-        if (event.key === "Escape") {
-          cancelNoiseOnlyExport();
-        }
-      }}
-    >
-      <h2 id="export-noise-only-title">{t("dialog.export.noise_only_confirm.title")}</h2>
-      <p>{t("dialog.export.noise_only_confirm.message")}</p>
-      <div class="actions">
-        <span class="spacer"></span>
-        <button type="button" data-testid="export-noise-only-cancel" onclick={cancelNoiseOnlyExport}>
-          {t("dialog.export.noise_only_confirm.cancel")}
-        </button>
-        <button
-          type="button"
-          class="primary"
-          data-testid="export-noise-only-continue"
-          onclick={() => void continueNoiseOnlyExport()}
-        >
-          {t("dialog.export.noise_only_confirm.continue")}
-        </button>
-      </div>
-    </div>
-  </div>
+  <Dialog
+    role="alertdialog"
+    size="sm"
+    title={t("dialog.export.noise_only_confirm.title")}
+    titleId="export-noise-only-title"
+    testid="export-noise-only-confirm"
+    onkeydown={(event) => {
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        cancelNoiseOnlyExport();
+      }
+    }}
+  >
+    <p>{t("dialog.export.noise_only_confirm.message")}</p>
+    {#snippet footer()}
+      <Button testid="export-noise-only-cancel" onclick={cancelNoiseOnlyExport}>
+        {t("dialog.export.noise_only_confirm.cancel")}
+      </Button>
+      <Button variant="primary" testid="export-noise-only-continue" onclick={() => void continueNoiseOnlyExport()}>
+        {t("dialog.export.noise_only_confirm.continue")}
+      </Button>
+    {/snippet}
+  </Dialog>
 {/if}
 
 {#if exp.job}
-  <div class="backdrop">
-    <div class="dialog" data-testid="export-progress" role="status">
-      <h2>{t("dialog.export.progress_title")}</h2>
-      <progress data-testid="export-progress-bar" value={exp.job.fraction} max="1"></progress>
-      {#if exp.job.state === "running"}
-        <div class="actions">
-          <button type="button" data-testid="export-progress-cancel" onclick={cancelExportJob}>
-            {t("dialog.export.cancel")}
-          </button>
-        </div>
+  <Dialog size="sm" title={t("dialog.export.progress_title")} testid="export-progress">
+    <progress data-testid="export-progress-bar" value={exp.job.fraction} max="1"></progress>
+    {#if exp.job.state !== "running"}
+      <p data-testid="export-progress-state">
+        {exp.job.state === "done"
+          ? t("dialog.export.done")
+          : exp.job.state === "cancelled"
+            ? t("dialog.export.job_cancelled")
+            : t("dialog.export.failed")}
+      </p>
+    {/if}
+    {#snippet footer()}
+      {#if exp.job?.state === "running"}
+        <Button testid="export-progress-cancel" onclick={cancelExportJob}>
+          {t("dialog.export.cancel")}
+        </Button>
       {:else}
-        <p data-testid="export-progress-state">
-          {exp.job.state === "done"
-            ? t("dialog.export.done")
-            : exp.job.state === "cancelled"
-              ? t("dialog.export.job_cancelled")
-              : t("dialog.export.failed")}
-        </p>
-        <div class="actions">
-          <button type="button" data-testid="export-progress-close" onclick={dismissExportJob}>
-            {t("dialog.export.close")}
-          </button>
-        </div>
+        <Button variant="primary" testid="export-progress-close" onclick={dismissExportJob}>
+          {t("dialog.export.close")}
+        </Button>
       {/if}
-    </div>
-  </div>
+    {/snippet}
+  </Dialog>
 {/if}
 
 <style>
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: rgba(0, 0, 0, 0.45);
-    z-index: 1000;
-  }
-
-  .dialog {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    min-width: 24rem;
-    max-width: 90vw;
-    padding: 1rem 1.25rem;
-    background: var(--surface-panel);
-    border: 1px solid var(--surface-border);
-    border-radius: 6px;
-    color: var(--text-primary);
-  }
-
-  h2 {
-    margin: 0;
-    font-size: 1rem;
-  }
-
-  fieldset {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    padding: 0.5rem 0.75rem;
-  }
-
-  legend {
-    color: var(--text-secondary);
-    padding: 0 0.25rem;
-  }
-
-  label {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-  }
-
-  .hint {
-    color: var(--text-disabled);
-    font-size: 0.85em;
-  }
-
-  .actions {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 0.5rem;
-  }
-
-  .spacer {
-    flex: 1;
-  }
-
-  button {
-    background: var(--surface-panel-raised);
-    color: var(--text-primary);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    padding: 0.25rem 0.75rem;
-  }
-
-  button.primary {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  button:disabled {
-    color: var(--text-disabled);
-  }
-
-  progress {
-    width: 100%;
+  .columns {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+    gap: var(--pv-space-3);
   }
 </style>

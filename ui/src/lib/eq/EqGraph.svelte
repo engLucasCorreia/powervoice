@@ -337,44 +337,55 @@
 
 <style>
   .eq-graph {
-    margin-bottom: 0.4rem;
+    display: flex;
+    flex-direction: column;
+    gap: var(--pv-space-1);
+    font-family: var(--pv-font-sans);
   }
 
   .toolbar {
     display: flex;
     justify-content: flex-end;
-    margin-bottom: 0.2rem;
   }
 
   .range-toggle {
-    background: var(--surface-inset);
-    color: var(--text-secondary);
-    border: 1px solid var(--surface-border);
-    border-radius: 3px;
-    padding: 0.1rem 0.5rem;
-    font-size: 0.75rem;
+    height: 20px;
+    padding: 0 var(--pv-space-2);
+    border: var(--pv-border-width) solid var(--pv-border);
+    border-radius: var(--pv-radius-sm);
+    background: var(--pv-control-bg);
+    color: var(--pv-text-secondary);
+    font-family: inherit;
+    font-size: var(--pv-text-xs);
+    font-variant-numeric: tabular-nums;
+    cursor: default;
+  }
+
+  .range-toggle:hover {
+    color: var(--pv-text-primary);
   }
 
   .graph {
     display: block;
     width: 100%;
-    background: var(--surface-inset);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
+    border: var(--pv-border-width) solid var(--pv-border);
+    border-radius: var(--pv-radius-md);
+    background: var(--pv-bg-inset);
     touch-action: none;
     cursor: crosshair;
   }
 
   .band-labels {
     display: flex;
-    gap: 0.3rem;
-    margin-top: 0.15rem;
-    font-size: 0.7rem;
-    color: var(--text-secondary);
+    flex-wrap: wrap;
+    gap: var(--pv-space-1) var(--pv-space-2);
+    color: var(--pv-text-tertiary);
+    font-size: var(--pv-text-xs);
+    font-variant-numeric: tabular-nums;
   }
 
   .band-label.selected {
-    color: var(--accent);
-    font-weight: 600;
+    color: var(--pv-accent-text);
+    font-weight: var(--pv-weight-semibold);
   }
 </style>

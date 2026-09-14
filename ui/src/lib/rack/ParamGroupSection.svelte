@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Icon } from "../ui";
   import type { ParamGroupDto, ParamInfoDto, RackSlotDto } from "../ipc/bindings";
   import { localized } from "./localized";
   import ParamControl from "./ParamControl.svelte";
@@ -73,7 +74,7 @@
         />
       {/if}
       <button type="button" class="title" onclick={() => (collapsed = !collapsed)}>
-        <span class="arrow">{collapsed ? "▸" : "▾"}</span>
+        <span class="arrow"><Icon name={collapsed ? "chevronRight" : "chevronDown"} size={12} /></span>
         {title}
       </button>
     </header>
@@ -95,35 +96,57 @@
 
 <style>
   .group {
-    border-top: 1px solid var(--surface-border);
-    padding-top: 0.3rem;
-    margin-top: 0.3rem;
+    border-top: var(--pv-border-width) solid var(--pv-border-subtle);
+    padding-top: var(--pv-space-1);
+    font-family: var(--pv-font-sans);
   }
 
   header {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: var(--pv-space-2);
+    min-height: var(--pv-control-h-sm);
+  }
+
+  header input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    accent-color: var(--pv-accent);
   }
 
   .title {
-    background: transparent;
-    border: none;
-    color: var(--text-primary);
-    font-size: 0.8rem;
-    font-weight: 600;
-    padding: 0.1rem 0;
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    gap: 0.3rem;
+    gap: var(--pv-space-1);
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--pv-text-secondary);
+    font-family: inherit;
+    font-size: var(--pv-text-sm);
+    font-weight: var(--pv-weight-semibold);
+    cursor: default;
+  }
+
+  .title:hover {
+    color: var(--pv-text-primary);
   }
 
   .arrow {
-    color: var(--text-secondary);
-    width: 0.8rem;
+    display: inline-flex;
+    color: var(--pv-text-tertiary);
+  }
+
+  .body,
+  .ungrouped {
+    display: flex;
+    flex-direction: column;
+    gap: var(--pv-space-1);
+    padding-top: var(--pv-space-1);
   }
 
   .body.dimmed {
-    opacity: 0.5;
+    opacity: 0.45;
   }
 </style>

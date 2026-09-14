@@ -7,7 +7,12 @@
   import { registerAction } from "../keymap";
   import type { MarkerDto } from "../ipc/bindings";
   import { isTakeMarker, markersState } from "../markers/markers.svelte";
-  import { recordState } from "../state/record.svelte";
+  import { openNewRecordingPrompt, recordState } from "../state/record.svelte";
+  import { settingsState } from "../state/settings.svelte";
+  import { dispatchAction } from "../keymap";
+  import { shortcutLabelForAction } from "../keymap/shortcutLabel";
+  import type { DefaultFormatDto } from "../ipc/bindings";
+  import { Button, EmptyState } from "../ui";
   import {
     beginDrag,
     clearSelection,
@@ -85,6 +90,10 @@
    */
 
   /** Must match `vox_engine::record::LIVE_PEAKS_SPB` (H-07). */
+  // H-25 empty state: File → New Recording…'s factory default (SPEC-002 §3), used only if
+  // settings haven't loaded yet — the same fallback `DocumentMenu.svelte` uses.
+  const NEW_RECORDING_FALLBACK: DefaultFormatDto = { sample_rate_hz: 48_000, bit_depth: "24" };
+  const recState = recordState();
   const LIVE_PEAKS_SPB = 256;
   /** The live view never zooms in tighter than this many seconds of the take. */
   const LIVE_MIN_WINDOW_SECONDS = 10;
@@ -882,7 +891,33 @@
       </div>
     </div>
   {:else}
-    <p class="empty" data-testid="waveform-empty">{t("waveform.empty")}</p>
+    <!-- H-25: no document yet — an invitation to act, not a grey sentence. Same actions as
+         File → Open… and File → New Recording…. -->
+    <EmptyState
+      icon="waveform"
+      title={t("empty.document.title")}
+      description={t("empty.document.body")}
+      testid="waveform-empty"
+      shortcuts={[
+        { label: t("empty.document.shortcut.open"), keys: shortcutLabelForAction("file.open") ?? "" },
+        { label: t("empty.document.shortcut.record"), keys: shortcutLabelForAction("record.toggle") ?? "" },
+        { label: t("empty.document.shortcut.play"), keys: shortcutLabelForAction("transport.play_pause") ?? "" },
+      ].filter((s) => s.keys !== "")}
+    >
+      {#snippet actions()}
+        <Button variant="primary" icon="open" testid="empty-open" onclick={() => dispatchAction("file.open")}>
+          {t("empty.document.open")}
+        </Button>
+        <Button
+          icon="record"
+          testid="empty-new-recording"
+          disabled={recState.state.recording || recState.state.finishing}
+          onclick={() => openNewRecordingPrompt(settingsState().current?.default_format ?? NEW_RECORDING_FALLBACK)}
+        >
+          {t("empty.document.record")}
+        </Button>
+      {/snippet}
+    </EmptyState>
   {/if}
 </div>
 
@@ -896,10 +931,6 @@
     background: var(--wave-bg);
   }
 
-  .empty {
-    margin: auto;
-    color: var(--text-secondary);
-  }
 
   /* H-24 item 7: the amplitude gutter — same width/style convention as the spectral pane's
    * frequency ruler (`spectrogram/SpectralView.svelte`'s `.ruler`), so the shared time ruler

@@ -74,53 +74,61 @@
   .nr-capture {
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
-    margin: 0.3rem 0;
-    padding: 0.3rem;
-    background: var(--surface-inset);
-    border-radius: 4px;
+    gap: var(--pv-space-1);
+    font-family: var(--pv-font-sans);
   }
 
   .row {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: var(--pv-space-2);
   }
 
   .capture {
-    background: var(--surface-panel-raised);
-    color: var(--text-primary);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    padding: 0.2rem 0.6rem;
+    height: var(--pv-control-h-sm);
+    padding: 0 var(--pv-space-2);
+    border: var(--pv-border-width) solid var(--pv-border);
+    border-radius: var(--pv-radius-sm);
+    background: var(--pv-control-bg);
+    color: var(--pv-text-primary);
+    font-family: inherit;
+    font-size: var(--pv-text-sm);
+    font-weight: var(--pv-weight-medium);
+    cursor: default;
   }
 
   .capture:hover:not(:disabled) {
-    border-color: var(--accent);
+    background: var(--pv-control-bg-hover);
   }
 
   .capture:disabled {
-    color: var(--text-disabled);
+    color: var(--pv-text-disabled);
+    border-color: var(--pv-border-subtle);
+  }
+
+  .capture:focus-visible {
+    outline: var(--pv-focus-width) solid var(--pv-focus-ring);
+    outline-offset: var(--pv-focus-offset);
   }
 
   .spinner {
-    width: 0.9rem;
-    height: 0.9rem;
-    border: 2px solid var(--surface-border);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--pv-control-track);
+    border-top-color: var(--pv-accent);
+    border-radius: var(--pv-radius-full);
+    animation: pv-nr-spin 0.9s linear infinite;
+  }
+
+  @keyframes pv-nr-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .status {
     margin: 0;
-    font-size: 0.78rem;
-    color: var(--text-secondary);
-  }
-
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
+    color: var(--pv-text-tertiary);
+    font-size: var(--pv-text-xs);
   }
 </style>

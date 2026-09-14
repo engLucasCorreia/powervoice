@@ -1,5 +1,6 @@
 <script lang="ts">
   import { t, tDynamic } from "../i18n";
+  import { Button } from "../ui";
   import type { ModuleDescriptorDto } from "../ipc/bindings";
   import { localized } from "./localized";
 
@@ -80,9 +81,18 @@
 <svelte:window onclick={onWindowClick} />
 
 <div class="add-module">
-  <button type="button" data-testid="rack-add" {disabled} title={disabled ? t("rack.max_slots") : ""} onclick={toggle}>
+  <Button
+    icon="add"
+    iconEnd="chevronDown"
+    testid="rack-add"
+    {disabled}
+    title={disabled ? t("rack.max_slots") : ""}
+    aria-haspopup="menu"
+    aria-expanded={open}
+    onclick={toggle}
+  >
     {t("rack.add")}
-  </button>
+  </Button>
   {#if open}
     <div class="menu" role="menu" data-testid="rack-add-menu">
       {#each groups as [cat, mods] (cat)}
@@ -111,52 +121,63 @@
     position: relative;
   }
 
-  button {
-    background: var(--surface-panel-raised);
-    color: var(--text-primary);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    padding: 0.25rem 0.75rem;
+  .add-module > :global(.pv-button) {
+    width: 100%;
+    justify-content: flex-start;
   }
 
-  button:disabled {
-    color: var(--text-disabled);
-    cursor: not-allowed;
+  .add-module > :global(.pv-button .label) {
+    flex: 1;
+    text-align: left;
   }
 
   .menu {
     position: absolute;
+    top: calc(100% + var(--pv-space-1));
     left: 0;
-    top: 100%;
-    z-index: 20;
-    margin-top: 0.2rem;
-    background: var(--surface-panel);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    min-width: 12rem;
-    max-height: 20rem;
+    right: 0;
+    z-index: var(--pv-z-dropdown);
+    max-height: 22rem;
+    padding: var(--pv-space-1);
     overflow-y: auto;
+    border: var(--pv-border-width) solid var(--pv-border);
+    border-radius: var(--pv-radius-md);
+    background: var(--pv-bg-overlay);
+    box-shadow: var(--pv-shadow-2);
+  }
+
+  .group + .group {
+    margin-top: var(--pv-space-1);
+    padding-top: var(--pv-space-1);
+    border-top: var(--pv-border-width) solid var(--pv-border-subtle);
   }
 
   .group-title {
-    color: var(--text-secondary);
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    padding: 0.3rem 0.6rem 0.1rem;
+    padding: var(--pv-space-1) var(--pv-space-2);
+    color: var(--pv-text-tertiary);
+    font-size: var(--pv-text-xs);
+    font-weight: var(--pv-weight-semibold);
   }
 
   .item {
-    display: block;
+    display: flex;
+    align-items: center;
     width: 100%;
-    text-align: left;
-    background: transparent;
+    height: var(--pv-control-h-sm);
+    padding: 0 var(--pv-space-2);
     border: none;
-    color: var(--text-primary);
-    padding: 0.3rem 0.6rem;
+    border-radius: var(--pv-radius-sm);
+    background: transparent;
+    color: var(--pv-text-primary);
+    font-family: var(--pv-font-sans);
+    font-size: var(--pv-text-md);
+    text-align: left;
+    cursor: default;
   }
 
-  .item:hover {
-    background: var(--surface-panel-raised);
+  .item:hover,
+  .item:focus-visible {
+    background: var(--pv-control-bg-active);
+    outline: none;
   }
 </style>

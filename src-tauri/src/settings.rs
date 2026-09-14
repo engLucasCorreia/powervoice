@@ -488,6 +488,20 @@ impl Default for LayoutPrefsDto {
     }
 }
 
+// --- Appearance (H-25) ---------------------------------------------------------------------------
+
+/// The UI colour theme (H-25 design system, docs/design/design-system.md §15). Dark is the
+/// factory default (the design is dark-first); `System` follows the OS light/dark preference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum ThemePref {
+    #[default]
+    Dark,
+    Light,
+    System,
+}
+
 // --- Settings root -------------------------------------------------------------------------------
 
 /// The whole settings file. `#[serde(default)]` at the container level means any field missing
@@ -544,6 +558,9 @@ pub struct Settings {
     /// H-24: the app shell's resizable layout (column widths, dock height, collapsed panels,
     /// active dock tab). Additive field — the settings version stays 1.
     pub layout: LayoutPrefsDto,
+    /// H-25: the UI colour theme (Preferences → Appearance). Additive field — the settings
+    /// version stays 1.
+    pub theme: ThemePref,
     #[serde(flatten)]
     #[ts(skip)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -571,6 +588,7 @@ impl Default for Settings {
             record_offsets: Vec::new(),
             save_dither: SaveDitherPref::default(),
             layout: LayoutPrefsDto::default(),
+            theme: ThemePref::default(),
             extra: serde_json::Map::new(),
         }
     }
@@ -922,6 +940,29 @@ mod tests {
         let json = br#"{"version":1,"monitor_mode":"dry"}"#;
         let migrated = parse_and_migrate(json).unwrap();
         assert_eq!(migrated.renderer_preference, RendererPreference::Auto);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// H-25: the theme preference round-trips, and an older settings file with no `theme` key
+    /// falls back to Dark (container-level `#[serde(default)]`).
+    #[test]
+    fn theme_pref_round_trips_and_defaults_to_dark() {
+        let dir = temp_dir("theme-pref");
+        let path = dir.join("settings.json");
+
+        let settings = Settings {
+            theme: ThemePref::Light,
+            ..Settings::default()
+        };
+        save(&path, &settings).unwrap();
+        assert_eq!(load_or_default(&path).theme, ThemePref::Light);
+
+        let json = br#"{"version":1,"monitor_mode":"dry"}"#;
+        assert_eq!(parse_and_migrate(json).unwrap().theme, ThemePref::Dark);
+
+        let system = br#"{"version":1,"theme":"system"}"#;
+        assert_eq!(parse_and_migrate(system).unwrap().theme, ThemePref::System);
 
         std::fs::remove_dir_all(&dir).ok();
     }

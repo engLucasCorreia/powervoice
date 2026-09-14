@@ -15,12 +15,15 @@
 
 <style>
   .menu-bar {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: 0.1rem;
-    padding: 0.2rem 0.5rem;
-    background: var(--surface-panel);
-    border-bottom: 1px solid var(--surface-border);
-    font-size: 0.85em;
+    gap: var(--pv-space-half);
+    height: var(--pv-menubar-h);
+    padding: 0 var(--pv-space-2);
+    border-bottom: var(--pv-border-width) solid var(--pv-border-subtle);
+    background: var(--pv-bg-panel);
+    font-family: var(--pv-font-sans);
+    font-size: var(--pv-text-md);
   }
 </style>

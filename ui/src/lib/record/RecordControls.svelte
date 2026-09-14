@@ -13,6 +13,7 @@
     toggleRecord,
   } from "../state/record.svelte";
   import { transportState } from "../state/transport.svelte";
+  import { Button, Icon, IconButton, Separator } from "../ui";
   import {
     DISK_WARN_MINUTES,
     formatElapsed,
@@ -32,6 +33,10 @@
    * menu on Record with the mode items, and the Punch & pre-roll section (mode, punch on
    * selection, pre/post-roll, pre-roll at the cursor, hear original, crossfade, the recording
    * offset readout with Calibrate… and manual entry) — locked while recording.
+   *
+   * H-25: two clusters in the transport bar — the Record key (lamp at rest, solid red on air)
+   * with the take's time, status chips and the CLIP lamp; then Input arm, Monitoring and the
+   * Punch & pre-roll popover behind an icon key.
    */
   const rec = recordState();
   const transport = transportState();
@@ -98,460 +103,624 @@
 </script>
 
 <div class="record" role="group" aria-label={t("record.group")} data-testid="record-controls">
-  <button
-    type="button"
-    data-testid="record-arm"
-    class:active={rec.state.armed}
-    aria-pressed={rec.state.armed}
-    disabled={noInput || busy}
-    title={noInput ? t("record.no_input_hint") : t("record.arm_title")}
-    onclick={() => void toggleArm()}
-  >
-    {t("record.arm")}
-  </button>
-  <span class="rec-wrap">
-    <button
-      type="button"
-      data-testid="record-button"
-      class="rec"
-      class:recording={rec.state.recording}
-      disabled={noInput || rec.state.finishing}
-      title={noInput ? t("record.no_input_hint") : t("record.record_title")}
-      onclick={() => void toggleRecord()}
-      oncontextmenu={onRecordContextMenu}
-    >
-      {rec.state.recording ? t("record.stop") : t("record.record")}
-    </button>
-    {#if menuOpen}
-      <div class="menu" role="menu" aria-label={t("record.menu_title")} data-testid="record-context-menu">
-        <button
-          type="button"
-          role="menuitemradio"
-          aria-checked={prefs.mode === "insert"}
-          data-testid="record-menu-insert"
-          onclick={() => chooseMode("insert")}
-        >
-          {t("record.mode.insert")}
-        </button>
-        <button
-          type="button"
-          role="menuitemradio"
-          aria-checked={prefs.mode === "overwrite"}
-          data-testid="record-menu-overwrite"
-          onclick={() => chooseMode("overwrite")}
-        >
-          {t("record.mode.overwrite")}
-        </button>
-        <button
-          type="button"
-          role="menuitemcheckbox"
-          aria-checked={prefs.punch_on_selection}
-          data-testid="record-menu-punch"
-          onclick={() => {
-            menuOpen = false;
-            void setRecordPrefs({ punch_on_selection: !prefs.punch_on_selection });
-          }}
-        >
-          {t("record.punch_on_selection")}
-        </button>
-      </div>
-    {/if}
-  </span>
-  <span class="elapsed" data-testid="record-elapsed" title={t("record.elapsed_title")}>{elapsed}</span>
-  {#if phase}
-    <span class="phase" data-testid="record-phase">{tDynamic(phase.key, phase.params)}</span>
-  {/if}
-  {#if diskRemaining !== null}
-    <span
-      class="disk-remaining"
-      class:low={diskLow}
-      data-testid="record-disk-remaining"
-      title={t("record.disk_remaining_title")}
-    >
-      {t("record.disk_remaining", { time: formatRemaining(diskRemaining) })}
-    </span>
-  {/if}
-  {#if rec.state.dropout_count > 0}
-    <span
-      class="dropouts"
-      data-testid="record-dropouts"
-      title={t("record.dropouts_title")}
-    >
-      {t("record.dropouts", { count: String(rec.state.dropout_count) })}
-    </span>
-  {/if}
-  <button
-    type="button"
-    data-testid="record-clip"
-    class="clip"
-    class:lit={rec.clipLatched}
-    title={t("record.clip_title")}
-    onclick={clearClip}
-  >
-    {t("record.clip")}
-  </button>
-  <label class="monitor">
-    <span>{t("record.monitor")}</span>
-    <select
-      data-testid="record-monitor"
-      value={monitor}
-      onchange={(e) => void setMonitor(e.currentTarget.value as MonitorMode)}
-    >
-      <option value="off">{t("record.monitor.off")}</option>
-      <option value="dry">{t("record.monitor.dry")}</option>
-      <option value="through_rack">{t("record.monitor.through_rack")}</option>
-    </select>
-  </label>
-  {#if latencyUs !== null}
-    <span
-      class="monitor-latency"
-      class:amber={latencyLevel === "amber"}
-      class:red={latencyLevel === "red"}
-      data-testid="record-monitor-latency"
-      title={latencyTitle}
-    >
-      {t("record.monitor_latency", { ms: formatLatencyMs(latencyUs) })}
-    </span>
-  {/if}
-  <span class="punch-wrap">
-    <button
-      type="button"
-      data-testid="record-punch-toggle"
-      aria-expanded={panelOpen}
-      onclick={togglePanel}
-    >
-      {t("record.punch_section")}
-    </button>
-    {#if panelOpen}
-      <div class="panel" data-testid="record-punch-panel">
-        <div class="row" role="group" aria-label={t("record.mode")} title={t("record.mode_title")}>
-          <span>{t("record.mode")}</span>
+  <div class="cluster">
+    <span class="rec-wrap">
+      <Button
+        variant="record"
+        active={rec.state.recording}
+        icon={rec.state.recording ? "stop" : "record"}
+        testid="record-button"
+        disabled={noInput || rec.state.finishing}
+        title={noInput ? t("record.no_input_hint") : t("record.record_title")}
+        onclick={() => void toggleRecord()}
+        oncontextmenu={onRecordContextMenu}
+      >
+        {rec.state.recording ? t("record.stop") : t("record.record")}
+      </Button>
+      {#if menuOpen}
+        <div class="menu" role="menu" aria-label={t("record.menu_title")} data-testid="record-context-menu">
           <button
             type="button"
-            data-testid="record-mode-insert"
-            class:active={prefs.mode === "insert"}
-            aria-pressed={prefs.mode === "insert"}
-            disabled={busy}
-            onclick={() => void setRecordPrefs({ mode: "insert" })}
+            role="menuitemradio"
+            aria-checked={prefs.mode === "insert"}
+            data-testid="record-menu-insert"
+            onclick={() => chooseMode("insert")}
           >
+            <span class="check">{#if prefs.mode === "insert"}<Icon name="check" size="sm" />{/if}</span>
             {t("record.mode.insert")}
           </button>
           <button
             type="button"
-            data-testid="record-mode-overwrite"
-            class:active={prefs.mode === "overwrite"}
-            aria-pressed={prefs.mode === "overwrite"}
-            disabled={busy}
-            onclick={() => void setRecordPrefs({ mode: "overwrite" })}
+            role="menuitemradio"
+            aria-checked={prefs.mode === "overwrite"}
+            data-testid="record-menu-overwrite"
+            onclick={() => chooseMode("overwrite")}
           >
+            <span class="check">{#if prefs.mode === "overwrite"}<Icon name="check" size="sm" />{/if}</span>
             {t("record.mode.overwrite")}
           </button>
-        </div>
-        <label class="row">
-          <input
-            type="checkbox"
-            data-testid="record-punch-on-selection"
-            checked={prefs.punch_on_selection}
-            disabled={busy}
-            onchange={(e) => void setRecordPrefs({ punch_on_selection: e.currentTarget.checked })}
-          />
-          <span>{t("record.punch_on_selection")}</span>
-        </label>
-        <label class="row">
-          <span>{t("record.preroll")}</span>
-          <input
-            type="number"
-            min="0"
-            max={ROLL_MAX_S}
-            step="0.1"
-            data-testid="record-preroll"
-            value={prefs.preroll_s}
-            disabled={busy}
-            onchange={(e) => {
-              const v = numberFrom(e, ROLL_MAX_S);
-              if (v !== null) void setRecordPrefs({ preroll_s: v });
-            }}
-          />
-          <span>{t("record.seconds")}</span>
-        </label>
-        <label class="row">
-          <span>{t("record.postroll")}</span>
-          <input
-            type="number"
-            min="0"
-            max={ROLL_MAX_S}
-            step="0.1"
-            data-testid="record-postroll"
-            value={prefs.postroll_s}
-            disabled={busy}
-            onchange={(e) => {
-              const v = numberFrom(e, ROLL_MAX_S);
-              if (v !== null) void setRecordPrefs({ postroll_s: v });
-            }}
-          />
-          <span>{t("record.seconds")}</span>
-        </label>
-        <label class="row">
-          <input
-            type="checkbox"
-            data-testid="record-preroll-at-cursor"
-            checked={prefs.preroll_at_cursor}
-            disabled={busy}
-            onchange={(e) => void setRecordPrefs({ preroll_at_cursor: e.currentTarget.checked })}
-          />
-          <span>{t("record.preroll_at_cursor")}</span>
-        </label>
-        {#if !transport.state.can_play}
-          <p class="hint" data-testid="record-preroll-needs-output">{t("record.preroll_needs_output")}</p>
-        {/if}
-        <label class="row">
-          <input
-            type="checkbox"
-            data-testid="record-hear-original"
-            checked={prefs.hear_original}
-            disabled={busy}
-            onchange={(e) => void setRecordPrefs({ hear_original: e.currentTarget.checked })}
-          />
-          <span>{t("record.hear_original")}</span>
-        </label>
-        <label class="row">
-          <span>{t("record.xfade")}</span>
-          <input
-            type="number"
-            min="0"
-            max={XFADE_MAX_MS}
-            step="1"
-            data-testid="record-xfade"
-            value={prefs.punch_xfade_ms}
-            disabled={busy}
-            onchange={(e) => {
-              const v = numberFrom(e, XFADE_MAX_MS);
-              if (v !== null) void setRecordPrefs({ punch_xfade_ms: v });
-            }}
-          />
-          <span>{t("record.milliseconds")}</span>
-        </label>
-        <div class="row offset">
-          <span>{t("record.offset.label")}</span>
-          <span data-testid="record-offset">{tDynamic(readout.key, readout.params)}</span>
           <button
             type="button"
-            data-testid="record-calibrate"
-            disabled={busy || rec.offset?.available === false}
-            onclick={openCalibration}
+            role="menuitemcheckbox"
+            aria-checked={prefs.punch_on_selection}
+            data-testid="record-menu-punch"
+            onclick={() => {
+              menuOpen = false;
+              void setRecordPrefs({ punch_on_selection: !prefs.punch_on_selection });
+            }}
           >
-            {t("record.offset.calibrate")}
+            <span class="check">{#if prefs.punch_on_selection}<Icon name="check" size="sm" />{/if}</span>
+            {t("record.punch_on_selection")}
           </button>
         </div>
-        {#if hint}
-          <p class="hint amber" data-testid="record-offset-hint">
-            {t("record.offset.buffer_hint", hint)}
-          </p>
-        {/if}
-        <form
-          class="row"
-          onsubmit={(e) => {
-            e.preventDefault();
-            void submitOffset();
-          }}
-        >
-          <input
-            type="text"
-            data-testid="record-offset-entry"
-            title={t("record.offset.entry_title")}
-            placeholder="0.00 / 150 smp"
-            bind:value={offsetText}
-            disabled={busy || rec.offset?.available === false}
-          />
-          <button type="submit" data-testid="record-offset-set" disabled={busy}>
-            {t("record.offset.set")}
-          </button>
-        </form>
-        {#if offsetInvalid}
-          <p class="hint amber">{t("record.offset.invalid")}</p>
-        {/if}
-      </div>
+      {/if}
+    </span>
+    <span class="elapsed" class:live={rec.state.recording} data-testid="record-elapsed" title={t("record.elapsed_title")}>{elapsed}</span>
+    {#if phase}
+      <span class="chip record" data-testid="record-phase">{tDynamic(phase.key, phase.params)}</span>
     {/if}
-  </span>
+    {#if diskRemaining !== null}
+      <span
+        class="disk-remaining"
+        class:low={diskLow}
+        data-testid="record-disk-remaining"
+        title={t("record.disk_remaining_title")}
+      >
+        {t("record.disk_remaining", { time: formatRemaining(diskRemaining) })}
+      </span>
+    {/if}
+    {#if rec.state.dropout_count > 0}
+      <span class="chip warning" data-testid="record-dropouts" title={t("record.dropouts_title")}>
+        {t("record.dropouts", { count: String(rec.state.dropout_count) })}
+      </span>
+    {/if}
+    <button
+      type="button"
+      data-testid="record-clip"
+      class="clip"
+      class:lit={rec.clipLatched}
+      title={t("record.clip_title")}
+      onclick={clearClip}
+    >
+      {t("record.clip")}
+    </button>
+  </div>
+  <Separator orientation="vertical" />
+  <div class="cluster">
+    <Button
+      variant="ghost"
+      icon={rec.state.armed ? "input" : "inputOff"}
+      testid="record-arm"
+      aria-pressed={rec.state.armed}
+      disabled={noInput || busy}
+      title={noInput ? t("record.no_input_hint") : t("record.arm_title")}
+      onclick={() => void toggleArm()}
+    >
+      {t("record.arm")}
+    </Button>
+    <label class="monitor" title={t("record.monitor")}>
+      <Icon name="monitor" size="sm" />
+      <span class="monitor-label">{t("record.monitor")}</span>
+      <select
+        data-testid="record-monitor"
+        value={monitor}
+        onchange={(e) => void setMonitor(e.currentTarget.value as MonitorMode)}
+      >
+        <option value="off">{t("record.monitor.off")}</option>
+        <option value="dry">{t("record.monitor.dry")}</option>
+        <option value="through_rack">{t("record.monitor.through_rack")}</option>
+      </select>
+    </label>
+    {#if latencyUs !== null}
+      <span
+        class="monitor-latency"
+        class:amber={latencyLevel === "amber"}
+        class:red={latencyLevel === "red"}
+        data-testid="record-monitor-latency"
+        title={latencyTitle}
+      >
+        {t("record.monitor_latency", { ms: formatLatencyMs(latencyUs) })}
+      </span>
+    {/if}
+    <span class="punch-wrap">
+      <IconButton
+        icon="punch"
+        label={t("record.punch_section")}
+        testid="record-punch-toggle"
+        pressed={panelOpen}
+        aria-expanded={panelOpen}
+        onclick={togglePanel}
+      />
+      {#if panelOpen}
+        <div class="panel" data-testid="record-punch-panel">
+          <div class="panel-title">{t("record.punch_section")}</div>
+          <div class="row" role="group" aria-label={t("record.mode")} title={t("record.mode_title")}>
+            <span class="row-label">{t("record.mode")}</span>
+            <div class="segments">
+              <button
+                type="button"
+                data-testid="record-mode-insert"
+                class:active={prefs.mode === "insert"}
+                aria-pressed={prefs.mode === "insert"}
+                disabled={busy}
+                onclick={() => void setRecordPrefs({ mode: "insert" })}
+              >
+                {t("record.mode.insert")}
+              </button>
+              <button
+                type="button"
+                data-testid="record-mode-overwrite"
+                class:active={prefs.mode === "overwrite"}
+                aria-pressed={prefs.mode === "overwrite"}
+                disabled={busy}
+                onclick={() => void setRecordPrefs({ mode: "overwrite" })}
+              >
+                {t("record.mode.overwrite")}
+              </button>
+            </div>
+          </div>
+          <label class="row">
+            <span class="row-label">{t("record.preroll")}</span>
+            <span class="number">
+              <input
+                type="number"
+                min="0"
+                max={ROLL_MAX_S}
+                step="0.1"
+                data-testid="record-preroll"
+                value={prefs.preroll_s}
+                disabled={busy}
+                onchange={(e) => {
+                  const v = numberFrom(e, ROLL_MAX_S);
+                  if (v !== null) void setRecordPrefs({ preroll_s: v });
+                }}
+              />
+              <span class="unit">{t("record.seconds")}</span>
+            </span>
+          </label>
+          <label class="row">
+            <span class="row-label">{t("record.postroll")}</span>
+            <span class="number">
+              <input
+                type="number"
+                min="0"
+                max={ROLL_MAX_S}
+                step="0.1"
+                data-testid="record-postroll"
+                value={prefs.postroll_s}
+                disabled={busy}
+                onchange={(e) => {
+                  const v = numberFrom(e, ROLL_MAX_S);
+                  if (v !== null) void setRecordPrefs({ postroll_s: v });
+                }}
+              />
+              <span class="unit">{t("record.seconds")}</span>
+            </span>
+          </label>
+          <label class="row">
+            <span class="row-label">{t("record.xfade")}</span>
+            <span class="number">
+              <input
+                type="number"
+                min="0"
+                max={XFADE_MAX_MS}
+                step="1"
+                data-testid="record-xfade"
+                value={prefs.punch_xfade_ms}
+                disabled={busy}
+                onchange={(e) => {
+                  const v = numberFrom(e, XFADE_MAX_MS);
+                  if (v !== null) void setRecordPrefs({ punch_xfade_ms: v });
+                }}
+              />
+              <span class="unit">{t("record.milliseconds")}</span>
+            </span>
+          </label>
+          <label class="check-row">
+            <input
+              type="checkbox"
+              data-testid="record-punch-on-selection"
+              checked={prefs.punch_on_selection}
+              disabled={busy}
+              onchange={(e) => void setRecordPrefs({ punch_on_selection: e.currentTarget.checked })}
+            />
+            <span>{t("record.punch_on_selection")}</span>
+          </label>
+          <label class="check-row">
+            <input
+              type="checkbox"
+              data-testid="record-preroll-at-cursor"
+              checked={prefs.preroll_at_cursor}
+              disabled={busy}
+              onchange={(e) => void setRecordPrefs({ preroll_at_cursor: e.currentTarget.checked })}
+            />
+            <span>{t("record.preroll_at_cursor")}</span>
+          </label>
+          {#if !transport.state.can_play}
+            <p class="hint" data-testid="record-preroll-needs-output">{t("record.preroll_needs_output")}</p>
+          {/if}
+          <label class="check-row">
+            <input
+              type="checkbox"
+              data-testid="record-hear-original"
+              checked={prefs.hear_original}
+              disabled={busy}
+              onchange={(e) => void setRecordPrefs({ hear_original: e.currentTarget.checked })}
+            />
+            <span>{t("record.hear_original")}</span>
+          </label>
+          <div class="divider"></div>
+          <div class="row">
+            <span class="row-label">{t("record.offset.label")}</span>
+            <span class="offset-value" data-testid="record-offset">{tDynamic(readout.key, readout.params)}</span>
+            <Button
+              size="sm"
+              testid="record-calibrate"
+              disabled={busy || rec.offset?.available === false}
+              onclick={openCalibration}
+            >
+              {t("record.offset.calibrate")}
+            </Button>
+          </div>
+          {#if hint}
+            <p class="hint warning" data-testid="record-offset-hint">
+              {t("record.offset.buffer_hint", hint)}
+            </p>
+          {/if}
+          <form
+            class="row"
+            onsubmit={(e) => {
+              e.preventDefault();
+              void submitOffset();
+            }}
+          >
+            <input
+              type="text"
+              class="offset-entry"
+              data-testid="record-offset-entry"
+              title={t("record.offset.entry_title")}
+              placeholder={t("record.offset.placeholder")}
+              bind:value={offsetText}
+              disabled={busy || rec.offset?.available === false}
+            />
+            <Button size="sm" type="submit" testid="record-offset-set" disabled={busy}>
+              {t("record.offset.set")}
+            </Button>
+          </form>
+          {#if offsetInvalid}
+            <p class="hint warning">{t("record.offset.invalid")}</p>
+          {/if}
+        </div>
+      {/if}
+    </span>
+  </div>
 </div>
 
 <style>
   .record {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 0.4rem;
+    gap: var(--pv-space-1) var(--pv-space-2);
+    font-family: var(--pv-font-sans);
   }
 
-  button {
-    background: var(--surface-panel-raised);
-    color: var(--text-primary);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    padding: 0.25rem 0.75rem;
-  }
-
-  button:hover:not(:disabled) {
-    border-color: var(--accent);
-  }
-
-  button:disabled {
-    color: var(--text-disabled);
-  }
-
-  button.active {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  button.rec.recording {
-    background: var(--meter-red);
-    border-color: var(--meter-red);
-    color: var(--text-primary);
+  .cluster {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: var(--pv-space-2);
   }
 
   .rec-wrap,
   .punch-wrap {
     position: relative;
+    display: inline-flex;
   }
 
+  /* The take's elapsed time: muted at rest, the record colour on air. */
+  .elapsed {
+    min-width: 7ch;
+    color: var(--pv-text-tertiary);
+    font-size: var(--pv-text-md);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .elapsed.live {
+    color: var(--pv-record-text);
+    font-weight: var(--pv-weight-medium);
+  }
+
+  .chip,
+  .disk-remaining,
+  .monitor-latency {
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    padding-inline: calc(var(--pv-space-1) + var(--pv-space-half));
+    border-radius: var(--pv-radius-sm);
+    font-size: var(--pv-text-xs);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .chip.record {
+    background: var(--pv-record-soft);
+    color: var(--pv-record-text);
+    font-weight: var(--pv-weight-medium);
+  }
+
+  .chip.warning {
+    background: var(--pv-warning-soft);
+    color: var(--pv-warning-text);
+  }
+
+  .disk-remaining {
+    padding-inline: 0;
+    color: var(--pv-text-tertiary);
+  }
+
+  .disk-remaining.low {
+    padding-inline: calc(var(--pv-space-1) + var(--pv-space-half));
+    background: var(--pv-warning-soft);
+    color: var(--pv-warning-text);
+  }
+
+  /* CLIP: a hardware-style lamp — dim when clear, solid red when latched (click to reset). */
+  .clip {
+    height: 20px;
+    padding: 0 var(--pv-space-1);
+    border: var(--pv-border-width) solid var(--pv-border);
+    border-radius: var(--pv-radius-sm);
+    background: transparent;
+    color: var(--pv-text-tertiary);
+    font-family: inherit;
+    font-size: 10px;
+    font-weight: var(--pv-weight-semibold);
+    letter-spacing: 0.04em;
+    cursor: default;
+  }
+
+  .clip.lit {
+    border-color: var(--pv-record-fill);
+    background: var(--pv-record-fill);
+    color: var(--pv-text-on-record);
+  }
+
+  .clip:focus-visible {
+    outline: var(--pv-focus-width) solid var(--pv-focus-ring);
+    outline-offset: var(--pv-focus-offset);
+  }
+
+  .monitor {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--pv-space-1);
+    color: var(--pv-text-secondary);
+    font-size: var(--pv-text-sm);
+    white-space: nowrap;
+  }
+
+  .monitor select {
+    height: var(--pv-control-h-md);
+    padding: 0 var(--pv-space-2);
+    border: var(--pv-border-width) solid var(--pv-border-control);
+    border-radius: var(--pv-radius-md);
+    background: var(--pv-control-bg);
+    color: var(--pv-text-primary);
+    font-family: inherit;
+    font-size: var(--pv-text-md);
+  }
+
+  .monitor select:focus-visible {
+    outline: var(--pv-focus-width) solid var(--pv-focus-ring);
+    outline-offset: 0;
+  }
+
+  .monitor-latency {
+    padding-inline: 0;
+    color: var(--pv-text-tertiary);
+  }
+
+  .monitor-latency.amber,
+  .monitor-latency.red {
+    padding-inline: calc(var(--pv-space-1) + var(--pv-space-half));
+  }
+
+  .monitor-latency.amber {
+    background: var(--pv-warning-soft);
+    color: var(--pv-warning-text);
+  }
+
+  .monitor-latency.red {
+    background: var(--pv-danger-soft);
+    color: var(--pv-danger-text);
+  }
+
+  /* Narrow transport bars drop the words that have an icon next to them. */
+  @container toolbar (max-width: 1240px) {
+    .monitor-label {
+      display: none;
+    }
+  }
+
+  /* Popovers: the record context menu and the Punch & pre-roll panel. */
   .menu,
   .panel {
     position: absolute;
-    top: calc(100% + 4px);
-    left: 0;
-    z-index: 50;
+    top: calc(100% + var(--pv-space-1));
+    z-index: var(--pv-z-dropdown);
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
-    padding: 0.5rem;
-    background: var(--surface-panel);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    min-width: 12rem;
+    padding: var(--pv-space-1);
+    border: var(--pv-border-width) solid var(--pv-border);
+    border-radius: var(--pv-radius-md);
+    background: var(--pv-bg-overlay);
+    box-shadow: var(--pv-shadow-2);
+    font-size: var(--pv-text-md);
+  }
+
+  .menu {
+    left: 0;
+    min-width: 13rem;
+  }
+
+  .menu button {
+    display: flex;
+    align-items: center;
+    gap: var(--pv-space-2);
+    height: var(--pv-control-h-sm);
+    padding: 0 var(--pv-space-2);
+    border: none;
+    border-radius: var(--pv-radius-sm);
+    background: transparent;
+    color: var(--pv-text-primary);
+    font: inherit;
+    text-align: left;
+    white-space: nowrap;
+    cursor: default;
+  }
+
+  .menu button:hover,
+  .menu button:focus-visible {
+    background: var(--pv-control-bg-active);
+    outline: none;
+  }
+
+  .check {
+    display: inline-flex;
+    width: var(--pv-icon-sm);
+    color: var(--pv-accent-text);
   }
 
   .panel {
-    min-width: 22rem;
     right: 0;
-    left: auto;
+    gap: var(--pv-space-2);
+    width: 22rem;
+    padding: var(--pv-space-3);
   }
 
-  .menu button[aria-checked="true"] {
-    color: var(--accent);
+  .panel-title {
+    color: var(--pv-text-secondary);
+    font-size: var(--pv-text-sm);
+    font-weight: var(--pv-weight-semibold);
   }
 
   .row {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
-    color: var(--text-secondary);
-    font-size: 0.8rem;
+    gap: var(--pv-space-2);
+    min-height: var(--pv-control-h-md);
   }
 
-  .row input[type="number"] {
-    width: 4.5rem;
+  .row-label {
+    flex: none;
+    width: 7.5rem;
+    color: var(--pv-text-secondary);
+    font-size: var(--pv-text-sm);
   }
 
-  .row input[type="text"] {
+  .segments {
+    display: inline-flex;
+    gap: var(--pv-space-half);
+    padding: var(--pv-space-half);
+    border-radius: var(--pv-radius-md);
+    background: var(--pv-control-track);
+  }
+
+  .segments button {
+    height: 22px;
+    padding: 0 var(--pv-space-2);
+    border: none;
+    border-radius: var(--pv-radius-sm);
+    background: transparent;
+    color: var(--pv-text-secondary);
+    font: inherit;
+    font-size: var(--pv-text-sm);
+    cursor: default;
+  }
+
+  .segments button.active {
+    background: var(--pv-control-bg-selected);
+    color: var(--pv-text-primary);
+    box-shadow: var(--pv-shadow-1);
+  }
+
+  .segments button:disabled {
+    color: var(--pv-text-disabled);
+  }
+
+  .number {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--pv-space-1);
+  }
+
+  .number input,
+  .offset-entry {
+    height: var(--pv-control-h-md);
+    padding: 0 var(--pv-space-2);
+    border: var(--pv-border-width) solid var(--pv-border-control);
+    border-radius: var(--pv-radius-md);
+    background: var(--pv-field-bg);
+    color: var(--pv-text-primary);
+    font-family: inherit;
+    font-size: var(--pv-text-md);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .number input {
+    width: 5rem;
+    text-align: right;
+  }
+
+  .offset-entry {
     flex: 1;
+    min-width: 0;
+  }
+
+  .unit {
+    color: var(--pv-text-tertiary);
+    font-size: var(--pv-text-xs);
+  }
+
+  .check-row {
+    display: flex;
+    align-items: center;
+    gap: var(--pv-space-2);
+    min-height: var(--pv-hit-min);
+    color: var(--pv-text-primary);
+    font-size: var(--pv-text-md);
+  }
+
+  .check-row input {
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    accent-color: var(--pv-accent);
+  }
+
+  .offset-value {
+    flex: 1;
+    color: var(--pv-text-primary);
+    font-size: var(--pv-text-sm);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .divider {
+    height: var(--pv-border-width);
+    margin-block: var(--pv-space-1);
+    background: var(--pv-border-subtle);
   }
 
   .hint {
     margin: 0;
-    font-size: 0.75rem;
-    color: var(--text-secondary);
+    color: var(--pv-text-tertiary);
+    font-size: var(--pv-text-sm);
   }
 
-  .hint.amber {
-    color: var(--meter-yellow);
-  }
-
-  .phase {
-    padding: 0.2rem 0.5rem;
-    border-radius: 4px;
-    font-size: 0.75rem;
-    font-variant-numeric: tabular-nums;
-    background: var(--meter-red);
-    color: var(--text-primary);
-  }
-
-  .elapsed {
-    min-width: 5.5rem;
-    padding: 0.2rem 0.5rem;
-    background: var(--surface-inset);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    font-variant-numeric: tabular-nums;
-    text-align: right;
-  }
-
-  button.clip {
-    padding: 0.25rem 0.4rem;
-    font-size: 0.7rem;
-    color: var(--text-disabled);
-  }
-
-  button.clip.lit {
-    background: var(--meter-red);
-    border-color: var(--meter-red);
-    color: var(--text-primary);
-  }
-
-  .dropouts {
-    padding: 0.2rem 0.5rem;
-    border-radius: 4px;
-    font-size: 0.75rem;
-    background: var(--meter-yellow);
-    color: var(--surface-panel);
-  }
-
-  .disk-remaining {
-    font-size: 0.75rem;
-    color: var(--text-secondary);
-  }
-
-  .disk-remaining.low {
-    padding: 0.2rem 0.5rem;
-    border-radius: 4px;
-    background: var(--meter-yellow);
-    color: var(--surface-panel);
-  }
-
-  .monitor-latency {
-    font-size: 0.75rem;
-    color: var(--text-secondary);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .monitor-latency.amber,
-  .monitor-latency.red {
-    padding: 0.2rem 0.5rem;
-    border-radius: 4px;
-    color: var(--surface-panel);
-  }
-
-  .monitor-latency.amber {
-    background: var(--meter-yellow);
-  }
-
-  .monitor-latency.red {
-    background: var(--meter-red);
-    color: var(--text-primary);
-  }
-
-  .monitor {
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-    color: var(--text-secondary);
-    font-size: 0.8rem;
-  }
-
-  select {
-    background: var(--surface-panel-raised);
-    color: var(--text-primary);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    padding: 0.15rem 0.3rem;
+  .hint.warning {
+    color: var(--pv-warning-text);
   }
 </style>

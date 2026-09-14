@@ -57,6 +57,7 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     },
     record_offsets: [],
     save_dither: "tpdf",
+    theme: "dark",
     ...overrides,
   };
 }

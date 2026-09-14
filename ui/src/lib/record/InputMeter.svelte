@@ -23,7 +23,7 @@
 
 {#if rec.state.input_open}
   <div class="input-meter" data-testid="input-meter">
-    <span>{t("meter.input")}</span>
+    <span class="row-label">{t("meter.input")}</span>
     <div
       class="meter"
       role="meter"
@@ -36,6 +36,7 @@
       <div class="rms" style:width="{percent(rec.meter.rmsDbfs)}%"></div>
       <div class="hold" class:clip={rec.clipLatched} style:left="{percent(rec.meter.holdDbfs)}%"></div>
     </div>
+    <span class="readouts">
     <button
       type="button"
       class="readout"
@@ -46,25 +47,32 @@
       {t("meter.max", { value: label(rec.meter.maxDbfs) })}
     </button>
     <span class="readout" data-testid="input-meter-rms">{t("meter.rms", { value: label(rec.meter.rmsDbfs) })}</span>
+    </span>
   </div>
 {/if}
 
 <style>
+  /* H-25: same row anatomy as the output meter in MeterBridge; bar colours unchanged. */
   .input-meter {
-    display: flex;
+    display: grid;
+    grid-template-columns: 5.5rem minmax(4rem, 1fr);
     align-items: center;
-    gap: 0.75rem;
+    gap: var(--pv-space-1) var(--pv-space-2);
+  }
+
+  .row-label {
+    color: var(--pv-text-secondary);
+    font-size: var(--pv-text-sm);
+    font-weight: var(--pv-weight-medium);
   }
 
   .meter {
     position: relative;
-    width: 20rem;
-    max-width: 30vw;
-    height: 0.6rem;
-    background: var(--surface-inset);
-    border: 1px solid var(--surface-border);
-    border-radius: 2px;
+    height: 10px;
     overflow: hidden;
+    border-radius: 2px;
+    background: var(--surface-inset);
+    box-shadow: inset 0 0 0 var(--pv-border-width) var(--pv-border);
   }
 
   .peak-bar,
@@ -96,18 +104,29 @@
     background: var(--meter-red);
   }
 
+  .readouts {
+    display: flex;
+    grid-column: 2;
+    gap: var(--pv-space-3);
+  }
+
   .readout {
-    min-width: 7rem;
-    font-variant-numeric: tabular-nums;
-    background: none;
-    border: none;
     padding: 0;
-    color: inherit;
+    border: none;
+    background: none;
+    color: var(--pv-text-tertiary);
     font: inherit;
+    font-size: var(--pv-text-xs);
+    font-variant-numeric: tabular-nums;
     text-align: left;
+    white-space: nowrap;
   }
 
   button.readout {
     cursor: pointer;
+  }
+
+  button.readout:hover {
+    color: var(--pv-text-primary);
   }
 </style>

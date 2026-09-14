@@ -35,6 +35,9 @@
   import MeterBridge from "./lib/layout/MeterBridge.svelte";
   import Splitter from "./lib/layout/Splitter.svelte";
   import { clampColumnWidthPx, clampDockHeightPx, stepSizePx } from "./lib/layout/splitterMath";
+  import { fitSideColumns } from "./lib/layout/fitColumns";
+  import { applyThemePref } from "./lib/theme/theme.svelte";
+  import { Icon } from "./lib/ui";
   import Toolbar from "./lib/layout/Toolbar.svelte";
   import ViewMenu from "./lib/layout/ViewMenu.svelte";
   import LoudnessPanel from "./lib/loudness/LoudnessPanel.svelte";
@@ -121,6 +124,15 @@
     clampColumnWidthPx(layout.markersWidthPx, MARKERS_MIN_PX, sideColumnMaxPx),
   );
   const rackWidthPx = $derived(clampColumnWidthPx(layout.rackWidthPx, RACK_MIN_PX, sideColumnMaxPx));
+  // H-25: the rendered widths — the editor keeps a minimum and the side panels shrink (Markers
+  // drops out first) so the Rack never falls off the right edge of a narrow window.
+  const fit = $derived(
+    fitSideColumns({
+      mainPx: mainAreaWidthPx,
+      markersPx: layout.markersCollapsed ? 0 : markersWidthPx,
+      rackPx: layout.rackCollapsed ? 0 : rackWidthPx,
+    }),
+  );
   const dockHeightPx = $derived(clampDockHeightPx(mainAreaHeightPx, layout.dockHeightPx));
 
   function onMarkersDrag(deltaPx: number): void {
@@ -186,6 +198,8 @@
       // H-19 (ADR-009 §4): View → Renderer's persisted choice, seeded before any waveform/
       // spectral view mounts. `?? "auto"` tolerates a mocked/pre-H-19 settings object in tests.
       setRendererPreference(current.renderer_preference ?? "auto");
+      // H-25: Preferences → Appearance (dark by default; `?? "dark"` tolerates mocked settings).
+      applyThemePref(current.theme ?? "dark");
       // H-24 (item 3): the app-shell layout (column widths, dock height, collapsed panels, dock
       // tab), seeded before the splitters' first render. `?? DEFAULT_LAYOUT_PREFS` tolerates a
       // mocked/pre-H-24 settings object in tests, same convention as `renderer_preference`.
@@ -338,8 +352,8 @@
   -->
   <div class="main-area" data-testid="main-area" bind:this={mainAreaEl}>
     <div class="workspace" data-testid="workspace">
-      {#if !layout.markersCollapsed}
-        <div class="col col-markers" data-testid="col-markers" style={`width: ${markersWidthPx}px`}>
+      {#if !layout.markersCollapsed && fit.markersPx > 0}
+        <div class="col col-markers" data-testid="col-markers" style={`width: ${fit.markersPx}px`}>
           <MarkersProperties />
         </div>
       {/if}
@@ -366,8 +380,8 @@
         onStep={onRackStep}
         onToggleCollapse={() => setRackCollapsed(!layout.rackCollapsed)}
       />
-      {#if !layout.rackCollapsed}
-        <div class="col col-rack" data-testid="col-rack" style={`width: ${rackWidthPx}px`}>
+      {#if !layout.rackCollapsed && fit.rackPx > 0}
+        <div class="col col-rack" data-testid="col-rack" style={`width: ${fit.rackPx}px`}>
           <RackPanel />
         </div>
       {/if}
@@ -390,6 +404,7 @@
           data-testid="dock-tab-meters"
           onclick={() => setDockTab("meters")}
         >
+          <Icon name="meters" size="sm" />
           {t("layout.dock.tab_meters")}
         </button>
         <button
@@ -400,6 +415,7 @@
           data-testid="dock-tab-loudness"
           onclick={() => setDockTab("loudness")}
         >
+          <Icon name="loudness" size="sm" />
           {t("layout.dock.tab_loudness")}
         </button>
       </div>
@@ -446,7 +462,12 @@
        panel and the bottom dock both landed in/after the `1fr` row), so the dock's height was
        never actually bounded and could grow to fill the window (item 1's diagnosis). */
     grid-template-rows: auto auto 1fr;
+    /* H-25: one column that may shrink below its content's min-content — without this the
+       toolbar's width became the grid's width and pushed the Rack off-screen. */
+    grid-template-columns: minmax(0, 1fr);
     height: 100vh;
+    overflow: hidden;
+    background: var(--pv-bg-app);
   }
 
   /* H-24 items 1/2: the main area is itself a vertical split — the workspace (item 1: "flex,
@@ -495,32 +516,61 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    background: var(--surface-panel);
-    border-top: 1px solid var(--surface-border);
+    background: var(--pv-bg-panel);
   }
 
-  /* H-24 item 1: the Loudness/ACX panel moved into the dock as a tab next to Meters/Analyzer, so
-     it can no longer squeeze the editor by growing the old flat `.bottom-dock` row. */
+  /* H-24 item 1 / H-25: dock tabs in the system's underline style, 32 px, aligned with every
+     panel header. */
   .dock-tabs {
     display: flex;
     flex: none;
-    gap: 0.15rem;
-    padding: 0.2rem 0.4rem 0;
+    align-items: stretch;
+    gap: var(--pv-space-1);
+    height: var(--pv-panel-header-h);
+    padding-inline: var(--pv-space-2);
+    border-bottom: var(--pv-border-width) solid var(--pv-border-subtle);
   }
 
   .dock-tabs button {
-    background: var(--surface-inset);
-    color: var(--text-secondary);
-    border: 1px solid var(--surface-border);
-    border-bottom: none;
-    border-radius: 4px 4px 0 0;
-    padding: 0.15rem 0.6rem;
-    font-size: 0.75rem;
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: calc(var(--pv-space-1) + var(--pv-space-half));
+    padding-inline: var(--pv-space-2);
+    border: none;
+    background: transparent;
+    color: var(--pv-text-secondary);
+    font-family: var(--pv-font-sans);
+    font-size: var(--pv-text-sm);
+    font-weight: var(--pv-weight-medium);
+    cursor: default;
+  }
+
+  .dock-tabs button::after {
+    content: "";
+    position: absolute;
+    inset: auto var(--pv-space-2) -1px;
+    height: 2px;
+    border-radius: 1px;
+    background: transparent;
+  }
+
+  .dock-tabs button:hover {
+    color: var(--pv-text-primary);
   }
 
   .dock-tabs button.active {
-    background: var(--surface-panel);
-    color: var(--text-primary);
+    color: var(--pv-text-primary);
+  }
+
+  .dock-tabs button.active::after {
+    background: var(--pv-accent);
+  }
+
+  .dock-tabs button:focus-visible {
+    outline: var(--pv-focus-width) solid var(--pv-focus-ring);
+    outline-offset: -4px;
+    border-radius: var(--pv-radius-sm);
   }
 
   .dock-body {

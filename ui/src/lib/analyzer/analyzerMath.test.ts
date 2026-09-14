@@ -5,8 +5,7 @@ import {
   dbAxisTicks,
   dbForAnalyzerY,
   nearestAnalyzerBand,
-  yForAnalyzerDb,
-} from "./analyzerMath";
+  yForAnalyzerDb, edgeAlignedLabel } from "./analyzerMath";
 
 describe("yForAnalyzerDb / dbForAnalyzerY (H-16, SPEC-007 §2.9)", () => {
   it("maps the ceiling to the top and the floor to the bottom", () => {
@@ -90,5 +89,15 @@ describe("dbAxisTicks (H-24 item 5: 10 dB spacing, or 20 dB when the pane is too
   it("returns an empty list for a degenerate range or non-positive height", () => {
     expect(dbAxisTicks(0, 0, 400, 20)).toEqual([]);
     expect(dbAxisTicks(-120, 0, 0, 20)).toEqual([]);
+  });
+});
+
+describe("edgeAlignedLabel (H-25: 20 Hz must not clip to \"0\")", () => {
+  it("left-aligns labels at the left edge, right-aligns at the right edge, centres the rest", () => {
+    expect(edgeAlignedLabel(0, 400)).toBe("start");
+    expect(edgeAlignedLabel(11, 400)).toBe("start");
+    expect(edgeAlignedLabel(12, 400)).toBe("center");
+    expect(edgeAlignedLabel(200, 400)).toBe("center");
+    expect(edgeAlignedLabel(395, 400)).toBe("end");
   });
 });

@@ -7,8 +7,8 @@
 
 <style>
   .menu-separator {
-    height: 1px;
-    margin: 0.3rem 0.25rem;
-    background: var(--surface-border);
+    height: var(--pv-border-width);
+    margin: var(--pv-space-1) var(--pv-space-1);
+    background: var(--pv-border-subtle);
   }
 </style>

@@ -78,7 +78,8 @@ describe("transport bar (S1-01)", () => {
 
     button("transport-play").click();
     await settle();
-    expect(button("transport-play").textContent?.trim()).toBe("Pause");
+    // H-25: an icon key now — its accessible name (and tooltip) says Pause while playing.
+    expect(button("transport-play").getAttribute("aria-label")).toBe("Pause");
     button("transport-play").click();
     await settle();
     button("transport-play-from-start").click();

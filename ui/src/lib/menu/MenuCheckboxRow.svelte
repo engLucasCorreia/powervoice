@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from "../ui/Icon.svelte";
   /** One `role="menuitemcheckbox"` row (H-19): View → Spectral/Analyzer. Closes its menu on
    * toggle, same as a plain item — the checkmark shows the new state next time it's opened. */
   let {
@@ -27,7 +28,7 @@
   disabled={disabled}
   onclick={onToggle}
 >
-  <span class="check" aria-hidden="true">{checked ? "✓" : ""}</span>
+  <span class="check" aria-hidden="true">{#if checked}<Icon name="check" size="sm" />{/if}</span>
   <span class="label">{label}</span>
   {#if shortcut}
     <span class="shortcut">{shortcut}</span>
@@ -35,33 +36,32 @@
 </button>
 
 <style>
+  /* H-25: calm 24 px menu rows — a neutral highlight (not a full accent fill), quiet shortcuts. */
   button {
     display: flex;
     align-items: center;
+    gap: var(--pv-space-2);
     width: 100%;
-    gap: 0.5rem;
-    background: none;
-    color: var(--text-primary);
+    min-height: var(--pv-control-h-sm);
+    padding: 0 var(--pv-space-2);
     border: none;
-    border-radius: 4px;
-    padding: 0.35rem 0.6rem;
+    border-radius: var(--pv-radius-sm);
+    background: none;
+    color: var(--pv-text-primary);
+    font-family: var(--pv-font-sans);
+    font-size: var(--pv-text-md);
     text-align: left;
-    font-size: inherit;
+    cursor: default;
   }
 
   button:hover:not(:disabled),
   button:focus-visible {
-    background: var(--accent);
-    color: var(--text-on-accent);
+    background: var(--pv-control-bg-active);
+    outline: none;
   }
 
   button:disabled {
-    color: var(--text-disabled);
-  }
-
-  .check {
-    width: 1em;
-    text-align: center;
+    color: var(--pv-text-disabled);
   }
 
   .label {
@@ -70,12 +70,24 @@
   }
 
   .shortcut {
-    color: var(--text-secondary);
-    font-size: 0.9em;
+    margin-left: var(--pv-space-6);
+    color: var(--pv-text-tertiary);
+    font-size: var(--pv-text-xs);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
 
-  button:hover:not(:disabled) .shortcut,
-  button:focus-visible .shortcut {
-    color: inherit;
+  button:disabled .shortcut {
+    color: var(--pv-text-disabled);
   }
+
+  .check {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: var(--pv-icon-sm);
+    color: var(--pv-accent-text);
+  }
+
 </style>

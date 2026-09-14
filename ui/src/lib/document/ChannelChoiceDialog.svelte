@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { DownmixChoiceDto } from "../ipc/bindings";
   import { t } from "../i18n";
+  import { Button, Dialog, Icon } from "../ui";
   import { documentState, resolveChannelChoicePrompt } from "./document.svelte";
 
   /**
@@ -8,6 +9,7 @@
    * averaging every channel or by picking one, with the silent-channel hint preselecting the
    * active side when the probe found one channel silent and the other active. "Always do this
    * for multichannel files" remembers the choice as `multichannel_policy` (Settings → Files).
+   * H-25: Dialog shell.
    */
   const doc = documentState();
 
@@ -72,155 +74,99 @@
 {#if doc.channelChoicePrompt}
   {@const probe = doc.channelChoicePrompt.probe}
   {@const hint = silentHint()}
-  <div class="backdrop">
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div
-      class="dialog"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="channel-choice-title"
-      data-testid="channel-choice-dialog"
-      tabindex="-1"
-      onkeydown={onKeydown}
-    >
-      <h2 id="channel-choice-title">
-        {probe.channels.length === 2
-          ? t("dialog.channel_choice.title_stereo")
-          : t("dialog.channel_choice.title_multi", { count: probe.channels.length })}
-      </h2>
-      <p>{t("dialog.channel_choice.message", { count: probe.channels.length })}</p>
-      {#if hint}
-        <p class="hint" data-testid="channel-choice-silent-hint">{hint}</p>
-      {/if}
-      <fieldset>
-        <label>
-          <input
-            type="radio"
-            name="channel-choice-mode"
-            value="average"
-            checked={mode === "average"}
-            onchange={() => (mode = "average")}
-          />
-          {t("dialog.channel_choice.mix")}
-        </label>
-        <label>
-          <input
-            type="radio"
-            name="channel-choice-mode"
-            value="channel"
-            checked={mode === "channel"}
-            onchange={() => (mode = "channel")}
-          />
-          {t("dialog.channel_choice.use_channel")}
-          <select
-            data-testid="channel-choice-select"
-            disabled={mode !== "channel"}
-            value={channelIndex}
-            onchange={(e) => {
-              mode = "channel";
-              channelIndex = Number(e.currentTarget.value);
-            }}
-          >
-            {#each probe.channels as channel, index (index)}
-              <option value={index}>{channel.label}</option>
-            {/each}
-          </select>
-        </label>
-      </fieldset>
-      <label class="remember">
+  <Dialog
+    title={probe.channels.length === 2
+      ? t("dialog.channel_choice.title_stereo")
+      : t("dialog.channel_choice.title_multi", { count: probe.channels.length })}
+    titleId="channel-choice-title"
+    testid="channel-choice-dialog"
+    onkeydown={onKeydown}
+  >
+    <p>{t("dialog.channel_choice.message", { count: probe.channels.length })}</p>
+    {#if hint}
+      <p class="suggestion" data-testid="channel-choice-silent-hint">
+        <Icon name="info" size="sm" />
+        <span>{hint}</span>
+      </p>
+    {/if}
+    <fieldset class="choices">
+      <label class="option">
         <input
-          type="checkbox"
-          data-testid="channel-choice-remember"
-          checked={remember}
-          onchange={(e) => (remember = e.currentTarget.checked)}
+          type="radio"
+          name="channel-choice-mode"
+          value="average"
+          checked={mode === "average"}
+          onchange={() => (mode = "average")}
         />
-        {t("dialog.channel_choice.remember")}
+        {t("dialog.channel_choice.mix")}
       </label>
-      <div class="actions">
-        <button type="button" data-testid="channel-choice-cancel" onclick={cancel}>
-          {t("dialog.channel_choice.cancel")}
-        </button>
-        <button type="button" class="primary" data-testid="channel-choice-open" onclick={confirm}>
-          {t("dialog.channel_choice.open")}
-        </button>
-      </div>
-    </div>
-  </div>
+      <label class="option">
+        <input
+          type="radio"
+          name="channel-choice-mode"
+          value="channel"
+          checked={mode === "channel"}
+          onchange={() => (mode = "channel")}
+        />
+        {t("dialog.channel_choice.use_channel")}
+        <select
+          data-testid="channel-choice-select"
+          disabled={mode !== "channel"}
+          value={channelIndex}
+          onchange={(e) => {
+            mode = "channel";
+            channelIndex = Number(e.currentTarget.value);
+          }}
+        >
+          {#each probe.channels as channel, index (index)}
+            <option value={index}>{channel.label}</option>
+          {/each}
+        </select>
+      </label>
+    </fieldset>
+    <label class="option remember">
+      <input
+        type="checkbox"
+        data-testid="channel-choice-remember"
+        checked={remember}
+        onchange={(e) => (remember = e.currentTarget.checked)}
+      />
+      {t("dialog.channel_choice.remember")}
+    </label>
+    {#snippet footer()}
+      <Button testid="channel-choice-cancel" onclick={cancel}>
+        {t("dialog.channel_choice.cancel")}
+      </Button>
+      <Button variant="primary" testid="channel-choice-open" onclick={confirm}>
+        {t("dialog.channel_choice.open")}
+      </Button>
+    {/snippet}
+  </Dialog>
 {/if}
 
 <style>
-  .backdrop {
-    position: fixed;
-    inset: 0;
+  .suggestion {
     display: flex;
-    align-items: center;
-    justify-content: center;
-    background: rgba(0, 0, 0, 0.45);
-    z-index: 1000;
+    align-items: flex-start;
+    gap: var(--pv-space-2);
+    padding: var(--pv-space-2) var(--pv-space-3);
+    border-radius: var(--pv-radius-md);
+    background: var(--pv-accent-soft);
+    color: var(--pv-accent-text);
+    font-size: var(--pv-text-sm);
+    line-height: var(--pv-leading-sm);
   }
 
-  .dialog {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    min-width: 26rem;
-    max-width: 90vw;
-    padding: 1rem 1.25rem;
-    background: var(--surface-panel);
-    border: 1px solid var(--surface-border);
-    border-radius: 6px;
-    color: var(--text-primary);
+  .suggestion :global(svg) {
+    flex: none;
+    margin-top: 1px;
   }
 
-  h2 {
-    margin: 0;
-    font-size: 1rem;
+  .choices {
+    gap: var(--pv-space-1);
   }
 
-  p {
-    margin: 0;
-    color: var(--text-secondary);
-  }
-
-  p.hint {
-    color: var(--accent, var(--text-secondary));
-  }
-
-  fieldset {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    padding: 0.5rem 0.75rem;
-  }
-
-  label {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-  }
-
-  label.remember {
-    color: var(--text-secondary);
-  }
-
-  .actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 0.5rem;
-  }
-
-  button {
-    background: var(--surface-panel-raised);
-    color: var(--text-primary);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    padding: 0.25rem 0.75rem;
-  }
-
-  button.primary {
-    border-color: var(--accent);
-    color: var(--accent);
+  .remember {
+    color: var(--pv-text-secondary);
   }
 </style>

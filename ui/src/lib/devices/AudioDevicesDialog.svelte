@@ -6,6 +6,7 @@
   import { devicesList, devicesSelect } from "../ipc/commands";
   import { noticeFromIpcError } from "../notices/fromIpcError";
   import { pushNotice } from "../state/notices.svelte";
+  import { Button, Dialog } from "../ui";
 
   /**
    * Settings → Audio Devices (SPEC-001 §2.1, minimal S1-01 form): host, output, input, sample
@@ -114,184 +115,163 @@
   });
 </script>
 
-<div class="backdrop">
-  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-  <div
-    class="dialog"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="audio-devices-title"
-    data-testid="audio-devices"
-    tabindex="-1"
-    onkeydown={onKeydown}
-  >
-    <h2 id="audio-devices-title">{t("devices.title")}</h2>
-    {#if view}
-      <label>
-        <span>{t("devices.host")}</span>
-        <select
-          data-testid="devices-host"
-          value={view.host ?? ""}
-          disabled={busy}
-          onchange={(e) => void apply({ host: e.currentTarget.value })}
-        >
-          {#each view.hosts as host (host)}
-            <option value={host}>{tDynamic(`devices.host_name.${host}`)}</option>
-          {/each}
-        </select>
-      </label>
-      <label>
-        <span>{t("devices.output")}</span>
-        <select
-          data-testid="devices-output"
-          value={view.prefs.output_device ?? ""}
-          disabled={busy}
-          onchange={(e) => void apply({ output_device: optionalString(e.currentTarget.value) })}
-        >
-          <option value="">{t("devices.system_default")}</option>
-          {#each outputs as device (device.name)}
-            <option value={device.name}>{device.name}</option>
-          {/each}
-        </select>
-      </label>
-      <label>
-        <span>{t("devices.input")}</span>
-        <select
-          data-testid="devices-input"
-          value={view.prefs.input_device ?? ""}
-          disabled={busy}
-          onchange={(e) => void apply({ input_device: optionalString(e.currentTarget.value) })}
-        >
-          <option value="">{t("devices.none")}</option>
-          {#each inputs as device (device.name)}
-            <option value={device.name}>{device.name}</option>
-          {/each}
-        </select>
-      </label>
-      <label>
-        <span>{t("devices.input_channel")}</span>
-        <select
-          data-testid="devices-input-channel"
-          value={String(view.prefs.input_channel)}
-          disabled={busy || view.prefs.input_device === null}
-          onchange={(e) => void apply({ input_channel: Number(e.currentTarget.value) })}
-        >
-          {#each inputChannels as channel (channel)}
-            <option value={String(channel)}>{t("devices.channel", { n: channel })}</option>
-          {/each}
-        </select>
-      </label>
-      <label>
-        <span>{t("devices.sample_rate")}</span>
-        <select
-          data-testid="devices-rate"
-          value={view.prefs.sample_rate_hz === null ? "" : String(view.prefs.sample_rate_hz)}
-          disabled={busy}
-          onchange={(e) => void apply({ sample_rate_hz: optionalNumber(e.currentTarget.value) })}
-        >
-          <option value="">{t("devices.device_default")}</option>
-          {#each rates as rate (rate)}
-            <option value={String(rate)}>{t("devices.rate_hz", { rate })}</option>
-          {/each}
-        </select>
-      </label>
-      <label>
-        <span>{t("devices.buffer_size")}</span>
-        <select
-          data-testid="devices-buffer"
-          value={view.prefs.buffer_size_frames === null ? "" : String(view.prefs.buffer_size_frames)}
-          disabled={busy}
-          onchange={(e) => void apply({ buffer_size_frames: optionalNumber(e.currentTarget.value) })}
-        >
-          <option value="">{t("devices.auto")}</option>
-          {#each buffers as frames (frames)}
-            <option value={String(frames)}>{t("devices.frames", { frames })}</option>
-          {/each}
-        </select>
-      </label>
+<Dialog title={t("devices.title")} titleId="audio-devices-title" testid="audio-devices" onkeydown={onKeydown}>
+  {#if view}
+    <div class="form-grid">
+      <label for="devices-host-select">{t("devices.host")}</label>
+      <select
+        id="devices-host-select"
+        data-testid="devices-host"
+        value={view.host ?? ""}
+        disabled={busy}
+        onchange={(e) => void apply({ host: e.currentTarget.value })}
+      >
+        {#each view.hosts as host (host)}
+          <option value={host}>{tDynamic(`devices.host_name.${host}`)}</option>
+        {/each}
+      </select>
+
+      <label for="devices-output-select">{t("devices.output")}</label>
+      <select
+        id="devices-output-select"
+        data-testid="devices-output"
+        value={view.prefs.output_device ?? ""}
+        disabled={busy}
+        onchange={(e) => void apply({ output_device: optionalString(e.currentTarget.value) })}
+      >
+        <option value="">{t("devices.system_default")}</option>
+        {#each outputs as device (device.name)}
+          <option value={device.name}>{device.name}</option>
+        {/each}
+      </select>
+
+      <label for="devices-input-select">{t("devices.input")}</label>
+      <select
+        id="devices-input-select"
+        data-testid="devices-input"
+        value={view.prefs.input_device ?? ""}
+        disabled={busy}
+        onchange={(e) => void apply({ input_device: optionalString(e.currentTarget.value) })}
+      >
+        <option value="">{t("devices.none")}</option>
+        {#each inputs as device (device.name)}
+          <option value={device.name}>{device.name}</option>
+        {/each}
+      </select>
+
+      <label for="devices-input-channel-select">{t("devices.input_channel")}</label>
+      <select
+        id="devices-input-channel-select"
+        data-testid="devices-input-channel"
+        value={String(view.prefs.input_channel)}
+        disabled={busy || view.prefs.input_device === null}
+        onchange={(e) => void apply({ input_channel: Number(e.currentTarget.value) })}
+      >
+        {#each inputChannels as channel (channel)}
+          <option value={String(channel)}>{t("devices.channel", { n: channel })}</option>
+        {/each}
+      </select>
+
+      <label for="devices-rate-select">{t("devices.sample_rate")}</label>
+      <select
+        id="devices-rate-select"
+        data-testid="devices-rate"
+        value={view.prefs.sample_rate_hz === null ? "" : String(view.prefs.sample_rate_hz)}
+        disabled={busy}
+        onchange={(e) => void apply({ sample_rate_hz: optionalNumber(e.currentTarget.value) })}
+      >
+        <option value="">{t("devices.device_default")}</option>
+        {#each rates as rate (rate)}
+          <option value={String(rate)}>{t("devices.rate_hz", { rate })}</option>
+        {/each}
+      </select>
+
+      <label for="devices-buffer-select">{t("devices.buffer_size")}</label>
+      <select
+        id="devices-buffer-select"
+        data-testid="devices-buffer"
+        value={view.prefs.buffer_size_frames === null ? "" : String(view.prefs.buffer_size_frames)}
+        disabled={busy}
+        onchange={(e) => void apply({ buffer_size_frames: optionalNumber(e.currentTarget.value) })}
+      >
+        <option value="">{t("devices.auto")}</option>
+        {#each buffers as frames (frames)}
+          <option value={String(frames)}>{t("devices.frames", { frames })}</option>
+        {/each}
+      </select>
+    </div>
+    <div class="statuses">
       <p class="status" data-testid="devices-status" data-status={view.output_status}>{status}</p>
       <p class="status" data-testid="devices-input-status" data-status={view.input_status}>{inputStatus}</p>
-    {:else}
-      <p>{t("devices.loading")}</p>
-    {/if}
-    <div class="actions">
-      <button type="button" data-testid="devices-close" onclick={onclose}>{t("devices.close")}</button>
     </div>
-  </div>
-</div>
+  {:else}
+    <p>{t("devices.loading")}</p>
+  {/if}
+  {#snippet footer()}
+    <Button variant="primary" testid="devices-close" onclick={onclose}>{t("devices.close")}</Button>
+  {/snippet}
+</Dialog>
 
 <style>
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: rgba(0, 0, 0, 0.45);
-    z-index: 900;
-  }
-
-  .dialog {
-    display: flex;
-    flex-direction: column;
-    gap: 0.6rem;
-    min-width: 28rem;
-    max-width: 90vw;
-    padding: 1rem 1.25rem;
-    background: var(--surface-panel);
-    border: 1px solid var(--surface-border);
-    border-radius: 6px;
-    color: var(--text-primary);
-  }
-
-  h2 {
-    margin: 0 0 0.25rem;
-    font-size: 1rem;
-  }
-
-  label {
+  .form-grid {
     display: grid;
-    grid-template-columns: 8rem 1fr;
+    grid-template-columns: minmax(7rem, auto) minmax(0, 1fr);
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--pv-space-2) var(--pv-space-3);
   }
 
-  label span {
-    color: var(--text-secondary);
+  .form-grid label {
+    color: var(--pv-text-secondary);
+    font-size: var(--pv-text-sm);
   }
 
-  select {
-    background: var(--surface-panel-raised);
-    color: var(--text-primary);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    padding: 0.2rem 0.4rem;
+  .form-grid select {
     min-width: 0;
   }
 
-  .status {
-    margin: 0.25rem 0 0;
-    color: var(--text-secondary);
+  .statuses {
+    display: flex;
+    flex-direction: column;
+    gap: var(--pv-space-1);
+    padding: var(--pv-space-2) var(--pv-space-3);
+    border-radius: var(--pv-radius-md);
+    background: var(--pv-bg-inset);
   }
 
-  .status[data-status="lost"] {
-    color: var(--meter-red);
+  /* Each status line gets a lamp — colour reinforces the words, never replaces them. */
+  .status {
+    display: flex;
+    align-items: center;
+    gap: var(--pv-space-2);
+    font-size: var(--pv-text-sm);
+  }
+
+  .status::before {
+    content: "";
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: var(--pv-radius-full);
+    background: var(--pv-text-tertiary);
+  }
+
+  .status[data-status="healthy"]::before {
+    background: var(--pv-success);
   }
 
   .status[data-status="fallback"] {
-    color: var(--meter-yellow);
+    color: var(--pv-warning-text);
   }
 
-  .actions {
-    display: flex;
-    justify-content: flex-end;
+  .status[data-status="fallback"]::before {
+    background: var(--pv-warning);
   }
 
-  button {
-    background: var(--surface-panel-raised);
-    color: var(--text-primary);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    padding: 0.25rem 0.75rem;
+  .status[data-status="lost"] {
+    color: var(--pv-danger-text);
+  }
+
+  .status[data-status="lost"]::before {
+    background: var(--pv-danger-text);
   }
 </style>

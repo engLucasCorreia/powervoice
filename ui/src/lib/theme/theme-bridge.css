@@ -1,0 +1,104 @@
+/*
+ * Theme bridge (H-25 phase 2): points the legacy `tokens.css` chrome names at the design-system
+ * roles in `design-tokens.css`, so every screen picks up the new palette (and follows
+ * `data-theme`) before — and while — its component moves onto `--pv-*` directly. Delete a line
+ * here once nothing uses that legacy name; delete the file when `tokens.css` keeps only content
+ * tokens (`--wave-*`, `--spec-*`, `--analyzer-*`, `--eq-*`).
+ *
+ * Declared on `:root` AND every `[data-theme]` element: a custom property holding `var(--pv-x)`
+ * is resolved where it's declared, so a light subtree must re-declare it to re-resolve.
+ * Content tokens (waveform, spectrogram, analyzer, meters, EQ) are deliberately not remapped in
+ * dark — the owner likes how they look.
+ */
+:root,
+[data-theme] {
+  --surface-app: var(--pv-bg-app);
+  --surface-panel: var(--pv-bg-panel);
+  --surface-panel-raised: var(--pv-control-bg);
+  --surface-inset: var(--pv-bg-inset);
+  --surface-border: var(--pv-border);
+
+  --text-primary: var(--pv-text-primary);
+  --text-secondary: var(--pv-text-secondary);
+  --text-disabled: var(--pv-text-disabled);
+  --text-on-accent: var(--pv-bridge-on-accent);
+
+  --accent: var(--pv-accent);
+  --accent-hover: var(--pv-accent-text);
+  --accent-active: var(--pv-accent-fill-active);
+
+  --focus-ring: var(--pv-focus-ring);
+  --selection-fill: var(--pv-selection-fill);
+  --selection-border: var(--pv-selection-border);
+
+  --meter-green: var(--pv-meter-safe);
+  --meter-yellow: var(--pv-meter-caution);
+  --meter-red: var(--pv-meter-over);
+
+  /* The take being recorded — the waveform read these with a hard-coded #ff5c5c fallback. */
+  --wave-record: var(--pv-record);
+  --wave-record-head: var(--pv-record);
+}
+
+/*
+ * Light theme values for the audio content tokens (tokens.css keeps the dark originals).
+ * `themeParity.test.ts` fails if a content token in tokens.css has no light value here.
+ * The spectrogram keeps its dark well in light — colormaps (inferno, viridis) start at black.
+ * Renderers parse these as #rrggbb or rgba(), so keep those two shapes.
+ */
+[data-theme="light"] {
+  --wave-bg: #fbfcfd;
+  --wave-fill: #2f72d6;
+  --wave-outline: #1f5fbf;
+  --wave-pending: #d3d7de;
+  --wave-clip: #d11f27;
+  --wave-playhead: #d97a00;
+  --wave-selection-fill: rgba(31, 111, 224, 0.16);
+  --wave-selection-handle: #1f6fe0;
+  --wave-marker: #1f9d55;
+  --wave-marker-region: rgba(31, 157, 85, 0.14);
+  --wave-ruler-text: #5f6671;
+  --wave-ruler-grid: #d3d7de;
+  --wave-zero-line: #aab1bb;
+  --waveform-fill: #2f72d6;
+  --waveform-rms: #7da7e0;
+  --waveform-baseline: #aab1bb;
+
+  --spec-bg: #0d0e10;
+  --spec-pending: #232630;
+  --spec-ruler-text: #5f6671;
+  --spec-ruler-grid: #d3d7de;
+
+  --analyzer-fill: rgba(31, 111, 224, 0.22);
+  --analyzer-peak: #d97a00;
+  --analyzer-grid: #d3d7de;
+
+  --eq-curve: #1a1d22;
+  --eq-fill: rgba(26, 29, 34, 0.1);
+  --eq-grid: #d3d7de;
+  --eq-band-hp: #5f6671;
+  --eq-band-ls: #1f6fe0;
+  --eq-band-1: #1f9d55;
+  --eq-band-2: #a37c00;
+  --eq-band-3: #d9731a;
+  --eq-band-4: #d11f27;
+  --eq-band-5: #9b3fc0;
+  --eq-band-hs: #1a64cc;
+  --eq-band-lp: #3a7de0;
+}
+
+/* Legacy components put `--text-on-accent` on a bright `--accent` fill: dark ink in dark (7:1),
+   white in light where the accent is deeper. New components use `--pv-accent-fill` instead. */
+:root,
+[data-theme="dark"] {
+  --pv-bridge-on-accent: #0b1220;
+}
+
+[data-theme="light"] {
+  --pv-bridge-on-accent: #ffffff;
+}
+
+html,
+body {
+  font-family: var(--pv-font-sans);
+}

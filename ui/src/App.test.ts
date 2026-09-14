@@ -1,4 +1,5 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
+import { closeAbout, openAbout } from "./lib/help/about.svelte";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App.svelte";
@@ -68,6 +69,7 @@ function baseSettings(layout: LayoutPrefsDto): Settings {
     },
     record_offsets: [],
     save_dither: "tpdf",
+    theme: "dark",
   };
 }
 
@@ -220,7 +222,12 @@ describe("App shell", () => {
     for (const testId of ["toolbar", "editor", "rack", "markers-properties", "meter-bridge"]) {
       expect(target.querySelector(`[data-testid="${testId}"]`), `missing region: ${testId}`).not.toBeNull();
     }
-    expect(target.querySelector('[data-testid="app-version"]')?.textContent).toBe("9.9.9");
+    // H-25: the version moved out of the toolbar into Help → About.
+    openAbout();
+    flushSync();
+    expect(target.ownerDocument.querySelector('[data-testid="about-version"]')?.textContent).toContain("9.9.9");
+    closeAbout();
+    flushSync();
     expect(target.querySelector('[data-testid="transport-time"]')?.textContent).toBe("00:00:00.000");
 
     unmount(app);

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { t } from "../i18n";
+  import { Badge, Button, SegmentedControl, type SegmentOption } from "../ui";
   import type { AcxRuleDto, AcxRuleStatusDto } from "../ipc/bindings";
   import { acxState, runAcxCheck } from "./acx.svelte";
   import {
@@ -23,6 +24,11 @@
   const enabled = $derived(canAnalyzeLoudness() && !running);
 
   const acx = acxState();
+  // H-25: Processed / Source as the kit's small segmented control.
+  const SOURCES: SegmentOption<"processed" | "source">[] = [
+    { value: "processed", label: t("panel.loudness.source.processed"), testid: "loudness-source-processed" },
+    { value: "source", label: t("panel.loudness.source.source"), testid: "loudness-source-source" },
+  ];
   const acxEnabled = $derived(canAnalyzeLoudness() && !acx.running);
 
   function db(value: number | undefined | null): string {
@@ -102,89 +108,75 @@
   }
 </script>
 
-<footer class="loudness-panel" data-testid="loudness-panel">
-  <span class="title">{t("panel.loudness.title")}</span>
 
-  <div class="source-toggle" role="group" aria-label={t("panel.loudness.title")}>
-    <button
-      type="button"
-      data-testid="loudness-source-processed"
-      class:active={state.source === "processed"}
-      onclick={() => setLoudnessSource("processed")}
-    >
-      {t("panel.loudness.source.processed")}
-    </button>
-    <button
-      type="button"
-      data-testid="loudness-source-source"
-      class:active={state.source === "source"}
-      onclick={() => setLoudnessSource("source")}
-    >
-      {t("panel.loudness.source.source")}
-    </button>
+<footer class="loudness-panel" data-testid="loudness-panel">
+  <div class="controls">
+    <span class="title">{t("panel.loudness.title")}</span>
+    <SegmentedControl
+      options={SOURCES}
+      value={state.source}
+      label={t("panel.loudness.title")}
+      size="sm"
+      onchange={setLoudnessSource}
+    />
+    {#if running}
+      <Button size="sm" loading testid="loudness-cancel" onclick={cancelLoudnessAnalyze}>
+        {t("panel.loudness.analyzing")}
+        {Math.round((state.job?.fraction ?? 0) * 100)}%
+      </Button>
+    {:else}
+      <Button
+        size="sm"
+        variant="primary"
+        icon="loudness"
+        testid="loudness-analyze"
+        disabled={!enabled}
+        onclick={() => void startLoudnessAnalyze()}
+      >
+        {t("panel.loudness.analyze")}
+      </Button>
+    {/if}
   </div>
 
-  {#if running}
-    <button type="button" data-testid="loudness-cancel" onclick={cancelLoudnessAnalyze}>
-      {t("panel.loudness.analyzing")}
-      {Math.round((state.job?.fraction ?? 0) * 100)}%
-    </button>
-  {:else}
-    <button
-      type="button"
-      data-testid="loudness-analyze"
-      disabled={!enabled}
-      onclick={() => void startLoudnessAnalyze()}
-    >
-      {t("panel.loudness.analyze")}
-    </button>
-  {/if}
-
   {#if state.report}
-    <span class="readout" data-testid="loudness-integrated">
-      {t("panel.loudness.integrated", { value: db(state.report.integrated_lufs) })}
-    </span>
-    <span class="readout" data-testid="loudness-short-term">
-      {t("panel.loudness.short_term", { value: db(state.report.max_short_term_lufs) })}
-    </span>
-    <span class="readout" data-testid="loudness-momentary">
-      {t("panel.loudness.momentary", { value: db(state.report.max_momentary_lufs) })}
-    </span>
-    <span class="readout" data-testid="loudness-lra">
-      {t("panel.loudness.lra", { value: db(state.report.lra_lu) })}
-    </span>
-    <span class="readout" data-testid="loudness-sample-peak">
-      {t("panel.loudness.sample_peak", { value: db(state.report.sample_peak_dbfs) })}
-    </span>
-    <span class="readout" data-testid="loudness-true-peak">
-      {t("panel.loudness.true_peak", { value: db(state.report.true_peak_dbtp) })}
-    </span>
+    <div class="readouts">
+      <span class="readout lead" data-testid="loudness-integrated">
+        {t("panel.loudness.integrated", { value: db(state.report.integrated_lufs) })}
+      </span>
+      <span class="readout" data-testid="loudness-short-term">
+        {t("panel.loudness.short_term", { value: db(state.report.max_short_term_lufs) })}
+      </span>
+      <span class="readout" data-testid="loudness-momentary">
+        {t("panel.loudness.momentary", { value: db(state.report.max_momentary_lufs) })}
+      </span>
+      <span class="readout" data-testid="loudness-lra">
+        {t("panel.loudness.lra", { value: db(state.report.lra_lu) })}
+      </span>
+      <span class="readout" data-testid="loudness-sample-peak">
+        {t("panel.loudness.sample_peak", { value: db(state.report.sample_peak_dbfs) })}
+      </span>
+      <span class="readout" data-testid="loudness-true-peak">
+        {t("panel.loudness.true_peak", { value: db(state.report.true_peak_dbtp) })}
+      </span>
+    </div>
   {:else}
-    <span class="readout muted" data-testid="loudness-not-analyzed">
+    <p class="readout muted" data-testid="loudness-not-analyzed">
       {t("panel.loudness.not_analyzed")}
-    </span>
+    </p>
   {/if}
 
   <div class="acx" data-testid="acx-section">
-    <button
-      type="button"
-      data-testid="acx-check"
-      disabled={!acxEnabled}
-      onclick={() => void runAcxCheck()}
-    >
-      {acx.running ? t("panel.acx.checking") : t("panel.acx.check")}
-    </button>
+    <div class="acx-head">
+      <Button size="sm" icon="check" testid="acx-check" loading={acx.running} disabled={!acxEnabled} onclick={() => void runAcxCheck()}>
+        {acx.running ? t("panel.acx.checking") : t("panel.acx.check")}
+      </Button>
+    </div>
 
     {#if acx.report}
       {@const report = acx.report}
-      <span
-        class="acx-result"
-        data-testid="acx-result"
-        class:pass={report.passes}
-        class:fail={!report.passes}
-      >
+      <Badge tone={report.passes ? "success" : "danger"} icon={report.passes ? "success" : "error"} testid="acx-result">
         {report.passes ? t("panel.acx.pass") : t("panel.acx.fail")}
-      </span>
+      </Badge>
 
       <table class="acx-table" data-testid="acx-table">
         <thead>
@@ -249,116 +241,98 @@
 </footer>
 
 <style>
+  /* H-25: the loudness tab — controls row, a readout grid led by Integrated, then ACX. */
   .loudness-panel {
     display: flex;
-    align-items: center;
+    flex-direction: column;
+    gap: var(--pv-space-3);
+    padding: var(--pv-space-3);
+    color: var(--pv-text-secondary);
+    font-family: var(--pv-font-sans);
+    font-size: var(--pv-text-sm);
+  }
+
+  .controls,
+  .acx-head {
+    display: flex;
     flex-wrap: wrap;
-    gap: 0.6rem;
-    padding: 0.4rem 0.75rem;
-    background: var(--surface-panel);
-    border-top: 1px solid var(--surface-border);
-    color: var(--text-secondary);
-    font-size: 0.75rem;
+    align-items: center;
+    gap: var(--pv-space-2) var(--pv-space-3);
   }
 
   .title {
-    color: var(--text-secondary);
+    color: var(--pv-text-secondary);
+    font-weight: var(--pv-weight-semibold);
   }
 
-  .source-toggle {
-    display: flex;
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    overflow: hidden;
-  }
-
-  .source-toggle button {
-    border: none;
-    border-radius: 0;
-  }
-
-  .source-toggle button.active {
-    background: var(--accent, #4a90d9);
-    color: var(--text-on-accent, #fff);
-  }
-
-  button {
-    background: var(--surface-panel-raised);
-    color: var(--text-primary);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    padding: 0.2rem 0.6rem;
-    font-variant-numeric: tabular-nums;
-  }
-
-  button:hover:not(:disabled) {
-    border-color: var(--accent);
-  }
-
-  button:disabled {
-    color: var(--text-disabled);
+  .readouts {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+    gap: var(--pv-space-2) var(--pv-space-4);
   }
 
   .readout {
+    margin: 0;
+    color: var(--pv-text-primary);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
 
+  .readout.lead {
+    font-size: var(--pv-text-lg);
+    font-weight: var(--pv-weight-semibold);
+  }
+
   .readout.muted {
-    color: var(--text-disabled);
+    color: var(--pv-text-tertiary);
   }
 
   .acx {
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 0.4rem;
-    flex-basis: 100%;
-    margin-top: 0.2rem;
-    padding-top: 0.4rem;
-    border-top: 1px solid var(--surface-border);
-  }
-
-  .acx-result {
-    font-weight: 600;
-  }
-
-  .acx-result.pass {
-    color: var(--meter-green);
-  }
-
-  .acx-result.fail {
-    color: var(--meter-red);
+    gap: var(--pv-space-2);
+    padding-top: var(--pv-space-3);
+    border-top: var(--pv-border-width) solid var(--pv-border-subtle);
   }
 
   .acx-table {
     border-collapse: collapse;
-    font-size: 0.75rem;
+    font-size: var(--pv-text-sm);
+    font-variant-numeric: tabular-nums;
   }
 
   .acx-table th,
   .acx-table td {
+    padding: var(--pv-space-1) var(--pv-space-4) var(--pv-space-1) 0;
     text-align: left;
-    padding: 0.1rem 0.6rem 0.1rem 0;
-    font-variant-numeric: tabular-nums;
+    border-bottom: var(--pv-border-width) solid var(--pv-border-subtle);
   }
 
   .acx-table th {
-    color: var(--text-secondary);
-    font-weight: 500;
+    color: var(--pv-text-tertiary);
+    font-size: var(--pv-text-xs);
+    font-weight: var(--pv-weight-medium);
+  }
+
+  .acx-table td {
+    color: var(--pv-text-primary);
   }
 
   .acx-table td.pass {
-    color: var(--meter-green);
+    color: var(--pv-success-text);
+    font-weight: var(--pv-weight-semibold);
   }
 
   .acx-table td.fail {
-    color: var(--meter-red);
+    color: var(--pv-danger-text);
+    font-weight: var(--pv-weight-semibold);
   }
 
   .acx-hint {
-    margin: 0;
-    color: var(--text-secondary);
     max-width: 40rem;
+    margin: 0;
+    color: var(--pv-text-secondary);
+    line-height: var(--pv-leading-sm);
   }
 </style>

@@ -97,3 +97,23 @@ export function nearestAnalyzerBand(
   const k = Math.round(bandsPerOctave * Math.log2(freqHz / f0Hz));
   return Math.min(Math.max(k, 0), bandCount - 1);
 }
+
+/**
+ * H-25 (owner: "the analyzer's first x-axis label reads 0"): the 20 Hz label sits at x ≈ 0 and,
+ * centred on its tick, was half-clipped to "0". Labels centre on their tick except near an edge,
+ * where the first left-aligns at its tick and the last right-aligns. `halfLabelPx` ≈ half the
+ * widest label ("20k" at 11 px).
+ */
+export function edgeAlignedLabel(
+  x: number,
+  width: number,
+  halfLabelPx = 12,
+): "start" | "center" | "end" {
+  if (x < halfLabelPx) {
+    return "start";
+  }
+  if (x > width - halfLabelPx) {
+    return "end";
+  }
+  return "center";
+}

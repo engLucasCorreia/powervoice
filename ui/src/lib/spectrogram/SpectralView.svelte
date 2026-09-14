@@ -851,30 +851,60 @@
 
   .empty {
     margin: auto;
-    color: var(--text-secondary);
+    color: var(--pv-text-tertiary);
+    font-family: var(--pv-font-sans);
+    font-size: var(--pv-text-sm);
   }
 
   .toolbar {
     display: flex;
     flex: none;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 0.6rem;
-    padding: 0.15rem 0.5rem;
-    background: var(--surface-panel);
-    border-bottom: 1px solid var(--surface-border);
-    font-size: 0.7rem;
-    color: var(--text-secondary);
+    gap: var(--pv-space-1) var(--pv-space-3);
+    min-height: 28px;
+    padding: var(--pv-space-half) var(--pv-space-2);
+    border-bottom: var(--pv-border-width) solid var(--pv-border-subtle);
+    background: var(--pv-bg-panel);
+    color: var(--pv-text-tertiary);
+    font-family: var(--pv-font-sans);
+    font-size: var(--pv-text-xs);
+  }
+
+  .toolbar label {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--pv-space-1);
   }
 
   .toolbar select,
   .toolbar input,
   .toolbar button {
-    background: var(--surface-panel-raised);
-    color: var(--text-primary);
-    border: 1px solid var(--surface-border);
-    border-radius: 3px;
-    padding: 0.1rem 0.3rem;
-    font-size: 0.7rem;
+    height: 22px;
+    padding: 0 var(--pv-space-1);
+    border: var(--pv-border-width) solid var(--pv-border-control);
+    border-radius: var(--pv-radius-sm);
+    background: var(--pv-control-bg);
+    color: var(--pv-text-primary);
+    font-family: inherit;
+    font-size: var(--pv-text-xs);
+    font-variant-numeric: tabular-nums;
+    cursor: default;
+  }
+
+  .toolbar button {
+    border-color: var(--pv-border);
+  }
+
+  .toolbar button:hover {
+    background: var(--pv-control-bg-hover);
+  }
+
+  .toolbar select:focus-visible,
+  .toolbar input:focus-visible,
+  .toolbar button:focus-visible {
+    outline: var(--pv-focus-width) solid var(--pv-focus-ring);
+    outline-offset: 0;
   }
 
   .toolbar input[type="number"] {

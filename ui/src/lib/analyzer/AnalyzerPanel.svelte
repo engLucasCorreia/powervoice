@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { SegmentedControl, Toggle, formatWithUnit, type SegmentOption } from "../ui";
   import { t } from "../i18n";
   import type { AnalyzerResponseDto } from "../ipc/bindings";
   import {
@@ -13,6 +14,7 @@
   import {
     ANALYZER_CEIL_OPTIONS_DB,
     ANALYZER_FLOOR_OPTIONS_DB,
+    edgeAlignedLabel,
     dbAxisTicks,
     DEFAULT_ANALYZER_CEIL_DB,
     DEFAULT_ANALYZER_FLOOR_DB,
@@ -47,6 +49,11 @@
   let dragMoved = false;
 
   const analyzer = analyzerState();
+  // H-25: Fast / Medium / Slow as the kit's small segmented control.
+  const responseOptions: SegmentOption<AnalyzerResponseDto>[] = RESPONSES.map((r) => ({
+    value: r,
+    label: t(`analyzer.response.${r}` as `analyzer.response.${AnalyzerResponseDto}`),
+  }));
   const device = outputDeviceStatus();
   const frame = $derived(analyzer.frame);
   const nyquistHz = $derived(frame ? frame.sampleRateHz / 2 : 24_000);
@@ -65,11 +72,10 @@
       return [];
     }
     const [fLo, fHi] = displayRange;
-    return frequencyTicks(fLo, fHi, "log", width, 40).map((tick) => ({
-      freqHz: tick.freqHz,
-      x: xForFreq(tick.freqHz),
-      label: tick.label,
-    }));
+    return frequencyTicks(fLo, fHi, "log", width, 40).map((tick) => {
+      const x = xForFreq(tick.freqHz);
+      return { freqHz: tick.freqHz, x, label: tick.label, align: edgeAlignedLabel(x, width) };
+    });
   });
 
   const dbTicks = $derived.by(() => (height > 0 ? dbAxisTicks(floorDb, ceilDb, height, 22) : []));
@@ -345,44 +351,39 @@
 
 <section class="analyzer-panel" data-testid="analyzer-panel">
   <div class="header">
-    <span>{t("panel.analyzer.title")}</span>
-    <div class="responses" role="group" aria-label={t("panel.analyzer.title")}>
-      {#each RESPONSES as r (r)}
-        <button
-          type="button"
-          class:active={analyzer.response === r}
-          onclick={() => chooseResponse(r)}
-        >
-          {t(`analyzer.response.${r}` as `analyzer.response.${AnalyzerResponseDto}`)}
-        </button>
-      {/each}
-    </div>
+    <span class="title">{t("panel.analyzer.title")}</span>
+    <SegmentedControl
+      options={responseOptions}
+      value={analyzer.response}
+      label={t("panel.analyzer.title")}
+      size="sm"
+      onchange={chooseResponse}
+    />
     <label class="axis-picker">
-      {t("analyzer.floor")}
+      <span>{t("analyzer.floor")}</span>
       <select data-testid="analyzer-floor" bind:value={floorDb}>
         {#each ANALYZER_FLOOR_OPTIONS_DB as v (v)}
-          <option value={v}>{v}</option>
+          <option value={v}>{formatWithUnit(v, "dB", 0)}</option>
         {/each}
       </select>
     </label>
     <label class="axis-picker">
-      {t("analyzer.ceiling")}
+      <span>{t("analyzer.ceiling")}</span>
       <select data-testid="analyzer-ceiling" bind:value={ceilDb}>
         {#each ANALYZER_CEIL_OPTIONS_DB as v (v)}
-          <option value={v}>{v}</option>
+          <option value={v}>{formatWithUnit(v, "dB", 0)}</option>
         {/each}
       </select>
     </label>
-    <label class="peak-hold">
-      <input type="checkbox" bind:checked={analyzer.peakHold} />
-      {t("analyzer.peak_hold")}
-    </label>
+    <span class="spacer"></span>
+    <Toggle bind:checked={analyzer.peakHold} label={t("analyzer.peak_hold")} size="sm" />
   </div>
   <div class="body">
     <div class="db-axis" data-testid="analyzer-db-axis">
       <span class="unit">{t("analyzer.unit_dbfs")}</span>
+      <span class="corner-unit" data-testid="analyzer-freq-unit">{t("spectral.freq_unit")}</span>
       {#each dbTicks as tick (tick.db)}
-        <span class="tick" style={`top: ${tick.y}px`}>{tick.label}</span>
+        <span class="tick" data-align={edgeAlignedLabel(tick.y, height, 6)} style={`top: ${tick.y}px`}>{tick.label}</span>
       {/each}
     </div>
     <div class="plot">
@@ -405,7 +406,7 @@
       </div>
       <div class="freq-axis" data-testid="analyzer-freq-axis">
         {#each freqAxisTicks as tick (tick.freqHz)}
-          <span class="tick" style={`left: ${tick.x}px`}>{tick.label}</span>
+          <span class="tick" data-align={tick.align} style={`left: ${tick.x}px`}>{tick.label}</span>
         {/each}
       </div>
     </div>
@@ -418,61 +419,56 @@
     flex-direction: column;
     min-width: 240px;
     flex: 1;
-    background: var(--surface-panel);
-    border-top: 1px solid var(--surface-border);
-    border-left: 1px solid var(--surface-border);
-    color: var(--text-secondary);
-    font-size: 0.75rem;
+    background: var(--pv-bg-panel);
+    border-left: var(--pv-border-width) solid var(--pv-border-subtle);
+    color: var(--pv-text-secondary);
+    font-family: var(--pv-font-sans);
+    font-size: var(--pv-text-sm);
   }
 
+  /* H-25: the analyzer's header follows the panel-header anatomy (32 px, sm kit controls). */
   .header {
     display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.25rem 0.5rem;
+    flex: none;
     flex-wrap: wrap;
+    align-items: center;
+    gap: var(--pv-space-2) var(--pv-space-3);
+    min-height: var(--pv-panel-header-h);
+    padding: var(--pv-space-1) var(--pv-space-3);
   }
 
-  .responses {
-    display: flex;
-    gap: 0.15rem;
-  }
-
-  .responses button {
-    background: var(--surface-inset);
-    border: 1px solid var(--surface-border);
-    color: var(--text-secondary);
-    border-radius: 2px;
-    font-size: 0.7rem;
-    padding: 0.05rem 0.35rem;
-    cursor: pointer;
-  }
-
-  .responses button.active {
-    background: var(--accent);
-    color: var(--text-on-accent);
-    border-color: var(--accent);
+  .title {
+    font-weight: var(--pv-weight-semibold);
+    color: var(--pv-text-secondary);
   }
 
   .axis-picker {
     display: flex;
     align-items: center;
-    gap: 0.2rem;
+    gap: var(--pv-space-1);
+    color: var(--pv-text-tertiary);
+    font-size: var(--pv-text-xs);
   }
 
   .axis-picker select {
-    background: var(--surface-inset);
-    color: var(--text-secondary);
-    border: 1px solid var(--surface-border);
-    border-radius: 2px;
-    font-size: 0.7rem;
+    height: var(--pv-control-h-sm);
+    padding: 0 var(--pv-space-1);
+    border: var(--pv-border-width) solid var(--pv-border-control);
+    border-radius: var(--pv-radius-sm);
+    background: var(--pv-control-bg);
+    color: var(--pv-text-primary);
+    font-family: inherit;
+    font-size: var(--pv-text-xs);
+    font-variant-numeric: tabular-nums;
   }
 
-  .peak-hold {
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-    margin-left: auto;
+  .axis-picker select:focus-visible {
+    outline: var(--pv-focus-width) solid var(--pv-focus-ring);
+    outline-offset: 0;
+  }
+
+  .spacer {
+    flex: 1;
   }
 
   /* H-24 item 5: a left dB gutter (SPEC-007 §2.9's floor/ceiling axis) and a bottom frequency
@@ -488,26 +484,53 @@
 
   .db-axis {
     position: relative;
-    width: 30px;
+    width: 34px;
     flex: none;
     border-right: 1px solid var(--analyzer-grid);
     overflow: hidden;
   }
 
-  .db-axis .unit {
+  .db-axis .unit,
+  .db-axis .corner-unit {
     position: absolute;
-    top: 2px;
     left: 2px;
-    font-size: 0.6rem;
-    color: var(--text-secondary);
+    font-size: 9px;
+    line-height: 12px;
+    color: var(--pv-text-tertiary);
+  }
+
+  .db-axis .unit {
+    top: 2px;
+  }
+
+  /* H-25: top and bottom dB labels align inside the gutter instead of straddling its edges
+     (where they collided with the units). */
+  .db-axis .tick[data-align="start"] {
+    transform: translateY(0);
+  }
+
+  .db-axis .tick[data-align="end"] {
+    transform: translateY(-100%);
+  }
+
+  .db-axis .unit {
+    left: 2px;
+    top: 12px;
+  }
+
+  /* H-25: the frequency unit, once, in the corner under the dB gutter (next to "20"). */
+  .db-axis .corner-unit {
+    bottom: 1px;
   }
 
   .db-axis .tick {
     position: absolute;
-    right: 2px;
+    right: 3px;
     transform: translateY(-50%);
-    font-size: 0.65rem;
-    color: var(--text-secondary);
+    line-height: 12px;
+    font-size: 10px;
+    color: var(--pv-text-tertiary);
+    font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
 
@@ -543,9 +566,19 @@
     position: absolute;
     top: 1px;
     transform: translateX(-50%);
-    font-size: 0.6rem;
-    color: var(--text-secondary);
+    font-size: 10px;
+    line-height: 12px;
+    color: var(--pv-text-tertiary);
+    font-variant-numeric: tabular-nums;
     white-space: nowrap;
+  }
+
+  .freq-axis .tick[data-align="start"] {
+    transform: translateX(1px);
+  }
+
+  .freq-axis .tick[data-align="end"] {
+    transform: translateX(calc(-100% - 1px));
   }
 
   .overlay {
@@ -554,7 +587,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    color: var(--text-disabled);
+    color: var(--pv-text-tertiary);
     pointer-events: none;
   }
 
@@ -562,10 +595,13 @@
     position: absolute;
     top: 2px;
     transform: translateX(-50%);
-    background: var(--surface-panel-raised);
-    border: 1px solid var(--surface-border);
-    border-radius: 2px;
-    padding: 0.05rem 0.3rem;
+    padding: var(--pv-space-half) var(--pv-space-2);
+    border: var(--pv-border-width) solid var(--pv-border);
+    border-radius: var(--pv-radius-sm);
+    background: var(--pv-bg-overlay);
+    box-shadow: var(--pv-shadow-1);
+    color: var(--pv-text-primary);
+    font-size: var(--pv-text-xs);
     font-variant-numeric: tabular-nums;
     pointer-events: none;
     white-space: nowrap;

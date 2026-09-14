@@ -186,100 +186,138 @@
 </div>
 
 <style>
+  /* H-25: label column, then the control; slider track and value box follow the kit. */
   .param {
     display: grid;
-    grid-template-columns: 8rem 1fr;
+    grid-template-columns: minmax(6.5rem, 38%) minmax(0, 1fr);
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.15rem 0;
+    gap: var(--pv-space-2);
+    min-height: var(--pv-control-h-sm);
+    font-family: var(--pv-font-sans);
   }
 
   .label {
-    color: var(--text-secondary);
-    font-size: 0.8rem;
+    overflow: hidden;
+    color: var(--pv-text-secondary);
+    font-size: var(--pv-text-sm);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .readout {
-    color: var(--text-secondary);
+    color: var(--pv-text-primary);
+    font-size: var(--pv-text-sm);
     font-variant-numeric: tabular-nums;
   }
 
   .toggle {
     justify-self: start;
-    background: var(--surface-inset);
-    color: var(--text-secondary);
-    border: 1px solid var(--surface-border);
-    border-radius: 3px;
-    padding: 0.1rem 0.6rem;
+    height: 22px;
+    padding: 0 var(--pv-space-2);
+    border: var(--pv-border-width) solid var(--pv-border);
+    border-radius: var(--pv-radius-sm);
+    background: var(--pv-control-bg);
+    color: var(--pv-text-secondary);
+    font-family: inherit;
+    font-size: var(--pv-text-sm);
+    cursor: default;
   }
 
   .toggle.on {
-    background: var(--accent);
-    color: var(--text-on-accent);
-    border-color: var(--accent);
+    border-color: var(--pv-accent);
+    background: var(--pv-accent-soft);
+    color: var(--pv-accent-text);
   }
 
   select {
-    background: var(--surface-panel-raised);
-    color: var(--text-primary);
-    border: 1px solid var(--surface-border);
-    border-radius: 3px;
-    padding: 0.1rem 0.3rem;
+    height: var(--pv-control-h-sm);
+    padding: 0 var(--pv-space-1);
+    border: var(--pv-border-width) solid var(--pv-border-control);
+    border-radius: var(--pv-radius-sm);
+    background: var(--pv-control-bg);
+    color: var(--pv-text-primary);
+    font-family: inherit;
+    font-size: var(--pv-text-sm);
   }
 
   .control {
     display: grid;
-    grid-template-columns: 1fr 4rem;
+    grid-template-columns: minmax(0, 1fr) 4.75rem;
     align-items: center;
-    gap: 0.4rem;
+    gap: var(--pv-space-2);
   }
 
   .slider {
     position: relative;
-    height: 0.9rem;
-    background: var(--surface-inset);
-    border: 1px solid var(--surface-border);
-    border-radius: 3px;
+    height: 6px;
+    border-radius: var(--pv-radius-full);
+    background: var(--pv-control-track);
+    box-shadow: inset 0 0 0 var(--pv-border-width) var(--pv-border);
     cursor: ew-resize;
     touch-action: none;
+  }
+
+  .slider::after {
+    content: "";
+    position: absolute;
+    inset: -8px 0;
   }
 
   .slider.stepped {
     background-image: repeating-linear-gradient(
       to right,
-      var(--surface-border) 0,
-      var(--surface-border) 1px,
+      var(--pv-border-strong) 0,
+      var(--pv-border-strong) 1px,
       transparent 1px,
       transparent 12.5%
     );
   }
 
+  .slider:focus-visible {
+    outline: var(--pv-focus-width) solid var(--pv-focus-ring);
+    outline-offset: 4px;
+  }
+
   .fill {
     position: absolute;
     inset: 0 auto 0 0;
-    background: var(--accent);
-    border-radius: 2px;
+    border-radius: var(--pv-radius-full);
+    background: var(--pv-accent);
     pointer-events: none;
   }
 
   .value,
   .value-input {
+    height: 22px;
+    padding: 0 var(--pv-space-1);
+    border: var(--pv-border-width) solid var(--pv-border);
+    border-radius: var(--pv-radius-sm);
+    background: var(--pv-field-bg);
+    color: var(--pv-text-primary);
+    font-family: inherit;
+    font-size: var(--pv-text-sm);
     font-variant-numeric: tabular-nums;
     text-align: right;
-    background: var(--surface-panel-raised);
-    color: var(--text-primary);
-    border: 1px solid var(--surface-border);
-    border-radius: 3px;
-    padding: 0.1rem 0.3rem;
+    white-space: nowrap;
+    cursor: text;
+  }
+
+  .value:hover {
+    border-color: var(--pv-border-control);
+  }
+
+  .value-input {
+    width: 100%;
+    border-color: var(--pv-accent);
   }
 
   .value-input.invalid {
-    border-color: var(--meter-red);
+    border-color: var(--pv-danger-text);
   }
 
   .error {
     grid-column: 2;
-    color: var(--meter-red);
-    font-size: 0.75rem;
+    color: var(--pv-danger-text);
+    font-size: var(--pv-text-xs);
   }
 </style>

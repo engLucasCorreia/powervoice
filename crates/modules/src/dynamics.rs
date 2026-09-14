@@ -23,9 +23,9 @@ use vox_dsp::dynamics::{
 };
 use vox_module_api::{
     ActivateConfig, ChannelLayout, Extension, ExtensionId, GroupId, Hold, LocalizedText,
-    MODULE_API_VERSION, Module, ModuleDescriptor, ModuleError, ModuleFactory, ModuleState,
-    ParamGroup, ParamId, ParamInfo, ProcessContext, ProcessStatus, StateError, Tail, Telemetry,
-    TelemetryCells, TelemetryInfo, TelemetryKind, Unit, Version, features, segments,
+    MODULE_API_VERSION, Module, ModuleDescriptor, ModuleError, ModuleFactory, ModulePreset,
+    ModuleState, ParamGroup, ParamId, ParamInfo, ProcessContext, ProcessStatus, StateError, Tail,
+    Telemetry, TelemetryCells, TelemetryInfo, TelemetryKind, Unit, Version, features, segments,
 };
 
 use crate::schema::{self, ParamBuild, param, switch};
@@ -640,5 +640,55 @@ impl ModuleFactory for DynamicsFactory {
 
     fn create(&self) -> Result<Box<dyn Module>, ModuleError> {
         Ok(Box::new(Dynamics::new()))
+    }
+
+    /// Factory presets (T-406; SPEC-016 §7 leaves the exact values to this ticket). The limiter
+    /// section stays off (the dedicated True-Peak Limiter module owns the final ceiling).
+    fn presets(&self) -> Vec<ModulePreset> {
+        let params = Dynamics::schema();
+        let state = |overrides: &[(&str, f64)]| {
+            schema::preset_state(&params, Dynamics::STATE_FORMAT_VERSION, overrides)
+        };
+        vec![
+            ModulePreset {
+                key: "gentle_voice".into(),
+                name: LocalizedText::keyed("module.dynamics.preset.gentle_voice", "Gentle voice"),
+                state: state(&[
+                    ("compressor_enabled", 1.0),
+                    ("compressor_threshold_db", -22.0),
+                    ("compressor_ratio", 2.0),
+                    ("compressor_attack_ms", 15.0),
+                    ("compressor_release_ms", 150.0),
+                    ("compressor_makeup_db", 2.0),
+                ]),
+            },
+            ModulePreset {
+                key: "podcast".into(),
+                name: LocalizedText::keyed("module.dynamics.preset.podcast", "Podcast"),
+                state: state(&[
+                    ("compressor_enabled", 1.0),
+                    ("compressor_threshold_db", -20.0),
+                    ("compressor_ratio", 3.5),
+                    ("compressor_attack_ms", 10.0),
+                    ("compressor_release_ms", 120.0),
+                    ("compressor_makeup_db", 3.0),
+                ]),
+            },
+            ModulePreset {
+                key: "broadcast_punch".into(),
+                name: LocalizedText::keyed(
+                    "module.dynamics.preset.broadcast_punch",
+                    "Broadcast punch",
+                ),
+                state: state(&[
+                    ("compressor_enabled", 1.0),
+                    ("compressor_threshold_db", -18.0),
+                    ("compressor_ratio", 4.0),
+                    ("compressor_attack_ms", 5.0),
+                    ("compressor_release_ms", 80.0),
+                    ("compressor_makeup_db", 4.0),
+                ]),
+            },
+        ]
     }
 }

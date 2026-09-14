@@ -427,6 +427,9 @@ pub struct RackSlotDto {
     pub uid: u64,
     /// `"id@version"`, or the stored reference verbatim for a placeholder.
     pub module: String,
+    /// The module id alone (registry key, no `@version`); `None` for a placeholder (T-406: which
+    /// preset menu — `module_presets_list`/`module_preset_save` — applies to this slot).
+    pub module_id: Option<String>,
     pub name: String,
     pub bypass: bool,
     pub latency_samples: u32,
@@ -459,6 +462,7 @@ impl From<&EngineRackSlot> for RackSlotDto {
         Self {
             uid: info.uid.0,
             module: info.module.clone(),
+            module_id: info.module_id.clone(),
             name: info.name.clone(),
             bypass: info.bypass,
             latency_samples: info.latency_samples,

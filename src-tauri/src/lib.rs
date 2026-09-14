@@ -13,6 +13,7 @@ pub mod logging;
 pub mod loudness;
 pub mod normalize;
 pub mod nr_capture;
+pub mod presets;
 pub mod recording;
 pub mod settings;
 #[cfg(feature = "spike")]
@@ -33,6 +34,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(settings::SettingsStore::load_default())
+        .manage(presets::PresetStores::load_default())
         .setup(|app| {
             // S1-01: the audio engine starts with the saved device prefs (SPEC-001 §2.5).
             let settings = app.state::<settings::SettingsStore>().get();

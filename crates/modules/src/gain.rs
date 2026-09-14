@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 
 use vox_module_api::{
     ActivateConfig, ChannelLayout, LocalizedText, MODULE_API_VERSION, Module, ModuleDescriptor,
-    ModuleError, ModuleFactory, ModuleState, ParamFlags, ParamId, ParamInfo, ProcessContext,
-    ProcessStatus, StateError, Tail, Taper, Unit, Version, features, segments,
+    ModuleError, ModuleFactory, ModulePreset, ModuleState, ParamFlags, ParamId, ParamInfo,
+    ProcessContext, ProcessStatus, StateError, Tail, Taper, Unit, Version, features, segments,
 };
 
 const MIN_DB: f64 = -60.0;
@@ -279,5 +279,22 @@ impl ModuleFactory for GainFactory {
 
     fn create(&self) -> Result<Box<dyn Module>, ModuleError> {
         Ok(Box::new(Gain::new()))
+    }
+
+    /// Factory presets (T-406): the module has one parameter, so these are simple boost/cut
+    /// shortcuts rather than spec-suggested values.
+    fn presets(&self) -> Vec<ModulePreset> {
+        vec![
+            ModulePreset {
+                key: "boost_6db".into(),
+                name: LocalizedText::keyed("module.gain.preset.boost_6db", "Boost (+6 dB)"),
+                state: Gain::state_with_gain_db(6.0),
+            },
+            ModulePreset {
+                key: "cut_6db".into(),
+                name: LocalizedText::keyed("module.gain.preset.cut_6db", "Cut (\u{2212}6 dB)"),
+                state: Gain::state_with_gain_db(-6.0),
+            },
+        ]
     }
 }

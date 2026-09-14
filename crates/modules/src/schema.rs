@@ -212,3 +212,31 @@ pub(crate) fn save_values(
 pub(crate) fn switch(v: f64) -> f64 {
     if v >= 0.5 { 1.0 } else { 0.0 }
 }
+
+/// A factory preset's state (T-406, ADR-005 §2 `ModuleFactory::presets`): every parameter at its
+/// schema default, with `overrides` (key, plain value) applied on top. No blob (SPEC-016 "none
+/// are defined here" / SPEC-014 §2.4 "factory presets are parameter-only"): a module whose
+/// factory presets need a blob (there are none in v1) builds its own `ModuleState` instead.
+///
+/// Panics (debug assertion) on an unknown key: a typo here is a programming error, not a runtime
+/// condition, and every built-in module's presets are exercised by its own tests.
+pub(crate) fn preset_state(
+    params: &[ParamInfo],
+    format_version: u32,
+    overrides: &[(&str, f64)],
+) -> ModuleState {
+    let mut values: BTreeMap<String, f64> =
+        params.iter().map(|p| (p.key.clone(), p.default)).collect();
+    for (key, value) in overrides {
+        debug_assert!(
+            values.contains_key(*key),
+            "preset_state: unknown parameter key `{key}`"
+        );
+        values.insert((*key).to_owned(), *value);
+    }
+    ModuleState {
+        format_version,
+        params: values,
+        blob: None,
+    }
+}

@@ -45,6 +45,7 @@ function noiseOnlySlot(): RackSlotDto {
   return {
     uid: 1,
     module: "org.powervoice.noise-reduction@1.0.0",
+    module_id: "org.powervoice.noise-reduction",
     name: "Noise Reduction",
     bypass: false,
     latency_samples: 0,

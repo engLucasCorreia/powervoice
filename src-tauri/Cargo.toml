@@ -32,8 +32,9 @@ tracing-appender = "0.2"
 directories = "6"
 # S1-01: the audio engine and the built-in modules registered into its rack (composition root).
 vox-engine = { path = "../crates/engine" }
-vox-rack = { path = "../crates/rack" }
 vox-modules = { path = "../crates/modules" }
+vox-presets = { path = "../crates/presets" }
+vox-rack = { path = "../crates/rack" }
 # S1-03: the document service (open/save WAV, peaks) wraps these directly (thin command layer).
 vox-project = { path = "../crates/project" }
 vox-io = { path = "../crates/io" }

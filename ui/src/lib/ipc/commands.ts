@@ -24,6 +24,8 @@ import type {
   NormalizeJobStartedDto,
   NrCaptureStartedDto,
   PeaksRequestDto,
+  PresetEntryDto,
+  PresetRefDto,
   RackStateDto,
   RecentFileDto,
   RecoverableSessionDto,
@@ -212,6 +214,102 @@ export async function rackResponseCurve(
   points: number[],
 ): Promise<ResponseCurveDto> {
   return invoke<ResponseCurveDto>("rack_response_curve" satisfies CommandName, { slot, points });
+}
+
+// --- Module & rack presets (T-406, SPEC-012 §2.7) --------------------------------------------
+
+/** Factory presets first, then user-saved ones (alphabetical) — a rack slot's preset menu. */
+export async function modulePresetsList(moduleId: string): Promise<PresetEntryDto[]> {
+  return invoke<PresetEntryDto[]>("module_presets_list" satisfies CommandName, { moduleId });
+}
+
+/** Saves slot `slot`'s current state as a new user preset named `name`. `includeNoisePrint`
+ * keeps a Noise Reduction slot's captured print in the saved state (off by default, SPEC-012
+ * scope); `overwrite` replaces an existing preset of the same name instead of failing. */
+export async function modulePresetSave(
+  slot: number,
+  name: string,
+  includeNoisePrint: boolean,
+  overwrite = false,
+): Promise<PresetEntryDto> {
+  return invoke<PresetEntryDto>("module_preset_save" satisfies CommandName, {
+    slot,
+    name,
+    includeNoisePrint,
+    overwrite,
+  });
+}
+
+/** Loads a module preset into slot `slot` (a state with a blob replaces the instance; a
+ * parameter-only state is smoothed, with no restart, SPEC-012 §2.7). */
+export async function modulePresetLoad(
+  slot: number,
+  moduleId: string,
+  preset: PresetRefDto,
+): Promise<RackStateDto> {
+  return invoke<RackStateDto>("module_preset_load" satisfies CommandName, {
+    slot,
+    moduleId,
+    preset,
+  });
+}
+
+/** Renames a user module preset. */
+export async function modulePresetRename(
+  moduleId: string,
+  oldName: string,
+  newName: string,
+): Promise<PresetEntryDto> {
+  return invoke<PresetEntryDto>("module_preset_rename" satisfies CommandName, {
+    moduleId,
+    oldName,
+    newName,
+  });
+}
+
+/** Deletes a user module preset. */
+export async function modulePresetDelete(moduleId: string, name: string): Promise<void> {
+  return invoke<void>("module_preset_delete" satisfies CommandName, { moduleId, name });
+}
+
+/** Resets every writable parameter of slot `slot` to its schema default (a committed blob, e.g.
+ * a noise print, is kept). */
+export async function moduleResetDefault(slot: number): Promise<RackStateDto> {
+  return invoke<RackStateDto>("module_reset_default" satisfies CommandName, { slot });
+}
+
+/** Factory rack presets ("Podcast voice", "Audiobook (ACX)", "Gentle cleanup", ...) first, then
+ * user-saved ones (alphabetical) — Effects → Rack Presets. */
+export async function rackPresetsList(): Promise<PresetEntryDto[]> {
+  return invoke<PresetEntryDto[]>("rack_presets_list" satisfies CommandName);
+}
+
+/** Saves the live rack as a new user rack preset named `name`. `overwrite` replaces an existing
+ * preset of the same name instead of failing. */
+export async function rackPresetSave(
+  name: string,
+  overwrite = false,
+): Promise<PresetEntryDto> {
+  return invoke<PresetEntryDto>("rack_preset_save" satisfies CommandName, { name, overwrite });
+}
+
+/** Loads a rack preset, replacing the live rack. An unknown module id becomes a placeholder slot
+ * with a notice, never a load failure. */
+export async function rackPresetLoad(preset: PresetRefDto): Promise<RackStateDto> {
+  return invoke<RackStateDto>("rack_preset_load" satisfies CommandName, { preset });
+}
+
+/** Renames a user rack preset. */
+export async function rackPresetRename(oldName: string, newName: string): Promise<PresetEntryDto> {
+  return invoke<PresetEntryDto>("rack_preset_rename" satisfies CommandName, {
+    oldName,
+    newName,
+  });
+}
+
+/** Deletes a user rack preset. */
+export async function rackPresetDelete(name: string): Promise<void> {
+  return invoke<void>("rack_preset_delete" satisfies CommandName, { name });
 }
 
 /**

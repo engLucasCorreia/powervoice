@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use vox_rack::{NoiseProfile, ParamId, RackHost, RackModel, SlotInfo};
+use vox_rack::{ModuleState, NoiseProfile, ParamId, RackHost, RackModel, SlotInfo};
 
 /// Cap on [`EngineHandle::response_curve`](crate::EngineHandle::response_curve)'s frequency list
 /// (S3-07, SPEC-015 §2.6.6 "≤ 512 points"): an oversized request is truncated, not rejected — the
@@ -92,6 +92,23 @@ pub enum RackCommand {
     /// Restarts the slot's instance from its committed state (Restart of a failed slot, or a
     /// manual retry).
     Restart {
+        /// Slot index.
+        index: usize,
+    },
+    /// Applies a module preset to slot `index` (T-406, SPEC-012 §2.7, ADR-005 §12): a state with
+    /// a blob (e.g. a Noise Reduction preset that "includes the print", SPEC-014 §2.4) replaces
+    /// the instance behind the 15 ms crossfade; a parameter-only state is smoothed, like typed
+    /// values, with no restart, and leaves the slot's own committed blob untouched.
+    ApplyModulePreset {
+        /// Slot index.
+        index: usize,
+        /// The preset's module state.
+        state: ModuleState,
+    },
+    /// Resets every writable parameter of slot `index` to its schema default (T-406): the same
+    /// smoothed, no-restart path as [`RackCommand::ApplyModulePreset`] with a parameter-only
+    /// state — a committed blob (a noise print) is kept.
+    ResetToDefault {
         /// Slot index.
         index: usize,
     },

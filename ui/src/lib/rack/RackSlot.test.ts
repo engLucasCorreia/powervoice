@@ -126,6 +126,7 @@ function slotFixture(): RackSlotDto {
   return {
     uid: 1,
     module: "org.powervoice.fixture@1.0.0",
+    module_id: "org.powervoice.fixture",
     name: "Fixture",
     bypass: false,
     latency_samples: 0,

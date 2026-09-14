@@ -21,9 +21,9 @@ use vox_dsp::eq::coeffs::{Biquad, GainShape, PassKind, Sections, butterworth};
 use vox_dsp::eq::{MAX_SECTIONS, ramp_samples};
 use vox_module_api::{
     ActivateConfig, ChannelLayout, CurveHandle, Extension, ExtensionId, LocalizedText,
-    MODULE_API_VERSION, Module, ModuleDescriptor, ModuleError, ModuleFactory, ModuleState,
-    ParamGroup, ParamId, ParamInfo, ProcessContext, ProcessStatus, ResponseCurve, StateError, Tail,
-    Unit, Version, features, segments,
+    MODULE_API_VERSION, Module, ModuleDescriptor, ModuleError, ModuleFactory, ModulePreset,
+    ModuleState, ParamGroup, ParamId, ParamInfo, ProcessContext, ProcessStatus, ResponseCurve,
+    StateError, Tail, Unit, Version, features, segments,
 };
 
 use crate::schema::{self, ParamBuild, param, switch};
@@ -605,5 +605,56 @@ impl ModuleFactory for ParametricEqFactory {
 
     fn create(&self) -> Result<Box<dyn Module>, ModuleError> {
         Ok(Box::new(ParametricEq::new()))
+    }
+
+    /// Factory presets (T-406; SPEC-015 doesn't suggest values, so these cover the module's two
+    /// common jobs: a plain rumble filter, and gentle voice tone shaping).
+    fn presets(&self) -> Vec<ModulePreset> {
+        let params = ParametricEq::schema();
+        let state = |overrides: &[(&str, f64)]| {
+            schema::preset_state(&params, ParametricEq::STATE_FORMAT_VERSION, overrides)
+        };
+        vec![
+            ModulePreset {
+                key: "rumble_filter_hp80".into(),
+                name: LocalizedText::keyed(
+                    "module.parametric_eq.preset.rumble_filter_hp80",
+                    "Rumble filter (HP 80 Hz)",
+                ),
+                state: state(&[("hp_on", 1.0), ("hp_freq_hz", 80.0)]),
+            },
+            ModulePreset {
+                key: "podcast_presence".into(),
+                name: LocalizedText::keyed(
+                    "module.parametric_eq.preset.podcast_presence",
+                    "Podcast presence",
+                ),
+                state: state(&[
+                    ("hp_on", 1.0),
+                    ("hp_freq_hz", 80.0),
+                    ("b2_freq_hz", 500.0),
+                    ("b2_gain_db", -1.5),
+                    ("b4_freq_hz", 3_000.0),
+                    ("b4_gain_db", 2.5),
+                    ("hs_freq_hz", 10_000.0),
+                    ("hs_gain_db", 1.5),
+                ]),
+            },
+            ModulePreset {
+                key: "de_mud".into(),
+                name: LocalizedText::keyed(
+                    "module.parametric_eq.preset.de_mud",
+                    "De-mud (cut 300\u{2013}500 Hz)",
+                ),
+                state: state(&[
+                    ("hp_on", 1.0),
+                    ("hp_freq_hz", 100.0),
+                    ("b1_freq_hz", 300.0),
+                    ("b1_gain_db", -1.5),
+                    ("b2_freq_hz", 500.0),
+                    ("b2_gain_db", -2.0),
+                ]),
+            },
+        ]
     }
 }

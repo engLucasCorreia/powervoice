@@ -25,6 +25,7 @@ function slotFixture(uid: number): RackSlotDto {
   return {
     uid,
     module: "org.powervoice.gain@1.0.0",
+    module_id: "org.powervoice.gain",
     name: `Slot ${uid}`,
     bypass: false,
     latency_samples: 0,

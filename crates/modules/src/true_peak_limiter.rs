@@ -42,9 +42,9 @@ use vox_dsp::true_peak::{
 };
 use vox_module_api::{
     ActivateConfig, ChannelLayout, Extension, ExtensionId, Hold, HostRequest, LocalizedText,
-    MODULE_API_VERSION, Module, ModuleDescriptor, ModuleError, ModuleFactory, ModuleState,
-    ParamFlags, ParamId, ParamInfo, ProcessContext, ProcessStatus, StateError, Tail, Taper,
-    TelemetryCells, TelemetryInfo, TelemetryKind, Unit, Version, features,
+    MODULE_API_VERSION, Module, ModuleDescriptor, ModuleError, ModuleFactory, ModulePreset,
+    ModuleState, ParamFlags, ParamId, ParamInfo, ProcessContext, ProcessStatus, StateError, Tail,
+    Taper, TelemetryCells, TelemetryInfo, TelemetryKind, Unit, Version, features,
 };
 
 /// Parameter events waiting for their sample, one FIFO per parameter (preallocated).
@@ -579,5 +579,36 @@ impl ModuleFactory for TruePeakLimiterFactory {
 
     fn create(&self) -> Result<Box<dyn Module>, ModuleError> {
         Ok(Box::new(TruePeakLimiter::new()))
+    }
+
+    /// Factory presets (T-406): ceiling targets for common delivery formats (PROMPT §3.4 default
+    /// −1 dBTP; ACX's peak requirement is −3 dB, SPEC-017 §2 default release/look-ahead kept).
+    fn presets(&self) -> Vec<ModulePreset> {
+        vec![
+            ModulePreset {
+                key: "podcast_minus1".into(),
+                name: LocalizedText::keyed(
+                    "module.true_peak_limiter.preset.podcast_minus1",
+                    "Podcast (\u{2212}1 dBTP)",
+                ),
+                state: TruePeakLimiter::state(0.0, -1.0, 100.0, 5.0),
+            },
+            ModulePreset {
+                key: "broadcast_minus2".into(),
+                name: LocalizedText::keyed(
+                    "module.true_peak_limiter.preset.broadcast_minus2",
+                    "Broadcast (\u{2212}2 dBTP)",
+                ),
+                state: TruePeakLimiter::state(0.0, -2.0, 100.0, 5.0),
+            },
+            ModulePreset {
+                key: "acx_audiobook_minus3".into(),
+                name: LocalizedText::keyed(
+                    "module.true_peak_limiter.preset.acx_audiobook_minus3",
+                    "ACX audiobook (\u{2212}3 dBTP)",
+                ),
+                state: TruePeakLimiter::state(0.0, -3.0, 150.0, 5.0),
+            },
+        ]
     }
 }

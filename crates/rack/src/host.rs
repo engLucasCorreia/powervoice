@@ -107,6 +107,9 @@ pub struct SlotInfo {
     pub uid: SlotUid,
     /// `"id@version"`.
     pub module: String,
+    /// The module id alone (registry key, no `@version`); `None` for a placeholder (T-406: which
+    /// preset menu to show — a missing module has no schema and no presets).
+    pub module_id: Option<String>,
     /// Display name (the module reference for placeholders).
     pub name: String,
     /// Host bypass flag.
@@ -589,6 +592,7 @@ impl RackHost {
             Kind::Loaded(l) => SlotInfo {
                 uid: hs.uid,
                 module: ModuleRef::of(&l.descriptor).to_string(),
+                module_id: Some(l.descriptor.id.clone()),
                 name: l.descriptor.name.text.clone(),
                 bypass: hs.bypass,
                 latency_samples: l.latency,
@@ -612,6 +616,7 @@ impl RackHost {
             } => SlotInfo {
                 uid: hs.uid,
                 module: model.module.clone(),
+                module_id: None,
                 name: model.module.clone(),
                 bypass: hs.bypass,
                 latency_samples: 0,
@@ -1152,6 +1157,89 @@ impl RackHost {
         self.flush();
         self.check_latency();
         Ok(())
+    }
+
+    // --- Presets (T-406, ADR-005 §10/§12, SPEC-012 §2.7) ------------------------------------
+
+    /// The committed state of slot `index` (mirror values, `READ_ONLY` excluded, plus the
+    /// committed blob) — what saving a module preset from a live slot captures. `None` blob
+    /// means "no noise print"; callers that implement an "include noise print" checkbox clear
+    /// [`ModuleState::blob`] themselves before storing it.
+    pub fn slot_state(&self, index: usize) -> Result<ModuleState, RackError> {
+        let hs = self.slots.get(index).ok_or(RackError::IndexOutOfRange {
+            index,
+            len: self.slots.len(),
+        })?;
+        let Kind::Loaded(l) = &hs.kind else {
+            return Err(RackError::NotLoaded { index });
+        };
+        Ok(committed_state(l))
+    }
+
+    /// The module id of slot `index` (registry key, no `@version`); `None` for a placeholder.
+    pub fn slot_module_id(&self, index: usize) -> Option<String> {
+        let Kind::Loaded(l) = &self.slots.get(index)?.kind else {
+            return None;
+        };
+        Some(l.descriptor.id.clone())
+    }
+
+    /// Applies a module preset to slot `index` (SPEC-012 §2.7): a state with a blob replaces the
+    /// instance behind the 15 ms crossfade, exactly like [`replace_state`](Self::replace_state)
+    /// (a noise-reduction preset "includes the print", SPEC-014 §2.4). A state with no blob is
+    /// **parameter-only** (ADR-005 §12): every parameter the preset defines is sent like a typed
+    /// value — smoothed, with no restart — and the slot's own committed blob (if any) is left
+    /// untouched. Keys the preset doesn't mention keep their current value.
+    pub fn apply_module_preset(
+        &mut self,
+        index: usize,
+        preset: &ModuleState,
+    ) -> Result<(), RackError> {
+        if preset.blob.is_some() {
+            return self.replace_state(index, preset.clone());
+        }
+        let hs = self.slots.get(index).ok_or(RackError::IndexOutOfRange {
+            index,
+            len: self.slots.len(),
+        })?;
+        let Kind::Loaded(l) = &hs.kind else {
+            return Err(RackError::NotLoaded { index });
+        };
+        let targets: Vec<(ParamId, f64)> = l
+            .params
+            .iter()
+            .filter(|p| !p.flags.contains(ParamFlags::READ_ONLY))
+            .filter_map(|p| preset.params.get(&p.key).map(|&v| (p.id, v)))
+            .collect();
+        for (id, value) in targets {
+            self.set_param(index, id, value)?;
+        }
+        Ok(())
+    }
+
+    /// Resets every writable parameter of slot `index` to its schema default, through the same
+    /// parameter-only path as [`apply_module_preset`](Self::apply_module_preset) (smoothed, no
+    /// restart, committed blob untouched — e.g. a Noise Reduction slot keeps its print).
+    pub fn reset_to_default(&mut self, index: usize) -> Result<(), RackError> {
+        let hs = self.slots.get(index).ok_or(RackError::IndexOutOfRange {
+            index,
+            len: self.slots.len(),
+        })?;
+        let Kind::Loaded(l) = &hs.kind else {
+            return Err(RackError::NotLoaded { index });
+        };
+        let params = l
+            .params
+            .iter()
+            .filter(|p| !p.flags.contains(ParamFlags::READ_ONLY))
+            .map(|p| (p.key.clone(), p.default))
+            .collect();
+        let defaults = ModuleState {
+            format_version: l.descriptor.state_format_version,
+            params,
+            blob: None,
+        };
+        self.apply_module_preset(index, &defaults)
     }
 
     // --- Noise print capture (S3-06, SPEC-014 §2.3, §2.9) -----------------------------------

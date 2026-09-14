@@ -1,12 +1,23 @@
 <script lang="ts">
   import EqGraph from "../eq/EqGraph.svelte";
   import { t } from "../i18n";
-  import type { ParamInfoDto, RackSlotDto } from "../ipc/bindings";
+  import type { ParamInfoDto, PresetEntryDto, RackSlotDto } from "../ipc/bindings";
   import GainReductionMeter from "./GainReductionMeter.svelte";
   import { localized } from "./localized";
   import NoiseReductionSection from "./NoiseReductionSection.svelte";
   import ParamGroupSection from "./ParamGroupSection.svelte";
-  import { noteSlotFocused, removeSlot, restartSlot, setBypass, slotTelemetry } from "./rack.svelte";
+  import {
+    deleteModulePreset,
+    listModulePresets,
+    loadModulePreset,
+    noteSlotFocused,
+    removeSlot,
+    resetSlotToDefault,
+    restartSlot,
+    saveModulePreset,
+    setBypass,
+    slotTelemetry,
+  } from "./rack.svelte";
 
   /**
    * One rack slot (SPEC-012 §2.1): header (bypass, name, latency, menu, collapse) and the
@@ -36,6 +47,74 @@
 
   let collapsed = $state(false);
   let menuOpen = $state(false);
+
+  // --- Presets (T-406, SPEC-012 §2.7) -----------------------------------------------------
+  let presetsOpen = $state(false);
+  let presetEntries = $state<PresetEntryDto[] | null>(null);
+  let savingPreset = $state(false);
+  let presetName = $state("");
+  let includeNoisePrint = $state(false);
+
+  function closeMenu(): void {
+    menuOpen = false;
+    presetsOpen = false;
+    savingPreset = false;
+  }
+
+  async function openPresetsSubmenu(): Promise<void> {
+    presetsOpen = true;
+    savingPreset = false;
+    if (slot.module_id) {
+      presetEntries = await listModulePresets(slot.module_id);
+    }
+  }
+
+  async function refreshPresets(): Promise<void> {
+    if (slot.module_id) {
+      presetEntries = await listModulePresets(slot.module_id);
+    }
+  }
+
+  function startSavePreset(): void {
+    savingPreset = true;
+    presetName = "";
+    includeNoisePrint = false;
+  }
+
+  async function confirmSavePreset(): Promise<void> {
+    const name = presetName.trim();
+    if (!name || !slot.module_id) {
+      return;
+    }
+    const saved = await saveModulePreset(index, name, includeNoisePrint);
+    if (saved) {
+      savingPreset = false;
+      presetName = "";
+      await refreshPresets();
+    }
+  }
+
+  async function pickPreset(entry: PresetEntryDto): Promise<void> {
+    if (!slot.module_id) {
+      return;
+    }
+    closeMenu();
+    await loadModulePreset(
+      index,
+      slot.module_id,
+      entry.is_factory ? { kind: "factory", key: entry.key } : { kind: "user", name: entry.key },
+    );
+  }
+
+  async function deletePreset(entry: PresetEntryDto, event: MouseEvent): Promise<void> {
+    event.stopPropagation();
+    if (!slot.module_id) {
+      return;
+    }
+    if (await deleteModulePreset(slot.module_id, entry.key)) {
+      await refreshPresets();
+    }
+  }
 
   const latencyLabel = $derived(
     slot.latency_samples > 0
@@ -77,10 +156,6 @@
       .filter(({ channel }) => channel.kind === "gain_reduction" && channel.group === null),
   );
   const meterValues = $derived(slotTelemetry(slot.uid));
-
-  function closeMenu(): void {
-    menuOpen = false;
-  }
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -142,7 +217,12 @@
         class="menu-button"
         aria-label={t("rack.slot.menu")}
         data-testid="rack-slot-menu"
-        onclick={() => (menuOpen = !menuOpen)}
+        onclick={() => {
+          menuOpen = !menuOpen;
+          if (!menuOpen) {
+            closeMenu();
+          }
+        }}
       >
         ⋯
       </button>
@@ -170,6 +250,104 @@
           >
             {t("rack.slot.menu.remove")}
           </button>
+          {#if slot.module_id}
+            <hr />
+            <button
+              type="button"
+              role="menuitem"
+              data-testid="rack-slot-presets"
+              aria-expanded={presetsOpen}
+              onclick={() => (presetsOpen ? (presetsOpen = false) : void openPresetsSubmenu())}
+            >
+              {t("rack.slot.menu.presets")} ▸
+            </button>
+            {#if presetsOpen}
+              <div class="submenu" data-testid="rack-slot-presets-submenu">
+                {#if presetEntries === null}
+                  <span class="preset-empty">…</span>
+                {:else if presetEntries.length === 0 && !savingPreset}
+                  <span class="preset-empty">{t("rack.slot.preset.none")}</span>
+                {:else}
+                  {#each presetEntries as entry (entry.is_factory + ":" + entry.key)}
+                    <div class="preset-row">
+                      <button
+                        type="button"
+                        role="menuitem"
+                        class="preset-name"
+                        data-testid="rack-slot-preset-{entry.key}"
+                        onclick={() => void pickPreset(entry)}
+                      >
+                        {localized(entry.name)}
+                      </button>
+                      {#if !entry.is_factory}
+                        <button
+                          type="button"
+                          class="preset-delete"
+                          title={t("rack.slot.preset.delete")}
+                          data-testid="rack-slot-preset-delete-{entry.key}"
+                          onclick={(e) => void deletePreset(entry, e)}
+                        >
+                          ×
+                        </button>
+                      {/if}
+                    </div>
+                  {/each}
+                {/if}
+                <hr />
+                {#if savingPreset}
+                  <div class="save-form">
+                    <input
+                      type="text"
+                      placeholder={t("rack.slot.preset.name_placeholder")}
+                      data-testid="rack-slot-preset-name"
+                      bind:value={presetName}
+                      onkeydown={(e) => {
+                        if (e.key === "Enter") void confirmSavePreset();
+                      }}
+                    />
+                    {#if slot.noise_profile !== null}
+                      <label class="checkbox-row">
+                        <input type="checkbox" bind:checked={includeNoisePrint} />
+                        {t("rack.slot.preset.include_noise_print")}
+                      </label>
+                    {/if}
+                    <div class="save-actions">
+                      <button
+                        type="button"
+                        data-testid="rack-slot-preset-save-confirm"
+                        onclick={() => void confirmSavePreset()}
+                      >
+                        {t("rack.slot.preset.save_button")}
+                      </button>
+                      <button type="button" onclick={() => (savingPreset = false)}>
+                        {t("rack.slot.preset.cancel_button")}
+                      </button>
+                    </div>
+                  </div>
+                {:else}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-testid="rack-slot-preset-save"
+                    onclick={startSavePreset}
+                  >
+                    {t("rack.slot.preset.save_as")}
+                  </button>
+                {/if}
+              </div>
+            {/if}
+            <button
+              type="button"
+              role="menuitem"
+              data-testid="rack-slot-reset-default"
+              onclick={() => {
+                closeMenu();
+                void resetSlotToDefault(index);
+              }}
+            >
+              {t("rack.slot.menu.reset_default")}
+            </button>
+          {/if}
         </div>
       {/if}
     </div>
@@ -292,6 +470,85 @@
 
   .menu button:hover {
     background: var(--surface-panel-raised);
+  }
+
+  .menu hr {
+    border: none;
+    border-top: 1px solid var(--surface-border);
+    margin: 0.2rem 0;
+    width: 100%;
+  }
+
+  .submenu {
+    display: flex;
+    flex-direction: column;
+    padding-left: 0.4rem;
+    border-left: 2px solid var(--surface-border);
+    margin: 0.15rem 0 0.15rem 0.6rem;
+  }
+
+  .preset-empty {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    padding: 0.2rem 0.6rem;
+  }
+
+  .preset-row {
+    display: flex;
+    align-items: center;
+  }
+
+  .preset-name {
+    flex: 1;
+    text-align: left;
+    background: transparent;
+    border: none;
+    color: var(--text-primary);
+    padding: 0.3rem 0.6rem;
+  }
+
+  .preset-name:hover {
+    background: var(--surface-panel-raised);
+  }
+
+  .preset-delete {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    padding: 0 0.4rem;
+  }
+
+  .preset-delete:hover {
+    color: var(--meter-yellow);
+  }
+
+  .save-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    padding: 0.3rem 0.6rem;
+  }
+
+  .save-form input[type="text"] {
+    background: var(--surface-inset);
+    border: 1px solid var(--surface-border);
+    color: var(--text-primary);
+    border-radius: 3px;
+    padding: 0.2rem 0.4rem;
+  }
+
+  .checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+  }
+
+  .save-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.4rem;
   }
 
   .status-message {

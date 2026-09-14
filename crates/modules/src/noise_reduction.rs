@@ -22,9 +22,9 @@ use std::sync::atomic::AtomicBool;
 use vox_dsp::nr::{self, BlobError, CaptureError, NrParams, ProfileView, SpectralNr};
 use vox_module_api::{
     ActivateConfig, ChannelLayout, Extension, ExtensionId, GroupId, HostRequest, LocalizedText,
-    MODULE_API_VERSION, Module, ModuleDescriptor, ModuleError, ModuleFactory, ModuleState,
-    NoiseProfile, ParamFlags, ParamGroup, ParamId, ParamInfo, ProcessContext, ProcessStatus,
-    StateError, Tail, Taper, Unit, Version, features, segments,
+    MODULE_API_VERSION, Module, ModuleDescriptor, ModuleError, ModuleFactory, ModulePreset,
+    ModuleState, NoiseProfile, ParamFlags, ParamGroup, ParamId, ParamInfo, ProcessContext,
+    ProcessStatus, StateError, Tail, Taper, Unit, Version, features, segments,
 };
 
 const PARAM_COUNT: usize = 8;
@@ -527,5 +527,42 @@ impl ModuleFactory for NoiseReductionFactory {
 
     fn create(&self) -> Result<Box<dyn Module>, ModuleError> {
         Ok(Box::new(NoiseReduction::new()))
+    }
+
+    /// Factory presets (T-406, SPEC-014 §2.4): **parameter-only**, so loading one keeps the
+    /// slot's current print (ADR-005 §12) — a factory print would need a real noise sample,
+    /// which the factory doesn't have. Only `reduction_db` changes (SPEC-014 AC-22).
+    fn presets(&self) -> Vec<ModulePreset> {
+        let state = |reduction_db: f64| {
+            let mut s = NoiseReduction::state_with_blob(None);
+            s.params.insert("reduction_db".into(), reduction_db);
+            s
+        };
+        vec![
+            ModulePreset {
+                key: "light_6db".into(),
+                name: LocalizedText::keyed(
+                    "module.noise_reduction.preset.light_6db",
+                    "Light (6 dB)",
+                ),
+                state: state(6.0),
+            },
+            ModulePreset {
+                key: "medium_12db".into(),
+                name: LocalizedText::keyed(
+                    "module.noise_reduction.preset.medium_12db",
+                    "Medium (12 dB)",
+                ),
+                state: state(12.0),
+            },
+            ModulePreset {
+                key: "strong_20db".into(),
+                name: LocalizedText::keyed(
+                    "module.noise_reduction.preset.strong_20db",
+                    "Strong (20 dB)",
+                ),
+                state: state(20.0),
+            },
+        ]
     }
 }

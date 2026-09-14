@@ -18,8 +18,8 @@ use vox_dsp::async_resample::MonitorResampler;
 use vox_dsp::capture_resample::CaptureResampler;
 use vox_project::{FreeSpaceProvider, TakeCapture};
 use vox_rack::{
-    ActivateConfig, ChannelLayout, MAX_BLOCK, ModuleDescriptor, ProcessMode, RackHost, RackModel,
-    RackNotice, RackOptions, Registry,
+    ActivateConfig, ChannelLayout, MAX_BLOCK, ModuleDescriptor, ModulePreset, ModuleState,
+    ProcessMode, RackHost, RackModel, RackNotice, RackOptions, Registry,
 };
 
 use crate::analyzer::{
@@ -773,6 +773,16 @@ impl Control {
         self.registry.descriptors().cloned().collect()
     }
 
+    /// `module_id`'s factory presets (T-406, ADR-005 §2 `ModuleFactory::presets`); empty for an
+    /// unregistered id. Always available, even with no live rack — a pure function of the
+    /// registry (assembled once at startup by the composition root).
+    pub(crate) fn rack_module_presets(&self, module_id: &str) -> Vec<ModulePreset> {
+        self.registry
+            .get(module_id)
+            .map(|f| f.presets())
+            .unwrap_or_default()
+    }
+
     /// The current rack state, empty when there is no live rack (no output stream open).
     pub(crate) fn rack_snapshot(&self) -> RackSnapshot {
         self.output
@@ -845,6 +855,10 @@ impl Control {
                     host.set_param(index, id, value).map(|_| ())
                 }
                 RackCommand::Restart { index } => host.restart(index),
+                RackCommand::ApplyModulePreset { index, state } => {
+                    host.apply_module_preset(index, &state)
+                }
+                RackCommand::ResetToDefault { index } => host.reset_to_default(index),
             };
             (result, host.take_notices())
         };
@@ -853,6 +867,22 @@ impl Control {
         let snapshot = self.rack_snapshot();
         (self.events)(EngineEvent::RackChanged(snapshot.clone()));
         Ok(snapshot)
+    }
+
+    /// The committed state of slot `index` (T-406: what "Save as preset" reads). Read-only.
+    pub(crate) fn rack_slot_state(&self, index: usize) -> Result<ModuleState, RackApiError> {
+        let Some(out) = self.output.as_ref() else {
+            return Err(RackApiError::Unavailable);
+        };
+        out.rack
+            .slot_state(index)
+            .map_err(|e| RackApiError::Rack(e.to_string()))
+    }
+
+    /// The module id of slot `index` (registry key, no `@version`); `None` for a placeholder, an
+    /// out-of-range index, or when there is no live rack (T-406: which preset menu to show).
+    pub(crate) fn rack_slot_module_id(&self, index: usize) -> Option<String> {
+        self.output.as_ref()?.rack.slot_module_id(index)
     }
 
     /// Forwards rack notices (ADR-005 §7 mirror echoes, latency changes, failures, restarts),

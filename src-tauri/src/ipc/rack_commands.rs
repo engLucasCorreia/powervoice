@@ -11,8 +11,12 @@ use crate::audio::AudioEngine;
 use crate::ipc::error::IpcError;
 use crate::ipc::rack_dto::{ModuleDescriptorDto, RackStateDto, ResponseCurveDto, rack_ipc_error};
 
-/// Runs `cmd` on the engine's control thread and maps the result to a [`RackStateDto`].
-async fn apply(engine: &AudioEngine, cmd: RackCommand) -> Result<RackStateDto, IpcError> {
+/// Runs `cmd` on the engine's control thread and maps the result to a [`RackStateDto`]. `pub(crate)`
+/// so `preset_commands` (T-406) reuses it for `ApplyModulePreset`/`ResetToDefault`.
+pub(crate) async fn apply(
+    engine: &AudioEngine,
+    cmd: RackCommand,
+) -> Result<RackStateDto, IpcError> {
     let handle = engine.handle().clone();
     let result = tauri::async_runtime::spawn_blocking(move || handle.rack_command(cmd))
         .await

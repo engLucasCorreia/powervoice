@@ -22,9 +22,9 @@ use vox_dsp::dynamics::{
 };
 use vox_module_api::{
     ActivateConfig, ChannelLayout, Extension, ExtensionId, GroupId, Hold, LocalizedText,
-    MODULE_API_VERSION, Module, ModuleDescriptor, ModuleError, ModuleFactory, ModuleState,
-    ParamGroup, ParamId, ParamInfo, ProcessContext, ProcessStatus, StateError, Tail, Telemetry,
-    TelemetryCells, TelemetryInfo, TelemetryKind, Unit, Version, features, segments,
+    MODULE_API_VERSION, Module, ModuleDescriptor, ModuleError, ModuleFactory, ModulePreset,
+    ModuleState, ParamGroup, ParamId, ParamInfo, ProcessContext, ProcessStatus, StateError, Tail,
+    Telemetry, TelemetryCells, TelemetryInfo, TelemetryKind, Unit, Version, features, segments,
 };
 
 use crate::schema::{self, ParamBuild, param};
@@ -449,5 +449,33 @@ impl ModuleFactory for NoiseGateFactory {
 
     fn create(&self) -> Result<Box<dyn Module>, ModuleError> {
         Ok(Box::new(NoiseGate::new()))
+    }
+
+    /// Factory presets (T-406; SPEC-013 §7 leaves the exact values to this ticket).
+    fn presets(&self) -> Vec<ModulePreset> {
+        let params = NoiseGate::schema();
+        let state = |overrides: &[(&str, f64)]| {
+            schema::preset_state(&params, NoiseGate::STATE_FORMAT_VERSION, overrides)
+        };
+        vec![
+            ModulePreset {
+                key: "light".into(),
+                name: LocalizedText::keyed("module.noise_gate.preset.light", "Light"),
+                state: state(&[
+                    ("threshold_db", -50.0),
+                    ("hysteresis_db", 4.0),
+                    ("range_db", -18.0),
+                ]),
+            },
+            ModulePreset {
+                key: "aggressive".into(),
+                name: LocalizedText::keyed("module.noise_gate.preset.aggressive", "Aggressive"),
+                state: state(&[
+                    ("threshold_db", -35.0),
+                    ("hysteresis_db", 8.0),
+                    ("range_db", -60.0),
+                ]),
+            },
+        ]
     }
 }

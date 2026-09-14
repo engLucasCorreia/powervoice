@@ -56,8 +56,9 @@ pub use shim::DualMonoShim;
 /// [`RackHost::read_telemetry`]).
 pub use vox_module_api::{
     ActivateConfig, ChannelLayout, CurveHandle, GroupId, LocalizedText, ModuleDescriptor,
-    ModuleError, ModuleFactory, NoiseProfile, ParamFlags, ParamGroup, ParamId, ParamInfo,
-    ProcessMode, ResponseCurve, Taper, Telemetry, TelemetryInfo, TelemetryKind, Transport, Unit,
+    ModuleError, ModuleFactory, ModulePreset, ModuleState, NoiseProfile, ParamFlags, ParamGroup,
+    ParamId, ParamInfo, ProcessMode, ResponseCurve, Taper, Telemetry, TelemetryInfo, TelemetryKind,
+    Transport, Unit,
 };
 
 use vox_module_api::{DEFAULT_EVENT_CAPACITY, EventListError, SchemaError, StateError};

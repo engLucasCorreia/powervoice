@@ -571,6 +571,14 @@ fn project_dirs() -> Option<directories::ProjectDirs> {
     directories::ProjectDirs::from("app", "powervoice", "powervoice")
 }
 
+/// The presets directory: `<OS config dir>/presets` (T-406). `vox_presets::ModulePresetStore`/
+/// `RackPresetStore` are rooted at `presets/modules`/`presets/racks` under it.
+pub fn presets_dir() -> PathBuf {
+    project_dirs()
+        .map(|dirs| dirs.config_dir().join("presets"))
+        .unwrap_or_else(|| std::env::temp_dir().join("powervoice").join("presets"))
+}
+
 /// The settings file path: `<OS config dir>/settings.json` (SPEC-001 §2.5).
 pub fn settings_path() -> PathBuf {
     project_dirs()

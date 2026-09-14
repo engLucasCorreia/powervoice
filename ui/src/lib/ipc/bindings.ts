@@ -67,7 +67,7 @@ peak_dbfs: number | null, clipped: boolean, weak: boolean, accepted: boolean, re
  */
 export type ClipboardChangedDto = { len_samples: number | null, sample_rate_hz: number | null, };
 
-export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "module_telemetry_subscribe" | "analyzer_subscribe" | "analyzer_set_response" | "analyzer_unsubscribe" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_open_cancel" | "document_probe" | "document_save" | "document_save_as" | "document_close" | "sidecar_view_set_spectral" | "sidecar_view_set_waveform" | "recent_files_get" | "recent_files_remove" | "recent_files_clear" | "recovery_list" | "recovery_recover" | "recovery_discard" | "storage_info" | "peaks_get" | "spectro_attach" | "spectro_detach" | "spectro_request" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check" | "record_start_at" | "record_offset_get" | "record_offset_set" | "calibration_run" | "calibration_cancel";
+export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "module_telemetry_subscribe" | "module_presets_list" | "module_preset_save" | "module_preset_load" | "module_preset_rename" | "module_preset_delete" | "module_reset_default" | "rack_presets_list" | "rack_preset_save" | "rack_preset_load" | "rack_preset_rename" | "rack_preset_delete" | "analyzer_subscribe" | "analyzer_set_response" | "analyzer_unsubscribe" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_open_cancel" | "document_probe" | "document_save" | "document_save_as" | "document_close" | "sidecar_view_set_spectral" | "sidecar_view_set_waveform" | "recent_files_get" | "recent_files_remove" | "recent_files_clear" | "recovery_list" | "recovery_recover" | "recovery_discard" | "storage_info" | "peaks_get" | "spectro_attach" | "spectro_detach" | "spectro_request" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check" | "record_start_at" | "record_offset_get" | "record_offset_set" | "calibration_run" | "calibration_cancel";
 
 /**
  * One draggable EQ-graph node (S3-07, SPEC-015 §3 "ResponseCurve components"): the band's
@@ -466,6 +466,33 @@ export type ParamValueDto = { id: number, value: number, normalized: number, tex
 export type PeaksRequestDto = { request_id: number, audio_rev: number, spp: number, start_sample: number, count: number, };
 
 /**
+ * One entry of a module or rack preset menu (`module_presets_list`/`rack_presets_list`):
+ * read-only factory presets first, then user-saved ones (both callers sort user names
+ * alphabetically; factory order is the module's own, ADR-005 §2).
+ */
+export type PresetEntryDto = { 
+/**
+ * Stable key (factory) or the sanitized file name (user) — pass back as [`PresetRefDto`].
+ */
+key: string, 
+/**
+ * Display name.
+ */
+name: LocalizedTextDto, 
+/**
+ * Read-only (`ModuleFactory::presets`/[`vox_presets::factory_rack_presets`]): no
+ * rename/delete menu item.
+ */
+is_factory: boolean, };
+
+/**
+ * Which preset to load (`module_preset_load`/`rack_preset_load`) or manage
+ * (`module_preset_rename`/`_delete`, `rack_preset_rename`/`_delete`): a factory preset (by its
+ * stable key) or a user-saved one (by its stored name).
+ */
+export type PresetRefDto = { "kind": "factory", key: string, } | { "kind": "user", name: string, };
+
+/**
  * T-202: one source channel's role (SPEC-005 §2.4), part of `document_probe`'s payload — the
  * data a future channel-choice dialog (T-209) needs.
  */
@@ -488,7 +515,12 @@ uid: number,
 /**
  * `"id@version"`, or the stored reference verbatim for a placeholder.
  */
-module: string, name: string, bypass: boolean, latency_samples: number, status: SlotStatusDto, params: Array<ParamInfoDto>, groups: Array<ParamGroupDto>, 
+module: string, 
+/**
+ * The module id alone (registry key, no `@version`); `None` for a placeholder (T-406: which
+ * preset menu — `module_presets_list`/`module_preset_save` — applies to this slot).
+ */
+module_id: string | null, name: string, bypass: boolean, latency_samples: number, status: SlotStatusDto, params: Array<ParamInfoDto>, groups: Array<ParamGroupDto>, 
 /**
  * Index-aligned with `params`; empty for a placeholder (no schema).
  */

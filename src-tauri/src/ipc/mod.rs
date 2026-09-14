@@ -28,6 +28,8 @@ mod normalize_commands;
 mod normalize_dto;
 mod nr_capture_commands;
 mod nr_capture_dto;
+mod preset_commands;
+mod preset_dto;
 mod rack_commands;
 mod rack_dto;
 mod recent_files_commands;
@@ -78,6 +80,8 @@ pub use normalize_commands::*;
 pub use normalize_dto::{NormalizeJobStartedDto, NormalizeResultDto};
 pub use nr_capture_commands::*;
 pub use nr_capture_dto::NrCaptureStartedDto;
+pub use preset_commands::*;
+pub use preset_dto::{PresetEntryDto, PresetRefDto};
 pub use rack_commands::*;
 pub use rack_dto::{
     NoiseProfileStatusDto, ParamChangedDto, RackLatencyDto, RackStateDto, rack_ipc_error,
@@ -133,6 +137,17 @@ crate::ipc_commands!(
     param_set_plain,
     rack_response_curve,
     module_telemetry_subscribe,
+    module_presets_list,
+    module_preset_save,
+    module_preset_load,
+    module_preset_rename,
+    module_preset_delete,
+    module_reset_default,
+    rack_presets_list,
+    rack_preset_save,
+    rack_preset_load,
+    rack_preset_rename,
+    rack_preset_delete,
     analyzer_subscribe,
     analyzer_set_response,
     analyzer_unsubscribe,
@@ -222,6 +237,17 @@ crate::ipc_commands!(
     param_set_plain,
     rack_response_curve,
     module_telemetry_subscribe,
+    module_presets_list,
+    module_preset_save,
+    module_preset_load,
+    module_preset_rename,
+    module_preset_delete,
+    module_reset_default,
+    rack_presets_list,
+    rack_preset_save,
+    rack_preset_load,
+    rack_preset_rename,
+    rack_preset_delete,
     analyzer_subscribe,
     analyzer_set_response,
     analyzer_unsubscribe,

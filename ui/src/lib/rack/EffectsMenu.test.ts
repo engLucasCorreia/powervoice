@@ -1,14 +1,16 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { RackStateDto } from "../ipc/bindings";
 import { clearActionHandlers, registerAction } from "../keymap";
 import { resetMenuBarForTest } from "../menu/menubar.svelte";
-import { resetNrCaptureForTest } from "./nrCapture.svelte";
 import { resetNormalizeForTest } from "../state/normalize.svelte";
 import { resetNormalizeLufsForTest } from "../state/normalizeLufs.svelte";
 import { resetRecordForTest } from "../state/record.svelte";
 import { resetSelectionForTest, setSelectionFromResult } from "../state/selection.svelte";
 import EffectsMenu from "./EffectsMenu.svelte";
+import { resetNrCaptureForTest } from "./nrCapture.svelte";
+import { loadRack, resetRackForTest } from "./rack.svelte";
 
 afterEach(() => {
   clearMocks();
@@ -19,6 +21,7 @@ afterEach(() => {
   resetNormalizeLufsForTest();
   resetRecordForTest();
   resetSelectionForTest();
+  resetRackForTest();
 });
 
 function mountMenu(): { target: HTMLElement; app: ReturnType<typeof mount> } {
@@ -164,6 +167,204 @@ describe("EffectsMenu (H-19)", () => {
 
       expect(started).toBe(true);
       expect(target.querySelector('[data-testid="effects-menu"]')).toBeNull();
+
+      unmount(app);
+      target.remove();
+    });
+  });
+
+  describe("Rack Presets submenu (T-406, SPEC-012 \"the rack-preset menu\")", () => {
+    async function settle(): Promise<void> {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+    }
+
+    function openRackPresets(target: HTMLElement): void {
+      openMenu(target);
+      target.querySelector<HTMLButtonElement>('[data-testid="menu-rack-presets"]')!.click();
+      flushSync();
+    }
+
+    it("lists factory and user rack presets when opened", async () => {
+      mockIPC((cmd) => {
+        if (cmd === "rack_presets_list") {
+          return [
+            { key: "podcast_voice", name: { text: "Podcast voice", key: null }, is_factory: true },
+            { key: "Mine", name: { text: "Mine", key: null }, is_factory: false },
+          ];
+        }
+        throw new Error(`unmocked command: ${cmd}`);
+      });
+      const { target, app } = mountMenu();
+      openRackPresets(target);
+      await settle();
+
+      const submenu = target.querySelector('[data-testid="rack-presets-submenu"]')!;
+      expect(submenu.textContent).toContain("Podcast voice");
+      expect(submenu.textContent).toContain("Mine");
+      expect(target.querySelector('[data-testid="rack-preset-delete-podcast_voice"]')).toBeNull();
+      expect(target.querySelector('[data-testid="rack-preset-delete-Mine"]')).not.toBeNull();
+
+      unmount(app);
+      target.remove();
+    });
+
+    it("loads a preset directly when the rack is empty (no replace confirmation)", async () => {
+      const calls: Array<[string, unknown]> = [];
+      mockIPC((cmd, args) => {
+        calls.push([cmd, args]);
+        if (cmd === "rack_presets_list") {
+          return [{ key: "gentle_cleanup", name: { text: "Gentle cleanup", key: null }, is_factory: true }];
+        }
+        if (cmd === "rack_preset_load") {
+          return { slots: [], ab: false, latency_samples: 0 };
+        }
+        throw new Error(`unmocked command: ${cmd}`);
+      });
+      const { target, app } = mountMenu();
+      openRackPresets(target);
+      await settle();
+      target.querySelector<HTMLButtonElement>('[data-testid="rack-preset-gentle_cleanup"]')!.click();
+      flushSync();
+      await settle();
+
+      expect(calls).toContainEqual([
+        "rack_preset_load",
+        { preset: { kind: "factory", key: "gentle_cleanup" } },
+      ]);
+      expect(target.querySelector('[data-testid="effects-menu"]')).toBeNull();
+
+      unmount(app);
+      target.remove();
+    });
+
+    it("asks for confirmation before replacing a non-empty rack, and loads on confirm", async () => {
+      const calls: Array<[string, unknown]> = [];
+      const oneSlot: RackStateDto = {
+        slots: [
+          {
+            uid: 1,
+            module: "org.powervoice.gain@1.0.0",
+            module_id: "org.powervoice.gain",
+            name: "Gain",
+            bypass: false,
+            latency_samples: 0,
+            status: { kind: "active" },
+            params: [],
+            groups: [],
+            values: [],
+            noise_profile: null,
+            curve_handles: null,
+            telemetry: [],
+          },
+        ],
+        ab: false,
+        latency_samples: 0,
+      };
+      mockIPC(
+        (cmd, args) => {
+          calls.push([cmd, args]);
+          switch (cmd) {
+            case "rack_list_modules":
+              return [];
+            case "rack_get":
+              return oneSlot;
+            case "rack_presets_list":
+              return [{ key: "podcast_voice", name: { text: "Podcast voice", key: null }, is_factory: true }];
+            case "rack_preset_load":
+              return { slots: [], ab: false, latency_samples: 0 };
+            default:
+              throw new Error(`unmocked command: ${cmd}`);
+          }
+        },
+        { shouldMockEvents: true },
+      );
+      const stopLoading = await loadRack();
+      calls.length = 0;
+
+      const { target, app } = mountMenu();
+      openRackPresets(target);
+      await settle();
+      target
+        .querySelector<HTMLButtonElement>('[data-testid="rack-preset-podcast_voice"]')!
+        .click();
+      flushSync();
+
+      // Not loaded yet — a confirmation is shown instead.
+      expect(calls.some(([cmd]) => cmd === "rack_preset_load")).toBe(false);
+      const confirmButton = target.querySelector<HTMLButtonElement>(
+        '[data-testid="rack-preset-confirm-replace"]',
+      );
+      expect(confirmButton).not.toBeNull();
+      confirmButton!.click();
+      flushSync();
+      await settle();
+
+      expect(calls).toContainEqual([
+        "rack_preset_load",
+        { preset: { kind: "factory", key: "podcast_voice" } },
+      ]);
+
+      unmount(app);
+      target.remove();
+      stopLoading();
+    });
+
+    it("saves the live rack as a new preset with the typed name", async () => {
+      const calls: Array<[string, unknown]> = [];
+      mockIPC((cmd, args) => {
+        calls.push([cmd, args]);
+        if (cmd === "rack_presets_list") {
+          return [];
+        }
+        if (cmd === "rack_preset_save") {
+          return { key: "Mine", name: { text: "Mine", key: null }, is_factory: false };
+        }
+        throw new Error(`unmocked command: ${cmd}`);
+      });
+      const { target, app } = mountMenu();
+      openRackPresets(target);
+      await settle();
+      target.querySelector<HTMLButtonElement>('[data-testid="rack-preset-save"]')!.click();
+      flushSync();
+      const input = target.querySelector<HTMLInputElement>('[data-testid="rack-preset-name"]')!;
+      input.value = "Mine";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      flushSync();
+      target.querySelector<HTMLButtonElement>('[data-testid="rack-preset-save-confirm"]')!.click();
+      flushSync();
+      await settle();
+
+      expect(calls).toContainEqual(["rack_preset_save", { name: "Mine", overwrite: false }]);
+
+      unmount(app);
+      target.remove();
+    });
+
+    it("deletes a user preset and refreshes the list", async () => {
+      const calls: Array<[string, unknown]> = [];
+      let deleted = false;
+      mockIPC((cmd, args) => {
+        calls.push([cmd, args]);
+        if (cmd === "rack_presets_list") {
+          return deleted ? [] : [{ key: "Mine", name: { text: "Mine", key: null }, is_factory: false }];
+        }
+        if (cmd === "rack_preset_delete") {
+          deleted = true;
+          return null;
+        }
+        throw new Error(`unmocked command: ${cmd}`);
+      });
+      const { target, app } = mountMenu();
+      openRackPresets(target);
+      await settle();
+      target.querySelector<HTMLButtonElement>('[data-testid="rack-preset-delete-Mine"]')!.click();
+      flushSync();
+      await settle();
+
+      expect(calls).toContainEqual(["rack_preset_delete", { name: "Mine" }]);
+      const submenu = target.querySelector('[data-testid="rack-presets-submenu"]')!;
+      expect(submenu.textContent).toContain("No saved presets");
 
       unmount(app);
       target.remove();

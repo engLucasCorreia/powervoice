@@ -5,6 +5,7 @@ members = [
     "crates/dsp",
     "crates/modules",
     "crates/rack",
+    "crates/presets",
     "crates/engine",
     "crates/io",
     "crates/project",

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { t } from "../i18n";
+  import type { PresetEntryDto, PresetRefDto } from "../ipc/bindings";
   import { dispatchAction } from "../keymap";
   import { shortcutLabelForAction } from "../keymap/shortcutLabel";
   import { closeAllMenus, menubarState, moveToAdjacentMenu, toggleMenu } from "../menu/menubar.svelte";
@@ -19,7 +20,15 @@
     normalizeLufsFavorite,
     openNormalizeLufsDialog,
   } from "../state/normalizeLufs.svelte";
+  import { localized } from "./localized";
   import { canCapture } from "./nrCapture.svelte";
+  import {
+    deleteRackPreset,
+    listRackPresets,
+    loadRackPreset,
+    rackState,
+    saveRackPreset,
+  } from "./rack.svelte";
 
   /**
    * Effects menu (H-19): Normalize…, Normalize (LUFS)…, Capture Noise Print, then Favorites ▸ (the
@@ -94,6 +103,15 @@
       openFavoritesSubmenu();
       return;
     }
+    if (
+      event.key === "ArrowRight" &&
+      current?.getAttribute("data-testid") === "menu-rack-presets"
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      openRackPresetsSubmenu();
+      return;
+    }
     handleMenuKeydown(popupEl!, event, {
       onEscape: closeSelf,
       onArrowLeft: () => moveToAdjacentMenu(MENU_ID, -1),
@@ -114,6 +132,90 @@
 
   function favoritesLufsTestId(targetLufs: number): string {
     return `menu-favorites-normalize-lufs-${Math.abs(targetLufs).toFixed(0)}`;
+  }
+
+  // --- Rack Presets (T-406, SPEC-012 "the rack-preset menu") ------------------------------
+  let rackPresetsOpen = $state(false);
+  let rackPresetsPopupEl: HTMLDivElement | undefined = $state();
+  let rackPresetEntries = $state<PresetEntryDto[] | null>(null);
+  let savingRackPreset = $state(false);
+  let rackPresetName = $state("");
+  let confirmingRackPreset = $state<PresetRefDto | null>(null);
+
+  function refToKey(ref: PresetRefDto): string {
+    return ref.kind === "factory" ? `factory:${ref.key}` : `user:${ref.name}`;
+  }
+
+  function openRackPresetsSubmenu(): void {
+    rackPresetsOpen = true;
+    savingRackPreset = false;
+    confirmingRackPreset = null;
+    queueMicrotask(() => focusFirstItem(rackPresetsPopupEl));
+    void refreshRackPresets();
+  }
+
+  function closeRackPresetsSubmenu(focusTrigger: boolean): void {
+    rackPresetsOpen = false;
+    savingRackPreset = false;
+    confirmingRackPreset = null;
+    if (focusTrigger) {
+      queueMicrotask(() => {
+        popupEl?.querySelector<HTMLElement>('[data-testid="menu-rack-presets"]')?.focus();
+      });
+    }
+  }
+
+  async function refreshRackPresets(): Promise<void> {
+    rackPresetEntries = await listRackPresets();
+  }
+
+  function startSaveRackPreset(): void {
+    savingRackPreset = true;
+    rackPresetName = "";
+  }
+
+  async function confirmSaveRackPreset(): Promise<void> {
+    const name = rackPresetName.trim();
+    if (!name) {
+      return;
+    }
+    const saved = await saveRackPreset(name);
+    if (saved) {
+      savingRackPreset = false;
+      rackPresetName = "";
+      await refreshRackPresets();
+    }
+  }
+
+  async function applyRackPreset(ref: PresetRefDto): Promise<void> {
+    confirmingRackPreset = null;
+    closeSelf();
+    await loadRackPreset(ref);
+  }
+
+  function pickRackPreset(entry: PresetEntryDto): void {
+    const ref: PresetRefDto = entry.is_factory
+      ? { kind: "factory", key: entry.key }
+      : { kind: "user", name: entry.key };
+    if (rackState().state.slots.length > 0) {
+      confirmingRackPreset = ref;
+    } else {
+      void applyRackPreset(ref);
+    }
+  }
+
+  async function deleteRackPresetEntry(entry: PresetEntryDto, event: MouseEvent): Promise<void> {
+    event.stopPropagation();
+    if (await deleteRackPreset(entry.key)) {
+      await refreshRackPresets();
+    }
+  }
+
+  function onRackPresetsPopupKeydown(event: KeyboardEvent): void {
+    handleMenuKeydown(rackPresetsPopupEl!, event, {
+      onCloseSubmenu: () => closeRackPresetsSubmenu(true),
+      onEscape: () => closeRackPresetsSubmenu(true),
+    });
   }
 </script>
 
@@ -198,6 +300,107 @@
           {/each}
         </div>
       {/if}
+      <MenuSeparatorRow />
+      <MenuItemRow
+        label={t("rack_preset.menu")}
+        testid="menu-rack-presets"
+        isSubmenuTrigger
+        expanded={rackPresetsOpen}
+        onSelect={() => (rackPresetsOpen ? closeRackPresetsSubmenu(false) : openRackPresetsSubmenu())}
+      />
+      {#if rackPresetsOpen}
+        <div
+          bind:this={rackPresetsPopupEl}
+          role="menu"
+          tabindex="-1"
+          aria-label={t("rack_preset.menu")}
+          class="menu-popup submenu-popup"
+          data-testid="rack-presets-submenu"
+          onkeydown={onRackPresetsPopupKeydown}
+        >
+          {#if confirmingRackPreset}
+            <div class="confirm-replace">
+              <p>{t("rack_preset.confirm_replace")}</p>
+              <div class="confirm-actions">
+                <button type="button" onclick={() => (confirmingRackPreset = null)}>
+                  {t("rack_preset.confirm_replace_cancel")}
+                </button>
+                <button
+                  type="button"
+                  class="primary"
+                  data-testid="rack-preset-confirm-replace"
+                  onclick={() => void applyRackPreset(confirmingRackPreset!)}
+                >
+                  {t("rack_preset.confirm_replace_confirm")}
+                </button>
+              </div>
+            </div>
+          {:else if rackPresetEntries === null}
+            <span class="preset-empty">…</span>
+          {:else if rackPresetEntries.length === 0 && !savingRackPreset}
+            <span class="preset-empty">{t("rack_preset.none")}</span>
+          {:else}
+            {#each rackPresetEntries as entry (refToKey(entry.is_factory ? { kind: "factory", key: entry.key } : { kind: "user", name: entry.key }))}
+              <div class="preset-row">
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="preset-name"
+                  data-testid="rack-preset-{entry.key}"
+                  onclick={() => pickRackPreset(entry)}
+                >
+                  {localized(entry.name)}
+                </button>
+                {#if !entry.is_factory}
+                  <button
+                    type="button"
+                    class="preset-delete"
+                    title={t("rack_preset.delete")}
+                    data-testid="rack-preset-delete-{entry.key}"
+                    onclick={(e) => void deleteRackPresetEntry(entry, e)}
+                  >
+                    ×
+                  </button>
+                {/if}
+              </div>
+            {/each}
+          {/if}
+          {#if !confirmingRackPreset}
+            <MenuSeparatorRow />
+            {#if savingRackPreset}
+              <div class="save-form">
+                <input
+                  type="text"
+                  placeholder={t("rack_preset.name_placeholder")}
+                  data-testid="rack-preset-name"
+                  bind:value={rackPresetName}
+                  onkeydown={(e) => {
+                    if (e.key === "Enter") void confirmSaveRackPreset();
+                  }}
+                />
+                <div class="save-actions">
+                  <button
+                    type="button"
+                    data-testid="rack-preset-save-confirm"
+                    onclick={() => void confirmSaveRackPreset()}
+                  >
+                    {t("rack_preset.save_button")}
+                  </button>
+                  <button type="button" onclick={() => (savingRackPreset = false)}>
+                    {t("rack_preset.cancel_button")}
+                  </button>
+                </div>
+              </div>
+            {:else}
+              <MenuItemRow
+                label={t("rack_preset.save_as")}
+                testid="rack-preset-save"
+                onSelect={startSaveRackPreset}
+              />
+            {/if}
+          {/if}
+        </div>
+      {/if}
     </div>
   {/if}
 </div>
@@ -246,5 +449,81 @@
     margin-top: 0;
     margin-left: 0.15rem;
     min-width: 12rem;
+  }
+
+  .preset-empty {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    padding: 0.3rem 0.6rem;
+  }
+
+  .preset-row {
+    display: flex;
+    align-items: center;
+  }
+
+  .preset-name {
+    flex: 1;
+    text-align: left;
+    background: transparent;
+    border: none;
+    color: var(--text-primary);
+    padding: 0.3rem 0.6rem;
+  }
+
+  .preset-name:hover {
+    background: var(--surface-panel-raised);
+  }
+
+  .preset-delete {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    padding: 0 0.4rem;
+  }
+
+  .preset-delete:hover {
+    color: var(--meter-yellow);
+  }
+
+  .save-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    padding: 0.3rem 0.6rem;
+  }
+
+  .save-form input[type="text"] {
+    background: var(--surface-inset);
+    border: 1px solid var(--surface-border);
+    color: var(--text-primary);
+    border-radius: 3px;
+    padding: 0.2rem 0.4rem;
+  }
+
+  .save-actions,
+  .confirm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.4rem;
+  }
+
+  .confirm-replace {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.4rem 0.6rem;
+    max-width: 14rem;
+  }
+
+  .confirm-replace p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+  }
+
+  .confirm-replace button.primary {
+    border-color: var(--accent);
+    color: var(--accent);
   }
 </style>

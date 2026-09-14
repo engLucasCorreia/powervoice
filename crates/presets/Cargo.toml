@@ -1,0 +1,22 @@
+[package]
+name = "vox-presets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+vox-module-api = { path = "../module-api" }
+vox-rack = { path = "../rack" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# Dev-only, like `vox-engine`'s noise-reduction id const (MEMORY.md S3-06): this crate doesn't
+# depend on `vox-modules` at compile time (it builds factory rack presets from literal module ids
+# and parameter keys, ADR-005 §2/§3), but a test guards those literals against drift.
+vox-modules = { path = "../modules" }
+
+[lints]
+workspace = true

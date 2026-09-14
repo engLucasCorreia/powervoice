@@ -16,7 +16,7 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 
 use vox_project::{ChunkStore, DocSnapshot, FreeSpaceProvider, SystemFreeSpace, TakeCapture};
-use vox_rack::{ModuleDescriptor, RackModel, RackNotice, Registry};
+use vox_rack::{ModuleDescriptor, ModulePreset, ModuleState, RackModel, RackNotice, Registry};
 
 use crate::analyzer::{AnalyzerResponse, AnalyzerSink};
 use crate::backend::{Backend, BufferRequest, DeviceSnapshot, HostId, app_now_ns};
@@ -446,6 +446,26 @@ impl EngineHandle {
         self.call(move |c| c.response_curve(index, freqs_hz))
             .unwrap_or(Err(RackApiError::Unavailable))
     }
+
+    /// The committed state of slot `index` (T-406: what "Save as preset" reads). Read-only.
+    pub fn rack_slot_state(&self, index: usize) -> Result<ModuleState, RackApiError> {
+        self.call(move |c| c.rack_slot_state(index))
+            .unwrap_or(Err(RackApiError::Unavailable))
+    }
+
+    /// The module id of slot `index` (registry key, no `@version`); `None` for a placeholder, an
+    /// out-of-range index, or when there is no live rack (T-406: which preset menu to show).
+    pub fn rack_slot_module_id(&self, index: usize) -> Option<String> {
+        self.call(move |c| c.rack_slot_module_id(index)).flatten()
+    }
+
+    /// `module_id`'s factory presets (T-406, ADR-005 §2 `ModuleFactory::presets`); empty for an
+    /// unregistered id. Always available, even with no live rack.
+    pub fn rack_module_presets(&self, module_id: &str) -> Vec<ModulePreset> {
+        let module_id = module_id.to_owned();
+        self.call(move |c| c.rack_module_presets(&module_id))
+            .unwrap_or_default()
+    }
 }
 
 /// The engine without threads (deterministic tests, benches): the reader runs inline, devices are
@@ -651,6 +671,21 @@ impl ManualEngine {
         freqs_hz: Vec<f64>,
     ) -> Result<ResponseCurvePoints, RackApiError> {
         self.control.response_curve(index, freqs_hz)
+    }
+
+    /// See [`EngineHandle::rack_slot_state`].
+    pub fn rack_slot_state(&self, index: usize) -> Result<ModuleState, RackApiError> {
+        self.control.rack_slot_state(index)
+    }
+
+    /// See [`EngineHandle::rack_slot_module_id`].
+    pub fn rack_slot_module_id(&self, index: usize) -> Option<String> {
+        self.control.rack_slot_module_id(index)
+    }
+
+    /// See [`EngineHandle::rack_module_presets`].
+    pub fn rack_module_presets(&self, module_id: &str) -> Vec<ModulePreset> {
+        self.control.rack_module_presets(module_id)
     }
 }
 

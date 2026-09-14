@@ -5,10 +5,18 @@ import type {
   IpcError,
   ModuleDescriptorDto,
   ParamChangedDto,
+  PresetEntryDto,
+  PresetRefDto,
   RackLatencyDto,
   RackStateDto,
 } from "../ipc/bindings";
 import {
+  modulePresetDelete,
+  modulePresetLoad,
+  modulePresetRename,
+  modulePresetSave,
+  modulePresetsList,
+  moduleResetDefault,
   moduleTelemetrySubscribe,
   paramSetNormalized,
   paramSetPlain,
@@ -19,6 +27,11 @@ import {
   rackGet,
   rackListModules,
   rackMove,
+  rackPresetDelete,
+  rackPresetLoad,
+  rackPresetRename,
+  rackPresetSave,
+  rackPresetsList,
   rackRemove,
   rackRestart,
 } from "../ipc/commands";
@@ -125,6 +138,87 @@ export const setBypass = (index: number, on: boolean): Promise<void> =>
   run(() => rackBypass(index, on));
 export const setAb = (on: boolean): Promise<void> => run(() => rackAb(on));
 export const restartSlot = (index: number): Promise<void> => run(() => rackRestart(index));
+
+// --- Module & rack presets (T-406, SPEC-012 §2.7) ---------------------------------------------
+
+/** Runs a preset-management call (list/save/rename/delete: not a `RackStateDto`), reporting and
+ * swallowing an `IpcError` (returns `null`) so a preset menu/dialog can show the failure inline
+ * or fall back gracefully instead of throwing. */
+async function runPreset<T>(command: () => Promise<T>): Promise<T | null> {
+  try {
+    return await command();
+  } catch (err) {
+    report(err);
+    return null;
+  }
+}
+
+/** Factory presets first, then user-saved ones — for slot `index`'s preset menu. `null` on
+ * failure (already reported). */
+export function listModulePresets(moduleId: string): Promise<PresetEntryDto[] | null> {
+  return runPreset(() => modulePresetsList(moduleId));
+}
+
+/** Saves slot `index`'s current state as a new user preset. `null` on failure (e.g. a duplicate
+ * name without `overwrite`) — already reported. */
+export function saveModulePreset(
+  index: number,
+  name: string,
+  includeNoisePrint: boolean,
+  overwrite = false,
+): Promise<PresetEntryDto | null> {
+  return runPreset(() => modulePresetSave(index, name, includeNoisePrint, overwrite));
+}
+
+/** Loads a module preset into slot `index` (SPEC-012 §2.7). */
+export const loadModulePreset = (
+  index: number,
+  moduleId: string,
+  preset: PresetRefDto,
+): Promise<void> => run(() => modulePresetLoad(index, moduleId, preset));
+
+/** Resets slot `index`'s parameters to their schema defaults (a committed blob is kept). */
+export const resetSlotToDefault = (index: number): Promise<void> =>
+  run(() => moduleResetDefault(index));
+
+/** Renames a user module preset. `null` on failure (already reported). */
+export function renameModulePreset(
+  moduleId: string,
+  oldName: string,
+  newName: string,
+): Promise<PresetEntryDto | null> {
+  return runPreset(() => modulePresetRename(moduleId, oldName, newName));
+}
+
+/** Deletes a user module preset. `false` on failure (already reported). */
+export async function deleteModulePreset(moduleId: string, name: string): Promise<boolean> {
+  return (await runPreset(() => modulePresetDelete(moduleId, name).then(() => true))) ?? false;
+}
+
+/** Factory rack presets first, then user-saved ones — Effects → Rack Presets. `null` on failure
+ * (already reported). */
+export function listRackPresets(): Promise<PresetEntryDto[] | null> {
+  return runPreset(() => rackPresetsList());
+}
+
+/** Saves the live rack as a new user rack preset. `null` on failure (already reported). */
+export function saveRackPreset(name: string, overwrite = false): Promise<PresetEntryDto | null> {
+  return runPreset(() => rackPresetSave(name, overwrite));
+}
+
+/** Loads a rack preset, replacing the live rack. */
+export const loadRackPreset = (preset: PresetRefDto): Promise<void> =>
+  run(() => rackPresetLoad(preset));
+
+/** Renames a user rack preset. `null` on failure (already reported). */
+export function renameRackPreset(oldName: string, newName: string): Promise<PresetEntryDto | null> {
+  return runPreset(() => rackPresetRename(oldName, newName));
+}
+
+/** Deletes a user rack preset. `false` on failure (already reported). */
+export async function deleteRackPreset(name: string): Promise<boolean> {
+  return (await runPreset(() => rackPresetDelete(name).then(() => true))) ?? false;
+}
 
 /** A rack slot's panel gained focus (a click or a keyboard focus inside it). */
 export function noteSlotFocused(index: number): void {

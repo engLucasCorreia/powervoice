@@ -56,7 +56,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-11 | Disk-space floor + remaining recording time (A-010: libc statvfs / windows-sys); dropouts > 2 s → device-loss stop (A-011); dropout marks on the resampled path | S | done |
 | H-12 | Spectral view follow-ups (T-207): persist display prefs in Settings (A-014), one shared time ruler + scrollbar in EditorView (SPEC-007 §2.1 stacking), HiDPI columns, import-freeze message once import has progress state | S | todo |
 | H-13 | WebGL2 renderers (ADR-009 primary): spectrogram R8 textures + colormap shader, waveform; Canvas2D stays the fallback; FFT-size texture gating live | S+OR | todo |
-| H-14 | FLAC export is malformed: flacenc frame numbering makes `flac -t` warn (not seekable) and symphonia reject our own exports — fix or replace the encoder; then FLAC verify-before-rename (SPEC-005 §2.11) | S | in progress |
+| H-14 | FLAC export is malformed: flacenc frame numbering makes `flac -t` warn (not seekable) and symphonia reject our own exports — fix or replace the encoder; then FLAC verify-before-rename (SPEC-005 §2.11) | S | done |
 | H-09 | Normalize follow-ups from S2-02: progress via the S4-04 `job_progress` event + cancel for long files; % targets; Effects menu entry; pyramid-accelerated peak scan (SPEC-010 AC-9/AC-15); remembered dialog value | S | done |
 
 ## M0 — Foundations
@@ -97,7 +97,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-205 | Waveform renderer: zoom/scroll, amplitude zoom, rulers, extrapolated playhead | W2 | S | T-203 | → S1-03 (Canvas2D subset), rest hardening |
 | T-206 | Selection model, time formats, zero-crossing snap | W3 | S | T-205 | todo |
 | T-207 | Spectrogram renderer, log/linear, split view | W3 | S | T-204, T-205 | done |
-| T-208 | Live output analyzer: post-rack tap, FFT worker, 1/24-oct bands, VXSA, bottom-dock UI | W3 | S+OR | T-205 | todo |
+| T-208 | Live output analyzer: post-rack tap, FFT worker, 1/24-oct bands, VXSA, bottom-dock UI | W3 | S+OR | T-205 | in progress |
 | T-209 | File menu & dialogs: Open, Save, Save As, downmix dialog, save format, clip prompt, unsaved-changes prompt, import progress | W3 | S | T-201, T-202, T-205 | → S1-03 (subset), rest hardening |
 
 ## M3 — Editing & history

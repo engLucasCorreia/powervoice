@@ -491,13 +491,18 @@ impl History {
                 continue;
             }
             let insert_len: u64 = pieces.iter().map(Piece::len_samples).sum();
-            if *mapping == MarkerMapping::Identity && insert_len != *remove_len {
+            let base: &DocSnapshot = work.as_ref().unwrap_or(cur);
+            // T-304 (SPEC-022 §2.5, §2.9): an Overwrite that runs past the end replaces
+            // `[at, L)` and grows the document; no marker lies after the replaced range, so
+            // keeping every marker in place is still exact.
+            let grows_at_end =
+                insert_len > *remove_len && at.saturating_add(*remove_len) == base.len_samples;
+            if *mapping == MarkerMapping::Identity && insert_len != *remove_len && !grows_at_end {
                 return Err(ProjectError::InvalidEdit(format!(
-                    "identity marker mapping needs a length-preserving op \
+                    "identity marker mapping needs a length-preserving op or growth at the end \
                      (removes {remove_len}, inserts {insert_len})"
                 )));
             }
-            let base: &DocSnapshot = work.as_ref().unwrap_or(cur);
             let new_pieces = base.replaced(*at, *remove_len, pieces)?;
             if *mapping == MarkerMapping::Shift {
                 markers = shift_markers(&markers, *at, *remove_len, insert_len);
@@ -738,13 +743,21 @@ mod tests {
             h.apply(&Edit::new("x").marker(MarkerOp::Remove(MarkerId(9))))
                 .is_err()
         );
-        assert!(
-            h.apply(&Edit::new("x").replace_with(0, 0, audio(10), MarkerMapping::Identity))
-                .is_err(),
-            "identity mapping on a length-changing op"
-        );
         assert_eq!(h.current().rev, rev);
         assert_eq!(h.undo_depth(), 0);
+
+        let mut h = History::new(DocSnapshot::new(48_000, audio(20), Vec::new()));
+        assert!(
+            h.apply(&Edit::new("x").replace_with(5, 2, audio(10), MarkerMapping::Identity))
+                .is_err(),
+            "identity mapping on a length-changing op inside the document"
+        );
+        assert_eq!(h.undo_depth(), 0);
+        assert!(
+            h.apply(&Edit::new("x").replace_with(15, 5, audio(10), MarkerMapping::Identity))
+                .is_ok(),
+            "T-304: growth at the end (Overwrite past L) keeps markers in place"
+        );
     }
 
     #[test]

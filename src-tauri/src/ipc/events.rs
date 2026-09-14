@@ -19,7 +19,10 @@ crate::ipc_events!(
     job_progress,
     loudness_report,
     normalize_result,
-    recent_files_changed
+    recent_files_changed,
+    record_phase,
+    record_finished,
+    calibration_result
 );
 
 /// A user-facing notice (ADR-003 `notice` event). Two shapes, distinguished by `persistent`:
@@ -117,6 +120,9 @@ pub enum JobKind {
     NormalizePeak,
     /// H-09: LUFS normalize (`edit_normalize_lufs_start`) — mirrors `NormalizePeak`.
     NormalizeLufs,
+    /// T-304 (SPEC-022 §2.14): a loopback latency calibration (`calibration_run`) — its result
+    /// arrives separately as a `calibration_result` event.
+    Calibration,
 }
 
 /// `job_progress`'s lifecycle. `Running` fractions are monotonically non-decreasing in `[0, 1]`;

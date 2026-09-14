@@ -66,6 +66,20 @@ use crate::telemetry::{
 };
 use crate::transport::{Action, Transport, TransportCommand, TransportState};
 
+// T-304 (SPEC-022): record operations and the latency calibration run.
+use std::collections::VecDeque;
+
+use crate::backend::frames_to_ns;
+use crate::capture::OpShared;
+use crate::record::{
+    CalibrationCapture, CalibrationError, CalibrationStatus, CancelReason, OpResult, RecordPhase,
+    RecordPhaseInfo,
+};
+use crate::record_op::{
+    CaptureBlock, LISTEN_FADE_MS, RecordOpKind, RecordPlan, RecordPrefs, RunSpec, resolve_record,
+    take_index_at,
+};
+
 /// Control tick = telemetry period (60 Hz, ADR-009).
 pub(crate) const TICK: Duration = Duration::from_nanos(16_666_667);
 
@@ -159,6 +173,161 @@ struct Recording {
     stop_at: Option<u64>,
     /// H-07: the take's running min/max peaks, updated by the capture-writer thread.
     peaks: LivePeaksHandle,
+    /// T-304: the record operation this take belongs to (`None`: a new recording, SPEC-002).
+    op: Option<OpState>,
+}
+
+/// T-304 (SPEC-022 §2.1, §4.3): a record operation's control-thread state.
+struct OpState {
+    plan: RecordPlan,
+    take: u32,
+    phase: RecordPhase,
+    shared: Arc<OpShared>,
+    /// The playback run of an aligned operation: its epoch and what it plays.
+    run: Option<(u32, RunSpec)>,
+    /// `monitor_gen` of the output stream the run plays on (another one = that output is gone).
+    out_gen: u32,
+    /// The run reported its end (the post-roll ran out).
+    run_ended: bool,
+    /// The output the run played on is gone.
+    output_lost: bool,
+    /// App time the record point `at` is heard (§4.3 `t_at_ns`).
+    t_at: Option<i128>,
+    /// The run's latest heard document position and its app time (before `t_at` is known).
+    anchor: Option<(u64, u64)>,
+    /// Recent input blocks: take position ↔ capture time (≈ 3 s).
+    blocks: VecDeque<CaptureBlock>,
+    /// The input stream's rate (the blocks' take positions are device frames).
+    in_rate: u32,
+    /// The record window's first take sample (document rate).
+    k_start: Option<u64>,
+    /// The decided end (`Some` once the operation stopped).
+    end: Option<OpEnd>,
+}
+
+/// How a record operation ends (SPEC-022 §2.10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OpEnd {
+    /// Cancelled: no edit, the document is unchanged.
+    Cancel(CancelReason),
+    /// The window ends at this document position (`None`: at the take's last sample).
+    At(Option<u64>),
+}
+
+/// What ended a record operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EndTrigger {
+    /// Stop / Space / Record.
+    User,
+    /// The run's post-roll ran out, or a punch whose output is gone reached `E`.
+    RunOver,
+    /// The output device is gone.
+    OutputLost,
+    /// The take ended or must end for another reason (input loss, overflow, disk, shutdown).
+    Failure(StopReason),
+}
+
+/// Input block history kept for [`OpState::blocks`] (the window start may lie up to input
+/// latency + max offset in the past, SPEC-022 §4.5).
+const OP_BLOCK_HISTORY_NS: u64 = 3_000_000_000;
+/// A stop's capture runs this long past the window's last sample (SPEC-022 §4.3).
+const OP_STOP_MARGIN_NS: u64 = 20_000_000;
+/// A calibration run that hasn't finished after this is interrupted.
+const CALIB_TIMEOUT_NS: u64 = 20_000_000_000;
+
+fn push_capture_block(
+    blocks: &mut VecDeque<CaptureBlock>,
+    take_frames: u64,
+    frames: u32,
+    end_ns: u64,
+    rate_hz: u32,
+    history_ns: Option<u64>,
+) {
+    let start_ns = end_ns.saturating_sub(frames_to_ns(u64::from(frames), rate_hz));
+    blocks.push_back(CaptureBlock {
+        end_take: take_frames,
+        frames,
+        start_ns,
+    });
+    if let Some(h) = history_ns {
+        while blocks.len() > 1 && blocks.front().is_some_and(|b| b.start_ns + h < start_ns) {
+            blocks.pop_front();
+        }
+    }
+}
+
+impl OpState {
+    fn doc_rate(&self) -> i128 {
+        i128::from(self.plan.doc_rate_hz.max(1))
+    }
+
+    /// The document position heard at app time `now` (heard positions advance at the document
+    /// rate, §4.3), once `at`'s heard time is known.
+    fn heard_q(&self, now: u64) -> Option<i128> {
+        self.t_at.map(|t| {
+            i128::from(self.plan.at_samples)
+                + (i128::from(now) - t) * self.doc_rate() / 1_000_000_000
+        })
+    }
+
+    /// App time document position `q` is heard.
+    fn heard_time(&self, q: u64) -> Option<i128> {
+        self.t_at.map(|t| {
+            t + (i128::from(q) - i128::from(self.plan.at_samples)) * 1_000_000_000 / self.doc_rate()
+        })
+    }
+
+    /// §4.3: once `at` was heard and an input block covers `t_at + δ`, the window's first take
+    /// sample `k_start = k_b + round((t_at + δ − c_b)·r/1e9)` (document rate). Returns it once.
+    fn resolve_k_start(&mut self) -> Option<u64> {
+        if self.k_start.is_some() {
+            return None;
+        }
+        let target = self.t_at? + i128::from(self.plan.offset_ns);
+        let k_dev = take_index_at(&self.blocks, target, self.in_rate)?;
+        let (doc, dev) = (
+            i128::from(self.plan.doc_rate_hz.max(1)),
+            i128::from(self.in_rate.max(1)),
+        );
+        let k = if doc == dev {
+            k_dev
+        } else {
+            (k_dev * doc + dev / 2).div_euclid(dev)
+        };
+        let k = u64::try_from(k.max(0)).unwrap_or(0);
+        self.k_start = Some(k);
+        Some(k)
+    }
+
+    fn phase_info(&self, phase: RecordPhase, doc_pos: u64, app_ns: u64) -> RecordPhaseInfo {
+        RecordPhaseInfo {
+            take: self.take,
+            kind: self.plan.kind,
+            phase,
+            doc_pos_samples: doc_pos,
+            app_ns,
+        }
+    }
+}
+
+/// T-304 (SPEC-022 §2.14, §4.7): a running latency calibration.
+struct CalibRun {
+    /// δ applied to the repetition starts (a Verify pass).
+    offset_ns: i64,
+    /// The capture ring's consumer while the run holds it.
+    rx: Option<Consumer<f32>>,
+    /// The input stream the ring belongs to (the consumer goes back only to it).
+    in_shared: Arc<InputShared>,
+    recording: Vec<f32>,
+    blocks: VecDeque<CaptureBlock>,
+    /// Heard time of each repetition's first sample.
+    rep_times: Vec<u64>,
+    started_ns: u64,
+    rate_hz: u32,
+    out_gen: u32,
+    restore_monitor: MonitorMode,
+    restore_armed: bool,
+    result: Option<Result<CalibrationCapture, CalibrationError>>,
 }
 
 /// Latest heard position reported by the output callback.
@@ -271,6 +440,8 @@ pub(crate) struct Control {
     disk_checked_ns: Option<u64>,
     /// The last query's result (`None`: never queried yet, or it failed).
     disk_free_bytes: Option<u64>,
+    /// T-304 (SPEC-022 §2.14): a latency calibration run (running, or finished until polled).
+    calib: Option<CalibRun>,
 }
 
 impl Control {
@@ -379,11 +550,13 @@ impl Control {
             record_volume,
             disk_checked_ns: None,
             disk_free_bytes: None,
+            calib: None,
         }
     }
 
     /// Finishes a running take (kept), closes the streams and stops the helper threads.
     pub(crate) fn shutdown(&mut self) {
+        self.calibration_cancel();
         self.stop_recording(StopReason::Shutdown);
         if let Some(rec) = self.recording.take() {
             match rec.link {
@@ -499,6 +672,10 @@ impl Control {
     /// control and the Space key; the UI sends Play or Pause for Space) and every other transport
     /// command is ignored (seeking is disabled while recording).
     pub(crate) fn transport_command(&mut self, cmd: TransportCommand) -> TransportState {
+        if self.calibrating() {
+            // SPEC-022 §2.14: the calibration run owns the output until it ends.
+            return self.transport_state();
+        }
         if self.recording.is_some() {
             if self.capturing()
                 && matches!(
@@ -1160,6 +1337,8 @@ impl Control {
                 self.analyzer.gate(),
                 self.analyzer.dropped_counter(),
             ),
+            // T-304 (SPEC-022 §4.7): built here, on the control thread, never on the RT thread.
+            calib_sweep: vox_dsp::calibration::sweep(rate),
         };
         let cb = OutputCb::new(parts, slot.clone(), rate, doc_rate);
         match self.backend.open_output(req, Box::new(cb)) {
@@ -1440,12 +1619,37 @@ impl Control {
                     capturing,
                     captured,
                     end_ns,
+                    take_frames,
                 } => {
                     period_grew |= self.in_lat.observe(frames, latency_ns);
                     self.in_meter.add(frames, peak, sum_sq, clipped);
                     if capturing && let Some(rec) = self.recording.as_mut() {
                         rec.captured = captured;
                         rec.anchor_ns = end_ns;
+                        // T-304 (SPEC-022 §4.3): take position ↔ capture time for `k_start`.
+                        if let Some(op) = rec.op.as_mut() {
+                            push_capture_block(
+                                &mut op.blocks,
+                                take_frames,
+                                frames,
+                                end_ns,
+                                op.in_rate,
+                                Some(OP_BLOCK_HISTORY_NS),
+                            );
+                        }
+                    }
+                    if capturing
+                        && let Some(c) = self.calib.as_mut()
+                        && c.result.is_none()
+                    {
+                        push_capture_block(
+                            &mut c.blocks,
+                            take_frames,
+                            frames,
+                            end_ns,
+                            c.rate_hz,
+                            None,
+                        );
                     }
                 }
                 InputEvent::CaptureEnded { samples } => {
@@ -1609,8 +1813,28 @@ impl Control {
         capture: TakeCapture,
         done: RecordDone,
     ) -> Result<RecordState, RecordError> {
+        self.start_capture(doc_rate_hz, capture, done, None)
+    }
+
+    /// A calibration run is in progress (a finished one waiting to be polled doesn't count).
+    fn calibrating(&self) -> bool {
+        self.calib.as_ref().is_some_and(|c| c.result.is_none())
+    }
+
+    /// [`Self::record_start`]; `op`: the record operation the take belongs to (T-304: its writer
+    /// finishes only once the operation is sealed).
+    fn start_capture(
+        &mut self,
+        doc_rate_hz: u32,
+        capture: TakeCapture,
+        done: RecordDone,
+        op: Option<Arc<OpShared>>,
+    ) -> Result<RecordState, RecordError> {
         if self.recording.is_some() {
             return Err(RecordError::AlreadyRecording);
+        }
+        if self.calibrating() {
+            return Err(RecordError::Calibrating);
         }
         if self.prefs.input_device.is_none() {
             return Err(RecordError::NoInputDevice);
@@ -1677,6 +1901,7 @@ impl Control {
             peaks.clone(),
             gap_rx,
             inp.gap_home.clone(),
+            op,
         );
         let link = if self.threaded {
             match capture::spawn(writer) {
@@ -1709,6 +1934,7 @@ impl Control {
             anchor_ns: now,
             stop_at: None,
             peaks,
+            op: None,
         });
         self.engine_stop();
         self.update_monitor();
@@ -1726,6 +1952,16 @@ impl Control {
 
     fn stop_recording(&mut self, reason: StopReason) {
         let now = self.now();
+        if self.recording.as_ref().is_some_and(|r| r.op.is_some()) {
+            // T-304 (SPEC-022 §2.10): what a stop means depends on the operation's phase.
+            let trigger = if reason == StopReason::User {
+                EndTrigger::User
+            } else {
+                EndTrigger::Failure(reason)
+            };
+            self.op_end(trigger, now);
+            return;
+        }
         let Some(rec) = self.recording.as_mut() else {
             return;
         };
@@ -1823,6 +2059,638 @@ impl Control {
                 let _ = join.join();
             }
             self.update_monitor();
+        }
+    }
+
+    // --- Record operations (T-304, SPEC-022) -----------------------------------------------
+
+    fn stop_code_of(reason: StopReason) -> u8 {
+        match reason {
+            StopReason::User => stop_code::USER,
+            StopReason::InputLost => stop_code::INPUT_LOST,
+            StopReason::Shutdown => stop_code::SHUTDOWN,
+            StopReason::Overflow => stop_code::OVERFLOW,
+            StopReason::WriteError => stop_code::WRITE_ERROR,
+            StopReason::DiskFull => stop_code::DISK_FULL,
+        }
+    }
+
+    fn stop_reason_of(code: u8) -> StopReason {
+        match code {
+            stop_code::INPUT_LOST => StopReason::InputLost,
+            stop_code::SHUTDOWN => StopReason::Shutdown,
+            stop_code::OVERFLOW => StopReason::Overflow,
+            stop_code::WRITE_ERROR => StopReason::WriteError,
+            stop_code::DISK_FULL => StopReason::DiskFull,
+            _ => StopReason::User,
+        }
+    }
+
+    /// SPEC-022 §2.2: resolves a Record press on a document with audio. A playing transport
+    /// stops first (engine-initiated, Pause semantics: the cursor becomes the heard position).
+    pub(crate) fn record_prepare(
+        &mut self,
+        selection: Option<(u64, u64)>,
+        prefs: RecordPrefs,
+    ) -> Result<RecordPlan, RecordError> {
+        if self.recording.is_some() {
+            return Err(RecordError::AlreadyRecording);
+        }
+        if self.calibrating() {
+            return Err(RecordError::Calibrating);
+        }
+        if self.prefs.input_device.is_none() {
+            return Err(RecordError::NoInputDevice);
+        }
+        self.engine_stop();
+        self.emit_state_if_changed();
+        let has_output = self.can_play();
+        resolve_record(
+            self.transport.len(),
+            self.doc_rate(),
+            selection,
+            self.transport.playhead(),
+            has_output,
+            &prefs,
+        )
+    }
+
+    /// SPEC-022 §2.4–§2.7, §4.4: starts a resolved record operation into `capture`. Aligned
+    /// operations start a playback run (pre-roll with silence padding, the record range muted,
+    /// post-roll for a punch); free starts capture right away with `k_start = 0`.
+    pub(crate) fn record_start_op(
+        &mut self,
+        plan: RecordPlan,
+        capture: TakeCapture,
+        done: RecordDone,
+    ) -> Result<RecordState, RecordError> {
+        if plan.kind == RecordOpKind::New {
+            return self.record_start(plan.doc_rate_hz, capture, done);
+        }
+        if self.recording.is_some() {
+            return Err(RecordError::AlreadyRecording);
+        }
+        let len = self.transport.len();
+        if plan.at_samples > len
+            || plan
+                .end_samples
+                .is_some_and(|e| e > len || e <= plan.at_samples)
+            || plan.doc_rate_hz != self.doc_rate()
+        {
+            return Err(RecordError::InvalidPosition);
+        }
+        let mut plan = plan;
+        if plan.aligned && !self.can_play() {
+            if plan.kind == RecordOpKind::Punch {
+                return Err(RecordError::PunchNeedsOutput);
+            }
+            // Cursor recordings work with only an input device, with a free start (D-020).
+            plan.aligned = false;
+            plan.preroll_samples = 0;
+            plan.offset_ns = 0;
+            plan.hear_original = false;
+        }
+        self.engine_stop();
+        let take = capture.id().0;
+        let shared = Arc::new(OpShared::new());
+        if !plan.aligned {
+            shared.k_start.store(0, Ordering::Release);
+        }
+        self.start_capture(plan.doc_rate_hz, capture, done, Some(shared.clone()))?;
+        let now = self.now();
+        let out_gen = self.monitor_gen;
+        let mut run = None;
+        if plan.aligned {
+            let fade = (LISTEN_FADE_MS / 1000.0 * f64::from(plan.doc_rate_hz))
+                .round()
+                .max(1.0) as u64;
+            let (mute_end, end) = match plan.end_samples {
+                Some(e) if plan.kind == RecordOpKind::Punch => {
+                    (Some(e), Some((e + plan.postroll_samples).min(len).max(e)))
+                }
+                _ => (None, None),
+            };
+            let spec = RunSpec {
+                offset: plan.preroll_samples.saturating_sub(plan.at_samples),
+                at: plan.at_samples,
+                mute_end,
+                doc_len: len,
+                hear_original: plan.hear_original,
+                end,
+                fade,
+            };
+            let epoch = self.transport.next_run_epoch();
+            let pos = spec.start_v(plan.preroll_samples);
+            self.anchor = None;
+            self.reader_send(ReaderCmd::StartRun {
+                epoch,
+                pos,
+                run: spec,
+            });
+            self.audio_cmd(AudioCmd::Play {
+                epoch,
+                pos,
+                reset: true,
+            });
+            run = Some((epoch, spec));
+        }
+        let Some(rec) = self.recording.as_mut() else {
+            return Ok(self.record_state());
+        };
+        let (phase, doc_pos) = if plan.aligned {
+            (
+                RecordPhase::PreRoll,
+                plan.at_samples.saturating_sub(plan.preroll_samples),
+            )
+        } else {
+            (RecordPhase::Recording, plan.at_samples)
+        };
+        let op = OpState {
+            plan,
+            take,
+            phase,
+            shared,
+            run,
+            out_gen,
+            run_ended: false,
+            output_lost: false,
+            t_at: None,
+            anchor: None,
+            blocks: VecDeque::new(),
+            in_rate: rec.rate_hz,
+            k_start: (!plan.aligned).then_some(0),
+            end: None,
+        };
+        let info = op.phase_info(phase, doc_pos, now);
+        rec.op = Some(op);
+        (self.events)(EngineEvent::RecordPhase(info));
+        self.update_monitor();
+        self.emit_record_if_changed();
+        Ok(self.record_state())
+    }
+
+    /// SPEC-022 §2.10: ends a record operation — decides by phase whether it is cancelled or
+    /// where its window ends, stops its playback run, stops the capture just past the window's
+    /// last sample (or forces it when the input is gone), then seals it when possible.
+    fn op_end(&mut self, trigger: EndTrigger, now: u64) {
+        let forced = matches!(
+            trigger,
+            EndTrigger::Failure(
+                StopReason::InputLost | StopReason::Shutdown | StopReason::Overflow
+            )
+        );
+        let Some(rec) = self.recording.as_mut() else {
+            return;
+        };
+        let Some(op) = rec.op.as_mut() else {
+            return;
+        };
+        if op.end.is_some() {
+            if forced {
+                rec.shared.force_finish.store(true, Ordering::Release);
+                self.op_try_seal(now, true);
+            }
+            return;
+        }
+        let at = op.plan.at_samples;
+        let e = op.plan.end_samples;
+        let end = match (op.phase, trigger) {
+            (RecordPhase::PreRoll, EndTrigger::User) => OpEnd::Cancel(CancelReason::User),
+            (RecordPhase::PreRoll, EndTrigger::Failure(StopReason::InputLost)) => {
+                OpEnd::Cancel(CancelReason::InputLost)
+            }
+            (RecordPhase::PreRoll, EndTrigger::Failure(_)) => OpEnd::Cancel(CancelReason::Aborted),
+            (RecordPhase::PreRoll, EndTrigger::OutputLost | EndTrigger::RunOver) => {
+                OpEnd::Cancel(CancelReason::OutputLost)
+            }
+            (RecordPhase::Recording, EndTrigger::User) if op.plan.aligned => {
+                // `p`: the heard position at the Stop command, clamped to `[at, E]`.
+                let q = op.heard_q(now).unwrap_or(i128::from(at));
+                let q = e.map_or(q, |e| q.min(i128::from(e)));
+                if q <= i128::from(at) {
+                    OpEnd::Cancel(CancelReason::User)
+                } else {
+                    OpEnd::At(Some(q as u64))
+                }
+            }
+            (RecordPhase::Recording, EndTrigger::User | EndTrigger::Failure(_)) => OpEnd::At(None),
+            // D-017: the take is unaffected; a punch then ends at `E` (RunOver).
+            (RecordPhase::Recording, EndTrigger::OutputLost) => return,
+            (RecordPhase::Recording, EndTrigger::RunOver) => OpEnd::At(e),
+            (RecordPhase::PostRoll | RecordPhase::Committing, _) => OpEnd::At(e),
+        };
+        op.end = Some(end);
+        let stop_ns = match end {
+            OpEnd::At(Some(q)) => op
+                .heard_time(q)
+                .map(|t| {
+                    let t = t + i128::from(op.plan.offset_ns) + i128::from(OP_STOP_MARGIN_NS);
+                    u64::try_from(t.max(i128::from(now))).unwrap_or(now)
+                })
+                .unwrap_or(now),
+            _ => now,
+        };
+        let stop_run = op.run.is_some() && !op.run_ended && !op.output_lost;
+        rec.stop_at.get_or_insert(stop_ns);
+        let code = match trigger {
+            EndTrigger::Failure(reason) => Self::stop_code_of(reason),
+            _ => stop_code::USER,
+        };
+        if !rec.shared.capture_done.load(Ordering::Acquire) {
+            let _ = rec.shared.stop_reason.compare_exchange(
+                stop_code::USER,
+                code,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
+        }
+        let shared = rec.shared.clone();
+        if stop_run {
+            self.audio_cmd(AudioCmd::Stop);
+            self.reader_send(ReaderCmd::Stop);
+        }
+        let sent = !forced
+            && self.input.as_mut().is_some_and(|i| {
+                Arc::ptr_eq(&i.shared, &shared)
+                    && i.cmds.push(InputCmd::StopCapture { stop_ns }).is_ok()
+            });
+        if !sent {
+            shared.force_finish.store(true, Ordering::Release);
+        }
+        self.op_try_seal(now, forced);
+        self.update_monitor();
+        self.emit_record_if_changed();
+    }
+
+    /// Seals a decided operation once its window start is known, so the capture-writer may finish
+    /// the take with the window (T-304). `force`: nothing more will arrive — an unknown window
+    /// start cancels.
+    fn op_try_seal(&mut self, now: u64, force: bool) {
+        let mut events = Vec::new();
+        {
+            let Some(rec) = self.recording.as_mut() else {
+                return;
+            };
+            let complete = force
+                || rec.shared.capture_done.load(Ordering::Acquire)
+                || rec.shared.force_finish.load(Ordering::Acquire);
+            let Some(op) = rec.op.as_mut() else {
+                return;
+            };
+            let Some(end) = op.end else {
+                return;
+            };
+            if op.shared.is_sealed() {
+                return;
+            }
+            if let Some(k) = op.resolve_k_start() {
+                op.shared.k_start.store(k, Ordering::Release);
+                events.push(EngineEvent::RecordWindow {
+                    take: op.take,
+                    k_start: k,
+                });
+            }
+            let at = op.plan.at_samples;
+            let result = match end {
+                OpEnd::Cancel(reason) => Some(OpResult {
+                    plan: op.plan,
+                    window: None,
+                    cancelled: Some(reason),
+                }),
+                OpEnd::At(q) => match op.k_start {
+                    Some(k) => Some(OpResult {
+                        plan: op.plan,
+                        window: Some((k, q.map_or(u64::MAX, |q| k + (q - at)))),
+                        cancelled: None,
+                    }),
+                    None if complete => Some(OpResult {
+                        plan: op.plan,
+                        window: None,
+                        cancelled: Some(CancelReason::Aborted),
+                    }),
+                    None => None,
+                },
+            };
+            let Some(result) = result else {
+                return;
+            };
+            op.shared.seal(result);
+            op.phase = RecordPhase::Committing;
+            if result.cancelled.is_none() {
+                let doc_pos = match end {
+                    OpEnd::At(Some(q)) => q,
+                    _ => op
+                        .heard_q(now)
+                        .map_or(at, |q| u64::try_from(q.max(i128::from(at))).unwrap_or(at)),
+                };
+                events.push(EngineEvent::RecordPhase(op.phase_info(
+                    RecordPhase::Committing,
+                    doc_pos,
+                    now,
+                )));
+            }
+        }
+        for e in events {
+            (self.events)(e);
+        }
+    }
+
+    /// Each tick (T-304, SPEC-022 §2.7, §2.10, §4.3): resolves the window start, advances the
+    /// phases on the heard clock, and ends the operation when its run is over, its output is gone
+    /// or its take ended by itself.
+    fn service_op(&mut self, now: u64) {
+        let out_alive = self.output.is_some();
+        let cur_gen = self.monitor_gen;
+        let mut events = Vec::new();
+        let mut trigger = None;
+        {
+            let Some(rec) = self.recording.as_mut() else {
+                return;
+            };
+            let capture_done = rec.shared.capture_done.load(Ordering::Acquire);
+            let reason = rec.shared.stop_reason.load(Ordering::Relaxed);
+            let Some(op) = rec.op.as_mut() else {
+                return;
+            };
+            if let Some(k) = op.resolve_k_start() {
+                op.shared.k_start.store(k, Ordering::Release);
+                events.push(EngineEvent::RecordWindow {
+                    take: op.take,
+                    k_start: k,
+                });
+            }
+            if op.run.is_some() && !op.output_lost && (!out_alive || cur_gen != op.out_gen) {
+                op.output_lost = true;
+            }
+            if op.end.is_none() {
+                let at = op.plan.at_samples;
+                let q_now = op.heard_q(now);
+                if let (Some(q), Some(t_at)) = (q_now, op.t_at) {
+                    if op.phase == RecordPhase::PreRoll && q >= i128::from(at) {
+                        op.phase = RecordPhase::Recording;
+                        let t = u64::try_from(t_at.max(0)).unwrap_or(0);
+                        events.push(EngineEvent::RecordPhase(op.phase_info(
+                            RecordPhase::Recording,
+                            at,
+                            t,
+                        )));
+                    }
+                    if op.phase == RecordPhase::Recording
+                        && op.plan.kind == RecordOpKind::Punch
+                        && let Some(e) = op.plan.end_samples
+                        && q >= i128::from(e)
+                    {
+                        op.phase = RecordPhase::PostRoll;
+                        let t = op
+                            .heard_time(e)
+                            .map_or(now, |t| u64::try_from(t.max(0)).unwrap_or(now));
+                        events.push(EngineEvent::RecordPhase(op.phase_info(
+                            RecordPhase::PostRoll,
+                            e,
+                            t,
+                        )));
+                    }
+                }
+                let past_end = op.plan.kind == RecordOpKind::Punch
+                    && q_now
+                        .zip(op.plan.end_samples)
+                        .is_some_and(|(q, e)| q >= i128::from(e));
+                trigger = if capture_done {
+                    Some(EndTrigger::Failure(Self::stop_reason_of(reason)))
+                } else if op.run_ended {
+                    Some(EndTrigger::RunOver)
+                } else if op.output_lost {
+                    match op.phase {
+                        RecordPhase::PreRoll => Some(EndTrigger::OutputLost),
+                        RecordPhase::PostRoll => Some(EndTrigger::RunOver),
+                        RecordPhase::Recording if past_end => Some(EndTrigger::RunOver),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+            }
+        }
+        for e in events {
+            (self.events)(e);
+        }
+        if let Some(t) = trigger {
+            self.op_end(t, now);
+        }
+        self.op_try_seal(now, false);
+    }
+
+    // --- Latency calibration (T-304, SPEC-022 §2.14, §4.7) ----------------------------------
+
+    /// Starts a loopback calibration run: monitoring forced Off, the input armed, the capture
+    /// ring taken for the run, the 5 sweeps started after the rack.
+    pub(crate) fn calibration_start(&mut self, offset_ns: i64) -> Result<(), CalibrationError> {
+        if self.recording.is_some() {
+            return Err(CalibrationError::Recording);
+        }
+        if self.calibrating() {
+            return Err(CalibrationError::Busy);
+        }
+        self.calib = None;
+        let Some(out_rate) = self.output.as_ref().map(|o| o.rate_hz) else {
+            return Err(CalibrationError::NoOutput);
+        };
+        if self.prefs.input_device.is_none() {
+            return Err(CalibrationError::NoInput);
+        }
+        self.engine_stop();
+        let restore_armed = self.armed;
+        let restore_monitor = self.monitor_mode;
+        if self.input.is_none() {
+            self.armed = true;
+            self.open_input();
+        }
+        let now = self.now();
+        let prepared = match self.input.as_mut() {
+            None => Err(CalibrationError::NoInput),
+            Some(inp) if inp.rate_hz != out_rate => Err(CalibrationError::RateMismatch {
+                input_hz: inp.rate_hz,
+                output_hz: out_rate,
+            }),
+            Some(inp) => match inp
+                .capture_rx
+                .take()
+                .or_else(|| take_home(&inp.capture_home))
+            {
+                None => Err(CalibrationError::Busy),
+                Some(mut rx) => {
+                    let stale = rx.slots();
+                    if stale > 0
+                        && let Ok(chunk) = rx.read_chunk(stale)
+                    {
+                        chunk.commit_all();
+                    }
+                    inp.shared.reset_take();
+                    let _ = inp.cmds.push(InputCmd::StartCapture { start_ns: now });
+                    Ok((rx, inp.rate_hz, inp.shared.clone()))
+                }
+            },
+        };
+        let (rx, rate_hz, in_shared) = match prepared {
+            Ok(p) => p,
+            Err(e) => {
+                self.calib_restore(restore_monitor, restore_armed);
+                return Err(e);
+            }
+        };
+        self.monitor_mode = MonitorMode::Off;
+        self.update_monitor();
+        self.audio_cmd(AudioCmd::Calibrate { start: true });
+        self.calib = Some(CalibRun {
+            offset_ns,
+            rx: Some(rx),
+            in_shared,
+            recording: Vec::with_capacity(rate_hz as usize * 12),
+            blocks: VecDeque::new(),
+            rep_times: Vec::new(),
+            started_ns: now,
+            rate_hz,
+            out_gen: self.monitor_gen,
+            restore_monitor,
+            restore_armed,
+            result: None,
+        });
+        self.emit_record_if_changed();
+        Ok(())
+    }
+
+    /// Restores monitoring and the armed state after a calibration run.
+    fn calib_restore(&mut self, monitor: MonitorMode, armed: bool) {
+        self.monitor_mode = monitor;
+        if !armed && self.recording.is_none() && self.armed {
+            self.armed = false;
+            self.close_input(true);
+        }
+        self.update_monitor();
+        self.latency_dirty = true;
+        self.emit_record_if_changed();
+    }
+
+    /// Ends the run with `result` (kept until polled) and gives the capture ring back.
+    fn calib_finish(&mut self, result: Result<CalibrationCapture, CalibrationError>) {
+        let Some(mut c) = self.calib.take() else {
+            return;
+        };
+        let now = self.now();
+        if let Some(inp) = self.input.as_mut()
+            && Arc::ptr_eq(&inp.shared, &c.in_shared)
+        {
+            let _ = inp.cmds.push(InputCmd::StopCapture { stop_ns: now });
+            if let Some(rx) = c.rx.take()
+                && inp.capture_rx.is_none()
+            {
+                inp.capture_rx = Some(rx);
+            }
+        }
+        self.audio_cmd(AudioCmd::Calibrate { start: false });
+        let (monitor, armed) = (c.restore_monitor, c.restore_armed);
+        c.result = Some(result);
+        c.rx = None;
+        c.recording = Vec::new();
+        c.blocks.clear();
+        self.calib = Some(c);
+        self.calib_restore(monitor, armed);
+    }
+
+    /// Each tick: collects the capture; once the blocks reach past the last repetition's sweep
+    /// plus the lag window, maps each repetition's heard time (+ δ) to its recording index.
+    fn service_calibration(&mut self, now: u64) {
+        let out_alive = self.output.is_some();
+        let cur_gen = self.monitor_gen;
+        let in_alive = self.input.is_some();
+        let Some(c) = self.calib.as_mut() else {
+            return;
+        };
+        if c.result.is_some() {
+            return;
+        }
+        if let Some(rx) = c.rx.as_mut() {
+            let n = rx.slots();
+            if n > 0
+                && let Ok(chunk) = rx.read_chunk(n)
+            {
+                let (a, b) = chunk.as_slices();
+                c.recording.extend_from_slice(a);
+                c.recording.extend_from_slice(b);
+                chunk.commit_all();
+            }
+        }
+        let failed = !out_alive
+            || cur_gen != c.out_gen
+            || !in_alive
+            || now.saturating_sub(c.started_ns) > CALIB_TIMEOUT_NS;
+        let mut done = None;
+        if failed {
+            done = Some(Err(CalibrationError::Interrupted));
+        } else if c.rep_times.len() >= vox_dsp::calibration::REPS {
+            let tail_ns = (vox_dsp::calibration::SWEEP_SECONDS * 1e9) as i128
+                + (vox_dsp::calibration::LAG_MAX_MS * 1e6) as i128
+                + 20_000_000;
+            let last = c.rep_times.last().copied().unwrap_or(0);
+            let need = i128::from(last) + i128::from(c.offset_ns.max(0)) + tail_ns;
+            let reached = c.blocks.back().is_some_and(|b| {
+                i128::from(b.start_ns) + i128::from(frames_to_ns(u64::from(b.frames), c.rate_hz))
+                    > need
+            });
+            if reached {
+                let rep_starts = c
+                    .rep_times
+                    .iter()
+                    .map(|&t| {
+                        take_index_at(
+                            &c.blocks,
+                            i128::from(t) + i128::from(c.offset_ns),
+                            c.rate_hz,
+                        )
+                        .map_or(i64::MIN / 2, |k| i64::try_from(k).unwrap_or(i64::MIN / 2))
+                    })
+                    .collect();
+                done = Some(Ok(CalibrationCapture {
+                    rate_hz: c.rate_hz,
+                    sweep: vox_dsp::calibration::sweep(c.rate_hz),
+                    recording: std::mem::take(&mut c.recording),
+                    rep_starts,
+                    offset_ns: c.offset_ns,
+                }));
+            }
+        }
+        if let Some(result) = done {
+            self.calib_finish(result);
+        }
+    }
+
+    /// The run's progress, or its result once (then idle).
+    pub(crate) fn calibration_poll(&mut self) -> CalibrationStatus {
+        let now = self.now();
+        let Some(c) = self.calib.as_mut() else {
+            return CalibrationStatus::Idle;
+        };
+        match c.result.take() {
+            Some(result) => {
+                self.calib = None;
+                CalibrationStatus::Done(result)
+            }
+            None => {
+                let total = vox_dsp::calibration::REPS as f64
+                    * vox_dsp::calibration::SPACING_SECONDS
+                    + vox_dsp::calibration::SWEEP_SECONDS;
+                let elapsed = now.saturating_sub(c.started_ns) as f64 / 1e9;
+                CalibrationStatus::Running {
+                    progress: (elapsed / total).clamp(0.0, 0.99) as f32,
+                }
+            }
+        }
+    }
+
+    /// Aborts a running calibration (its poll then reports `Cancelled`).
+    pub(crate) fn calibration_cancel(&mut self) {
+        if self.calibrating() {
+            self.calib_finish(Err(CalibrationError::Cancelled));
         }
     }
 
@@ -1966,8 +2834,10 @@ impl Control {
         }
         self.drain_rt();
         self.drain_input();
+        self.service_calibration(now);
         self.poll_disk(now);
         self.check_disk_floor();
+        self.service_op(now);
         self.service_recording(now);
         let notices = self.output.as_mut().map(|out| out.rack.tick());
         if let Some(notices) = notices {
@@ -2001,6 +2871,11 @@ impl Control {
             std::iter::from_fn(|| out.events.pop().ok()).collect()
         };
         let mut period_grew = false;
+        let doc_rate = u64::from(self.doc_rate().max(1));
+        let out_rate = self
+            .output
+            .as_ref()
+            .map_or(1, |o| u64::from(o.rate_hz.max(1)));
         for e in events {
             match e {
                 RtEvent::Block {
@@ -2024,13 +2899,46 @@ impl Control {
                             time_ns: heard_time_ns,
                         });
                     }
+                    // T-304 (SPEC-022 §4.3 `WindowHeard`): the heard time of `at`, from the block
+                    // whose heard range contains it (or the first past it).
+                    if let Some(pos_v) = heard_pos
+                        && let Some(op) = self.recording.as_mut().and_then(|r| r.op.as_mut())
+                        && let Some((run_epoch, spec)) = op.run
+                        && epoch == run_epoch
+                    {
+                        op.anchor = Some((pos_v.saturating_sub(spec.offset), heard_time_ns));
+                        if op.t_at.is_none() {
+                            let at_v = spec.at + spec.offset;
+                            let span = (u64::from(frames) * doc_rate / out_rate).max(1);
+                            if at_v < pos_v + span {
+                                op.t_at = Some(
+                                    i128::from(heard_time_ns)
+                                        + (i128::from(at_v) - i128::from(pos_v)) * 1_000_000_000
+                                            / i128::from(doc_rate),
+                                );
+                            }
+                        }
+                    }
                 }
                 RtEvent::Stopped { epoch, pos } => self.transport.on_stopped(epoch, pos),
                 RtEvent::Ended { epoch, pos } => {
+                    if let Some(op) = self.recording.as_mut().and_then(|r| r.op.as_mut())
+                        && op.run.is_some_and(|(e, _)| e == epoch)
+                    {
+                        op.run_ended = true;
+                    }
                     if self.transport.on_ended(epoch, pos) {
                         self.reader_send(ReaderCmd::Stop);
                     }
                 }
+                RtEvent::CalibRep { heard_time_ns, .. } => {
+                    if let Some(c) = self.calib.as_mut()
+                        && c.result.is_none()
+                    {
+                        c.rep_times.push(heard_time_ns);
+                    }
+                }
+                RtEvent::CalibDone => {}
             }
         }
         if period_grew {
@@ -2073,6 +2981,31 @@ impl Control {
 
     /// Telemetry anchor: the heard position while playing, the take position while recording.
     fn anchor_now(&self, now: u64) -> (u64, u64, f64) {
+        // T-304: during a record operation the playhead is the heard document position (pre-roll
+        // and window alike, frozen once it stops), or `at` + the take for a free start.
+        if let Some(rec) = self.recording.as_ref()
+            && let Some(op) = rec.op.as_ref()
+        {
+            let rate = f64::from(op.plan.doc_rate_hz);
+            let t = rec.stop_at.map_or(now, |s| s.min(now));
+            let moving = if rec.stop_at.is_none() { rate } else { 0.0 };
+            if let Some(q) = op.heard_q(t) {
+                return (u64::try_from(q.max(0)).unwrap_or(0), t, moving);
+            }
+            if let Some((pos, time_ns)) = op.anchor {
+                return (pos, time_ns, moving);
+            }
+            if !op.plan.aligned {
+                let doc =
+                    rec.captured * u64::from(op.plan.doc_rate_hz) / u64::from(rec.rate_hz.max(1));
+                return (op.plan.at_samples + doc, rec.anchor_ns, moving);
+            }
+            return (
+                op.plan.at_samples.saturating_sub(op.plan.preroll_samples),
+                now,
+                0.0,
+            );
+        }
         if let Some(rec) = self.recording.as_ref() {
             let rate = if rec.stop_at.is_none() {
                 f64::from(rec.rate_hz)

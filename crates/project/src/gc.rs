@@ -167,6 +167,9 @@ struct Summary {
     redo: Vec<u64>,
     saved_seq: u64,
     open_takes: BTreeSet<u32>,
+    /// T-304: aligned takes whose record window never opened (no `take_window`): a crash in
+    /// pre-roll — nothing of them is applicable, so they don't make the session recoverable.
+    pending_aligned: BTreeSet<u32>,
     truncated_takes: BTreeSet<u32>,
     inconsistent: bool,
     /// `(path, size, mtime)` of the `open` record's source.
@@ -198,11 +201,21 @@ fn summarize(records: &[Record]) -> Summary {
                 Some(top) if top == *seq => s.undo.push(top),
                 _ => s.inconsistent = true,
             },
-            Record::TakeBegin { take, .. } => {
-                s.open_takes.insert(*take);
+            Record::TakeBegin { take, aligned, .. } => {
+                if *aligned {
+                    s.pending_aligned.insert(*take);
+                } else {
+                    s.open_takes.insert(*take);
+                }
             }
-            Record::TakeDiscard { take } => {
+            Record::TakeWindow { take, .. } => {
+                if s.pending_aligned.remove(take) {
+                    s.open_takes.insert(*take);
+                }
+            }
+            Record::TakeDiscard { take } | Record::TakeCancel { take } => {
                 s.open_takes.remove(take);
+                s.pending_aligned.remove(take);
             }
             Record::Saved {
                 seq,

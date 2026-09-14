@@ -48,6 +48,7 @@ pub mod prefs;
 mod rack_api;
 mod reader;
 pub mod record;
+pub mod record_op;
 mod rt;
 pub mod spectro;
 pub mod telemetry;

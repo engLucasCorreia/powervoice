@@ -77,8 +77,8 @@ pub use reader::SnapshotReader;
 pub use recovery::{RecoveredTakeInfo, RecoveryReport, SavedFacts};
 pub use save::{OversInfo, overs_check, save_snapshot_flac, save_snapshot_wav};
 pub use session::{
-    CloseError, FinishedTake, Session, SessionConfig, SourceInfo, TAKE_LABEL_KEY, TakeCapture,
-    TakeId, TakeMode,
+    CloseError, FinishedTake, PUNCH_LABEL_KEY, Session, SessionConfig, SourceInfo, TAKE_LABEL_KEY,
+    TakeCapture, TakeId, TakeMode, TakeParams, TakePlan,
 };
 pub use sidecar::{
     DocumentIdentity, MarkerItemModel, MarkerMeta, MarkerMetaTable, SaveFormatModel, SidecarDoc,

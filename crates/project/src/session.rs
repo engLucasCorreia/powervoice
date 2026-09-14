@@ -11,7 +11,9 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 use crate::fs_util::{sync_dir, unix_ms, write_all_at, write_file_atomic};
-use crate::history::{Edit, EditOp, History, HistoryStep, MarkerOp, check_marker_bounds};
+use crate::history::{
+    Edit, EditOp, History, HistoryStep, MarkerMapping, MarkerOp, check_marker_bounds,
+};
 use crate::journal::{
     CheckpointRecord, EditRecord, Journal, Record, SourceRecord, TakeModeRecord, journal_file_name,
 };
@@ -89,6 +91,45 @@ pub enum TakeMode {
     New,
     /// Inserted at a document position (record at cursor, M3).
     Insert { at_samples: u64 },
+    /// T-304 (SPEC-022 §2.5): overwrites from a document position, extending the document when
+    /// the take runs past its end (an open-ended punch).
+    Overwrite { at_samples: u64 },
+    /// T-304 (SPEC-022 §2.6): replaces exactly `[start_samples, end_samples)` (a punch-in).
+    Punch {
+        start_samples: u64,
+        end_samples: u64,
+    },
+}
+
+/// Undo label key of a punch-in (SPEC-022 §2.11).
+pub const PUNCH_LABEL_KEY: &str = "history.punch";
+
+/// T-304 (SPEC-022 §4.6): how an operation's record window is aligned and joined.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TakeParams {
+    /// Punch/Overwrite crossfade length `X` (SPEC-022 §2.8), in document samples.
+    pub xfade_samples: u64,
+    /// The recording offset δ applied to the aligned start (journaled, informational).
+    pub offset_ns: i64,
+    /// The window opens at an aligned start (the engine reports `k_start` later through
+    /// [`Session::note_take_window`]); otherwise it is a free start (`k_start = 0`).
+    pub aligned: bool,
+}
+
+/// T-304: everything the journal knows about an open take (`take_begin` + `take_window`), so a
+/// live commit and crash recovery build the same edit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TakePlan {
+    pub mode: TakeModeRecord,
+    /// Insertion point / record point `at` (the punch start `S`).
+    pub at: u64,
+    /// Punch: `E − S`; otherwise 0.
+    pub len: u64,
+    pub xfade_samples: u64,
+    pub offset_ns: i64,
+    pub aligned: bool,
+    /// Take sample the record window starts at (`None`: an aligned window not opened yet).
+    pub k_start: Option<u64>,
 }
 
 /// The capture side of an open take, owned by the engine's capture-writer thread: every block
@@ -177,7 +218,16 @@ pub struct CloseError {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct OpenTake {
     pub(crate) id: TakeId,
-    pub(crate) at: u64,
+    pub(crate) plan: TakePlan,
+}
+
+/// Which way a boundary crossfade runs (SPEC-022 §4.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FadeDir {
+    /// Punch-in: from the old audio `A` to the take `T`.
+    In,
+    /// Punch-out: from the take `T` back to `A`.
+    Out,
 }
 
 /// One open document's session: directory + lock + store + journal + history. Owned by the
@@ -369,7 +419,7 @@ impl Session {
 
     /// The open take and where it will be inserted.
     pub fn open_take_at(&self) -> Option<(TakeId, u64)> {
-        self.open_take.map(|t| (t.id, t.at))
+        self.open_take.map(|t| (t.id, t.plan.at))
     }
 
     /// The current store generation (T-301 compaction bumps it).
@@ -573,20 +623,98 @@ impl Session {
         mode: TakeMode,
         options: TakeWriterOptions,
     ) -> Result<TakeCapture> {
+        self.begin_take_with(mode, TakeParams::default(), options)
+    }
+
+    /// The open take and its journaled plan (T-304).
+    pub fn open_take_plan(&self) -> Option<(TakeId, TakePlan)> {
+        self.open_take.map(|t| (t.id, t.plan))
+    }
+
+    /// T-304 (SPEC-022 §4.6): journals (`take_window` + `fdatasync`) that the aligned record
+    /// window of `take` opened at take sample `k_start`, so recovery reproduces the live
+    /// alignment. Idempotent for the same value.
+    pub fn note_take_window(&mut self, take: TakeId, k_start: u64) -> Result<()> {
+        let open = match self.open_take {
+            Some(open) if open.id == take => open,
+            _ => return Err(ProjectError::NoSuchTake(take.0)),
+        };
+        if open.plan.k_start == Some(k_start) {
+            return Ok(());
+        }
+        self.journal.append(&[Record::TakeWindow {
+            take: take.0,
+            k_start,
+        }])?;
+        if let Some(open) = self.open_take.as_mut() {
+            open.plan.k_start = Some(k_start);
+        }
+        Ok(())
+    }
+
+    /// T-304 (SPEC-022 §2.10): closes a cancelled operation's take with `take_cancel` (no undo
+    /// entry, the document is untouched) and deletes its take files (best effort).
+    pub fn cancel_take(&mut self, take: TakeId) -> Result<()> {
+        match self.open_take {
+            Some(open) if open.id == take => {
+                self.journal
+                    .append(&[Record::TakeCancel { take: take.0 }])?;
+                self.open_take = None;
+                let takes_dir = self.takes_dir();
+                for part in 0.. {
+                    let path = take_part_path(&takes_dir, take.0, part);
+                    if fs::remove_file(&path).is_err() {
+                        break;
+                    }
+                }
+                Ok(())
+            }
+            _ => Err(ProjectError::NoSuchTake(take.0)),
+        }
+    }
+
+    /// [`Self::begin_take`] for the record operations of SPEC-022 (T-304): the mode (Insert,
+    /// Overwrite, Punch) and how the window is aligned/joined go into `take_begin`.
+    pub fn begin_take_with(
+        &mut self,
+        mode: TakeMode,
+        params: TakeParams,
+        options: TakeWriterOptions,
+    ) -> Result<TakeCapture> {
         if self.open_take.is_some() {
             return Err(ProjectError::TakeAlreadyOpen);
         }
         let len = self.history.current().len_samples;
-        let (at, mode_record) = match mode {
-            TakeMode::New => (len, TakeModeRecord::New),
+        let (at, mode_record, plan_len) = match mode {
+            TakeMode::New => (len, TakeModeRecord::New, 0),
             TakeMode::Insert { at_samples } if at_samples <= len => {
-                (at_samples, TakeModeRecord::Insert)
+                (at_samples, TakeModeRecord::Insert, 0)
             }
-            TakeMode::Insert { .. } => {
+            TakeMode::Overwrite { at_samples } if at_samples <= len => {
+                (at_samples, TakeModeRecord::Overwrite, 0)
+            }
+            TakeMode::Punch {
+                start_samples,
+                end_samples,
+            } if start_samples < end_samples && end_samples <= len => (
+                start_samples,
+                TakeModeRecord::Punch,
+                end_samples - start_samples,
+            ),
+            _ => {
                 return Err(ProjectError::InvalidEdit(
-                    "take insertion point is past the end".into(),
+                    "take position is outside the document".into(),
                 ));
             }
+        };
+        let plan = TakePlan {
+            mode: mode_record,
+            at,
+            len: plan_len,
+            xfade_samples: params.xfade_samples,
+            offset_ns: params.offset_ns,
+            aligned: params.aligned,
+            k_start: (!params.aligned).then_some(0),
         };
         let id = TakeId(self.next_take);
         let takes_dir = self.takes_dir();
@@ -595,9 +723,12 @@ impl Session {
             take: id.0,
             mode: mode_record,
             at,
-            len: 0,
+            len: plan_len,
             file: file.to_string_lossy().replace('\\', "/"),
             sample_rate_hz: self.sample_rate_hz,
+            xfade_samples: params.xfade_samples,
+            offset_ns: params.offset_ns,
+            aligned: params.aligned,
         }])?;
         self.next_take += 1;
         let wav = match TakeWriter::create(&takes_dir, id.0, self.sample_rate_hz, options) {
@@ -608,7 +739,7 @@ impl Session {
                 return Err(e);
             }
         };
-        self.open_take = Some(OpenTake { id, at });
+        self.open_take = Some(OpenTake { id, plan });
         Ok(TakeCapture {
             id,
             wav,
@@ -655,9 +786,9 @@ impl Session {
         }
         let mut edit = Edit::new(TAKE_LABEL_KEY);
         if len > 0 {
-            edit = edit.replace(open.at, 0, finished.audio.pieces.clone());
+            edit = edit.replace(open.plan.at, 0, finished.audio.pieces.clone());
         }
-        let (lo, hi) = (open.at, open.at.saturating_add(len));
+        let (lo, hi) = (open.plan.at, open.plan.at.saturating_add(len));
         for marker in markers {
             let pos = marker.pos_samples.clamp(lo, hi);
             let end = marker.end_samples().clamp(pos, hi);
@@ -749,17 +880,179 @@ impl Session {
         let mut writer = self.store.writer();
         crate::take::copy_take_into(&parts, &mut writer)?;
         let audio = writer.finish()?;
-        if audio.len_samples == 0 {
+        // T-304 (SPEC-022 §2.12): "Apply as recorded" applies exactly what Stop at the recovered
+        // end would have: the record window from the journaled `k_start` to the last sample.
+        let Some(k_start) = open.plan.k_start else {
+            self.cancel_take(open.id)?;
+            return Ok(None);
+        };
+        let Some(edit) = self.build_take_edit(&open.plan, &audio.pieces, (k_start, u64::MAX))?
+        else {
             self.journal
                 .append(&[Record::TakeDiscard { take: open.id.0 }])?;
             self.open_take = None;
             return Ok(None);
-        }
-        let at = open.at.min(self.history.current().len_samples);
-        let edit = Edit::new(TAKE_LABEL_KEY).replace(at, 0, audio.pieces);
+        };
         let step = self.commit_internal(&edit, Some((open.id, None)))?;
         self.open_take = None;
         Ok(Some(step))
+    }
+
+    /// T-304 (SPEC-022 §2.4–§2.11, §4.1): commits the record window `take[window.0, window.1)`
+    /// of a finished take as **one** undoable edit according to the open take's mode — Insert
+    /// (spliced exactly, markers shift), Overwrite (replaces/extends, equal-power fades inside the
+    /// new range, markers stay) or Punch (replaces exactly `[S, S + n)`, fades inside, markers
+    /// stay) — with `markers` (document time; clamped into the new audio). The window is clipped
+    /// to the take (and, for a punch, to `E − S`): a partial take commits what it holds. An empty
+    /// window cancels the take (`take_cancel`, `Ok(None)`). Retry-safe like
+    /// [`Self::commit_take`]: on error the take stays open.
+    pub fn commit_take_window(
+        &mut self,
+        finished: &FinishedTake,
+        window: (u64, u64),
+        markers: &[Marker],
+    ) -> Result<Option<HistoryStep>> {
+        let open = match self.open_take {
+            Some(open) if open.id == finished.take => open,
+            _ => return Err(ProjectError::NoSuchTake(finished.take.0)),
+        };
+        let len = finished.audio.len_samples;
+        if len == 0 && finished.wav_samples > 0 {
+            return Err(ProjectError::TakeNotInStore {
+                take: open.id.0,
+                wav_samples: finished.wav_samples,
+            });
+        }
+        let Some(mut edit) = self.build_take_edit(&open.plan, &finished.audio.pieces, window)?
+        else {
+            self.cancel_take(open.id)?;
+            return Ok(None);
+        };
+        let n = Self::window_len(&open.plan, len, window);
+        let (lo, hi) = (open.plan.at, open.plan.at.saturating_add(n));
+        for marker in markers {
+            let pos = marker.pos_samples.clamp(lo, hi);
+            let end = marker.end_samples().clamp(pos, hi);
+            edit = edit.marker(MarkerOp::Add(Marker {
+                pos_samples: pos,
+                len_samples: end - pos,
+                ..marker.clone()
+            }));
+        }
+        let truncated = (finished.wav_samples > len).then_some(finished.wav_samples);
+        let step = self.commit_internal(&edit, Some((open.id, truncated)))?;
+        self.open_take = None;
+        Ok(Some(step))
+    }
+
+    /// Samples of `window` that a take of `take_len` samples commits under `plan`.
+    fn window_len(plan: &TakePlan, take_len: u64, window: (u64, u64)) -> u64 {
+        let start = window.0.min(take_len);
+        let n = window.1.min(take_len).saturating_sub(start);
+        if plan.mode == TakeModeRecord::Punch {
+            n.min(plan.len)
+        } else {
+            n
+        }
+    }
+
+    /// The edit a record window becomes (SPEC-022 §4.1); `None` when the window is empty.
+    fn build_take_edit(
+        &self,
+        plan: &TakePlan,
+        take_pieces: &[Piece],
+        window: (u64, u64),
+    ) -> Result<Option<Edit>> {
+        let take_len: u64 = take_pieces.iter().map(Piece::len_samples).sum();
+        let n = Self::window_len(plan, take_len, window);
+        if n == 0 {
+            return Ok(None);
+        }
+        let ws = window.0.min(take_len);
+        let cur = self.current();
+        let at = plan.at.min(cur.len_samples);
+        let take = DocSnapshot::new(self.sample_rate_hz, take_pieces.to_vec(), Vec::new());
+        let edit = match plan.mode {
+            TakeModeRecord::New | TakeModeRecord::Insert => {
+                Edit::new(TAKE_LABEL_KEY).replace(at, 0, take.slice(ws, n)?)
+            }
+            TakeModeRecord::Overwrite => {
+                // §4.2: fade-in at `c` only when `c < L`, fade-out only when `c + n < L`.
+                let l = cur.len_samples;
+                let x = plan.xfade_samples;
+                let xs = if at < l { x.min(l - at).min(n / 2) } else { 0 };
+                let xe = if at + n < l { x.min(n / 2) } else { 0 };
+                let mut pieces = self.render_fade(&cur, at, &take, ws, xs, FadeDir::In)?;
+                pieces.extend(take.slice(ws + xs, n - xs - xe)?);
+                pieces.extend(self.render_fade(
+                    &cur,
+                    at + n - xe,
+                    &take,
+                    ws + n - xe,
+                    xe,
+                    FadeDir::Out,
+                )?);
+                Edit::new(TAKE_LABEL_KEY).replace_with(
+                    at,
+                    n.min(l - at),
+                    pieces,
+                    MarkerMapping::Identity,
+                )
+            }
+            TakeModeRecord::Punch => {
+                // §4.2: `X′ = min(X, ⌊(E′ − S)/2⌋)` at both ends, inside `[S, E′)`.
+                let x = plan.xfade_samples.min(n / 2);
+                let mut pieces = self.render_fade(&cur, at, &take, ws, x, FadeDir::In)?;
+                pieces.extend(take.slice(ws + x, n - 2 * x)?);
+                pieces.extend(self.render_fade(
+                    &cur,
+                    at + n - x,
+                    &take,
+                    ws + n - x,
+                    x,
+                    FadeDir::Out,
+                )?);
+                Edit::new(PUNCH_LABEL_KEY).replace_with(at, n, pieces, MarkerMapping::Identity)
+            }
+        };
+        Ok(Some(edit))
+    }
+
+    /// Renders one equal-power boundary crossfade of `len` samples into new chunks (SPEC-022
+    /// §4.2): `θᵢ = (π/2)·(i + 0.5)/len`, `out = cos θ·F + sin θ·G` in f64, rounded once, with
+    /// `F = A, G = T` for [`FadeDir::In`] and `F = T, G = A` for [`FadeDir::Out`]. Reads only
+    /// `A[doc_pos, doc_pos + len)` and `T[take_pos, take_pos + len)`.
+    fn render_fade(
+        &self,
+        doc: &DocSnapshot,
+        doc_pos: u64,
+        take: &DocSnapshot,
+        take_pos: u64,
+        len: u64,
+        dir: FadeDir,
+    ) -> Result<Vec<Piece>> {
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+        let n = usize::try_from(len)
+            .map_err(|_| ProjectError::InvalidArgument("crossfade too long"))?;
+        let mut a = vec![0.0f32; n];
+        self.store.read(doc, doc_pos, &mut a)?;
+        let mut t = vec![0.0f32; n];
+        self.store.read(take, take_pos, &mut t)?;
+        let out: Vec<f32> = (0..n)
+            .map(|i| {
+                let theta = std::f64::consts::FRAC_PI_2 * (i as f64 + 0.5) / len as f64;
+                let (f, g) = match dir {
+                    FadeDir::In => (a[i], t[i]),
+                    FadeDir::Out => (t[i], a[i]),
+                };
+                (theta.cos() * f64::from(f) + theta.sin() * f64::from(g)) as f32
+            })
+            .collect();
+        let mut writer = self.store.writer();
+        writer.append(&out)?;
+        Ok(writer.finish()?.pieces)
     }
 
     /// Crash recovery's "Open as new document" (SPEC-004 §2.7): copies the open take's WAV into a
@@ -782,14 +1075,21 @@ impl Session {
             },
         )?;
         let mut writer = fresh.chunk_writer();
+        // T-304 (SPEC-022 §2.12): only the record window part of an operation's take (a take
+        // whose aligned window never opened has none).
+        let plan = open.plan;
         let built = crate::take::copy_take_into(&parts, &mut writer)
             .and_then(|_| writer.finish())
             .and_then(|audio| {
-                if audio.len_samples == 0 {
+                let start = plan.k_start.unwrap_or(audio.len_samples);
+                let n = Self::window_len(&plan, audio.len_samples, (start, u64::MAX));
+                if n == 0 {
                     return Ok(false);
                 }
+                let take = DocSnapshot::new(self.sample_rate_hz, audio.pieces.clone(), Vec::new());
+                let pieces = take.slice(start.min(audio.len_samples), n)?;
                 fresh
-                    .commit_edit(Edit::new(TAKE_LABEL_KEY).replace(0, 0, audio.pieces))
+                    .commit_edit(Edit::new(TAKE_LABEL_KEY).replace(0, 0, pieces))
                     .map(|_| true)
             })
             .and_then(|made| self.discard_take(open.id).map(|()| made));

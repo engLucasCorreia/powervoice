@@ -118,6 +118,131 @@ pub async fn record_set_monitor(
     Ok(state)
 }
 
+/// T-304 (SPEC-022 §2.2, §4.9): Record with the current selection (`[start, end)` or `null`).
+/// Resolves to a new recording (empty document), a punch-in over a non-empty selection, or
+/// Insert/Overwrite at the selection start / cursor (a playing transport stops first).
+#[tauri::command]
+pub async fn record_start_at(
+    rec: State<'_, RecordingService>,
+    selection: Option<(u64, u64)>,
+) -> Result<crate::ipc::RecordStartedDto, IpcError> {
+    let rec = rec.inner().clone();
+    blocking(move || rec.start_at(selection)).await
+}
+
+/// T-304 (SPEC-022 §2.13): the current device setup's recording offset (the readout).
+#[tauri::command]
+pub async fn record_offset_get(
+    engine: State<'_, crate::audio::AudioEngine>,
+    settings: State<'_, SettingsStore>,
+) -> Result<crate::ipc::RecordOffsetDto, IpcError> {
+    let engine = engine.handle().clone();
+    let saved = settings.get();
+    blocking(move || Ok(offset_readout(&engine, &saved.record_offsets))).await
+}
+
+/// T-304 (SPEC-022 §2.13, §2.14, AC-18): stores the offset for the current device setup
+/// (calibration Apply, or a manual entry — the UI converts "N smp" at the device rate), clamped
+/// to ±500 ms. Returns the new readout.
+#[tauri::command]
+pub async fn record_offset_set(
+    engine: State<'_, crate::audio::AudioEngine>,
+    settings: State<'_, SettingsStore>,
+    offset_ms: f64,
+    source: crate::settings::RecordOffsetSource,
+    confidence: Option<f64>,
+) -> Result<crate::ipc::RecordOffsetDto, IpcError> {
+    let handle = engine.handle().clone();
+    let setup = blocking(move || Ok(crate::recording::device_setup(&handle))).await?;
+    let Some(setup) = setup else {
+        return Err(IpcError::new(
+            crate::ipc::IpcErrorCode::DeviceNotFound,
+            "error.calibration.no_output",
+        ));
+    };
+    let mut saved = settings.get();
+    apply_offset(
+        &mut saved,
+        &setup,
+        offset_ms,
+        source,
+        confidence,
+        now_unix_ms(),
+    );
+    let saved = settings.set(saved)?;
+    let engine = engine.handle().clone();
+    blocking(move || Ok(offset_readout(&engine, &saved.record_offsets))).await
+}
+
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// Stores `offset_ms` (clamped to ±500 ms, SPEC-022 §3) under `setup`'s key.
+fn apply_offset(
+    saved: &mut Settings,
+    setup: &crate::recording::DeviceSetup,
+    offset_ms: f64,
+    source: crate::settings::RecordOffsetSource,
+    confidence: Option<f64>,
+    now_ms: u64,
+) {
+    let offset_ms = if offset_ms.is_finite() {
+        offset_ms.clamp(
+            -vox_engine::record_op::MAX_OFFSET_MS,
+            vox_engine::record_op::MAX_OFFSET_MS,
+        )
+    } else {
+        0.0
+    };
+    crate::settings::upsert_record_offset(
+        &mut saved.record_offsets,
+        crate::settings::RecordOffsetEntry {
+            host: setup.host.clone(),
+            input_device: setup.input_device.clone(),
+            output_device: setup.output_device.clone(),
+            device_rate_hz: setup.device_rate_hz,
+            offset_ms,
+            source,
+            updated_unix_ms: now_ms,
+            confidence,
+            buffer_frames: setup.buffer_frames,
+        },
+    );
+}
+
+/// The readout for the current device setup (SPEC-022 §2.13: "Not calibrated" = `source: null`).
+fn offset_readout(
+    engine: &vox_engine::EngineHandle,
+    entries: &[crate::settings::RecordOffsetEntry],
+) -> crate::ipc::RecordOffsetDto {
+    let setup = crate::recording::device_setup(engine);
+    let entry = setup
+        .as_ref()
+        .and_then(|s| crate::recording::record_offset_for(s, entries));
+    crate::ipc::RecordOffsetDto {
+        available: setup.is_some(),
+        host: setup.as_ref().map(|s| s.host.clone()).unwrap_or_default(),
+        input_device: setup
+            .as_ref()
+            .map(|s| s.input_device.clone())
+            .unwrap_or_default(),
+        output_device: setup
+            .as_ref()
+            .map(|s| s.output_device.clone())
+            .unwrap_or_default(),
+        device_rate_hz: setup.as_ref().map_or(0, |s| s.device_rate_hz),
+        offset_ms: entry.map_or(0.0, |e| e.offset_ms),
+        source: entry.map(|e| e.source),
+        updated_unix_ms: entry.map(|e| e.updated_unix_ms),
+        confidence: entry.and_then(|e| e.confidence),
+        buffer_frames: entry.and_then(|e| e.buffer_frames),
+        current_buffer_frames: setup.as_ref().and_then(|s| s.buffer_frames),
+    }
+}
+
 /// T-107 (SPEC-002 §2.7, AC-12): saves `mode` as the preference; returns whether the one-time
 /// headphone hint is due — the first time monitoring is enabled (remembered in the settings).
 fn apply_monitor_pref(saved: &mut Settings, mode: MonitorMode) -> bool {

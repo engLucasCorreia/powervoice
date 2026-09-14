@@ -1753,6 +1753,161 @@ impl DocumentService {
 
     // --- S2-01: selection, cut/copy/paste/delete/trim/silence, undo/redo -------------------
 
+    // --- T-304: record operations (SPEC-022) ----------------------------------------------
+
+    /// Length of the open document (0: none, or empty).
+    pub fn current_len_samples(&self) -> u64 {
+        self.0
+            .open
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or(0, |d| d.session.current().len_samples)
+    }
+
+    /// T-304 (SPEC-022 §2.2, §4.6): opens the take for a resolved record operation (Insert /
+    /// Overwrite at `at`, or a punch over `[S, E)`), journaling `take_begin` with its crossfade,
+    /// offset and alignment. Refused while recording or while a document job runs.
+    pub fn begin_record_op(
+        &self,
+        plan: &vox_engine::record_op::RecordPlan,
+    ) -> Result<TakeCapture, IpcError> {
+        use vox_engine::record_op::RecordOpKind;
+        if self.is_normalize_busy() {
+            return Err(document_busy());
+        }
+        let mut guard = self.0.open.lock().unwrap();
+        let doc = guard.as_mut().ok_or_else(no_document)?;
+        if doc.session.is_recording() {
+            return Err(IpcError::not_while_recording());
+        }
+        if doc.session.sample_rate_hz() != plan.doc_rate_hz {
+            return Err(invalid_range());
+        }
+        let mode = match plan.kind {
+            RecordOpKind::New => TakeMode::New,
+            RecordOpKind::Insert => TakeMode::Insert {
+                at_samples: plan.at_samples,
+            },
+            RecordOpKind::Overwrite => TakeMode::Overwrite {
+                at_samples: plan.at_samples,
+            },
+            RecordOpKind::Punch => TakeMode::Punch {
+                start_samples: plan.at_samples,
+                end_samples: plan.end_samples.unwrap_or(plan.at_samples),
+            },
+        };
+        doc.session
+            .begin_take_with(
+                mode,
+                vox_project::TakeParams {
+                    xfade_samples: plan.xfade_samples,
+                    offset_ns: plan.offset_ns,
+                    aligned: plan.aligned,
+                },
+                TakeWriterOptions::default(),
+            )
+            .map_err(document_error)
+    }
+
+    /// T-304 (SPEC-022 §4.6): journals `take_window` for the open take (best effort — a failure
+    /// only costs crash recovery of this take its alignment, so it is logged, not raised).
+    pub fn note_take_window(&self, take: u32, k_start: u64) {
+        let mut guard = self.0.open.lock().unwrap();
+        if let Some(doc) = guard.as_mut()
+            && let Err(error) = doc.session.note_take_window(TakeId(take), k_start)
+        {
+            tracing::warn!(%error, take, k_start, "journaling the record window failed");
+        }
+    }
+
+    /// T-304 (SPEC-022 §2.10–§2.12, §4.1): commits a finished record operation's window as one
+    /// undoable edit ("Record" / "Punch-in", with the dropout markers inside the window) and
+    /// hands the result to the engine, setting the playhead per §2.10 (`S` after a punch, the end
+    /// of the new audio after Insert/Overwrite). A cancelled operation closes its take with
+    /// `take_cancel` and returns `Ok(None)` (document unchanged). On a commit failure the take is
+    /// closed without an edit (its WAV stays in the session) so the document stays usable.
+    pub fn commit_take_op(
+        &self,
+        finished: &FinishedTake,
+        op: &vox_engine::record::OpResult,
+        dropouts: &[DropoutMark],
+    ) -> Result<Option<(DocumentInfo, EditResult)>, IpcError> {
+        use vox_engine::record_op::RecordOpKind;
+        let mut guard = self.0.open.lock().unwrap();
+        let doc = guard.as_mut().ok_or_else(no_document)?;
+        let Some((ws, we)) = op.window else {
+            if let Err(error) = doc.session.cancel_take(finished.take) {
+                tracing::warn!(%error, "cancelling the take failed");
+            }
+            return Ok(None);
+        };
+        let plan = op.plan;
+        let rate_hz = doc.session.sample_rate_hz();
+        let take_len = finished.audio.len_samples;
+        let mut n = we.min(take_len).saturating_sub(ws.min(take_len));
+        if plan.kind == RecordOpKind::Punch {
+            n = n.min(
+                plan.end_samples
+                    .unwrap_or(plan.at_samples)
+                    .saturating_sub(plan.at_samples),
+            );
+        }
+        // SPEC-022 §2.12: only dropouts inside the window get a marker, at their document
+        // position; pre-/post-roll gaps are filled in the take but never enter the document.
+        let markers: Vec<Marker> = dropouts
+            .iter()
+            .filter(|d| d.pos_samples >= ws && d.pos_samples < ws + n)
+            .map(|d| {
+                let id = doc.session.new_marker_id();
+                Marker::new(
+                    id,
+                    plan.at_samples + (d.pos_samples - ws),
+                    d.len_samples,
+                    dropout_marker_name(d.len_samples, rate_hz),
+                )
+            })
+            .collect();
+        let mut outcome = doc.session.commit_take_window(finished, (ws, we), &markers);
+        for _ in 1..COMMIT_ATTEMPTS {
+            if outcome.is_ok() {
+                break;
+            }
+            std::thread::sleep(COMMIT_RETRY_DELAY);
+            outcome = doc.session.commit_take_window(finished, (ws, we), &markers);
+        }
+        let step = match outcome {
+            Ok(Some(step)) => step,
+            Ok(None) => return Ok(None),
+            Err(err) => {
+                if let Err(error) = doc.session.discard_take(finished.take) {
+                    tracing::warn!(%error, "closing the failed take failed");
+                }
+                return Err(document_error(err));
+            }
+        };
+        self.0.engine.set_document(Some(PlaybackDoc {
+            store: Arc::clone(doc.session.store()),
+            snapshot: Arc::clone(&step.snapshot),
+        }));
+        let (selection, playhead) = match plan.kind {
+            RecordOpKind::Punch => (
+                plan.end_samples.map(|e| (plan.at_samples, e)),
+                plan.at_samples,
+            ),
+            _ => (None, plan.at_samples + n),
+        };
+        self.0.engine.transport(TransportCommand::Seek(playhead));
+        let result = EditResult {
+            changed: true,
+            audio_rev: step.snapshot.audio_rev,
+            len_samples: step.snapshot.len_samples,
+            selection,
+            playhead_samples: playhead,
+        };
+        Ok(Some((info_of(&self.0.engine, guard.as_ref()), result)))
+    }
+
     /// The Edit menu's Undo/Redo state (`history_state` event).
     pub fn history_state(&self) -> HistoryState {
         let guard = self.0.open.lock().unwrap();

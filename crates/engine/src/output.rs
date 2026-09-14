@@ -9,6 +9,10 @@
 //! thread. While the monitor feeds the rack, a transport restart skips the rack reset: the live
 //! input keeps flowing through it, so a reset would cut the talent's monitored voice.
 //!
+//! T-304 (SPEC-022 §2.14, §4.7, §4.10): during a calibration run the preallocated sweep is mixed
+//! in after the rack (5 repetitions, 1.6 s apart); the heard time of each repetition's first
+//! sample leaves through the RT event ring. Its state is a read index and a flag.
+//!
 //! RT contract: no allocation, locks, I/O or panics; the FTZ/DAZ guard is entered first. The
 //! callback owns the `LiveRack` and the ring ends. When the stream ends the backend drops the
 //! callback (cpal: on its own thread) and `Drop` hands those parts back through a slot, so the
@@ -22,7 +26,7 @@ use vox_dsp::fp::DenormalGuard;
 use vox_rack::{LiveRack, MAX_BLOCK, Transport};
 
 use crate::analyzer::AnalyzerTap;
-use crate::backend::{OutputCallback, OutputTimestamp};
+use crate::backend::{OutputCallback, OutputTimestamp, frames_to_ns};
 use crate::monitor::MonitorOut;
 use crate::rt::{
     AudioCmd, FADE_MS, MAX_AUDIO_CMDS_PER_CALLBACK, PACKET_FRAMES, PLAYBACK_RING_PACKETS,
@@ -40,6 +44,8 @@ pub(crate) struct OutputParts {
     pub(crate) monitor: MonitorOut,
     /// T-208: the live analyzer's RT tap (post-rack + dry monitor, SPEC-007 §4.8 step 1).
     pub(crate) analyzer_tap: AnalyzerTap,
+    /// T-304 (SPEC-022 §4.7): the calibration sweep at the stream rate, built with the stream.
+    pub(crate) calib_sweep: Vec<f32>,
 }
 
 /// Where a dropped callback leaves its [`OutputParts`].
@@ -101,6 +107,10 @@ struct State {
     underrun: bool,
     rack_in: Vec<f32>,
     rack_out: Vec<f32>,
+    /// T-304: the calibration run's position in frames since its start (`None`: idle).
+    calib_pos: Option<u64>,
+    /// T-304: frames between calibration repetition starts (1.6 s).
+    calib_spacing: u64,
 }
 
 fn emit(parts: &mut OutputParts, e: RtEvent) {
@@ -182,6 +192,13 @@ impl State {
             } => parts
                 .monitor
                 .command(tap, in_rate_hz, target_frames, ending),
+            AudioCmd::Calibrate { start } => {
+                if start {
+                    self.calib_pos = Some(0);
+                } else if self.calib_pos.take().is_some() {
+                    emit(parts, RtEvent::CalibDone);
+                }
+            }
         }
     }
 
@@ -343,6 +360,33 @@ impl State {
             }
         }
     }
+
+    /// T-304: the calibration sweep sample for the frame heard at `heard_ns` (0 when idle);
+    /// reports each repetition's start and the end of the run. Bounded, allocation-free.
+    fn calib_sample(&mut self, parts: &mut OutputParts, heard_ns: u64) -> f32 {
+        let Some(pos) = self.calib_pos else {
+            return 0.0;
+        };
+        let spacing = self.calib_spacing.max(1);
+        let rep = pos / spacing;
+        if rep >= vox_dsp::calibration::REPS as u64 {
+            self.calib_pos = None;
+            emit(parts, RtEvent::CalibDone);
+            return 0.0;
+        }
+        let off = (pos % spacing) as usize;
+        if off == 0 {
+            emit(
+                parts,
+                RtEvent::CalibRep {
+                    rep: rep as u32,
+                    heard_time_ns: heard_ns,
+                },
+            );
+        }
+        self.calib_pos = Some(pos + 1);
+        parts.calib_sweep.get(off).copied().unwrap_or(0.0)
+    }
 }
 
 /// The output stream's callback.
@@ -383,6 +427,8 @@ impl OutputCb {
                 underrun: false,
                 rack_in: vec![0.0; max_block],
                 rack_out: vec![0.0; max_block],
+                calib_pos: None,
+                calib_spacing: vox_dsp::calibration::spacing_frames(dev_rate_hz.max(1)),
             },
             parts: Some(parts),
             slot,
@@ -418,6 +464,8 @@ impl OutputCallback for OutputCb {
         let latency_doc = (latency * st.doc_rate + st.dev_rate / 2) / st.dev_rate;
         let block_epoch = st.epoch;
         let block_start = st.start_pos;
+        let heard_time_ns = ts.to_app_ns(ts.playback_ns);
+        let dev_rate = u32::try_from(st.dev_rate).unwrap_or(u32::MAX);
         let mut first_pos: Option<u64> = None;
         let mut peak = 0.0f32;
         let mut sum_sq = 0.0f64;
@@ -459,7 +507,12 @@ impl OutputCallback for OutputCb {
                 peak = peak.max(s.abs());
                 sum_sq += f64::from(s) * f64::from(s);
                 // Dry monitoring: after the rack, unity gain (never recorded, never metered).
-                let y = s + parts.monitor.dry()[i];
+                let mut y = s + parts.monitor.dry()[i];
+                // T-304 (SPEC-022 §2.14): the calibration sweep, after the rack.
+                if st.calib_pos.is_some() {
+                    let heard = heard_time_ns + frames_to_ns((done + i) as u64, dev_rate);
+                    y += st.calib_sample(parts, heard);
+                }
                 // T-208: stage the analyzer tap's signal in `rack_out` (no longer needed as `s`
                 // past this point) rather than a second scratch buffer.
                 st.rack_out[i] = y;
@@ -483,7 +536,6 @@ impl OutputCallback for OutputCb {
             };
             p.saturating_sub(latency_doc).max(start)
         });
-        let heard_time_ns = ts.to_app_ns(ts.playback_ns);
         emit(
             parts,
             RtEvent::Block {

@@ -44,12 +44,30 @@ export type AppInfo = { name: string, version: string, };
 export type BitDepth = "16" | "24" | "32f";
 
 /**
+ * Why a calibration was rejected (SPEC-022 §2.14 step 3).
+ */
+export type CalibrationRejectDto = "no_signal" | "low_confidence";
+
+/**
+ * `calibration_result` event (SPEC-022 §4.9), tagged with its job id.
+ */
+export type CalibrationResultDto = { job_id: number, 
+/**
+ * A Verify pass: `offset_ms` is the residual after compensation.
+ */
+verify: boolean, offset_ms: number, offset_samples: number, device_rate_hz: number, confidence: number, reps_agreeing: number, psr_median: number, 
+/**
+ * Highest recorded level (`null`: digital silence).
+ */
+peak_dbfs: number | null, clipped: boolean, weak: boolean, accepted: boolean, reason: CalibrationRejectDto | null, };
+
+/**
  * S2-01: the clipboard's length/rate (`clipboard_changed` event); `null` fields mean it's empty
  * (SPEC-008 §4.3).
  */
 export type ClipboardChangedDto = { len_samples: number | null, sample_rate_hz: number | null, };
 
-export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "module_telemetry_subscribe" | "analyzer_subscribe" | "analyzer_set_response" | "analyzer_unsubscribe" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_open_cancel" | "document_probe" | "document_save" | "document_save_as" | "document_close" | "sidecar_view_set_spectral" | "sidecar_view_set_waveform" | "recent_files_get" | "recent_files_remove" | "recent_files_clear" | "recovery_list" | "recovery_recover" | "recovery_discard" | "storage_info" | "peaks_get" | "spectro_attach" | "spectro_detach" | "spectro_request" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check";
+export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "module_telemetry_subscribe" | "analyzer_subscribe" | "analyzer_set_response" | "analyzer_unsubscribe" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_open_cancel" | "document_probe" | "document_save" | "document_save_as" | "document_close" | "sidecar_view_set_spectral" | "sidecar_view_set_waveform" | "recent_files_get" | "recent_files_remove" | "recent_files_clear" | "recovery_list" | "recovery_recover" | "recovery_discard" | "storage_info" | "peaks_get" | "spectro_attach" | "spectro_detach" | "spectro_request" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check" | "record_start_at" | "record_offset_get" | "record_offset_set" | "calibration_run" | "calibration_cancel";
 
 /**
  * One draggable EQ-graph node (S3-07, SPEC-015 §3 "ResponseCurve components"): the band's
@@ -209,7 +227,7 @@ selection: [number, number] | null, playhead_samples: number, };
  */
 export type EditTargetDto = { "kind": "cursor", at_samples: number, } | { "kind": "range", start_samples: number, end_samples: number, };
 
-export type EventName = "notice" | "transport_state" | "devices_changed" | "rack_changed" | "param_changed" | "rack_latency" | "record_state" | "document_changed" | "history_state" | "clipboard_changed" | "job_progress" | "loudness_report" | "normalize_result" | "recent_files_changed";
+export type EventName = "notice" | "transport_state" | "devices_changed" | "rack_changed" | "param_changed" | "rack_latency" | "record_state" | "document_changed" | "history_state" | "clipboard_changed" | "job_progress" | "loudness_report" | "normalize_result" | "recent_files_changed" | "record_phase" | "record_finished" | "calibration_result";
 
 /**
  * Export output format and its per-format settings. FLAC's `bits` rejects `"32f"` (FLAC has no
@@ -270,7 +288,7 @@ export type IpcErrorCode = "internal" | "invalid_argument" | "not_found" | "not_
  * job kinds add a variant here rather than a new event, so the frontend has one progress/cancel
  * pattern for every job.
  */
-export type JobKind = "export" | "import" | "nr_capture" | "loudness_analyze" | "normalize_peak" | "normalize_lufs";
+export type JobKind = "export" | "import" | "nr_capture" | "loudness_analyze" | "normalize_peak" | "normalize_lufs" | "calibration";
 
 /**
  * `job_progress` event payload (ADR-003; ≤ 10 Hz per job). `job_id` distinguishes overlapping or
@@ -522,6 +540,129 @@ export type RecentFileDto = { path: string, name: string, folder: string, exists
 export type RecentFileEntry = { path: string, opened_at: string, };
 
 /**
+ * Why an operation was cancelled (SPEC-022 §2.10).
+ */
+export type RecordCancelDto = "user" | "input_lost" | "output_lost" | "aborted";
+
+/**
+ * `record_finished` event (SPEC-022 §4.9): committed with the edit result (selection and
+ * playhead per §2.10), or cancelled with its reason.
+ */
+export type RecordFinishedDto = { take_id: number, op: RecordOpDto, committed: boolean, cancel_reason: RecordCancelDto | null, result: EditResultDto | null, };
+
+/**
+ * SPEC-022 §3 `record_mode`: what Record at the cursor does.
+ */
+export type RecordModePref = "insert" | "overwrite";
+
+/**
+ * The current device setup's recording offset (SPEC-022 §2.13 readout).
+ */
+export type RecordOffsetDto = { 
+/**
+ * An input and an output device are configured (else nothing can be calibrated).
+ */
+available: boolean, host: string, input_device: string, output_device: string, device_rate_hz: number, 
+/**
+ * The applied δ (0 when not calibrated).
+ */
+offset_ms: number, 
+/**
+ * `null`: not calibrated.
+ */
+source: RecordOffsetSource | null, updated_unix_ms: number | null, confidence: number | null, 
+/**
+ * The buffer size it was measured at.
+ */
+buffer_frames: number | null, 
+/**
+ * The current output buffer size (a mismatch shows the recalibrate hint).
+ */
+current_buffer_frames: number | null, };
+
+/**
+ * One device setup's recording offset δ (SPEC-022 §2.13), keyed by (host, input device, output
+ * device, device sample rate).
+ */
+export type RecordOffsetEntry = { host: string, input_device: string, output_device: string, device_rate_hz: number, 
+/**
+ * Signed, −500…+500 ms (positive: recordings would land late and are moved earlier).
+ */
+offset_ms: number, source: RecordOffsetSource, 
+/**
+ * When it was calibrated or entered (Unix ms).
+ */
+updated_unix_ms: number, 
+/**
+ * Calibration confidence (0–1); `None` for a manual entry.
+ */
+confidence: number | null, 
+/**
+ * The output buffer size it was measured at (`None`: Auto/unknown).
+ */
+buffer_frames: number | null, };
+
+/**
+ * Where a recording offset came from (SPEC-022 §2.13).
+ */
+export type RecordOffsetSource = "calibrated" | "manual";
+
+/**
+ * What a Record press resolved to (SPEC-022 §2.2).
+ */
+export type RecordOpDto = "new" | "insert" | "overwrite" | "punch";
+
+/**
+ * `record_phase` event: sent at each phase change.
+ */
+export type RecordPhaseDto = { take_id: number, op: RecordOpDto, phase: RecordPhaseKindDto, 
+/**
+ * Where the phase starts in the document (the record point for `recording`, `E` for
+ * `postroll`, the window end for `committing`).
+ */
+doc_pos_samples: number, 
+/**
+ * App-clock time of the change (`clock_now_ns` domain).
+ */
+app_ns: number, };
+
+/**
+ * A record operation's phase (SPEC-022 §4.9).
+ */
+export type RecordPhaseKindDto = "preroll" | "recording" | "postroll" | "committing";
+
+/**
+ * SPEC-022 §2.3 "Punch & pre-roll" (app preferences, not document state; the record panel and
+ * Settings → Recording show the same values).
+ */
+export type RecordPrefsDto = { mode: RecordModePref, punch_on_selection: boolean, 
+/**
+ * 0.0–20.0 s.
+ */
+preroll_s: number, 
+/**
+ * 0.0–20.0 s.
+ */
+postroll_s: number, preroll_at_cursor: boolean, hear_original: boolean, 
+/**
+ * 0–50 ms.
+ */
+punch_xfade_ms: number, };
+
+/**
+ * `record_start_at`'s result (SPEC-022 §4.9 `RecordStarted`).
+ */
+export type RecordStartedDto = { take_id: number, op: RecordOpDto, at_samples: number, 
+/**
+ * The punch end `E` (`null` for cursor recordings).
+ */
+end_samples: number | null, preroll_samples: number, postroll_samples: number, 
+/**
+ * The window opens at an aligned start (playback precedes it).
+ */
+aligned: boolean, state: RecordStateDto, };
+
+/**
  * The record panel state (SPEC-002 §2.1–§2.2, §2.7).
  */
 export type RecordStateDto = { 
@@ -694,7 +835,17 @@ multichannel_policy: MultichannelPolicy,
  * H-19 (ADR-009 §4): Settings → View's renderer override (View → Renderer in the menu bar).
  * Additive field — the settings version stays 1.
  */
-renderer_preference: RendererPreference, };
+renderer_preference: RendererPreference, 
+/**
+ * T-304 (SPEC-022 §2.3): Punch & pre-roll preferences. Additive field — the settings version
+ * stays 1.
+ */
+record: RecordPrefsDto, 
+/**
+ * T-304 (SPEC-022 §2.13): recording offsets per (host, input, output, device rate).
+ * Additive field — the settings version stays 1.
+ */
+record_offsets: Array<RecordOffsetEntry>, };
 
 /**
  * Slot status (SPEC-012 §2.2, §2.9). `message` is pre-rendered English text shown verbatim (see

@@ -41,6 +41,7 @@
   import { initMarkers } from "./lib/markers/markers.svelte";
   import RecoveryDialog from "./lib/recovery/RecoveryDialog.svelte";
   import { initRecovery } from "./lib/recovery/recovery.svelte";
+  import CalibrationDialog from "./lib/record/CalibrationDialog.svelte";
   import LowDiskDialog from "./lib/record/LowDiskDialog.svelte";
   import NewRecordingDialog from "./lib/record/NewRecordingDialog.svelte";
   import { setRendererPreference } from "./lib/state/rendererPref.svelte";
@@ -258,6 +259,7 @@
 <NormalizeDialog />
 <NormalizeLufsDialog />
 <AboutDialog {version} />
+<CalibrationDialog />
 
 <style>
   .shell {

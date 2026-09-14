@@ -4,6 +4,7 @@
 //! domain types to the DTOs in [`ipc`].
 
 pub mod audio;
+pub mod calibration;
 pub mod document;
 pub mod export;
 pub mod housekeeping;
@@ -91,9 +92,12 @@ pub fn run() {
             let spectro = std::sync::Arc::new(vox_engine::spectro::SpectroService::new(
                 vox_engine::spectro::SpectroConfig::default(),
             ));
+            // T-304 (SPEC-022 §2.14): the loopback latency calibration job.
+            let calibration = calibration::start(app.handle(), engine.handle().clone());
             app.manage(spectro);
             app.manage(documents);
             app.manage(recording);
+            app.manage(calibration);
             app.manage(engine);
             app.manage(export);
             app.manage(nr_capture);

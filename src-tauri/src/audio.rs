@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use vox_engine::backend::cpal::CpalBackend;
 use vox_engine::{Engine, EngineConfig, EngineEvent, EngineHandle};
 use vox_rack::{RackNotice, Registry};
@@ -81,6 +81,20 @@ fn forward<R: Runtime>(app: &AppHandle<R>, event: EngineEvent) {
             EventName::record_state.as_str(),
             RecordStateDto::from(&state),
         ),
+        // T-304 (SPEC-022 §4.9): phase changes drive the record panel's countdown and where the
+        // UI places the live take.
+        EngineEvent::RecordPhase(info) => app.emit(
+            EventName::record_phase.as_str(),
+            crate::ipc::RecordPhaseDto::from(&info),
+        ),
+        // T-304 (SPEC-022 §4.6): journal the opened window — handed to the recording service's
+        // worker (never block the control thread on the document lock).
+        EngineEvent::RecordWindow { take, k_start } => {
+            if let Some(rec) = app.try_state::<crate::recording::RecordingService>() {
+                rec.note_window(take, k_start);
+            }
+            Ok(())
+        }
     };
     if let Err(e) = result {
         tracing::warn!(error = %e, "emitting an engine event failed");

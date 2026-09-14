@@ -3,6 +3,11 @@
 //! (`vox_dsp::resample`, primed, so packet positions stay exact). Never runs on an audio thread:
 //! reads can page-fault. Runs on its own thread in the app, or inline on the control thread under
 //! `ManualEngine` (deterministic tests).
+//!
+//! T-304 (SPEC-022 §4.4): a record operation's playback **run** streams virtual positions
+//! (`RunSpec`): silence before document position 0, the record range muted (or the original, with
+//! Hear original), the 5 ms listening fades, and an END packet at the run end (none for cursor
+//! recordings, which play silence until Stop). No `DISCONTINUITY` and no rack reset inside a run.
 
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
@@ -12,6 +17,7 @@ use vox_dsp::resample::{ResampleError, StreamResampler};
 use vox_project::SnapshotReader;
 
 use crate::engine::PlaybackDoc;
+use crate::record_op::RunSpec;
 use crate::rt::{PACKET_FRAMES, PLAYBACK_RING_PACKETS, Packet, READ_AHEAD_MS, packet_flags};
 
 /// Control → reader.
@@ -27,6 +33,8 @@ pub(crate) enum ReaderCmd {
     SetDoc(Option<PlaybackDoc>),
     /// Stream `epoch` from document position `pos`.
     Start { epoch: u32, pos: u64 },
+    /// T-304: stream a record operation's run `epoch` from virtual position `pos`.
+    StartRun { epoch: u32, pos: u64, run: RunSpec },
     /// Stop streaming.
     Stop,
 }
@@ -34,11 +42,13 @@ pub(crate) enum ReaderCmd {
 struct Active {
     epoch: u32,
     start: u64,
-    /// Next document position to read.
+    /// Next (virtual, for a run) position to read.
     next_in: u64,
     /// Device frames emitted since `start` (resampling only).
     emitted: u64,
     done: bool,
+    /// T-304: a record operation's run (positions are virtual).
+    run: Option<RunSpec>,
 }
 
 pub(crate) struct Reader {
@@ -65,6 +75,13 @@ pub(crate) fn resampler_for(
     StreamResampler::new(doc_rate_hz, dev_rate_hz).map(Some)
 }
 
+/// Reads `A[pos, pos + buf.len())`, zero-filling whatever the reader didn't deliver.
+fn read_doc(reader: &mut SnapshotReader, pos: u64, buf: &mut [f32]) {
+    let got = reader.read(pos, buf).unwrap_or(0);
+    let n = buf.len();
+    buf[got.min(n)..].fill(0.0);
+}
+
 impl Reader {
     pub(crate) fn new() -> Self {
         Self {
@@ -87,6 +104,20 @@ impl Reader {
         };
         self.resample_failed = built.is_err();
         self.resampler = built.ok().flatten();
+    }
+
+    fn start(&mut self, epoch: u32, pos: u64, run: Option<RunSpec>) {
+        self.active = Some(Active {
+            epoch,
+            start: pos,
+            next_in: pos,
+            emitted: 0,
+            done: false,
+            run,
+        });
+        if let Some(r) = self.resampler.as_mut() {
+            r.reset();
+        }
     }
 
     pub(crate) fn handle(&mut self, cmd: ReaderCmd) {
@@ -124,18 +155,8 @@ impl Reader {
                 }
                 self.rebuild_resampler();
             }
-            ReaderCmd::Start { epoch, pos } => {
-                self.active = Some(Active {
-                    epoch,
-                    start: pos,
-                    next_in: pos,
-                    emitted: 0,
-                    done: false,
-                });
-                if let Some(r) = self.resampler.as_mut() {
-                    r.reset();
-                }
-            }
+            ReaderCmd::Start { epoch, pos } => self.start(epoch, pos, None),
+            ReaderCmd::StartRun { epoch, pos, run } => self.start(epoch, pos, Some(run)),
             ReaderCmd::Stop => {
                 self.active = None;
                 if let Some(r) = self.reader.as_mut() {
@@ -168,20 +189,31 @@ impl Reader {
         else {
             return 0;
         };
-        let len = *len;
+        // Where the stream ends: the document end, or a run's end (`None`: never).
+        let limit = match a.run {
+            Some(run) => run.end_v(),
+            None => Some(*len),
+        };
         let mut pushed = 0;
         while !a.done && prod.slots() > 0 && PLAYBACK_RING_PACKETS - prod.slots() < target {
             let mut pkt = Packet::new(a.epoch);
             match resampler.as_mut() {
                 None => {
-                    if a.next_in >= len {
+                    if limit.is_some_and(|l| a.next_in >= l) {
                         pkt.flags = packet_flags::END;
-                        pkt.doc_pos = len;
+                        pkt.doc_pos = limit.unwrap_or(a.next_in);
                         a.done = true;
                     } else {
-                        let n = (len - a.next_in).min(PACKET_FRAMES as u64) as usize;
-                        let got = reader.read(a.next_in, &mut pkt.samples[..n]).unwrap_or(0);
-                        pkt.samples[got.min(n)..n].fill(0.0);
+                        let room = limit.map_or(PACKET_FRAMES as u64, |l| {
+                            (l - a.next_in).min(PACKET_FRAMES as u64)
+                        });
+                        let n = room as usize;
+                        match a.run {
+                            Some(run) => run.render(a.next_in, &mut pkt.samples[..n], |q, b| {
+                                read_doc(reader, q, b)
+                            }),
+                            None => read_doc(reader, a.next_in, &mut pkt.samples[..n]),
+                        }
                         pkt.len = n as u16;
                         pkt.doc_pos = a.next_in;
                         a.next_in += n as u64;
@@ -191,20 +223,25 @@ impl Reader {
                     let num = u128::from(*doc_rate_hz);
                     let den = u128::from(*dev_rate_hz);
                     let doc_pos = a.start + (u128::from(a.emitted) * num / den) as u64;
-                    let total =
-                        (u128::from(len.saturating_sub(a.start)) * den).div_ceil(num) as u64;
-                    if doc_pos >= len || a.emitted >= total {
+                    let total = limit.map_or(u64::MAX, |l| {
+                        (u128::from(l.saturating_sub(a.start)) * den).div_ceil(num) as u64
+                    });
+                    if limit.is_some_and(|l| doc_pos >= l) || a.emitted >= total {
                         pkt.flags = packet_flags::END;
-                        pkt.doc_pos = len;
+                        pkt.doc_pos = limit.unwrap_or(doc_pos);
                         a.done = true;
                     } else {
                         let n = (total - a.emitted).min(PACKET_FRAMES as u64) as usize;
                         let next_in = &mut a.next_in;
+                        let run = a.run;
                         let pulled = rs.pull(&mut pkt.samples[..n], |buf| {
-                            let n = buf.len();
-                            let got = reader.read(*next_in, buf).unwrap_or(0);
-                            buf[got.min(n)..].fill(0.0);
-                            *next_in += n as u64;
+                            match run {
+                                Some(run) => {
+                                    run.render(*next_in, buf, |q, b| read_doc(reader, q, b));
+                                }
+                                None => read_doc(reader, *next_in, buf),
+                            }
+                            *next_in += buf.len() as u64;
                         });
                         if pulled.is_err() {
                             pkt.samples[..n].fill(0.0);

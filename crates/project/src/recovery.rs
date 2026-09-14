@@ -16,9 +16,10 @@ use std::path::{Path, PathBuf};
 use crate::budget::live_chunk_ids;
 use crate::gc::try_lock_session;
 use crate::history::{Edit, EditOp, History};
+use crate::journal::TakeModeRecord;
 use crate::journal::{Journal, Record, SourceRecord, journal_file_name, scan_journal};
 use crate::session::{
-    META_FILE_NAME, OpenTake, SourceInfo, TAKES_DIR_NAME, TakeId, read_meta,
+    META_FILE_NAME, OpenTake, SourceInfo, TAKES_DIR_NAME, TakeId, TakePlan, read_meta,
     remove_other_generations, write_lock_info,
 };
 use crate::snapshot::Source;
@@ -98,8 +99,8 @@ pub struct Replay {
     /// The latest `saved` / `state` records, verbatim.
     pub saved_record: Option<Record>,
     pub state_record: Option<Record>,
-    /// Open takes: take id → insertion point.
-    pub open_takes: BTreeMap<u32, u64>,
+    /// Open takes: take id → what `take_begin` (+ `take_window`, T-304) journaled about it.
+    pub open_takes: BTreeMap<u32, TakePlan>,
     /// Highest take id ever begun (0: none).
     pub max_take: u32,
     /// The journal ends in `close`.
@@ -212,11 +213,36 @@ fn note_metadata(r: &mut Replay, record: &Record) {
             r.saved_record = Some(record.clone());
         }
         Record::State { .. } => r.state_record = Some(record.clone()),
-        Record::TakeBegin { take, at, .. } => {
-            r.open_takes.insert(*take, *at);
+        Record::TakeBegin {
+            take,
+            mode,
+            at,
+            len,
+            xfade_samples,
+            offset_ns,
+            aligned,
+            ..
+        } => {
+            r.open_takes.insert(
+                *take,
+                TakePlan {
+                    mode: *mode,
+                    at: *at,
+                    len: *len,
+                    xfade_samples: *xfade_samples,
+                    offset_ns: *offset_ns,
+                    aligned: *aligned,
+                    k_start: (!*aligned).then_some(0),
+                },
+            );
             r.max_take = r.max_take.max(*take);
         }
-        Record::TakeDiscard { take } => {
+        Record::TakeWindow { take, k_start } => {
+            if let Some(plan) = r.open_takes.get_mut(take) {
+                plan.k_start = Some(*k_start);
+            }
+        }
+        Record::TakeDiscard { take } | Record::TakeCancel { take } => {
             r.open_takes.remove(take);
         }
         Record::Edit(e) => {
@@ -271,6 +297,8 @@ fn apply(r: &mut Replay, record: &Record) -> bool {
         | Record::State { .. }
         | Record::TakeBegin { .. }
         | Record::TakeDiscard { .. }
+        | Record::TakeWindow { .. }
+        | Record::TakeCancel { .. }
         | Record::Close => {}
     }
     note_metadata(r, record);
@@ -380,19 +408,33 @@ impl Session {
         let _ = fs::remove_file(dir.join(format!("{META_FILE_NAME}.tmp")));
 
         let takes_dir = dir.join(TAKES_DIR_NAME);
-        let open_take = rep
+        let last_take = rep
             .open_takes
             .iter()
             .next_back()
-            .map(|(&id, &at)| OpenTake { id: TakeId(id), at });
+            .map(|(&id, &plan)| OpenTake {
+                id: TakeId(id),
+                plan,
+            });
+        // T-304 (SPEC-022 §2.12, §4.6): an aligned take whose record window never opened (a
+        // crash during pre-roll) holds nothing applicable: it is cancelled below, not offered.
+        let (open_take, cancelled_take) = match last_take {
+            Some(t) if t.plan.aligned && t.plan.k_start.is_none() => (None, Some(t.id)),
+            other => (other, None),
+        };
         let open_take_info = match open_take {
             Some(t) => {
-                let samples = crate::take::recover_take(&takes_dir, t.id.0)
+                let total: u64 = crate::take::recover_take(&takes_dir, t.id.0)
                     .map(|parts| parts.iter().map(|p| p.samples).sum())
                     .unwrap_or(0);
+                // What "Apply as recorded" commits: the record window part of the take.
+                let mut samples = total.saturating_sub(t.plan.k_start.unwrap_or(0));
+                if t.plan.mode == TakeModeRecord::Punch {
+                    samples = samples.min(t.plan.len);
+                }
                 Some(RecoveredTakeInfo {
                     take: t.id,
-                    at_samples: t.at.min(rep.history.current().len_samples),
+                    at_samples: t.plan.at.min(rep.history.current().len_samples),
                     samples,
                 })
             }
@@ -443,6 +485,11 @@ impl Session {
         };
         for &id in rep.chunks.keys() {
             session.mark_journaled(id);
+        }
+        if let Some(take) = cancelled_take {
+            session
+                .journal
+                .append(&[Record::TakeCancel { take: take.0 }])?;
         }
         Ok((session, report))
     }

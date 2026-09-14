@@ -455,12 +455,34 @@ pub enum Record {
         take: u32,
         mode: TakeModeRecord,
         at: u64,
+        /// T-304 (SPEC-022 §4.6): `E − S` for a punch, else 0.
         len: u64,
         /// Session-relative path of the first take file.
         file: String,
         sample_rate_hz: u32,
+        /// T-304 (SPEC-022 §4.6, ADR-004 Amendment 4): the punch/overwrite crossfade length.
+        #[serde(default, skip_serializing_if = "is_zero_u64")]
+        xfade_samples: u64,
+        /// T-304: the recording offset δ applied to the aligned start (ns, signed).
+        #[serde(default, skip_serializing_if = "is_zero_i64")]
+        offset_ns: i64,
+        /// T-304: the record window opens at an aligned start (it then needs a `take_window`
+        /// record before anything of it is applicable).
+        #[serde(default, skip_serializing_if = "is_false")]
+        aligned: bool,
     },
     TakeDiscard {
+        take: u32,
+    },
+    /// T-304 (SPEC-022 §4.6): the record window of an aligned take opened at take sample
+    /// `k_start` (recovery reproduces the live alignment from it).
+    TakeWindow {
+        take: u32,
+        k_start: u64,
+    },
+    /// T-304 (SPEC-022 §2.10, §4.6): a record operation was cancelled (Stop in pre-roll, device
+    /// loss before the window opened): no edit, the take is not recoverable.
+    TakeCancel {
         take: u32,
     },
     State {
@@ -487,6 +509,18 @@ pub enum Record {
     },
     Checkpoint(CheckpointRecord),
     Close,
+}
+
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
+}
+
+fn is_zero_i64(v: &i64) -> bool {
+    *v == 0
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 /// Encodes one record as a journal line (`<crc32 hex>\t<json>\n`).
@@ -769,6 +803,9 @@ mod tests {
                 len: 0,
                 file: "takes/take-0001.wav".into(),
                 sample_rate_hz: 48_000,
+                xfade_samples: 0,
+                offset_ns: 0,
+                aligned: false,
             },
             Record::Edit(EditRecord::from_edit(1, &edit, Some(1))),
             Record::Undo { seq: 1 },

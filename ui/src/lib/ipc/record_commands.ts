@@ -1,5 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CommandName, DefaultFormatDto, MonitorMode, RecordStateDto } from "./bindings";
+import type {
+  CommandName,
+  DefaultFormatDto,
+  MonitorMode,
+  RecordOffsetDto,
+  RecordOffsetSource,
+  RecordStartedDto,
+  RecordStateDto,
+} from "./bindings";
 
 /**
  * S1-04 recording commands: typed `invoke` wrappers (ADR-003) using generated types only. Kept
@@ -28,6 +36,15 @@ export async function recordStart(replace: boolean, format?: DefaultFormatDto): 
   );
 }
 
+/**
+ * T-304 (SPEC-022 §2.2): Record with the current selection — a new recording into an empty
+ * document, a punch-in over a non-empty selection, else Insert/Overwrite at the selection start or
+ * the cursor.
+ */
+export async function recordStartAt(selection: [number, number] | null): Promise<RecordStartedDto> {
+  return invoke<RecordStartedDto>("record_start_at" satisfies CommandName, { selection });
+}
+
 /** Stops the recording (the take becomes the document once committed). */
 export async function recordStop(): Promise<RecordStateDto> {
   return invoke<RecordStateDto>("record_stop" satisfies CommandName);
@@ -44,4 +61,32 @@ export async function recordSetMonitor(mode: MonitorMode): Promise<RecordStateDt
  */
 export async function recordPeaksGet(startBucket: number, count: number): Promise<ArrayBuffer> {
   return invoke<ArrayBuffer>("record_peaks_get" satisfies CommandName, { startBucket, count });
+}
+
+/** T-304 (SPEC-022 §2.13): the current device setup's recording offset. */
+export async function recordOffsetGet(): Promise<RecordOffsetDto> {
+  return invoke<RecordOffsetDto>("record_offset_get" satisfies CommandName);
+}
+
+/** T-304: stores the offset for the current device setup (clamped to ±500 ms). */
+export async function recordOffsetSet(
+  offsetMs: number,
+  source: RecordOffsetSource,
+  confidence: number | null,
+): Promise<RecordOffsetDto> {
+  return invoke<RecordOffsetDto>("record_offset_set" satisfies CommandName, {
+    offsetMs,
+    source,
+    confidence,
+  });
+}
+
+/** T-304 (SPEC-022 §2.14): starts a calibration job (`verify`: with the stored offset applied). */
+export async function calibrationRun(verify: boolean): Promise<number> {
+  return invoke<number>("calibration_run" satisfies CommandName, { verify });
+}
+
+/** T-304: aborts the running calibration. */
+export async function calibrationCancel(): Promise<void> {
+  return invoke<void>("calibration_cancel" satisfies CommandName);
 }

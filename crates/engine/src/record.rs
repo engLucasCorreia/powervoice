@@ -137,6 +137,59 @@ pub struct RecordingResult {
     /// document-rate samples like every other position here — `pos_samples` is read from the
     /// take's own (already document-rate) sample count, so resampling needs no extra mapping.
     pub dropouts: Vec<DropoutMark>,
+    /// T-304 (SPEC-022): how a record operation (Insert / Overwrite / Punch) ended — `None` for a
+    /// plain new recording (SPEC-002), whose whole take is the document audio.
+    pub op: Option<OpResult>,
+}
+
+/// A record operation's phase (SPEC-022 §2.1, §4.9 `record_phase`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordPhase {
+    /// Playback before the record point.
+    PreRoll,
+    /// The record window: the part that enters the document.
+    Recording,
+    /// Playback after a punch.
+    PostRoll,
+    /// The operation ended; the take is being finished and committed.
+    Committing,
+}
+
+/// `EngineEvent::RecordPhase`'s payload (SPEC-022 §4.9): sent at each phase change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecordPhaseInfo {
+    /// The take (`vox_project::TakeId.0`).
+    pub take: u32,
+    pub kind: crate::record_op::RecordOpKind,
+    pub phase: RecordPhase,
+    /// Document position where the phase starts (the pre-roll start clamps at 0).
+    pub doc_pos_samples: u64,
+    /// App-clock time of the phase change (heard time of `doc_pos_samples` where known).
+    pub app_ns: u64,
+}
+
+/// Why a record operation was cancelled (SPEC-022 §2.10): no edit, the document is unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CancelReason {
+    /// Stop / Space during pre-roll, or a stop at or before the record point.
+    User,
+    /// The input device was lost before the window opened.
+    InputLost,
+    /// The output device was lost during pre-roll: the talent can't hear the lead-in.
+    OutputLost,
+    /// The take ended (ring overflow, disk floor, write error) before the window opened.
+    Aborted,
+}
+
+/// A record operation's result (`RecordingResult::op`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OpResult {
+    pub plan: crate::record_op::RecordPlan,
+    /// The record window `[k_start, k_end)` in take samples (document rate); `k_end` may exceed
+    /// the take (the commit clips it to what was captured). `None` when cancelled.
+    pub window: Option<(u64, u64)>,
+    /// Set when the operation was cancelled.
+    pub cancelled: Option<CancelReason>,
 }
 
 /// One dropout the capture-writer filled with silence (H-10 item 4), in take-relative samples at
@@ -206,4 +259,66 @@ pub enum RecordError {
     /// The engine is not running.
     #[error("the audio engine is not running")]
     EngineStopped,
+    /// T-304 (SPEC-022 §2.2): a punch-in needs an output device for pre-roll and post-roll.
+    #[error("punch-in needs an output device")]
+    PunchNeedsOutput,
+    /// T-304: the operation doesn't fit the current document (stale position or length).
+    #[error("the record position is outside the document")]
+    InvalidPosition,
+    /// T-304 (SPEC-022 §2.14): a calibration run is in progress.
+    #[error("a latency calibration is running")]
+    Calibrating,
+}
+
+/// Why a calibration run could not start or complete (SPEC-022 §2.14).
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum CalibrationError {
+    /// Refused while a record operation runs.
+    #[error("not available while recording")]
+    Recording,
+    /// Another calibration is running.
+    #[error("a calibration is already running")]
+    Busy,
+    /// Calibration needs an output device.
+    #[error("no output device")]
+    NoOutput,
+    /// Calibration needs an input device.
+    #[error("no input device")]
+    NoInput,
+    /// Input and output must run at the same rate.
+    #[error("the input runs at {input_hz} Hz and the output at {output_hz} Hz")]
+    RateMismatch { input_hz: u32, output_hz: u32 },
+    /// A device was lost or the run timed out.
+    #[error("the calibration was interrupted")]
+    Interrupted,
+    /// Cancelled by the user.
+    #[error("cancelled")]
+    Cancelled,
+}
+
+/// A finished calibration capture (SPEC-022 §4.7), analysed off the control thread with
+/// `vox_dsp::calibration::analyze`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CalibrationCapture {
+    /// Device rate of both streams.
+    pub rate_hz: u32,
+    /// The sweep that was played.
+    pub sweep: Vec<f32>,
+    /// The input captured with automatic alignment.
+    pub recording: Vec<f32>,
+    /// Recording index aligned (heard time + δ) to each repetition's first sample.
+    pub rep_starts: Vec<i64>,
+    /// The offset δ that was applied (a Verify pass), ns.
+    pub offset_ns: i64,
+}
+
+/// [`crate::EngineHandle::calibration_poll`]'s answer.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CalibrationStatus {
+    /// No run.
+    Idle,
+    /// Running; `progress` in `[0, 1]`.
+    Running { progress: f32 },
+    /// Finished (taken once).
+    Done(Result<CalibrationCapture, CalibrationError>),
 }

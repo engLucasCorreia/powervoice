@@ -326,6 +326,107 @@ pub fn remove_recent_file(recent_files: &mut Vec<RecentFileEntry>, path: &str) {
         .retain(|e| vox_project::canonical_path_for_compare(Path::new(&e.path)) != canonical);
 }
 
+// --- Recording: punch & pre-roll, recording offsets (T-304, SPEC-022 §2.3, §2.13, §3) ------------
+
+/// SPEC-022 §3 `record_mode`: what Record at the cursor does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum RecordModePref {
+    /// Factory default: never destroys audio.
+    #[default]
+    Insert,
+    Overwrite,
+}
+
+/// SPEC-022 §2.3 "Punch & pre-roll" (app preferences, not document state; the record panel and
+/// Settings → Recording show the same values).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[serde(default)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct RecordPrefsDto {
+    pub mode: RecordModePref,
+    pub punch_on_selection: bool,
+    /// 0.0–20.0 s.
+    pub preroll_s: f64,
+    /// 0.0–20.0 s.
+    pub postroll_s: f64,
+    pub preroll_at_cursor: bool,
+    pub hear_original: bool,
+    /// 0–50 ms.
+    pub punch_xfade_ms: f64,
+}
+
+impl Default for RecordPrefsDto {
+    fn default() -> Self {
+        Self {
+            mode: RecordModePref::Insert,
+            punch_on_selection: true,
+            preroll_s: 5.0,
+            postroll_s: 1.0,
+            preroll_at_cursor: false,
+            hear_original: false,
+            punch_xfade_ms: 10.0,
+        }
+    }
+}
+
+/// Where a recording offset came from (SPEC-022 §2.13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum RecordOffsetSource {
+    Calibrated,
+    Manual,
+}
+
+/// One device setup's recording offset δ (SPEC-022 §2.13), keyed by (host, input device, output
+/// device, device sample rate).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct RecordOffsetEntry {
+    pub host: String,
+    pub input_device: String,
+    pub output_device: String,
+    pub device_rate_hz: u32,
+    /// Signed, −500…+500 ms (positive: recordings would land late and are moved earlier).
+    pub offset_ms: f64,
+    pub source: RecordOffsetSource,
+    /// When it was calibrated or entered (Unix ms).
+    pub updated_unix_ms: u64,
+    /// Calibration confidence (0–1); `None` for a manual entry.
+    pub confidence: Option<f64>,
+    /// The output buffer size it was measured at (`None`: Auto/unknown).
+    pub buffer_frames: Option<u32>,
+}
+
+/// The offset stored for a device setup, if any (SPEC-022 §2.13 "Per device setup").
+pub fn find_record_offset<'a>(
+    entries: &'a [RecordOffsetEntry],
+    host: &str,
+    input_device: &str,
+    output_device: &str,
+    device_rate_hz: u32,
+) -> Option<&'a RecordOffsetEntry> {
+    entries.iter().find(|e| {
+        e.host == host
+            && e.input_device == input_device
+            && e.output_device == output_device
+            && e.device_rate_hz == device_rate_hz
+    })
+}
+
+/// Stores `entry`, replacing the one with the same key.
+pub fn upsert_record_offset(entries: &mut Vec<RecordOffsetEntry>, entry: RecordOffsetEntry) {
+    entries.retain(|e| {
+        !(e.host == entry.host
+            && e.input_device == entry.input_device
+            && e.output_device == entry.output_device
+            && e.device_rate_hz == entry.device_rate_hz)
+    });
+    entries.push(entry);
+}
+
 // --- Settings root -------------------------------------------------------------------------------
 
 /// The whole settings file. `#[serde(default)]` at the container level means any field missing
@@ -370,6 +471,12 @@ pub struct Settings {
     /// H-19 (ADR-009 §4): Settings → View's renderer override (View → Renderer in the menu bar).
     /// Additive field — the settings version stays 1.
     pub renderer_preference: RendererPreference,
+    /// T-304 (SPEC-022 §2.3): Punch & pre-roll preferences. Additive field — the settings version
+    /// stays 1.
+    pub record: RecordPrefsDto,
+    /// T-304 (SPEC-022 §2.13): recording offsets per (host, input, output, device rate).
+    /// Additive field — the settings version stays 1.
+    pub record_offsets: Vec<RecordOffsetEntry>,
     #[serde(flatten)]
     #[ts(skip)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -393,6 +500,8 @@ impl Default for Settings {
             analyzer_peak_hold: true,
             multichannel_policy: MultichannelPolicy::default(),
             renderer_preference: RendererPreference::default(),
+            record: RecordPrefsDto::default(),
+            record_offsets: Vec::new(),
             extra: serde_json::Map::new(),
         }
     }

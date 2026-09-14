@@ -7,6 +7,9 @@
 //! - [`resample`]: fixed-ratio streaming sample-rate conversion (document → device rate).
 //! - [`async_resample`]: adjustable-ratio (drift-corrected) resampling of the monitor ring in the
 //!   RT output callback (T-107, ADR-002 §6) — allocation-free after construction.
+//! - [`calibration`]: the SPEC-022 loopback calibration sweep and its band-limited GCC-PHAT
+//!   analysis (T-304) — off the audio thread only (the sweep is built with the output stream, the
+//!   analysis runs on a job worker).
 //! - [`capture_resample`]: push-based streaming resampling for the capture-writer thread (H-06,
 //!   device rate → document rate) — off the audio thread only, never the RT input callback.
 //! - [`eq`]: parametric-EQ biquads, Butterworth cascades and smoothed bands (SPEC-015).
@@ -22,6 +25,7 @@
 pub mod acx;
 pub mod analyzer;
 pub mod async_resample;
+pub mod calibration;
 pub mod capture_resample;
 pub mod dither;
 pub mod dynamics;

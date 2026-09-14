@@ -8,19 +8,33 @@
 //! - **Take finished** (the engine's done callback, on the capture-writer thread): posts the take
 //!   notices, commits it (`DocumentService::commit_take`: one undoable "Record" edit, then
 //!   `EngineHandle::set_document`) and emits `document_changed`, so the waveform shows the take.
+//!
+//! T-304 (SPEC-022): **Record on a document with audio** (`record_start_at`) resolves per §2.2 in
+//! the engine (`EngineHandle::record_prepare`: Insert / Overwrite at the cursor or selection
+//! start, or a punch-in over the selection), opens the matching take
+//! (`DocumentService::begin_record_op`) and runs it (`EngineHandle::record_start_op`) with the
+//! device setup's recording offset (§2.13). When it ends, the record window is committed as one
+//! edit (`DocumentService::commit_take_op`) or the operation is cancelled, and `record_finished`
+//! tells the UI (selection and playhead per §2.10).
 
 use std::sync::{Arc, Weak};
 
 use tauri::{AppHandle, Emitter, Manager, Runtime};
-use vox_engine::EngineHandle;
-use vox_engine::record::{LiveTakePeaks, RecordDone, RecordError, RecordingResult, StopReason};
+use vox_engine::record::{
+    CancelReason, LiveTakePeaks, OpResult, RecordDone, RecordError, RecordingResult, StopReason,
+};
+use vox_engine::record_op::{CursorRecordMode, RecordOpKind, RecordPrefs};
+use vox_engine::{BufferRequest, EngineHandle, TransportCommand};
 
 use crate::document::{DocumentInfo, DocumentService};
 use crate::ipc::{
-    DocumentDto, EventName, IpcError, IpcErrorCode, Notice, NoticeLevel, RecordStateDto,
-    emit_notice, engine_monitor_mode,
+    DocumentDto, EventName, IpcError, IpcErrorCode, Notice, NoticeLevel, RecordCancelDto,
+    RecordFinishedDto, RecordStartedDto, RecordStateDto, emit_notice, engine_monitor_mode,
 };
-use crate::settings::{DefaultFormatDto, MonitorMode, Settings, SettingsStore};
+use crate::settings::{
+    DefaultFormatDto, MonitorMode, RecordModePref, RecordOffsetEntry, RecordPrefsDto, Settings,
+    SettingsStore, find_record_offset,
+};
 
 /// What the service tells the UI.
 pub enum RecordingEvent {
@@ -28,6 +42,8 @@ pub enum RecordingEvent {
     DocumentChanged(DocumentInfo),
     /// A notice (clip count, take errors, …).
     Notice(Notice),
+    /// T-304: a record operation ended (committed or cancelled).
+    Finished(RecordFinishedDto),
 }
 
 /// Emits [`RecordingEvent`]s (built by [`start`] from the app handle).
@@ -38,10 +54,15 @@ pub type RecordingEmitter = Arc<dyn Fn(RecordingEvent) + Send + Sync>;
 /// from startup).
 type DefaultFormatFn = Box<dyn Fn() -> DefaultFormatDto + Send + Sync>;
 
+/// T-304: reads the Punch & pre-roll preferences and the stored recording offsets fresh from the
+/// settings store (they change from the record panel and the calibration dialog).
+pub type RecordSettingsFn = Box<dyn Fn() -> (RecordPrefsDto, Vec<RecordOffsetEntry>) + Send + Sync>;
+
 struct Inner {
     engine: EngineHandle,
     documents: DocumentService,
     default_format: DefaultFormatFn,
+    record_settings: RecordSettingsFn,
     emit: RecordingEmitter,
 }
 
@@ -60,6 +81,11 @@ pub fn start<R: Runtime>(
     let format_app = app.clone();
     let default_format: DefaultFormatFn =
         Box::new(move || format_app.state::<SettingsStore>().get().default_format);
+    let record_app = app.clone();
+    let record_settings: RecordSettingsFn = Box::new(move || {
+        let s = record_app.state::<SettingsStore>().get();
+        (s.record, s.record_offsets)
+    });
     let app = app.clone();
     let emit: RecordingEmitter = Arc::new(move |event| {
         let result = match event {
@@ -68,15 +94,17 @@ pub fn start<R: Runtime>(
                 DocumentDto::from(info),
             ),
             RecordingEvent::Notice(notice) => emit_notice(&app, notice),
+            RecordingEvent::Finished(dto) => app.emit(EventName::record_finished.as_str(), dto),
         };
         if let Err(e) = result {
             tracing::warn!(error = %e, "emitting a recording event failed");
         }
     });
-    RecordingService::new(
+    RecordingService::with_record_settings(
         engine,
         documents,
         default_format,
+        record_settings,
         settings.monitor_mode,
         emit,
     )
@@ -95,6 +123,13 @@ fn record_error(e: RecordError) -> IpcError {
         RecordError::InputNotOpen => {
             IpcError::new(IpcErrorCode::DeviceLost, "error.record.input_unavailable")
         }
+        RecordError::PunchNeedsOutput => {
+            IpcError::new(IpcErrorCode::DeviceNotFound, "error.punch_needs_output")
+        }
+        RecordError::InvalidPosition => {
+            IpcError::new(IpcErrorCode::InvalidArgument, "error.invalid_range")
+        }
+        RecordError::Calibrating => IpcError::new(IpcErrorCode::Busy, "error.calibration.busy"),
         other => IpcError::new(IpcErrorCode::Internal, "error.record.failed")
             .with_param("message", other.to_string()),
     }
@@ -122,6 +157,72 @@ fn duration_text(samples: u64, rate_hz: u32) -> String {
     }
 }
 
+/// T-304 (SPEC-022 §2.13): the device setup a recording offset is keyed by.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceSetup {
+    pub host: String,
+    pub input_device: String,
+    pub output_device: String,
+    /// The output stream's rate.
+    pub device_rate_hz: u32,
+    /// The output buffer request (`None`: Auto).
+    pub buffer_frames: Option<u32>,
+}
+
+/// The current device setup (`None` unless an input and an output device are configured and the
+/// output is open).
+pub fn device_setup(engine: &EngineHandle) -> Option<DeviceSetup> {
+    let view = engine.devices()?;
+    Some(DeviceSetup {
+        host: view.host?.as_str().to_owned(),
+        input_device: view.input_device?,
+        output_device: view.output_device?,
+        device_rate_hz: view.output_rate_hz?,
+        buffer_frames: match view.output_buffer {
+            Some(BufferRequest::Frames(n)) => Some(n),
+            _ => None,
+        },
+    })
+}
+
+/// The stored offset entry for `setup`, if any.
+pub fn record_offset_for<'a>(
+    setup: &DeviceSetup,
+    entries: &'a [RecordOffsetEntry],
+) -> Option<&'a RecordOffsetEntry> {
+    find_record_offset(
+        entries,
+        &setup.host,
+        &setup.input_device,
+        &setup.output_device,
+        setup.device_rate_hz,
+    )
+}
+
+/// δ for the current device setup (0: not calibrated).
+pub fn current_offset_ms(engine: &EngineHandle, settings: &Settings) -> f64 {
+    device_setup(engine)
+        .and_then(|s| record_offset_for(&s, &settings.record_offsets).map(|e| e.offset_ms))
+        .unwrap_or(0.0)
+}
+
+/// The SPEC-022 §3 preferences the engine resolves a Record press with.
+pub fn record_prefs(p: &RecordPrefsDto, offset_ms: f64) -> RecordPrefs {
+    RecordPrefs {
+        mode: match p.mode {
+            RecordModePref::Insert => CursorRecordMode::Insert,
+            RecordModePref::Overwrite => CursorRecordMode::Overwrite,
+        },
+        punch_on_selection: p.punch_on_selection,
+        preroll_s: p.preroll_s,
+        postroll_s: p.postroll_s,
+        preroll_at_cursor: p.preroll_at_cursor,
+        hear_original: p.hear_original,
+        xfade_ms: p.punch_xfade_ms,
+        offset_ms,
+    }
+}
+
 /// The done callback's work (see the module docs). Runs on the capture-writer thread.
 fn on_take_finished(inner: &Inner, result: RecordingResult) {
     let notice = |n: Notice| (inner.emit)(RecordingEvent::Notice(n));
@@ -130,6 +231,7 @@ fn on_take_finished(inner: &Inner, result: RecordingResult) {
         samples = result.finished.wav_samples,
         clips = result.clip_events,
         overflow = result.overflow_samples,
+        op = ?result.op.map(|o| (o.plan.kind, o.window, o.cancelled)),
         "take finished"
     );
     for e in [&result.finished.error, &result.write_error]
@@ -176,6 +278,10 @@ fn on_take_finished(inner: &Inner, result: RecordingResult) {
                 .with_param("count", result.dropouts.len().to_string()),
         );
     }
+    if let Some(op) = result.op {
+        on_op_finished(inner, &result, op);
+        return;
+    }
     match inner
         .documents
         .commit_take(&result.finished, &result.dropouts)
@@ -197,11 +303,103 @@ fn on_take_finished(inner: &Inner, result: RecordingResult) {
     }
 }
 
+/// T-304 (SPEC-022 §2.10–§2.12): commits a finished operation's window as one edit, or cancels
+/// it (document unchanged, playhead back at the record point), then `record_finished`.
+fn on_op_finished(inner: &Inner, result: &RecordingResult, op: OpResult) {
+    let notice = |n: Notice| (inner.emit)(RecordingEvent::Notice(n));
+    let take_id = result.finished.take.0;
+    let kind = op.plan.kind;
+    let dto = match inner
+        .documents
+        .commit_take_op(&result.finished, &op, &result.dropouts)
+    {
+        Ok(Some((info, edit))) => {
+            (inner.emit)(RecordingEvent::DocumentChanged(info));
+            if result.reason == StopReason::InputLost {
+                // §2.10: a partial result at the last good sample.
+                notice(
+                    Notice::toast(NoticeLevel::Warning, "notice.punch_partial_input_lost")
+                        .with_param(
+                            "duration",
+                            duration_text(
+                                edit.playhead_samples.saturating_sub(op.plan.at_samples),
+                                result.sample_rate_hz,
+                            ),
+                        ),
+                );
+            }
+            RecordFinishedDto {
+                take_id,
+                op: kind.into(),
+                committed: true,
+                cancel_reason: None,
+                result: Some(edit.into()),
+            }
+        }
+        Ok(None) => {
+            let reason = op.cancelled.unwrap_or(CancelReason::Aborted);
+            let _ = inner
+                .engine
+                .transport(TransportCommand::Seek(op.plan.at_samples));
+            if reason != CancelReason::User {
+                // §2.10: "Punch-in cancelled — nothing changed" when not user-initiated.
+                notice(Notice::toast(
+                    NoticeLevel::Warning,
+                    "notice.punch_cancelled",
+                ));
+            }
+            RecordFinishedDto {
+                take_id,
+                op: kind.into(),
+                committed: false,
+                cancel_reason: Some(reason.into()),
+                result: None,
+            }
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "committing the record operation failed");
+            let message = e.params.get("message").cloned().unwrap_or(e.key);
+            notice(
+                Notice::toast(NoticeLevel::Error, "notice.record.commit_failed")
+                    .with_param("message", message),
+            );
+            (inner.emit)(RecordingEvent::DocumentChanged(inner.documents.info()));
+            RecordFinishedDto {
+                take_id,
+                op: kind.into(),
+                committed: false,
+                cancel_reason: Some(RecordCancelDto::Aborted),
+                result: None,
+            }
+        }
+    };
+    (inner.emit)(RecordingEvent::Finished(dto));
+}
+
 impl RecordingService {
     pub fn new(
         engine: EngineHandle,
         documents: DocumentService,
         default_format: DefaultFormatFn,
+        monitor: MonitorMode,
+        emit: RecordingEmitter,
+    ) -> Self {
+        Self::with_record_settings(
+            engine,
+            documents,
+            default_format,
+            Box::new(|| (RecordPrefsDto::default(), Vec::new())),
+            monitor,
+            emit,
+        )
+    }
+
+    /// [`Self::new`] with the T-304 record-settings source.
+    pub fn with_record_settings(
+        engine: EngineHandle,
+        documents: DocumentService,
+        default_format: DefaultFormatFn,
+        record_settings: RecordSettingsFn,
         monitor: MonitorMode,
         emit: RecordingEmitter,
     ) -> Self {
@@ -211,6 +409,7 @@ impl RecordingService {
             engine,
             documents,
             default_format,
+            record_settings,
             emit,
         }))
     }
@@ -248,6 +447,18 @@ impl RecordingService {
     /// forward to `EngineHandle::live_take_peaks` — `record_peaks_get` encodes the `VXPK` frame.
     pub fn live_peaks(&self, start_bucket: u32, count: u32) -> Option<LiveTakePeaks> {
         self.0.engine.live_take_peaks(start_bucket, count)
+    }
+
+    /// T-304 (SPEC-022 §4.6): journals the opened window of `take` — on a worker, never on the
+    /// engine's control thread (the event sink this comes from must not block on the document).
+    pub fn note_window(&self, take: u32, k_start: u64) {
+        let documents = self.0.documents.clone();
+        let spawned = std::thread::Builder::new()
+            .name("vox-take-window".into())
+            .spawn(move || documents.note_take_window(take, k_start));
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "journaling the record window failed");
+        }
     }
 
     /// New recording (SPEC-002 §2.2): into the current document when it is empty, else into a
@@ -308,11 +519,83 @@ impl RecordingService {
             }
         }
     }
+
+    /// T-304 (SPEC-022 §2.2, §4.9 `record_start`): Record with the current `selection`. An empty
+    /// document records a new take into itself (row 1); otherwise the engine resolves the press
+    /// (punch-in over a non-empty selection, else Insert/Overwrite at the selection start or the
+    /// cursor, stopping a playing transport first) and the operation starts.
+    pub fn start_at(&self, selection: Option<(u64, u64)>) -> Result<RecordStartedDto, IpcError> {
+        let inner = &self.0;
+        if inner.documents.is_recording() {
+            return Err(IpcError::not_while_recording());
+        }
+        let new_recording = |st: RecordStateDto| RecordStartedDto {
+            take_id: 0,
+            op: RecordOpKind::New.into(),
+            at_samples: 0,
+            end_samples: None,
+            preroll_samples: 0,
+            postroll_samples: 0,
+            aligned: false,
+            state: st,
+        };
+        if inner.documents.current_len_samples() == 0 {
+            return self.start(false, None).map(new_recording);
+        }
+        let st = inner.engine.set_armed(true).ok_or_else(engine_stopped)?;
+        if st.recording || st.finishing {
+            return Err(IpcError::not_while_recording());
+        }
+        if st.input_device.is_none() {
+            return Err(record_error(RecordError::NoInputDevice));
+        }
+        if !st.input_open {
+            return Err(record_error(RecordError::InputNotOpen));
+        }
+        let (prefs, offsets) = (inner.record_settings)();
+        let offset_ms = device_setup(&inner.engine)
+            .and_then(|s| record_offset_for(&s, &offsets).map(|e| e.offset_ms))
+            .unwrap_or(0.0);
+        let plan = inner
+            .engine
+            .record_prepare(selection, record_prefs(&prefs, offset_ms))
+            .map_err(record_error)?;
+        if plan.kind == RecordOpKind::New {
+            return self.start(false, None).map(new_recording);
+        }
+        let capture = inner.documents.begin_record_op(&plan)?;
+        let take = capture.id();
+        let weak: Weak<Inner> = Arc::downgrade(&self.0);
+        let done: RecordDone = Box::new(move |result| {
+            if let Some(inner) = weak.upgrade() {
+                on_take_finished(&inner, result);
+            }
+        });
+        match inner.engine.record_start_op(plan, capture, done) {
+            Ok(st) => Ok(RecordStartedDto {
+                take_id: take.0,
+                op: plan.kind.into(),
+                at_samples: plan.at_samples,
+                end_samples: plan.end_samples,
+                preroll_samples: plan.preroll_samples,
+                postroll_samples: plan.postroll_samples,
+                aligned: plan.aligned,
+                state: RecordStateDto::from(&st),
+            }),
+            Err(e) => {
+                inner.documents.discard_take(take);
+                Err(record_error(e))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{duration_text, format_rate_hz};
+    use super::{duration_text, format_rate_hz, record_error, record_prefs};
+    use crate::settings::{RecordModePref, RecordPrefsDto};
+    use vox_engine::record::RecordError;
+    use vox_engine::record_op::CursorRecordMode;
 
     #[test]
     fn duration_text_is_m_ss_then_h_mm_ss() {
@@ -328,5 +611,26 @@ mod tests {
         assert_eq!(format_rate_hz(48_000), "48 kHz");
         assert_eq!(format_rate_hz(88_200), "88.2 kHz");
         assert_eq!(format_rate_hz(96_000), "96 kHz");
+    }
+
+    /// T-304: the settings map onto the engine's resolution prefs; a punch without an output is
+    /// `error.punch_needs_output` (SPEC-022 §2.2).
+    #[test]
+    fn record_prefs_and_errors_map() {
+        let p = record_prefs(
+            &RecordPrefsDto {
+                mode: RecordModePref::Overwrite,
+                preroll_s: 2.5,
+                ..RecordPrefsDto::default()
+            },
+            3.0,
+        );
+        assert_eq!(p.mode, CursorRecordMode::Overwrite);
+        assert_eq!((p.preroll_s, p.offset_ms, p.xfade_ms), (2.5, 3.0, 10.0));
+        assert!(p.punch_on_selection);
+        assert_eq!(
+            record_error(RecordError::PunchNeedsOutput).key,
+            "error.punch_needs_output"
+        );
     }
 }

@@ -70,6 +70,10 @@ pub(crate) enum InputEvent {
         capturing: bool,
         captured: u64,
         end_ns: u64,
+        /// T-304 (SPEC-022 §4.3, §4.5): the take position at the end of the block in device
+        /// frames, dropout fills included (`captured` + filled frames) — the `k_b` that keeps
+        /// take indices consistent with capture times.
+        take_frames: u64,
     },
     /// The take's last sample is in the capture ring.
     CaptureEnded { samples: u64 },
@@ -197,6 +201,9 @@ pub(crate) struct InputSide {
     /// `0.5 × period` dropout threshold (SPEC-002 §4.3); adapts to the device's actual buffer
     /// size instead of assuming a fixed nominal one.
     last_block_frames: u32,
+    /// T-304 (SPEC-022 §4.5): silence frames the capture-writer will splice in for the gap
+    /// events accepted so far this take — `captured + filled` is the take position.
+    filled: u64,
 }
 
 /// Index of the first sample at or after time offset `dt_ns` in a stream at `rate_hz`.
@@ -226,6 +233,7 @@ impl InputSide {
             gap_events: p.gap_events,
             last_capture_end_ns: None,
             last_block_frames: 0,
+            filled: 0,
         }
     }
 
@@ -245,6 +253,7 @@ impl InputSide {
                 self.last_clip = None;
                 self.last_capture_end_ns = None;
                 self.last_block_frames = 0;
+                self.filled = 0;
             }
             InputCmd::StopCapture { stop_ns } => {
                 if self.capturing {
@@ -318,6 +327,7 @@ impl InputSide {
                         .is_ok()
                 {
                     self.shared.dropout_events.fetch_add(1, Ordering::Relaxed);
+                    self.filled = self.filled.saturating_add(u64::from(lost_frames));
                 }
             }
         }
@@ -434,6 +444,7 @@ impl InputSide {
             capturing: self.capturing,
             captured: self.captured,
             end_ns,
+            take_frames: self.captured + self.filled,
         });
     }
 }

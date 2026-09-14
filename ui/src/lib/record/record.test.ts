@@ -2,17 +2,11 @@ import { emit } from "@tauri-apps/api/event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  documentState,
-  initDocument,
-  resetDocumentStateForTest,
-  resolveUnsavedPrompt,
-} from "../document/document.svelte";
+import { documentState, initDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import type { DocumentDto, RecordStateDto, TransportStateDto } from "../ipc/bindings";
 import { VXTM_FLAGS, type TelemetryFrame } from "../ipc/telemetry";
 import { attachKeymap, clearActionHandlers } from "../keymap";
 import {
-  cancelNewRecordingPrompt,
   initRecord,
   onInputTelemetry,
   recordState,
@@ -30,7 +24,16 @@ import {
 } from "./format";
 import RecordControls from "./RecordControls.svelte";
 import { resetWaveformViewForTest } from "../state/waveformView.svelte";
+import {
+  beginDrag,
+  dragTo,
+  resetSelectionForTest,
+  selectionState,
+  setSelectionFromResult,
+} from "../state/selection.svelte";
 
+/** T-304: what the mocked `record_start_at` resolves Record to. */
+let startedOp: "insert" | "punch" = "insert";
 let calls: Array<{ cmd: string; args: unknown }> = [];
 let docLen = 0;
 let recording = false;
@@ -101,6 +104,7 @@ function frame(flags: number, playheadSample = 0): TelemetryFrame {
 
 beforeEach(() => {
   calls = [];
+  startedOp = "insert";
   docLen = 0;
   recording = false;
   inputDevice = "Mic";
@@ -122,6 +126,18 @@ beforeEach(() => {
           }
           recording = true;
           return recDto();
+        case "record_start_at":
+          recording = true;
+          return {
+            take_id: 7,
+            op: startedOp,
+            at_samples: 240_000,
+            end_samples: startedOp === "punch" ? 384_000 : null,
+            preroll_samples: startedOp === "punch" ? 96_000 : 0,
+            postroll_samples: startedOp === "punch" ? 48_000 : 0,
+            aligned: startedOp === "punch",
+            state: recDto(),
+          };
         case "record_stop":
           recording = false;
           return recDto();
@@ -144,6 +160,7 @@ afterEach(() => {
   resetRecordForTest();
   resetDocumentStateForTest();
   resetWaveformViewForTest();
+  resetSelectionForTest();
   document.body.innerHTML = "";
 });
 
@@ -217,37 +234,77 @@ describe("record panel (S1-04)", () => {
     teardown();
   });
 
-  it("Record on a document with audio opens the New Recording dialog (H-10 item 7, SPEC-002 §2.2)", async () => {
+  it("T-304 (SPEC-022 §2.2, AC-1): Record on a document with audio records at the cursor or punches the selection", async () => {
     const stopDocument = await initDocument();
     const { el, teardown } = await setup();
-    // A saved document with audio opens the format prompt directly (no unsaved-changes ask) —
-    // it no longer silently replaces at the default format.
-    await emit("document_changed", docDto(96_000, false));
+    // A document with audio no longer replaces the document: no dialog, no unsaved-changes ask.
+    await emit("document_changed", docDto(96_000, true));
     await settle();
     el("record-button").click();
     await settle();
-    expect(recordCalls()).toEqual([]);
-    expect(recordState().newRecordingPrompt).not.toBeNull();
-    cancelNewRecordingPrompt();
-
-    // A modified one asks first: Cancel keeps it, Don't Save opens the prompt.
-    await emit("document_changed", docDto(96_000, true));
+    expect(documentState().unsavedPrompt).toBeNull();
+    expect(recordState().newRecordingPrompt).toBeNull();
+    expect(recordCalls()).toEqual([{ cmd: "record_start_at", args: { selection: null } }]);
+    expect(recordState().op?.op).toBe("insert");
+    el("record-button").click(); // Stop
     await settle();
+    await emit("record_finished", {
+      take_id: 7,
+      op: "insert",
+      committed: true,
+      cancel_reason: null,
+      result: { changed: true, audio_rev: 2, len_samples: 144_000, selection: null, playhead_samples: 72_000 },
+    });
+    await settle();
+    expect(recordState().op).toBeNull();
+
+    // A non-empty selection is sent along; the backend resolves it to a punch-in.
+    setSelectionFromResult([24_000, 48_000]);
+    startedOp = "punch";
     calls = [];
     el("record-button").click();
     await settle();
-    expect(documentState().unsavedPrompt).not.toBeNull();
-    expect(recordState().newRecordingPrompt).toBeNull();
-    resolveUnsavedPrompt("cancel");
+    expect(recordCalls()).toEqual([{ cmd: "record_start_at", args: { selection: [24_000, 48_000] } }]);
+    // SPEC-022 §2.11: selection gestures are ignored while the operation runs.
+    beginDrag(10);
+    dragTo(500);
+    expect(selectionState().current).toEqual({ startSample: 24_000, endSample: 48_000 });
+    teardown();
+    stopDocument();
+  });
+
+  it("T-304 (SPEC-022 §2.11, AC-8): the panel counts the pre-roll down, then shows the punch progress", async () => {
+    const stopDocument = await initDocument();
+    const { el, teardown } = await setup();
+    await emit("document_changed", docDto(960_000, false));
     await settle();
-    expect(recordState().newRecordingPrompt).toBeNull();
-    expect(recordCalls()).toEqual([]);
+    startedOp = "punch";
     el("record-button").click();
     await settle();
-    resolveUnsavedPrompt("discard");
+    await emit("record_phase", { take_id: 7, op: "punch", phase: "preroll", doc_pos_samples: 144_000, app_ns: 0 });
+    onInputTelemetry(frame(VXTM_FLAGS.RECORDING, 144_000));
     await settle();
-    expect(recordState().newRecordingPrompt).not.toBeNull();
-    expect(recordCalls()).toEqual([]);
+    expect(el("record-phase").textContent?.trim()).toBe("Pre-roll 2.0 s");
+    onInputTelemetry(frame(VXTM_FLAGS.RECORDING, 235_200));
+    await settle();
+    expect(el("record-phase").textContent?.trim()).toBe("Pre-roll 0.1 s");
+    await emit("record_phase", { take_id: 7, op: "punch", phase: "recording", doc_pos_samples: 240_000, app_ns: 0 });
+    onInputTelemetry(frame(VXTM_FLAGS.RECORDING, 302_400));
+    await settle();
+    expect(el("record-phase").textContent?.trim()).toBe("Punch-in 0:01.3 / 0:03.0");
+    await emit("record_phase", { take_id: 7, op: "punch", phase: "postroll", doc_pos_samples: 384_000, app_ns: 0 });
+    await settle();
+    expect(el("record-phase").textContent?.trim()).toBe("Post-roll");
+    await emit("record_finished", {
+      take_id: 7,
+      op: "punch",
+      committed: true,
+      cancel_reason: null,
+      result: { changed: true, audio_rev: 2, len_samples: 960_000, selection: [240_000, 384_000], playhead_samples: 240_000 },
+    });
+    await settle();
+    expect(document.querySelector('[data-testid="record-phase"]')).toBeNull();
+    expect(selectionState().current).toEqual({ startSample: 240_000, endSample: 384_000 });
     teardown();
     stopDocument();
   });

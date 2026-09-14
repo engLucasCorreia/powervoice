@@ -27,7 +27,11 @@ use crate::prefs::DevicePrefs;
 use crate::rack_api::{
     NrCapturePrep, RackApiError, RackCommand, RackSnapshot, ResponseCurvePoints,
 };
-use crate::record::{LiveTakePeaks, MonitorMode, RecordDone, RecordError, RecordState};
+use crate::record::{
+    CalibrationError, CalibrationStatus, LiveTakePeaks, MonitorMode, RecordDone, RecordError,
+    RecordPhaseInfo, RecordState,
+};
+use crate::record_op::{RecordPlan, RecordPrefs};
 use crate::telemetry::{ModuleTelemetrySink, TelemetrySink};
 use crate::transport::{TransportCommand, TransportState};
 
@@ -78,6 +82,12 @@ pub enum EngineEvent {
     RackChanged(RackSnapshot),
     /// The record panel state changed (S1-04).
     Record(RecordState),
+    /// T-304 (SPEC-022 §4.9): a record operation changed phase (`record_phase`).
+    RecordPhase(RecordPhaseInfo),
+    /// T-304 (SPEC-022 §4.6): the aligned record window of `take` opened at take sample
+    /// `k_start` — the app journals it (`Session::note_take_window`) so recovery reproduces the
+    /// live alignment.
+    RecordWindow { take: u32, k_start: u64 },
 }
 
 /// Devices as the Settings dialog shows them.
@@ -361,6 +371,51 @@ impl EngineHandle {
             .flatten()
     }
 
+    /// T-304 (SPEC-022 §2.2): resolves a Record press on a document that has audio — stops a
+    /// playing transport first (Pause semantics: the cursor becomes the heard position), then
+    /// applies the resolution table to `selection` and `prefs`. The app begins the matching take
+    /// (`Session::begin_take_with`) and hands it to [`Self::record_start_op`].
+    pub fn record_prepare(
+        &self,
+        selection: Option<(u64, u64)>,
+        prefs: RecordPrefs,
+    ) -> Result<RecordPlan, RecordError> {
+        self.call(move |c| c.record_prepare(selection, prefs))
+            .unwrap_or(Err(RecordError::EngineStopped))
+    }
+
+    /// T-304: runs a resolved record operation (Insert / Overwrite / Punch with pre-roll,
+    /// post-roll and latency-compensated alignment) into `capture`; `done` receives the result
+    /// with its record window (`RecordingResult::op`). A `New` plan is [`Self::record_start`].
+    pub fn record_start_op(
+        &self,
+        plan: RecordPlan,
+        capture: TakeCapture,
+        done: RecordDone,
+    ) -> Result<RecordState, RecordError> {
+        self.call(move |c| c.record_start_op(plan, capture, done))
+            .unwrap_or(Err(RecordError::EngineStopped))
+    }
+
+    /// T-304 (SPEC-022 §2.14): starts a loopback calibration run (monitoring forced off, the
+    /// input armed, 5 sweeps after the rack). `offset_ns`: δ applied for a Verify pass (0 for a
+    /// measurement). Poll with [`Self::calibration_poll`].
+    pub fn calibration_start(&self, offset_ns: i64) -> Result<(), CalibrationError> {
+        self.call(move |c| c.calibration_start(offset_ns))
+            .unwrap_or(Err(CalibrationError::Interrupted))
+    }
+
+    /// T-304: the calibration run's progress, or its capture once (then [`CalibrationStatus::Idle`]).
+    pub fn calibration_poll(&self) -> CalibrationStatus {
+        self.call(|c| c.calibration_poll())
+            .unwrap_or(CalibrationStatus::Idle)
+    }
+
+    /// T-304: aborts a calibration run (monitoring and arming are restored).
+    pub fn calibration_cancel(&self) {
+        let _ = self.call(|c| c.calibration_cancel());
+    }
+
     /// Capture Noise Print, step 1 (S3-06, SPEC-014 §2.3): resolves the target slot (inserting a
     /// default one if none exists) and reads out what the capture job needs before it starts
     /// reading audio. Call from any thread (the job's own worker), never from an [`EventSink`].
@@ -536,6 +591,40 @@ impl ManualEngine {
     /// See [`EngineHandle::live_take_peaks`].
     pub fn live_take_peaks(&self, start_bucket: u32, max: u32) -> Option<LiveTakePeaks> {
         self.control.live_take_peaks(start_bucket, max)
+    }
+
+    /// See [`EngineHandle::record_prepare`].
+    pub fn record_prepare(
+        &mut self,
+        selection: Option<(u64, u64)>,
+        prefs: RecordPrefs,
+    ) -> Result<RecordPlan, RecordError> {
+        self.control.record_prepare(selection, prefs)
+    }
+
+    /// See [`EngineHandle::record_start_op`]. The capture-writer runs inline in [`Self::tick`].
+    pub fn record_start_op(
+        &mut self,
+        plan: RecordPlan,
+        capture: TakeCapture,
+        done: RecordDone,
+    ) -> Result<RecordState, RecordError> {
+        self.control.record_start_op(plan, capture, done)
+    }
+
+    /// See [`EngineHandle::calibration_start`].
+    pub fn calibration_start(&mut self, offset_ns: i64) -> Result<(), CalibrationError> {
+        self.control.calibration_start(offset_ns)
+    }
+
+    /// See [`EngineHandle::calibration_poll`].
+    pub fn calibration_poll(&mut self) -> CalibrationStatus {
+        self.control.calibration_poll()
+    }
+
+    /// See [`EngineHandle::calibration_cancel`].
+    pub fn calibration_cancel(&mut self) {
+        self.control.calibration_cancel();
     }
 
     /// See [`EngineHandle::nr_capture_prepare`].

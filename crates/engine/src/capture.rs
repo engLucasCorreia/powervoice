@@ -8,10 +8,16 @@
 //! gone, or the control thread forces it — the writer calls `TakeCapture::finish()`, hands the
 //! capture-ring consumer back for the next take and calls the [`RecordDone`] callback.
 //!
+//! T-304 (SPEC-022 §4.5): during a record operation the take holds the whole pass (pre-roll,
+//! window, post-roll). The control thread decides the record window and **seals** the operation
+//! ([`OpShared`]); the writer finishes only after that, so the result always carries the decided
+//! window. Live peaks describe the window only (take index `k_start` on): samples appended before
+//! `k_start` became known are kept in a 2 s look-back and replayed.
+//!
 //! `ManualEngine` runs the same [`CaptureWriter`] inline from its tick (deterministic tests).
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -22,16 +28,59 @@ use vox_project::take::DEFAULT_TAKE_SYNC_INTERVAL;
 use vox_project::{ProjectError, TakeCapture};
 
 use crate::input::{GapEvent, InputShared, stop_code};
-use crate::record::{DropoutMark, LIVE_PEAKS_SPB, RecordDone, RecordingResult, StopReason};
+use crate::record::{
+    DropoutMark, LIVE_PEAKS_SPB, OpResult, RecordDone, RecordingResult, StopReason,
+};
 
 /// Drain period of the writer thread (≤ 50 ms, SPEC-002 §4.1).
 pub(crate) const DRAIN_INTERVAL: Duration = Duration::from_millis(20);
+/// SPEC-022 §3 `capture_history_s`: look-back kept for a window start that lies in the past.
+const LOOKBACK_S: usize = 2;
 
 /// Where the writer returns the capture-ring consumer when a take is finished.
 pub(crate) type CaptureHome = Arc<Mutex<Option<Consumer<f32>>>>;
 /// Where the writer returns the gap-ring consumer when a take is finished (H-10 item 4, mirrors
 /// [`CaptureHome`]).
 pub(crate) type GapHome = Arc<Mutex<Option<Consumer<GapEvent>>>>;
+
+/// T-304 (SPEC-022 §4.5): a record operation's state shared by the control thread (which
+/// decides the window) and the capture-writer (which finishes the take with it). Never touched
+/// by an RT callback.
+#[derive(Debug)]
+pub(crate) struct OpShared {
+    /// The record window's first take sample (document rate); `u64::MAX` until known.
+    pub(crate) k_start: AtomicU64,
+    /// Set (Release) once `outcome` holds the decision: only then may the writer finish.
+    sealed: AtomicBool,
+    outcome: Mutex<Option<OpResult>>,
+}
+
+impl OpShared {
+    pub(crate) fn new() -> Self {
+        Self {
+            k_start: AtomicU64::new(u64::MAX),
+            sealed: AtomicBool::new(false),
+            outcome: Mutex::new(None),
+        }
+    }
+
+    /// \[control thread\] Records the decision; the writer may now finish the take.
+    pub(crate) fn seal(&self, result: OpResult) {
+        *self.outcome.lock().unwrap_or_else(PoisonError::into_inner) = Some(result);
+        self.sealed.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn is_sealed(&self) -> bool {
+        self.sealed.load(Ordering::Acquire)
+    }
+
+    fn take_outcome(&self) -> Option<OpResult> {
+        self.outcome
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+}
 
 /// \[control thread\] Takes the gap-ring consumer a finished writer returned.
 pub(crate) fn take_gap_home(home: &GapHome) -> Option<Consumer<GapEvent>> {
@@ -173,6 +222,16 @@ pub(crate) struct CaptureWriter {
     pending_gaps: VecDeque<GapEvent>,
     /// Dropouts filled so far, to mark once the take is committed (`RecordingResult::dropouts`).
     dropouts: Vec<DropoutMark>,
+    /// T-304: the record operation this take belongs to (`None`: a new recording).
+    op: Option<Arc<OpShared>>,
+    /// Take samples (document rate) appended so far.
+    written: u64,
+    /// Live peaks describe take samples from here on (the record window); `None` until the
+    /// operation's window start is known.
+    peaks_from: Option<u64>,
+    /// The last ≤ [`LOOKBACK_S`] of appended samples while `peaks_from` is unknown.
+    lookback: VecDeque<f32>,
+    lookback_cap: usize,
 }
 
 impl CaptureWriter {
@@ -188,6 +247,7 @@ impl CaptureWriter {
         peaks: LivePeaksHandle,
         gap_rx: Option<Consumer<GapEvent>>,
         gap_home: GapHome,
+        op: Option<Arc<OpShared>>,
     ) -> Self {
         Self {
             rx,
@@ -206,6 +266,11 @@ impl CaptureWriter {
             ring_consumed: 0,
             pending_gaps: VecDeque::new(),
             dropouts: Vec::new(),
+            peaks_from: if op.is_none() { Some(0) } else { None },
+            op,
+            written: 0,
+            lookback: VecDeque::new(),
+            lookback_cap: rate_hz as usize * LOOKBACK_S,
         }
     }
 
@@ -219,14 +284,53 @@ impl CaptureWriter {
             return;
         }
         match self.capture.append(part) {
-            Ok(()) => self
-                .peaks
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .append(part),
+            Ok(()) => self.feed_peaks(part),
             Err(e) => {
                 self.write_error = Some(e);
                 self.shared.writer_failed.store(true, Ordering::Release);
+            }
+        }
+    }
+
+    /// T-304 (SPEC-022 §4.5): live peaks describe the record window only. Until its start is
+    /// known, appended samples wait in the look-back; then the part of it from `k_start` on is
+    /// replayed and later samples go straight in.
+    fn feed_peaks(&mut self, part: &[f32]) {
+        let start = self.written;
+        self.written += part.len() as u64;
+        if self.peaks_from.is_none() {
+            let k = self
+                .op
+                .as_ref()
+                .map_or(0, |o| o.k_start.load(Ordering::Acquire));
+            if k != u64::MAX {
+                self.peaks_from = Some(k);
+                let lb_start = start - self.lookback.len() as u64;
+                let skip = k.saturating_sub(lb_start) as usize;
+                if skip < self.lookback.len() {
+                    let replay: Vec<f32> = self.lookback.iter().skip(skip).copied().collect();
+                    self.peaks
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .append(&replay);
+                }
+                self.lookback = VecDeque::new();
+            }
+        }
+        match self.peaks_from {
+            Some(k) => {
+                let skip = k.saturating_sub(start).min(part.len() as u64) as usize;
+                if skip < part.len() {
+                    self.peaks
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .append(&part[skip..]);
+                }
+            }
+            None => {
+                self.lookback.extend(part.iter().copied());
+                let excess = self.lookback.len().saturating_sub(self.lookback_cap);
+                self.lookback.drain(..excess);
             }
         }
     }
@@ -308,15 +412,17 @@ impl CaptureWriter {
     }
 
     /// Appends everything in the ring to the take (and its H-07 live peaks). Returns `true` once
-    /// the take is complete and the ring is empty. After an append error the rest of the take is
-    /// drained and dropped, and [`InputShared::writer_failed`] asks the control thread to stop
-    /// the recording (H-05: the take is kept up to the last good sample, SPEC-002 §2.5).
+    /// the take is complete and the ring is empty — and, for a record operation, once the control
+    /// thread sealed its decision (T-304). After an append error the rest of the take is drained
+    /// and dropped, and [`InputShared::writer_failed`] asks the control thread to stop the
+    /// recording (H-05: the take is kept up to the last good sample, SPEC-002 §2.5).
     pub(crate) fn drain(&mut self) -> bool {
         // Read the completion flags first: every sample pushed before they were set is then
         // visible to the drain below (Release/Acquire).
         let complete = self.shared.capture_done.load(Ordering::Acquire)
             || self.shared.force_finish.load(Ordering::Acquire)
             || self.rx.is_abandoned();
+        let sealed = self.op.as_ref().is_none_or(|o| o.is_sealed());
         let n = self.rx.slots();
         if n > 0
             && let Ok(chunk) = self.rx.read_chunk(n)
@@ -341,7 +447,7 @@ impl CaptureWriter {
             drained.clear();
             self.drain_scratch = drained;
         }
-        complete && self.rx.is_empty()
+        complete && sealed && self.rx.is_empty()
     }
 
     /// Patches the WAV header + `fdatasync`s on this thread (inline mode).
@@ -384,6 +490,7 @@ impl CaptureWriter {
             overflow_samples: self.shared.overflow_samples.load(Ordering::Relaxed),
             write_error: self.write_error.take(),
             dropouts: std::mem::take(&mut self.dropouts),
+            op: self.op.as_ref().and_then(|o| o.take_outcome()),
         };
         if let Some(done) = self.done.take() {
             done(result);

@@ -125,6 +125,47 @@ impl Signal {
     }
 }
 
+/// T-304 (SPEC-022 §4.8): a loopback from an output device's playback into an input device
+/// (a cable, or a microphone at a speaker). The output device must record its output
+/// ([`FakeDirection::record_output`]; don't [`FakeBackend::take_recorded_output`] it meanwhile).
+///
+/// An input frame whose true capture time is `t` carries the output sample truly heard at
+/// `t − residual` — so with `residual > 0` the recording lands late by exactly what the reported
+/// timestamps miss (the hidden, unreported latency) — times `gain`, plus an optional echo, plus
+/// seeded white noise. `mute` ranges (true time) silence the looped signal (not the noise).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Loopback {
+    /// The output device whose playback is looped back.
+    pub output: DeviceKey,
+    /// The input device capturing it (every channel receives the loop).
+    pub input: DeviceKey,
+    /// Loop gain.
+    pub gain_db: f64,
+    /// Unreported residual latency in ns (may be negative).
+    pub residual_ns: i64,
+    /// Echo `(delay ns, gain dB)` added to the direct path.
+    pub echo: Option<(u64, f64)>,
+    /// Additive uniform white noise `(seed, RMS dBFS)`.
+    pub noise: Option<(u64, f64)>,
+    /// True-time ranges `[start, end)` (ns) where the loop is silent.
+    pub mute: Vec<(u64, u64)>,
+}
+
+impl Loopback {
+    /// A clean 0 dB loopback with no residual.
+    pub fn new(output: DeviceKey, input: DeviceKey) -> Self {
+        Self {
+            output,
+            input,
+            gain_db: 0.0,
+            residual_ns: 0,
+            echo: None,
+            noise: None,
+            mute: Vec::new(),
+        }
+    }
+}
+
 /// One direction of a fake device: capabilities plus timing/fault behavior.
 pub struct FakeDirection {
     /// Reported capabilities.
@@ -483,6 +524,8 @@ struct State {
     pending_caps: bool,
     /// Devices whose capabilities a `Cached`/`Fresh` enumeration has read (like cpal's cache).
     caps_read: HashSet<(HostId, String)>,
+    /// T-304: the output → input loopback, if any.
+    loopback: Option<Loopback>,
 }
 
 impl State {
@@ -629,8 +672,15 @@ impl FakeBackend {
                 open_failures: Vec::new(),
                 pending_caps: false,
                 caps_read: HashSet::new(),
+                loopback: None,
             })),
         }
+    }
+
+    /// T-304 (SPEC-022 §4.8): loops an output device's playback back into an input device
+    /// (`None` removes it). See [`Loopback`].
+    pub fn set_loopback(&self, loopback: Option<Loopback>) {
+        self.lock().loopback = loopback;
     }
 
     /// Two-phase enumeration like the cpal backend on ALSA: [`Enumerate::Quick`] reports every
@@ -847,6 +897,9 @@ impl FakeBackend {
                         }
                     }
                     None => buf.fill(0.0),
+                }
+                if let Some(lb) = st.loopback.as_ref().filter(|lb| lb.input == key) {
+                    mix_loopback(&st, lb, i, first, channels, &mut buf);
                 }
             }
             Direction::Output => buf.fill(0.0),
@@ -1158,6 +1211,64 @@ impl Backend for FakeBackend {
         callback: Box<dyn OutputCallback>,
     ) -> Result<StreamHandle, BackendError> {
         self.open(request, Direction::Output, Cb::Output(Some(callback)))
+    }
+}
+
+/// T-304: adds the [`Loopback`] into input slot `slot`'s block of frames `first..` (interleaved
+/// `buf`, every channel). Runs outside the RT guard, like the device source.
+fn mix_loopback(
+    st: &State,
+    lb: &Loopback,
+    slot: usize,
+    first: u64,
+    channels: usize,
+    buf: &mut [f32],
+) {
+    let input = &st.slots[slot];
+    let Some(out) = st.slots.iter().rev().find(|s| {
+        s.info.device == lb.output && s.info.direction == Direction::Output && s.record.is_some()
+    }) else {
+        return;
+    };
+    let Some(rec) = out.record.as_ref() else {
+        return;
+    };
+    let gain = 10f64.powf(lb.gain_db / 20.0);
+    let echo = lb.echo.map(|(d, g)| (i128::from(d), 10f64.powf(g / 20.0)));
+    let noise = lb
+        .noise
+        .map(|(seed, db)| (seed, 10f64.powf(db / 20.0) * 3f64.sqrt()));
+    let origin = i128::from(out.origin_ns);
+    // The output sample truly heard at time `t` (nearest frame; 0 before the stream or past what
+    // it has rendered).
+    let heard = |t: i128| -> f64 {
+        if t < origin {
+            return 0.0;
+        }
+        let g = ((t - origin) as f64 * out.true_rate / 1e9).round() as usize;
+        rec.samples.get(g).map_or(0.0, |&x| f64::from(x))
+    };
+    for (f, frame) in buf.chunks_exact_mut(channels.max(1)).enumerate() {
+        let frame_idx = first + f as u64;
+        let t = i128::from(input.frame_time(frame_idx));
+        let muted = lb
+            .mute
+            .iter()
+            .any(|&(a, b)| t >= i128::from(a) && t < i128::from(b));
+        let tau = t - i128::from(lb.residual_ns);
+        let mut v = if muted {
+            0.0
+        } else {
+            gain * heard(tau) + echo.map_or(0.0, |(d, g)| gain * g * heard(tau - d))
+        };
+        if let Some((seed, amp)) = noise {
+            let z = mix64(seed ^ frame_idx.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let unit = (z >> 11) as f64 * (1.0 / (1u64 << 53) as f64);
+            v += (unit * 2.0 - 1.0) * amp;
+        }
+        for x in frame.iter_mut() {
+            *x += v as f32;
+        }
     }
 }
 

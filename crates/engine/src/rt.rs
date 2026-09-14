@@ -70,6 +70,9 @@ pub(crate) enum AudioCmd {
         target_frames: u32,
         ending: bool,
     },
+    /// T-304 (SPEC-022 §2.14, §4.7): start (`true`) or abort the calibration run — the
+    /// preallocated sweep, 5 repetitions at 1.6 s spacing, mixed in after the rack.
+    Calibrate { start: bool },
 }
 
 /// Output callback → control (ADR-002 §4 step 5, §7).
@@ -91,6 +94,11 @@ pub(crate) enum RtEvent {
     Stopped { epoch: u32, pos: u64 },
     /// The document end was played.
     Ended { epoch: u32, pos: u64 },
+    /// T-304 (SPEC-022 §4.7): calibration repetition `rep` starts being heard at app time
+    /// `heard_time_ns` (reported like `WindowHeard`).
+    CalibRep { rep: u32, heard_time_ns: u64 },
+    /// T-304: the calibration run's last repetition was played (or it was aborted).
+    CalibDone,
 }
 
 /// Counters the callback bumps (atomics only).

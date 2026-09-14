@@ -12,6 +12,7 @@ mod analyzer_commands;
 mod analyzer_dto;
 mod audio_commands;
 mod audio_dto;
+mod calibration_commands;
 mod commands;
 pub mod document_commands;
 pub mod document_dto;
@@ -33,6 +34,7 @@ mod recent_files_commands;
 mod recent_files_dto;
 mod record_commands;
 mod record_dto;
+mod record_op_dto;
 mod recovery_commands;
 mod recovery_dto;
 mod spectro_commands;
@@ -49,6 +51,7 @@ pub use audio_commands::*;
 pub use audio_dto::{
     DeviceDto, DeviceStatusDto, DevicesDto, TransportStateDto, notice_from_device,
 };
+pub use calibration_commands::*;
 pub use commands::*;
 pub use document_commands::*;
 pub use document_dto::{
@@ -83,6 +86,10 @@ pub use recent_files_commands::*;
 pub use recent_files_dto::RecentFileDto;
 pub use record_commands::*;
 pub use record_dto::{RecordStateDto, engine_monitor_mode};
+pub use record_op_dto::{
+    CalibrationRejectDto, CalibrationResultDto, RecordCancelDto, RecordFinishedDto,
+    RecordOffsetDto, RecordOpDto, RecordPhaseDto, RecordPhaseKindDto, RecordStartedDto,
+};
 pub use recovery_commands::*;
 pub use recovery_dto::{
     RecoverResultDto, RecoverableSessionDto, RecoveredTakeActionDto, StorageInfoDto,
@@ -179,6 +186,11 @@ crate::ipc_commands!(
     loudness_analyze_start,
     loudness_analyze_cancel,
     acx_check,
+    record_start_at,
+    record_offset_get,
+    record_offset_set,
+    calibration_run,
+    calibration_cancel,
 );
 
 #[cfg(feature = "spike")]
@@ -263,6 +275,11 @@ crate::ipc_commands!(
     loudness_analyze_start,
     loudness_analyze_cancel,
     acx_check,
+    record_start_at,
+    record_offset_get,
+    record_offset_set,
+    calibration_run,
+    calibration_cancel,
     spike_env,
     spike_waveform_peaks,
     spike_spectrogram_texture,

@@ -136,6 +136,15 @@ impl Transport {
         self.epoch
     }
 
+    /// T-304 (SPEC-022 §4.4): a fresh epoch for a record operation's playback run. The transport
+    /// itself stays stopped (its state machine never sees the run); packets of older epochs are
+    /// discarded, and the next Play gets a newer epoch and resets the rack.
+    pub(crate) fn next_run_epoch(&mut self) -> u32 {
+        self.rack_pos = None;
+        self.awaiting = None;
+        self.next_epoch()
+    }
+
     fn play(&mut self, can_play: bool) -> Option<Action> {
         if self.playing || !can_play || self.len == 0 {
             return None;

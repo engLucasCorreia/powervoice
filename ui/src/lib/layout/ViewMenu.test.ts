@@ -40,6 +40,16 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     analyzer_peak_hold: true,
     multichannel_policy: "ask",
     renderer_preference: "auto",
+    record: {
+      mode: "insert",
+      punch_on_selection: true,
+      preroll_s: 5,
+      postroll_s: 1,
+      preroll_at_cursor: false,
+      hear_original: false,
+      punch_xfade_ms: 10,
+    },
+    record_offsets: [],
     ...overrides,
   };
 }

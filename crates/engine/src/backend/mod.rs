@@ -374,6 +374,11 @@ pub struct StreamInfo {
     pub buffer: BufferRequest,
     /// The backend's estimate of frames per callback, if known. Callbacks may deliver any size.
     pub nominal_frames: Option<u32>,
+    /// Whether this input stream's capture timestamps can be trusted to measure a dropout's
+    /// length (SPEC-002 §4.3, ADR-002 §7). `false` falls back to the callback-gap rule and marks
+    /// dropouts "length unknown" with no silence fill (H-23). Always `true` for output streams;
+    /// real backends report `true` until T-105/T-106 add per-backend detection (PipeWire/JACK).
+    pub timestamps_reliable: bool,
 }
 
 /// Backend-assigned stream id.

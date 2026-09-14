@@ -209,6 +209,9 @@ pub struct FakeDirection {
     /// Capabilities cannot be read (busy/exclusive): enumerated as `Unavailable`, opens fail with
     /// `DeviceBusy`.
     pub unreadable: bool,
+    /// H-23 (SPEC-002 §4.3): input streams opened on this direction report unreliable capture
+    /// timestamps — dropouts fall back to the callback-gap rule, "length unknown", no fill.
+    pub reliable_timestamps: bool,
     source: Option<SignalFn>,
 }
 
@@ -236,6 +239,7 @@ impl FakeDirection {
             skew_ppm: 0.0,
             record: false,
             unreadable: false,
+            reliable_timestamps: true,
             source: None,
         }
     }
@@ -294,6 +298,14 @@ impl FakeDirection {
     /// Records output streams on this device.
     pub fn record_output(mut self) -> Self {
         self.record = true;
+        self
+    }
+
+    /// H-23: input streams opened on this direction report unreliable capture timestamps
+    /// (SPEC-002 §4.3) — a dropped span is detected by the ADR-002 §7 callback-gap rule instead
+    /// of the capture-timestamp gap, and gets the "length unknown" marker with no silence fill.
+    pub fn unreliable_timestamps(mut self) -> Self {
+        self.reliable_timestamps = false;
         self
     }
 
@@ -1086,6 +1098,7 @@ impl FakeBackend {
         let latency_ns = side.latency_ns;
         let jitter_ns = side.jitter_ns;
         let record = (dir == Direction::Output && side.record).then(RecordedOutput::default);
+        let timestamps_reliable = dir == Direction::Output || side.reliable_timestamps;
 
         st.seq += 1;
         let id = StreamId(st.seq);
@@ -1099,6 +1112,7 @@ impl FakeBackend {
             sample_rate_hz: req.sample_rate_hz,
             buffer: req.buffer,
             nominal_frames: nominal,
+            timestamps_reliable,
         };
         let status = StreamStatus::new();
         let mut slot = Slot {

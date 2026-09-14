@@ -56,6 +56,12 @@
     opPeaksRequestStart,
   } from "./opLayout";
   import { PeaksRequester } from "./peaksRequester";
+  import {
+    followRecordHead,
+    INITIAL_RECORD_FOLLOW_STATE,
+    suspendRecordFollow,
+    type RecordFollowState,
+  } from "./recordFollow";
   import { buildColumnQuads, buildRawPolyline } from "./webglGeometry";
   import { type WaveformGlContent, WaveformGlRenderer } from "./webglRenderer";
 
@@ -87,6 +93,9 @@
    * colour (`opLayout.ts`): Insert shifts the existing waveform and markers after `at` right by the
    * current take length; Overwrite and Punch draw the take over the old audio, a punch also
    * shading its region `[S, E)`; a record-head line marks the take's end.
+   *
+   * H-23 (A-016): while that operation runs, the view also page-flips to keep the record head in
+   * view, respecting a user scroll/zoom until the head reaches the next page (`recordFollow.ts`).
    */
 
   /** Must match `vox_engine::record::LIVE_PEAKS_SPB` (H-07). */
@@ -221,6 +230,32 @@
     const windowSamples = Math.max(rec.elapsedSamples, LIVE_MIN_WINDOW_SECONDS * rateHz);
     samplesPerPixel = zoomFullSamplesPerPixel(windowSamples, viewportPx);
     startSample = 0;
+  });
+
+  // H-23 (A-016, `recordFollow.ts`): during a record operation on a document with audio (`layout`
+  // non-null — a plain new recording is handled by the zoom-to-fit effect above instead), page-flip
+  // the view to keep the record head visible.
+  let recordFollowState = $state<RecordFollowState>(INITIAL_RECORD_FOLLOW_STATE);
+  /** The `startSample` this effect itself last applied — any other value seen next time is a user
+   * scroll/zoom/click-to-seek/drag (the shared scrollbar included), not a flip of its own. */
+  let recordFollowLastSet: number | null = null;
+  $effect(() => {
+    if (!layout || viewportPx <= 0 || samplesPerPixel <= 0) {
+      recordFollowState = INITIAL_RECORD_FOLLOW_STATE;
+      recordFollowLastSet = null;
+      return;
+    }
+    const viewportSamples = viewportPx * samplesPerPixel;
+    if (recordFollowLastSet !== null && startSample !== recordFollowLastSet) {
+      recordFollowState = suspendRecordFollow(startSample, viewportSamples);
+    }
+    const head = layout.at + layout.takeLen;
+    const flip = followRecordHead(startSample, viewportSamples, head, recordFollowState);
+    recordFollowState = flip.state;
+    if (flip.startSample !== startSample) {
+      startSample = flip.startSample;
+    }
+    recordFollowLastSet = startSample;
   });
 
   // H-07: polls record_peaks_get at ~10 Hz while recording (the document has no committed audio

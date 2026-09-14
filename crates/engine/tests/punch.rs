@@ -878,6 +878,46 @@ fn ac14_output_device_lost_in_each_phase() {
     assert_eq!(r.fake.rt_violations(), 0);
 }
 
+/// H-23 (A-016): losing the output mid-window must never announce a `PostRoll` phase — SPEC-022
+/// §2.10's "a punch ends at `E` with no post-roll" means the operation goes straight from
+/// Recording to Committing once the window ends, with nothing in between telling the panel a
+/// post-roll started.
+#[test]
+fn output_lost_mid_window_emits_no_phantom_post_roll() {
+    let mut r = rig(Some(src), None);
+    r.run_ms(50);
+    r.arm();
+    r.run_ms(100);
+    r.start(Some((S, E)), prefs());
+    r.run_ms(2_050); // ≈ 1 s into the 3 s window
+    r.fake.lose_stream(r.output_stream());
+    let res = r.result();
+    let op = res.op.unwrap();
+    assert_eq!(op.cancelled, None);
+    assert_eq!(
+        op.window.map(|(a, b)| b - a),
+        Some(E - S),
+        "the window still ends at E"
+    );
+    let phases: Vec<RecordPhase> = r
+        .phases
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(i, _)| i.phase)
+        .collect();
+    assert!(
+        !phases.contains(&RecordPhase::PostRoll),
+        "no PostRoll phase after an output loss mid-window: {phases:?}"
+    );
+    assert!(
+        phases.contains(&RecordPhase::Committing),
+        "still reaches Committing: {phases:?}"
+    );
+    r.commit(&res).unwrap();
+    assert_eq!(r.fake.rt_violations(), 0);
+}
+
 /// SPEC-022 AC-1 (Record while playing): the transport stops first (engine-initiated, Pause
 /// semantics) and the operation's `at` is the heard position at the stop, ±1 sample.
 #[test]
@@ -1232,6 +1272,95 @@ fn ac13_dropouts_during_a_punch_keep_the_window_aligned() {
         &out[s + 480..e - 480],
         &x[s + 480..e - 480],
         "exactly aligned",
+    );
+    assert_eq!(r.fake.rt_violations(), 0);
+}
+
+/// SPEC-022 AC-13, length-unknown variant (H-23, SPEC-002 §4.3): with the mic stream's capture
+/// timestamps flagged unreliable, the same dropped span falls back to the ADR-002 §7 callback-gap
+/// rule — one dropout is still detected inside the window, but its length is
+/// `DropoutMark::UNKNOWN_LEN` ("length unknown") and nothing is filled, so the rest of the window
+/// is early by the lost length rather than staying aligned.
+#[test]
+fn ac13_unreliable_timestamps_mark_the_dropout_length_unknown() {
+    let x = noise(2, L);
+    let mut r = talent_rig(noise(1, L), &x, 0.0);
+    // H-23: re-plug the mic with unreliable capture timestamps — a fixed callback size keeps the
+    // callback-gap threshold (1.5 × period) comfortably below the 480-frame (10 ms) gap.
+    r.fake.plug(
+        HostId::Alsa,
+        FakeDevice::new("Mic").with_input(
+            FakeDirection::new(1, &[48_000], 48_000)
+                .callback_sizes(CallbackSizes::Fixed(256))
+                .latency_ns(5 * MS)
+                .unreliable_timestamps(),
+        ),
+    );
+    r.run_ms(50);
+    r.arm();
+    r.run_ms(100);
+    r.start(Some((S, E)), hear_original());
+    let t_at = loop {
+        r.run_ms(1);
+        let rec = r
+            .phases
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(i, _)| i.phase == RecordPhase::Recording)
+            .map(|(i, _)| i.app_ns);
+        if let Some(t) = rec {
+            break t;
+        }
+    };
+    while r.fake.now_ns() < t_at + 1_000_000_000 {
+        r.run_ms(1);
+    }
+    let input = r.input_stream();
+    let f0 = r
+        .fake
+        .streams()
+        .iter()
+        .find(|st| st.info.id == input)
+        .unwrap()
+        .frame_pos;
+    let t_gap = r.fake.frame_time_ns(input, f0).unwrap();
+    r.fake.input_dropout(input, 480);
+    r.run_ms(20);
+    let q_gap = r.true_heard(t_gap, S + 48_000) as usize;
+    assert!(
+        q_gap.abs_diff(S as usize + 48_000) <= 480,
+        "the gap is about 1 s in: {q_gap}"
+    );
+    let res = r.result();
+    let (k0, _) = res.op.unwrap().window.unwrap();
+    let marks: Vec<_> = res
+        .dropouts
+        .iter()
+        .filter(|d| d.pos_samples >= k0 && d.pos_samples < k0 + (E - S))
+        .collect();
+    assert_eq!(
+        marks.len(),
+        1,
+        "one dropout inside the window: {:?}",
+        res.dropouts
+    );
+    assert_eq!(
+        marks[0].len_samples,
+        vox_engine::record::DropoutMark::UNKNOWN_LEN,
+        "length unknown (unreliable timestamps)"
+    );
+    r.commit(&res).unwrap();
+    let out = r.doc();
+    // Nothing was filled: 480 fewer samples entered the take than were lost, so from here on the
+    // document is exactly 480 samples early against `x` (unlike the reliable-timestamps case,
+    // where the silence fill keeps it at shift 0 — `shift_near`'s ±40 search range doesn't cover
+    // a shift this large, so this compares directly).
+    let q0 = q_gap + 600;
+    assert_bits(
+        &out[q0..q0 + 64],
+        &x[q0 + 480..q0 + 480 + 64],
+        "early by exactly the lost (unfilled) length",
     );
     assert_eq!(r.fake.rt_violations(), 0);
 }

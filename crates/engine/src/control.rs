@@ -1558,7 +1558,7 @@ impl Control {
 
     fn build_input(&mut self, req: &StreamRequest) -> Result<InputStream, BackendError> {
         let rate = req.sample_rate_hz;
-        let (cmd_tx, cmd_rx) = RingBuffer::new(INPUT_CMD_CAPACITY);
+        let (mut cmd_tx, cmd_rx) = RingBuffer::new(INPUT_CMD_CAPACITY);
         let (ev_tx, ev_rx) = RingBuffer::new(INPUT_EVENT_CAPACITY);
         let (cap_tx, cap_rx) = RingBuffer::new(rate as usize * CAPTURE_RING_SECONDS);
         let (gap_tx, gap_rx) = RingBuffer::new(GAP_EVENT_CAPACITY);
@@ -1578,21 +1578,28 @@ impl Control {
         });
         let cb = input_callback(self.in_channel.clone(), side);
         match self.backend.open_input(req, Box::new(cb)) {
-            Ok(handle) => Ok(InputStream {
-                stall: StallDetector::new(handle.info(), self.now()),
-                nominal_frames: handle.info().nominal_frames,
-                handle,
-                cmds: cmd_tx,
-                events: ev_rx,
-                shared,
-                slot,
-                capture_rx: Some(cap_rx),
-                capture_home: Arc::new(Mutex::new(None)),
-                gap_rx: Some(gap_rx),
-                gap_home: Arc::new(Mutex::new(None)),
-                rate_hz: rate,
-                monitor_gen,
-            }),
+            Ok(handle) => {
+                if !handle.info().timestamps_reliable {
+                    // H-23 (SPEC-002 §4.3): sent before any capture starts, so the callback has
+                    // it applied well ahead of the first block it ever processes.
+                    let _ = cmd_tx.push(InputCmd::TimestampsReliable(false));
+                }
+                Ok(InputStream {
+                    stall: StallDetector::new(handle.info(), self.now()),
+                    nominal_frames: handle.info().nominal_frames,
+                    handle,
+                    cmds: cmd_tx,
+                    events: ev_rx,
+                    shared,
+                    slot,
+                    capture_rx: Some(cap_rx),
+                    capture_home: Arc::new(Mutex::new(None)),
+                    gap_rx: Some(gap_rx),
+                    gap_home: Arc::new(Mutex::new(None)),
+                    rate_hz: rate,
+                    monitor_gen,
+                })
+            }
             Err(e) => {
                 // The backend dropped the callback: its monitor producer is in the slot.
                 self.repark_monitor(&slot);
@@ -2467,8 +2474,12 @@ impl Control {
                             t,
                         )));
                     }
+                    // A-016/H-23: no PostRoll phase when the output was already lost — the run
+                    // that would have played it is gone, so the op goes straight from Recording
+                    // to Committing once `past_end` ends it below (`EndTrigger::RunOver`).
                     if op.phase == RecordPhase::Recording
                         && op.plan.kind == RecordOpKind::Punch
+                        && !op.output_lost
                         && let Some(e) = op.plan.end_samples
                         && q >= i128::from(e)
                     {

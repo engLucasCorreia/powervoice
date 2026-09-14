@@ -827,6 +827,7 @@ impl CpalBackend {
             sample_rate_hz: rate,
             buffer: applied,
             nominal_frames,
+            timestamps_reliable: true,
         };
         Ok(StreamHandle::new(info, status, Box::new(stream)))
     }

@@ -198,8 +198,16 @@ pub struct OpResult {
 pub struct DropoutMark {
     /// Where the gap starts (samples already written to the take before it).
     pub pos_samples: u64,
-    /// How many silent samples were inserted.
+    /// How many silent samples were inserted, or [`Self::UNKNOWN_LEN`] (H-23, SPEC-002 §4.3:
+    /// unreliable timestamps) when the gap's length couldn't be estimated — nothing was filled,
+    /// and the rest of the take is early by the lost length.
     pub len_samples: u64,
+}
+
+impl DropoutMark {
+    /// [`Self::len_samples`] sentinel for a dropout of unknown length (H-23): the marker reads
+    /// "Dropout (length unknown)" and no silence was inserted.
+    pub const UNKNOWN_LEN: u64 = u64::MAX;
 }
 
 /// Called once, on the capture-writer thread (or inline in a `ManualEngine`), when a take is

@@ -27,7 +27,7 @@ use vox_dsp::capture_resample::CaptureResampler;
 use vox_project::take::DEFAULT_TAKE_SYNC_INTERVAL;
 use vox_project::{ProjectError, TakeCapture};
 
-use crate::input::{GapEvent, InputShared, stop_code};
+use crate::input::{GapEvent, InputShared, UNKNOWN_GAP, stop_code};
 use crate::record::{
     DropoutMark, LIVE_PEAKS_SPB, OpResult, RecordDone, RecordingResult, StopReason,
 };
@@ -399,10 +399,17 @@ impl CaptureWriter {
                 cursor = local;
             }
             let pos_samples = self.capture.samples_written();
-            self.fill_silence(ev.lost_frames);
+            // H-23 (SPEC-002 §4.3): an unreliable-timestamp gap's length is unknown — nothing is
+            // filled, and the marker carries `DropoutMark::UNKNOWN_LEN` instead of a duration.
+            let len_samples = if ev.lost_frames == UNKNOWN_GAP {
+                DropoutMark::UNKNOWN_LEN
+            } else {
+                self.fill_silence(ev.lost_frames);
+                u64::from(ev.lost_frames)
+            };
             self.dropouts.push(DropoutMark {
                 pos_samples,
-                len_samples: u64::from(ev.lost_frames),
+                len_samples,
             });
             self.pending_gaps.pop_front();
         }

@@ -53,6 +53,10 @@ pub(crate) enum InputCmd {
     StopCapture { stop_ns: u64 },
     /// Push to the monitor ring (monitoring audible).
     Monitor(bool),
+    /// H-23 (SPEC-002 §4.3): whether this stream's capture timestamps can be trusted to measure
+    /// a dropout's length — sent once, right after the stream opens (before any capture starts),
+    /// from the opened [`crate::backend::StreamInfo::timestamps_reliable`].
+    TimestampsReliable(bool),
 }
 
 /// Input callback → control.
@@ -82,12 +86,18 @@ pub(crate) enum InputEvent {
 /// H-10 item 4 (SPEC-002 §2.4/§4.3): one detected input dropout, in the ring-position numbering
 /// the capture-writer also sees draining `InputSideParts::capture` (device-rate sample count
 /// pushed to the capture ring since the take started). `take_index`: where the gap starts.
-/// `lost_frames`: the estimated number of missing device-rate frames to fill with silence.
+/// `lost_frames`: the estimated number of missing device-rate frames to fill with silence, or
+/// [`UNKNOWN_GAP`] (H-23: unreliable timestamps, ADR-002 §7's callback-gap rule) when the length
+/// can't be estimated — the capture-writer then fills nothing and marks it "length unknown".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct GapEvent {
     pub(crate) take_index: u64,
     pub(crate) lost_frames: u32,
 }
+
+/// [`GapEvent::lost_frames`] sentinel: the gap was detected but its length is unreliable, so the
+/// capture-writer fills nothing (SPEC-002 §4.3).
+pub(crate) const UNKNOWN_GAP: u32 = u32::MAX;
 
 /// [`InputShared::stop_reason`] values.
 pub(crate) mod stop_code {
@@ -204,6 +214,14 @@ pub(crate) struct InputSide {
     /// T-304 (SPEC-022 §4.5): silence frames the capture-writer will splice in for the gap
     /// events accepted so far this take — `captured + filled` is the take position.
     filled: u64,
+    /// H-23 (SPEC-002 §4.3): whether this stream's capture timestamps are trusted to measure a
+    /// dropout's length. `false`: `detect_dropout` falls back to the ADR-002 §7 callback-gap
+    /// rule and reports [`UNKNOWN_GAP`] instead of a frame count.
+    timestamps_reliable: bool,
+    /// The app-clock instant (`ts.now_ns`) this callback was invoked, at the end of the last
+    /// block processed while capturing — the callback-gap rule's reference when
+    /// `timestamps_reliable` is false. Reset the same way as `last_capture_end_ns`.
+    last_callback_ns: Option<u64>,
 }
 
 /// Index of the first sample at or after time offset `dt_ns` in a stream at `rate_hz`.
@@ -234,6 +252,8 @@ impl InputSide {
             last_capture_end_ns: None,
             last_block_frames: 0,
             filled: 0,
+            timestamps_reliable: true,
+            last_callback_ns: None,
         }
     }
 
@@ -252,6 +272,7 @@ impl InputSide {
                 self.captured = 0;
                 self.last_clip = None;
                 self.last_capture_end_ns = None;
+                self.last_callback_ns = None;
                 self.last_block_frames = 0;
                 self.filled = 0;
             }
@@ -261,6 +282,7 @@ impl InputSide {
                 }
             }
             InputCmd::Monitor(on) => self.monitor_on = on,
+            InputCmd::TimestampsReliable(reliable) => self.timestamps_reliable = reliable,
         }
     }
 
@@ -293,8 +315,39 @@ impl InputSide {
     /// ends right here (like a capture-ring overflow, no gap event, no live counter bump) instead
     /// of being asked to silently fill seconds of silence.
     ///
+    /// H-23 (SPEC-002 §4.3, ADR-002 §7): when `self.timestamps_reliable` is false, the capture
+    /// timestamp itself can't be trusted to size a gap, so this falls back to comparing
+    /// consecutive *callback* instants (`ts.now_ns`, the one clock read of the call) against
+    /// 1.5 × the expected period, and reports [`UNKNOWN_GAP`] — no length, no A-011 device-loss
+    /// escalation (a real device loss still raises `DEVICE_LOST` independently).
+    ///
     /// RT-safe: one non-blocking ring push, no allocation.
-    fn detect_dropout(&mut self, capture_ns: u64) {
+    fn detect_dropout(&mut self, ts: InputTimestamp) {
+        if !self.timestamps_reliable {
+            if let Some(last_cb) = self.last_callback_ns
+                && ts.now_ns > last_cb
+            {
+                let gap_ns = ts.now_ns - last_cb;
+                let period_ns =
+                    frames_to_ns(u64::from(self.last_block_frames.max(1)), self.rate_hz);
+                let threshold_ns = period_ns.saturating_mul(3) / 2;
+                if gap_ns >= threshold_ns
+                    && self
+                        .gap_events
+                        .push(GapEvent {
+                            take_index: self.captured,
+                            lost_frames: UNKNOWN_GAP,
+                        })
+                        .is_ok()
+                {
+                    self.shared.dropout_events.fetch_add(1, Ordering::Relaxed);
+                    // Nothing is filled for an unknown-length gap (SPEC-002 §4.3): `filled`
+                    // stays as-is, and the rest of the window is early by the lost length.
+                }
+            }
+            return;
+        }
+        let capture_ns = ts.capture_ns;
         if let Some(expected) = self.last_capture_end_ns
             && capture_ns > expected
         {
@@ -402,7 +455,7 @@ impl InputSide {
             // H-10 item 4 (SPEC-002 §4.3): detect a gap before this block's own samples advance
             // `self.captured` — the reported `take_index` must be the position right before it.
             // Uses the stream's own (unmapped) capture time — see `detect_dropout`'s docs.
-            self.detect_dropout(ts.capture_ns);
+            self.detect_dropout(ts);
         }
         let mut peak = 0.0f32;
         let mut sum_sq = 0.0f64;
@@ -430,9 +483,11 @@ impl InputSide {
                 ts.capture_ns
                     .saturating_add(frames_to_ns(frames, self.rate_hz)),
             );
+            self.last_callback_ns = Some(ts.now_ns);
             self.last_block_frames = frames as u32;
         } else {
             self.last_capture_end_ns = None;
+            self.last_callback_ns = None;
         }
         let end_ns = t0.saturating_add(frames_to_ns(frames, self.rate_hz));
         self.emit(InputEvent::Block {

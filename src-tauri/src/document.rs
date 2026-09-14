@@ -398,11 +398,26 @@ fn marker_default_number(name: &str) -> Option<u64> {
 
 /// H-10 item 4 (SPEC-002 §2.4/§4.3): "Dropout 12 ms" — same hardcoded-English convention as
 /// [`next_marker_name`] (SPEC-009's i18n key for generated marker names is deferred, S2-03
-/// ticket report); `len_samples` rounds to the nearest millisecond.
+/// ticket report); `len_samples` rounds to the nearest millisecond. H-23: `DropoutMark::UNKNOWN_LEN`
+/// (unreliable timestamps) reads "Dropout (length unknown)" instead.
 fn dropout_marker_name(len_samples: u64, rate_hz: u32) -> String {
+    if len_samples == DropoutMark::UNKNOWN_LEN {
+        return "Dropout (length unknown)".to_owned();
+    }
     let rate_hz = u64::from(rate_hz.max(1));
     let ms = (len_samples * 1000 + rate_hz / 2) / rate_hz;
     format!("Dropout {ms} ms")
+}
+
+/// A dropout marker's own `len_samples` (its highlighted span): the fill length, or a point
+/// marker (0) for `DropoutMark::UNKNOWN_LEN` (H-23) — its duration is unknown, so there is no
+/// span to show.
+fn dropout_marker_len(len_samples: u64) -> u64 {
+    if len_samples == DropoutMark::UNKNOWN_LEN {
+        0
+    } else {
+        len_samples
+    }
 }
 
 /// SPEC-009 §2.4's rename normalization (also SPEC-005 §4.6's cue-name reading rules): trim
@@ -1916,7 +1931,7 @@ impl DocumentService {
                 Marker::new(
                     id,
                     d.pos_samples,
-                    d.len_samples,
+                    dropout_marker_len(d.len_samples),
                     dropout_marker_name(d.len_samples, rate_hz),
                 )
             })
@@ -2089,7 +2104,7 @@ impl DocumentService {
                 Marker::new(
                     id,
                     plan.at_samples + (d.pos_samples - ws),
-                    d.len_samples,
+                    dropout_marker_len(d.len_samples),
                     dropout_marker_name(d.len_samples, rate_hz),
                 )
             })
@@ -4264,6 +4279,34 @@ mod tests {
         assert_eq!(history.undo_label.as_deref(), Some("history.record"));
         service.history_undo().unwrap();
         assert!(service.markers_get().is_empty());
+    }
+
+    /// H-23 (SPEC-002 §4.3): a dropout of unknown length (unreliable timestamps,
+    /// `DropoutMark::UNKNOWN_LEN`) becomes a point marker (no known span, so `len_samples` is 0 —
+    /// not the `u64::MAX` sentinel) reading "Dropout (length unknown)".
+    #[test]
+    fn dropout_of_unknown_length_becomes_a_length_unknown_point_marker() {
+        let (service, _engine, _dir) = service("dropout-unknown-length");
+        let (mut capture, _info) = service
+            .begin_recording(48_000, BitDepth::Bit24, false)
+            .unwrap();
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.2, 48_000).unwrap();
+        capture.append(&samples).unwrap();
+        let dropouts = [vox_engine::record::DropoutMark {
+            pos_samples: 1_000,
+            len_samples: vox_engine::record::DropoutMark::UNKNOWN_LEN,
+        }];
+        let info = service
+            .commit_take(&capture.finish(), &dropouts)
+            .unwrap()
+            .expect("one undoable edit");
+        assert!(info.dirty);
+
+        let markers = service.markers_get();
+        assert_eq!(markers.len(), 1, "{markers:?}");
+        assert_eq!(markers[0].pos_samples, 1_000);
+        assert_eq!(markers[0].len_samples, 0, "a point marker — no known span");
+        assert_eq!(markers[0].name, "Dropout (length unknown)");
     }
 
     /// H-10 item 1: a `commit_take` failure (e.g. `TakeNotInStore` — the chunk store never got

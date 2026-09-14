@@ -63,6 +63,7 @@
   "rack.slot.status.restarting": "Restarting…",
   "rack.slot.status.failed": "Plugin failed",
   "rack.slot.status.not_installed": "Not installed",
+  "rack.slot.status.loading": "Loading…",
   "rack.slot.retry": "Retry",
   "rack.slot.menu.presets": "Presets",
   "rack.slot.menu.reset_default": "Reset to Default",
@@ -95,6 +96,7 @@
   "rack.category.utility": "Utility",
   "rack.category.analyzer": "Analyzer",
   "rack.category.other": "Other",
+  "rack.category.plugins_clap": "Plugins (CLAP)",
 
   "transport.group": "Transport",
   "transport.play": "Play",

@@ -5,7 +5,8 @@
   import { localized } from "./localized";
 
   /** The Add-module menu (SPEC-012 §2.1): the registry's modules grouped by feature (EQ,
-   * dynamics, restoration, utility, …). */
+   * dynamics, restoration, utility, …); installed CLAP effects (`clap:*`, T-803) in their own
+   * "Plugins (CLAP)" group after the built-in categories. */
   let {
     modules,
     disabled,
@@ -26,7 +27,7 @@
     "utility",
     "analyzer",
   ] as const;
-  type Category = (typeof CATEGORY_ORDER)[number] | "other";
+  type Category = (typeof CATEGORY_ORDER)[number] | "other" | "plugins_clap";
   const CATEGORY_FEATURES: Record<(typeof CATEGORY_ORDER)[number], string[]> = {
     eq: ["equalizer", "filter"],
     restoration: ["restoration"],
@@ -37,6 +38,9 @@
   };
 
   function categoryOf(m: ModuleDescriptorDto): Category {
+    if (m.id.startsWith("clap:")) {
+      return "plugins_clap";
+    }
     for (const cat of CATEGORY_ORDER) {
       if (CATEGORY_FEATURES[cat].some((f) => m.features.includes(f))) {
         return cat;
@@ -47,7 +51,7 @@
 
   // A fixed category order (EQ, restoration, dynamics, ...), not registry order — the menu's
   // layout doesn't depend on which module happens to be registered first.
-  const ALL_CATEGORIES: readonly Category[] = [...CATEGORY_ORDER, "other"];
+  const ALL_CATEGORIES: readonly Category[] = [...CATEGORY_ORDER, "other", "plugins_clap"];
 
   const groups = $derived.by(() => {
     const byCat = new Map<Category, ModuleDescriptorDto[]>();

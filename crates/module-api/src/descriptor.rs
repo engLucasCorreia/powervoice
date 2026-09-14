@@ -261,6 +261,14 @@ pub trait ModuleFactory: Send + Sync {
     fn presets(&self) -> Vec<ModulePreset> {
         Vec::new()
     }
+    /// Creating an instance is slow (T-803, ADR-005 Amendment 4): an out-of-process plugin
+    /// spawns a sandbox process and loads the plugin, which can take seconds. The live rack
+    /// then creates **and activates** instances on a worker thread and shows the slot as
+    /// loading meanwhile (`create` and `activate` must be callable from any non-audio thread);
+    /// offline renders still create them synchronously. Default `false`.
+    fn loads_async(&self) -> bool {
+        false
+    }
 }
 
 /// A factory preset.

@@ -22,6 +22,11 @@ Flagged components (ADR-007)
   into `vox-io`. Source for the exact version in use: https://github.com/pdeljanov/Symphonia (see
   the pinned version below). We have not modified any symphonia file; if we ever do, that file
   must be published under MPL-2.0 (ADR-007 §3).
+- **CLAP headers, MIT** (Copyright (c) 2021 Alexandre BIQUE). The crate `vox-clap-abi` transcribes
+  the CLAP 1.2 type definitions from https://github.com/free-audio/clap; the full MIT license text
+  is in `crates/clap-abi/LICENSE-CLAP`. Third-party CLAP plugins are not part of PowerVoice: they
+  are loaded at runtime, only inside the separate `powervoice-sandbox` process (ADR-008), through
+  `libloading` (ISC).
 - **System libraries** (dynamically linked, provided by the OS, never bundled except where noted):
   WebKitGTK / GTK3 (Linux), ALSA `libasound.so.2` (Linux, LGPL-2.1-or-later), PipeWire / JACK
   client libraries (Linux, MIT / LGPL respectively), WebView2 (Windows, Microsoft), CoreAudio /

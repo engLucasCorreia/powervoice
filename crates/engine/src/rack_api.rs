@@ -122,6 +122,9 @@ pub struct RackSlot {
     pub info: SlotInfo,
     /// Current plain value of each parameter in `info.params`.
     pub values: Vec<f64>,
+    /// Display text of each value (index-aligned with `values`): the plugin's own text for a
+    /// plugin that formats its values (T-803), else the module API's text rules.
+    pub texts: Vec<String>,
 }
 
 /// The rack as the UI renders it (`rack_get`, every mutating command's result, and the
@@ -147,7 +150,12 @@ impl RackSnapshot {
                     .iter()
                     .map(|p| host.param_value(i, p.id).unwrap_or(p.default))
                     .collect();
-                Some(RackSlot { info, values })
+                let texts = host.param_texts(i);
+                Some(RackSlot {
+                    info,
+                    values,
+                    texts,
+                })
             })
             .collect();
         Self {

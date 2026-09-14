@@ -57,6 +57,9 @@
         return slot.sandboxed ? { kind: "running", label: t("rack.slot.status.running") } : null;
       case "restarting":
         return { kind: "restarting", label: t("rack.slot.status.restarting") };
+      case "loading":
+        // T-803: an out-of-process plugin is being started (off the control thread).
+        return { kind: "loading", label: t("rack.slot.status.loading") };
       case "failed":
         return { kind: "failed", label: t("rack.slot.status.failed") };
       case "missing":
@@ -376,7 +379,7 @@
       {/if}
     </div>
   </header>
-  {#if slot.status.kind !== "active"}
+  {#if slot.status.kind !== "active" && slot.status.kind !== "loading"}
     <div class="status-row">
       <p class="status-message" data-testid="rack-slot-status">{slot.status.message}</p>
       {#if canRetry}

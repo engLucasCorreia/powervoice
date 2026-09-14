@@ -181,6 +181,20 @@ impl Sandbox {
         r
     }
 
+    /// A best-effort request (T-803: parameter text): a timeout is not a hang (the plugin's
+    /// main thread may just be busy); a closed channel is still a crash.
+    pub(crate) fn call_soft(
+        &self,
+        body: RequestBody,
+        timeout: Duration,
+    ) -> Result<(ResponseBody, Vec<u8>), RpcError> {
+        let r = lock(&self.rpc).call(body, Vec::new(), timeout);
+        if let Err(RpcError::Disconnected) = &r {
+            self.record(SandboxFault::Crashed);
+        }
+        r
+    }
+
     /// Installs (or removes) the monitor of the current activation's channel.
     pub(crate) fn set_monitor(&self, m: Option<Monitor>) {
         *lock(&self.monitor) = m;

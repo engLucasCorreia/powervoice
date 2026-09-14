@@ -16,6 +16,12 @@
 //!   request when callbacks exceed it).
 //! - **State** = the plugin's state wrapped with its format, plugin reference, id and version
 //!   ([`state`]), plus the mirrored parameter values (which win on load).
+//! - **Text:** a plugin that formats its own values (CLAP) answers the host-internal
+//!   `ParamText` extension through the control channel (T-803).
+//! - **CLAP enumeration** ([`scan`], T-803): the standard CLAP paths, each file scanned in its
+//!   own `powervoice-sandbox --scan` process (a crashing file is reported, not fatal), cached
+//!   by path + size + mtime.
+//! - Instances are created off the rack's control thread (`ModuleFactory::loads_async`).
 //! - The **watchdog** thread (one per process, [`watchdog`]) spawns the sandboxes, polls every
 //!   channel's `Monitor` (crash, hang, clean exit), kills hung processes and reaps retired ones:
 //!   no orphan processes, and no named shared-memory object outlives the handshake.
@@ -24,12 +30,13 @@ mod factory;
 mod proxy;
 mod rpc;
 mod sandbox;
+pub mod scan;
 pub mod state;
 pub mod watchdog;
 
 pub use factory::{
-    SandboxFactory, SandboxInstance, SandboxOptions, SandboxSpec, TEST_FORMAT, test_factories,
-    test_spec,
+    CLAP_FORMAT, SandboxFactory, SandboxInstance, SandboxOptions, SandboxSpec, TEST_FORMAT,
+    clap_spec, test_factories, test_spec,
 };
 pub use proxy::{MAX_TRANSPORT_BLOCK, ProxyModule};
 pub use sandbox::SandboxFault;

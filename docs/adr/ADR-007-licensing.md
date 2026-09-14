@@ -228,3 +228,12 @@ before the first public distribution or outside contribution, and it doesn't blo
   committed under `crates/io/tests/data/`, so importer tests don't need external encoders in CI.
 - **symphonia features:** `default-features = false` with `wav`, `pcm`, `flac`, `ogg`, `vorbis`, `mp3`,
   `isomp4`, `aac` (AAC-LC; patent note stays in the risk list).
+
+## Amendment — CLAP host bindings are hand-written (T-803, 2026-09-14)
+- The M8 row "clack-plugin / -host / -extensions 0.2.0" doesn't apply to the host side.
+  `vox-clap-abi` transcribes the CLAP 1.2 type definitions from the headers (MIT, Copyright (c)
+  2021 Alexandre BIQUE). The full license text is in `crates/clap-abi/LICENSE-CLAP`, and the
+  flagged section of THIRD_PARTY_NOTICES names it.
+- `libloading` (ISC), already a dependency of `vox-io` for LAME, also loads CLAP plugins, only
+  inside `powervoice-sandbox` (ADR-008 Amendment 3). No new third-party crate.
+- T-805 (`module-clap`, the plugin side) can still choose clack or reuse `vox-clap-abi`.

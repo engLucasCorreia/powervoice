@@ -406,3 +406,23 @@ describe("slot status and Retry (T-802)", () => {
     r.teardown();
   });
 });
+
+// T-803: an out-of-process plugin being started off the control thread.
+describe("loading slot (T-803)", () => {
+  it("shows Loading… with no status message, body or Retry", () => {
+    const { target, teardown } = render({
+      ...slotFixture(),
+      params: [],
+      values: [],
+      status: { kind: "loading" },
+    });
+    try {
+      expect(target.querySelector('[data-testid="rack-slot-badge"]')?.textContent?.trim()).toBe("Loading…");
+      expect(target.querySelector('[data-testid="rack-slot-status"]')).toBeNull();
+      expect(target.querySelector('[data-testid="rack-slot-retry"]')).toBeNull();
+      expect(target.querySelector(".body")).toBeNull();
+    } finally {
+      teardown();
+    }
+  });
+});

@@ -14,7 +14,8 @@
 //!   (§5–§6).
 //! - State: [`ModuleState`], [`prepare_state`] (§10).
 //! - Extensions: [`ExtensionId`], [`Extension`], [`Telemetry`], [`ResponseCurve`],
-//!   [`NoiseProfile`], [`AdapterHealth`] (§11; the last one is host-internal, T-802).
+//!   [`NoiseProfile`], [`AdapterHealth`], [`ParamText`] (§11; the last two are host-internal,
+//!   T-802/T-803).
 //!
 //! Feature `test-util` adds [`test_util::ModuleTestHost`] and the reference module
 //! [`test_util::TestGain`].
@@ -43,9 +44,9 @@ pub use event::{
     DEFAULT_EVENT_CAPACITY, EventList, EventListError, OutputEvents, ParamEvent, Segment, segments,
 };
 pub use extension::{
-    AdapterHealth, AtomicF32, CurveHandle, Extension, ExtensionId, Hold, NoiseProfile,
+    AdapterHealth, AtomicF32, CurveHandle, Extension, ExtensionId, Hold, NoiseProfile, ParamText,
     ResponseCurve, Telemetry, TelemetryCells, TelemetryInfo, TelemetryKind, adapter_health,
-    noise_profile, response_curve, telemetry,
+    noise_profile, param_text, response_curve, telemetry,
 };
 pub use module::{Module, ModuleError};
 pub use param::{

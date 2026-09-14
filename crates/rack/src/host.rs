@@ -5,15 +5,16 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use rtrb::PushError;
 use serde_json::Map;
 use vox_module_api::{
     ActivateConfig, AdapterHealth, CurveHandle, Module, ModuleDescriptor, ModuleError, ModuleRef,
-    ModuleState, NoiseProfile, ParamEvent, ParamFlags, ParamGroup, ParamId, ParamInfo,
-    ResponseCurve, Telemetry, TelemetryInfo, adapter_health, noise_profile, response_curve,
-    telemetry,
+    ModuleState, NoiseProfile, ParamEvent, ParamFlags, ParamGroup, ParamId, ParamInfo, ParamText,
+    ResponseCurve, Telemetry, TelemetryInfo, adapter_health, noise_profile, param_text,
+    response_curve, telemetry,
 };
 
 use crate::chain::PlanEntry;
@@ -75,6 +76,15 @@ pub enum RackNotice {
         /// Slot index.
         index: usize,
     },
+    /// A loading slot (a module created off the control thread, T-803) is ready: its schema,
+    /// values and latency are known now — or it resolved to a placeholder. A load that failed
+    /// is a [`RackNotice::SlotFailed`] instead.
+    SlotLoaded {
+        /// Slot.
+        slot: SlotUid,
+        /// Slot index.
+        index: usize,
+    },
 }
 
 /// State of a slot as the UI shows it.
@@ -101,6 +111,11 @@ pub enum SlotStatus {
         /// The failure ("‹plugin› crashed and was bypassed").
         message: String,
     },
+    /// A module whose factory [`loads_async`](vox_module_api::ModuleFactory::loads_async) (an
+    /// out-of-process plugin, T-803) is being created and activated off the control thread:
+    /// the slot passes dry (latency 0, no schema yet) until it's ready. Also shown while a
+    /// failed slot's replacement loads.
+    Loading,
 }
 
 /// Whether/how a slot's [`NoiseProfile`] blob loads (SPEC-014 §2.5, §2.8). `None` at the call
@@ -199,6 +214,9 @@ struct Loaded {
     /// The newest instance's [`AdapterHealth`] handle (out-of-process modules only; T-802):
     /// the failure reason, and whether the restart policy applies. Refreshed on replacement.
     health: Option<Arc<dyn AdapterHealth>>,
+    /// The newest instance's [`ParamText`] handle (a plugin that formats its own values,
+    /// T-803): display text and typed-text parsing. Refreshed on replacement.
+    text: Option<Arc<dyn ParamText>>,
 }
 
 /// A module's [`Telemetry`] handle and its channel descriptions.
@@ -212,6 +230,14 @@ fn telemetry_of(module: &dyn Module) -> (Option<Arc<dyn Telemetry>>, Arc<[Teleme
 
 enum Kind {
     Loaded(Box<Loaded>),
+    /// Being created and activated on a worker thread (T-803, a `loads_async` factory): dry,
+    /// latency 0, written back verbatim until the instance arrives.
+    Loading {
+        /// The stored slot being loaded.
+        model: SlotModel,
+        /// Display name (the factory's).
+        name: String,
+    },
     /// Dry, latency 0, written back verbatim: a missing module, a too-new state, or (`failed`)
     /// a module that could not start when the rack was loaded.
     Placeholder {
@@ -231,6 +257,9 @@ struct HostSlot {
     auto_restarts: u32,
     /// An automatic restart is due at this time (the slot shows "Restarting").
     restart_due: Option<Instant>,
+    /// The background instantiation in flight for this slot (T-803): its first instance
+    /// ([`Kind::Loading`]) or a replacement of a loaded one.
+    job: Option<PendingJob>,
 }
 
 impl HostSlot {
@@ -242,7 +271,44 @@ impl HostSlot {
             kind,
             auto_restarts: 0,
             restart_due: None,
+            job: None,
         }
+    }
+}
+
+/// A background instantiation a slot waits for (T-803).
+struct PendingJob {
+    id: u64,
+    /// Replacements: the mirror when it was requested — a value the user changes meanwhile
+    /// wins over the new instance's.
+    values: Vec<f64>,
+    /// Replacements: the requested state's blob (the committed blob if the instance has none).
+    blob: Option<Vec<u8>>,
+}
+
+/// A finished background instantiation (T-803), sent by the loader thread.
+struct LoadDone {
+    job: u64,
+    uid: SlotUid,
+    result: Result<Resolved, RackError>,
+}
+
+/// The display name of `s`'s module when its factory loads asynchronously (T-803), else
+/// `None` (create it here, synchronously).
+fn async_name(registry: &Registry, s: &SlotModel) -> Option<String> {
+    if s.is_malformed() {
+        return None;
+    }
+    let r = s.module_ref().ok()?;
+    let f = registry.get(&r.id)?;
+    f.loads_async().then(|| f.descriptor().name.text.clone())
+}
+
+/// "Couldn't start ‹module›: ‹reason›" for a slot that failed to start.
+fn start_failure(s: &SlotModel, e: RackError) -> String {
+    match e {
+        RackError::Activate { .. } | RackError::Create { .. } => e.to_string(),
+        other => format!("Couldn't start {}: {other}", s.module),
     }
 }
 
@@ -329,6 +395,7 @@ fn loaded_from(module: Box<dyn Module>) -> Box<Loaded> {
     let curve = response_curve(module.as_ref());
     let (telemetry, telemetry_channels) = telemetry_of(module.as_ref());
     let health = adapter_health(module.as_ref());
+    let text = param_text(module.as_ref());
     Box::new(Loaded {
         descriptor: module.descriptor().clone(),
         params,
@@ -343,17 +410,25 @@ fn loaded_from(module: Box<dyn Module>) -> Box<Loaded> {
         telemetry,
         telemetry_channels,
         health,
+        text,
     })
 }
 
 /// The host slot kind for a stored slot, never failing: missing modules and too-new states
-/// become placeholders, modules that cannot start become failed placeholders (kept verbatim).
+/// become placeholders, modules that cannot start become failed placeholders (kept verbatim),
+/// modules that load asynchronously start [`Kind::Loading`] (the caller starts the job).
 fn resolve_lenient(
     registry: &Registry,
     config: &ActivateConfig,
     s: &SlotModel,
     index: usize,
 ) -> Kind {
+    if let Some(name) = async_name(registry, s) {
+        return Kind::Loading {
+            model: s.clone(),
+            name,
+        };
+    }
     match registry.instantiate(s, config, index) {
         Ok(Resolved::Module(m)) => Kind::Loaded(loaded_from(m)),
         Ok(Resolved::Placeholder { message, too_new }) => Kind::Placeholder {
@@ -362,18 +437,12 @@ fn resolve_lenient(
             too_new,
             failed: false,
         },
-        Err(e) => {
-            let message = match e {
-                RackError::Activate { .. } | RackError::Create { .. } => e.to_string(),
-                other => format!("Couldn't start {}: {other}", s.module),
-            };
-            Kind::Placeholder {
-                model: s.clone(),
-                message,
-                too_new: false,
-                failed: true,
-            }
-        }
+        Err(e) => Kind::Placeholder {
+            model: s.clone(),
+            message: start_failure(s, e),
+            too_new: false,
+            failed: true,
+        },
     }
 }
 
@@ -421,6 +490,11 @@ fn build_fresh_slot(
         }
         Kind::Placeholder { model, .. } => {
             let mut slot = Slot::new(hs.uid, None, model.module.clone(), options);
+            slot.attach(config, fade_len, init, 0);
+            slot
+        }
+        Kind::Loading { name, .. } => {
+            let mut slot = Slot::new(hs.uid, None, name.clone(), options);
             slot.attach(config, fade_len, init, 0);
             slot
         }
@@ -494,7 +568,7 @@ fn total_latency(slots: &[HostSlot]) -> u32 {
         .iter()
         .map(|s| match &s.kind {
             Kind::Loaded(l) => l.latency,
-            Kind::Placeholder { .. } => 0,
+            Kind::Placeholder { .. } | Kind::Loading { .. } => 0,
         })
         .fold(0u32, u32::saturating_add)
 }
@@ -518,6 +592,10 @@ pub struct RackHost {
     next_uid: u64,
     notices: Vec<RackNotice>,
     reported_latency: u32,
+    /// Background instantiations report here (T-803; drained by [`tick`](Self::tick)).
+    loads_tx: Sender<LoadDone>,
+    loads_rx: Receiver<LoadDone>,
+    next_job: u64,
 }
 
 impl RackHost {
@@ -559,7 +637,8 @@ impl RackHost {
         let total = total_latency(&slots);
         let ab_capacity = (total as usize).max((config.sample_rate * 0.1).round() as usize);
         let (live, link) = LiveRack::new(Box::new(chain), ab_capacity);
-        let host = Self {
+        let (loads_tx, loads_rx) = mpsc::channel();
+        let mut host = Self {
             registry,
             config,
             options,
@@ -575,8 +654,170 @@ impl RackHost {
             next_uid,
             notices: Vec::new(),
             reported_latency: total,
+            loads_tx,
+            loads_rx,
+            next_job: 1,
         };
+        host.start_pending_loads();
         Ok((host, live))
+    }
+
+    /// Starts a background instantiation of `model` for slot `uid` (T-803): the loader thread
+    /// creates and activates the instance and reports through the load ring; a result for a
+    /// slot that is gone (or has a newer job) is deactivated and dropped by the next tick.
+    fn spawn_load(&mut self, uid: SlotUid, model: SlotModel, index: usize) -> u64 {
+        let job = self.next_job;
+        self.next_job += 1;
+        let (registry, config, tx) = (self.registry.clone(), self.config, self.loads_tx.clone());
+        let id = model.module.clone();
+        let spawned = std::thread::Builder::new()
+            .name("rack-loader".into())
+            .spawn(move || {
+                let result = registry.instantiate(&model, &config, index);
+                if let Err(mpsc::SendError(done)) = tx.send(LoadDone { job, uid, result })
+                    && let Ok(Resolved::Module(mut m)) = done.result
+                {
+                    // The rack is gone: nobody will take the instance.
+                    m.deactivate();
+                }
+            });
+        if let Err(e) = spawned {
+            let _ = self.loads_tx.send(LoadDone {
+                job,
+                uid,
+                result: Err(RackError::Create {
+                    id,
+                    source: ModuleError::External(format!("couldn't start a loader thread: {e}")),
+                }),
+            });
+        }
+        job
+    }
+
+    /// Starts the job of every [`Kind::Loading`] slot that has none yet.
+    fn start_pending_loads(&mut self) {
+        for k in 0..self.slots.len() {
+            let hs = &self.slots[k];
+            if hs.job.is_some() {
+                continue;
+            }
+            let Kind::Loading { model, .. } = &hs.kind else {
+                continue;
+            };
+            let (uid, model) = (hs.uid, model.clone());
+            let id = self.spawn_load(uid, model, k);
+            self.slots[k].job = Some(PendingJob {
+                id,
+                values: Vec::new(),
+                blob: None,
+            });
+        }
+    }
+
+    /// True while a background instantiation is in flight (a slot loading, or a replacement
+    /// on its way).
+    pub fn is_loading(&self) -> bool {
+        self.slots.iter().any(|s| s.job.is_some())
+    }
+
+    /// Takes the finished background instantiations (T-803).
+    fn drain_loads(&mut self) {
+        while let Ok(done) = self.loads_rx.try_recv() {
+            self.on_load_done(done);
+        }
+    }
+
+    fn on_load_done(&mut self, done: LoadDone) {
+        let current = self
+            .index_of(done.uid)
+            .filter(|&k| self.slots[k].job.as_ref().is_some_and(|j| j.id == done.job));
+        let Some(k) = current else {
+            // The slot was removed, or a newer job superseded this one.
+            if let Ok(Resolved::Module(mut m)) = done.result {
+                m.deactivate();
+            }
+            return;
+        };
+        let Some(job) = self.slots[k].job.take() else {
+            return;
+        };
+        let uid = done.uid;
+        match &self.slots[k].kind {
+            Kind::Loading { model, .. } => {
+                let model = model.clone();
+                match done.result {
+                    Ok(Resolved::Module(m)) => {
+                        self.slots[k].kind = Kind::Loaded(loaded_from(m));
+                        // The audio thread runs the dry stand-in: replace it (the instance
+                        // fades in from the undelayed input once its output is valid).
+                        if let Some(li) = self.layout_pos(uid)
+                            && self.layout[li].sent
+                        {
+                            self.layout[li].replace = true;
+                        }
+                        self.dirty = true;
+                        self.notices.push(RackNotice::SlotLoaded {
+                            slot: uid,
+                            index: k,
+                        });
+                    }
+                    Ok(Resolved::Placeholder { message, too_new }) => {
+                        self.slots[k].kind = Kind::Placeholder {
+                            model,
+                            message,
+                            too_new,
+                            failed: false,
+                        };
+                        self.notices.push(RackNotice::SlotLoaded {
+                            slot: uid,
+                            index: k,
+                        });
+                    }
+                    Err(e) => {
+                        let message = start_failure(&model, e);
+                        self.slots[k].kind = Kind::Placeholder {
+                            model,
+                            message: message.clone(),
+                            too_new: false,
+                            failed: true,
+                        };
+                        self.notices.push(RackNotice::SlotFailed {
+                            slot: uid,
+                            index: k,
+                            message,
+                        });
+                    }
+                }
+            }
+            Kind::Loaded(l) => {
+                let name = l.descriptor.name.text.clone();
+                let err = match done.result {
+                    Ok(Resolved::Module(m)) => {
+                        self.install_replacement(k, m, job.blob, Some(&job.values));
+                        None
+                    }
+                    Ok(Resolved::Placeholder { message, .. }) => Some(message),
+                    Err(e) => Some(e.to_string()),
+                };
+                if let Some(err) = err
+                    && let Kind::Loaded(l) = &mut self.slots[k].kind
+                {
+                    let message = format!("Couldn't restart {name}: {err}");
+                    l.failed = Some(message.clone());
+                    self.notices.push(RackNotice::SlotFailed {
+                        slot: uid,
+                        index: k,
+                        message,
+                    });
+                }
+            }
+            Kind::Placeholder { .. } => {
+                if let Ok(Resolved::Module(mut m)) = done.result {
+                    m.deactivate();
+                }
+            }
+        }
+        self.check_latency();
     }
 
     fn alloc_uid(&mut self) -> SlotUid {
@@ -638,14 +879,15 @@ impl RackHost {
                 name: l.descriptor.name.text.clone(),
                 bypass: hs.bypass,
                 latency_samples: l.latency,
-                status: match (&l.failed, hs.restart_due) {
-                    (Some(message), Some(_)) => SlotStatus::Restarting {
+                status: match (&l.failed, hs.restart_due, &hs.job) {
+                    (Some(_), _, Some(_)) => SlotStatus::Loading,
+                    (Some(message), Some(_), None) => SlotStatus::Restarting {
                         message: message.clone(),
                     },
-                    (Some(message), None) => SlotStatus::Failed {
+                    (Some(message), None, None) => SlotStatus::Failed {
                         message: message.clone(),
                     },
-                    (None, _) => SlotStatus::Active,
+                    (None, _, _) => SlotStatus::Active,
                 },
                 params: l.params.clone(),
                 groups: l.groups.clone(),
@@ -683,7 +925,50 @@ impl RackHost {
                 telemetry: Arc::from(Vec::new()),
                 sandboxed: false,
             },
+            Kind::Loading { model, name } => SlotInfo {
+                uid: hs.uid,
+                module: model.module.clone(),
+                module_id: None,
+                name: name.clone(),
+                bypass: hs.bypass,
+                latency_samples: 0,
+                status: SlotStatus::Loading,
+                params: Arc::from(Vec::new()),
+                groups: Arc::from(Vec::new()),
+                noise_profile: None,
+                curve_handles: None,
+                telemetry: Arc::from(Vec::new()),
+                sandboxed: false,
+            },
         })
+    }
+
+    /// The display text of every parameter value of slot `index` (index-aligned with its
+    /// schema; empty for a slot without one): the plugin's own text when it has
+    /// [`ParamText`] (one batched round trip, T-803), else the module API's text rules.
+    pub fn param_texts(&self, index: usize) -> Vec<String> {
+        let Some(Kind::Loaded(l)) = self.slots.get(index).map(|s| &s.kind) else {
+            return Vec::new();
+        };
+        let own = l.text.as_ref().map(|t| {
+            let values: Vec<(ParamId, f64)> = l
+                .params
+                .iter()
+                .zip(&l.values)
+                .map(|(p, &v)| (p.id, v))
+                .collect();
+            t.values_to_text(&values)
+        });
+        l.params
+            .iter()
+            .zip(&l.values)
+            .enumerate()
+            .map(|(i, (p, &v))| {
+                own.as_ref()
+                    .and_then(|o| o.get(i).cloned().flatten())
+                    .unwrap_or_else(|| p.value_to_text(v))
+            })
+            .collect()
     }
 
     /// Total latency: the sum of slot latencies, bypassed slots included, placeholders 0
@@ -735,7 +1020,7 @@ impl RackHost {
                         m.extra = hs.extra.clone();
                         m
                     }
-                    Kind::Placeholder { model, .. } => {
+                    Kind::Placeholder { model, .. } | Kind::Loading { model, .. } => {
                         let mut m = model.clone();
                         m.bypass = hs.bypass;
                         m
@@ -784,13 +1069,18 @@ impl RackHost {
         let p = &l.params[pi];
         let v = l.values[pi];
         let (uid, pid) = (hs.uid, p.id);
+        let text = l
+            .text
+            .as_ref()
+            .and_then(|t| t.values_to_text(&[(pid, v)]).into_iter().next().flatten())
+            .unwrap_or_else(|| p.value_to_text(v));
         let notice = RackNotice::ParamChanged {
             slot: uid,
             index,
             id: pid,
             value: v,
             normalized: p.to_normalized(v),
-            text: p.value_to_text(v),
+            text,
         };
         self.notices.retain(
             |n| !matches!(n, RackNotice::ParamChanged { slot, id, .. } if *slot == uid && *id == pid),
@@ -834,6 +1124,10 @@ impl RackHost {
     /// reported latency) and fades in over 15 ms while the other slots keep running untouched.
     /// A missing module becomes a placeholder. A module that fails to activate is not inserted
     /// ("Couldn't start ‹module›: ‹reason›").
+    ///
+    /// A module whose factory loads asynchronously (T-803) is inserted at once as a loading
+    /// slot (dry) and created on a worker thread; it becomes active — or a failed slot with
+    /// the reason — at a later [`tick`](Self::tick).
     pub fn insert(&mut self, index: usize, slot: SlotModel) -> Result<SlotUid, RackError> {
         if index > self.slots.len() {
             return Err(RackError::IndexOutOfRange {
@@ -844,13 +1138,19 @@ impl RackHost {
         if self.slots.len() >= MAX_SLOTS {
             return Err(RackError::TooManySlots);
         }
-        let kind = match self.registry.instantiate(&slot, &self.config, index)? {
-            Resolved::Module(m) => Kind::Loaded(loaded_from(m)),
-            Resolved::Placeholder { message, too_new } => Kind::Placeholder {
+        let kind = match async_name(&self.registry, &slot) {
+            Some(name) => Kind::Loading {
                 model: slot.clone(),
-                message,
-                too_new,
-                failed: false,
+                name,
+            },
+            None => match self.registry.instantiate(&slot, &self.config, index)? {
+                Resolved::Module(m) => Kind::Loaded(loaded_from(m)),
+                Resolved::Placeholder { message, too_new } => Kind::Placeholder {
+                    model: slot.clone(),
+                    message,
+                    too_new,
+                    failed: false,
+                },
             },
         };
         let uid = self.alloc_uid();
@@ -858,6 +1158,7 @@ impl RackHost {
         self.layout.insert(pos, LayoutEntry::new(uid));
         self.slots
             .insert(index, HostSlot::new(uid, slot.bypass, slot.extra, kind));
+        self.start_pending_loads();
         self.dirty = true;
         self.flush();
         self.check_latency();
@@ -935,16 +1236,23 @@ impl RackHost {
             Kind::Loaded(l) => {
                 let model =
                     SlotModel::new(&ModuleRef::of(&l.descriptor), bypass, &committed_state(l));
-                match self.registry.instantiate(&model, &self.config, to)? {
-                    Resolved::Module(m) => Kind::Loaded(loaded_from(m)),
-                    Resolved::Placeholder { message, too_new } => Kind::Placeholder {
-                        model,
-                        message,
-                        too_new,
-                        failed: false,
+                match async_name(&self.registry, &model) {
+                    Some(name) => Kind::Loading { model, name },
+                    None => match self.registry.instantiate(&model, &self.config, to)? {
+                        Resolved::Module(m) => Kind::Loaded(loaded_from(m)),
+                        Resolved::Placeholder { message, too_new } => Kind::Placeholder {
+                            model,
+                            message,
+                            too_new,
+                            failed: false,
+                        },
                     },
                 }
             }
+            Kind::Loading { model, name } => Kind::Loading {
+                model: model.clone(),
+                name: name.clone(),
+            },
             Kind::Placeholder {
                 model,
                 message,
@@ -959,7 +1267,7 @@ impl RackHost {
         };
         let hold = match &kind {
             Kind::Loaded(l) => l.latency,
-            Kind::Placeholder { .. } => 0,
+            Kind::Placeholder { .. } | Kind::Loading { .. } => 0,
         };
         self.remove_with_hold(from, hold)?;
         let uid = self.alloc_uid();
@@ -967,6 +1275,7 @@ impl RackHost {
         self.layout.insert(pos, LayoutEntry::new(uid));
         self.slots
             .insert(to, HostSlot::new(uid, bypass, extra, kind));
+        self.start_pending_loads();
         self.dirty = true;
         self.flush();
         self.check_latency();
@@ -1066,8 +1375,14 @@ impl RackHost {
         text: &str,
     ) -> Result<f64, RackError> {
         let p = self.param_info(index, id)?;
-        let v = p
-            .text_to_value(text)
+        // A plugin that parses its own text (T-803) first, then the module API's rules.
+        let own = match self.slots.get(index).map(|s| &s.kind) {
+            Some(Kind::Loaded(l)) => l.text.clone(),
+            _ => None,
+        };
+        let v = own
+            .and_then(|t| t.text_to_value(id, text))
+            .or_else(|| p.text_to_value(text))
             .ok_or_else(|| RackError::InvalidText(text.to_owned()))?;
         self.set_param(index, id, v)
     }
@@ -1113,6 +1428,12 @@ impl RackHost {
         };
         let mut model = model.clone();
         model.bypass = hs.bypass;
+        if let Some(name) = async_name(&self.registry, &model) {
+            // T-803: created off the control thread; the stand-in keeps passing dry until then.
+            self.slots[index].kind = Kind::Loading { model, name };
+            self.start_pending_loads();
+            return Ok(());
+        }
         let m = match self.registry.instantiate(&model, &self.config, index)? {
             Resolved::Module(m) => m,
             Resolved::Placeholder { message, .. } => {
@@ -1156,6 +1477,18 @@ impl RackHost {
         };
         let state = state.unwrap_or_else(|| committed_state(l));
         let model = SlotModel::new(&ModuleRef::of(&l.descriptor), hs.bypass, &state);
+        if async_name(&self.registry, &model).is_some() {
+            // T-803: the replacement is created off the control thread; the current instance
+            // keeps playing (or stays bypassed) until it arrives (`install_replacement`).
+            let values = l.values.clone();
+            let id = self.spawn_load(uid, model, index);
+            self.slots[index].job = Some(PendingJob {
+                id,
+                values,
+                blob: state.blob,
+            });
+            return Ok(());
+        }
         let m = match self.registry.instantiate(&model, &self.config, index)? {
             Resolved::Module(m) => m,
             Resolved::Placeholder { message, .. } => {
@@ -1165,13 +1498,37 @@ impl RackHost {
                 });
             }
         };
+        self.install_replacement(index, m, state.blob, None);
+        Ok(())
+    }
+
+    /// Makes `m` (activated, built from the slot's committed or requested state) slot
+    /// `index`'s next instance: mirror, blob and extension handles follow it, and it
+    /// crossfades in once its output is valid. `requested`: the mirror when an asynchronous
+    /// replacement was requested — values changed since then keep the mirror's value (they reach
+    /// the new instance as events at its first sample).
+    fn install_replacement(
+        &mut self,
+        index: usize,
+        mut m: Box<dyn Module>,
+        blob: Option<Vec<u8>>,
+        requested: Option<&[f64]>,
+    ) {
+        let uid = self.slots[index].uid;
         let latency = m.latency_samples();
         let Kind::Loaded(l) = &mut self.slots[index].kind else {
-            unreachable!("checked above");
+            m.deactivate();
+            return;
         };
         let mut changed = Vec::new();
         for (pi, p) in l.params.iter().enumerate() {
             if p.flags.contains(ParamFlags::READ_ONLY) {
+                continue;
+            }
+            let edited = requested
+                .and_then(|r| r.get(pi))
+                .is_some_and(|v| v.to_bits() != l.values[pi].to_bits());
+            if edited {
                 continue;
             }
             let v = m.param_value(p.id).unwrap_or(p.default);
@@ -1180,9 +1537,10 @@ impl RackHost {
                 changed.push(pi);
             }
         }
-        l.blob = m.save_state().ok().and_then(|s| s.blob).or(state.blob);
+        l.blob = m.save_state().ok().and_then(|s| s.blob).or(blob);
         (l.telemetry, l.telemetry_channels) = telemetry_of(m.as_ref());
         l.health = adapter_health(m.as_ref());
+        l.text = param_text(m.as_ref());
         if let Some(mut old) = l.fresh.replace(m) {
             old.deactivate();
         }
@@ -1201,7 +1559,6 @@ impl RackHost {
             .push(RackNotice::SlotRestarted { slot: uid, index });
         self.flush();
         self.check_latency();
-        Ok(())
     }
 
     // --- Presets (T-406, ADR-005 §10/§12, SPEC-012 §2.7) ------------------------------------
@@ -1294,7 +1651,7 @@ impl RackHost {
     pub fn noise_profile_extension(&self, index: usize) -> Option<Arc<dyn NoiseProfile>> {
         match &self.slots.get(index)?.kind {
             Kind::Loaded(l) => l.noise_profile.clone(),
-            Kind::Placeholder { .. } => None,
+            Kind::Placeholder { .. } | Kind::Loading { .. } => None,
         }
     }
 
@@ -1307,7 +1664,7 @@ impl RackHost {
     pub fn response_curve_extension(&self, index: usize) -> Option<Arc<dyn ResponseCurve>> {
         match &self.slots.get(index)?.kind {
             Kind::Loaded(l) => l.response_curve.clone(),
-            Kind::Placeholder { .. } => None,
+            Kind::Placeholder { .. } | Kind::Loading { .. } => None,
         }
     }
 
@@ -1382,7 +1739,7 @@ impl RackHost {
                         m.extra = hs.extra.clone();
                         Some(m)
                     }
-                    Kind::Placeholder { .. } => None,
+                    Kind::Placeholder { .. } | Kind::Loading { .. } => None,
                 })
                 .collect(),
         }
@@ -1420,6 +1777,7 @@ impl RackHost {
                 .push(HostSlot::new(uid, s.bypass, s.extra.clone(), kind));
             self.layout.push(LayoutEntry::new(uid));
         }
+        self.start_pending_loads();
         self.set_ab(false);
         self.dirty = true;
         self.flush();
@@ -1445,10 +1803,12 @@ impl RackHost {
                 let Some(k) = self.index_of(slot) else {
                     return;
                 };
-                if self
-                    .layout_pos(slot)
-                    .is_some_and(|li| self.layout[li].replace)
+                if self.slots[k].job.is_some()
+                    || self
+                        .layout_pos(slot)
+                        .is_some_and(|li| self.layout[li].replace)
                 {
+                    // A replacement is already on its way.
                     return;
                 }
                 if let Err(err) = self.restart_now(k) {
@@ -1526,6 +1886,7 @@ impl RackHost {
         while let Ok(e) = self.link.events.pop() {
             self.on_event(e);
         }
+        self.drain_loads();
         self.run_due_restarts(Instant::now());
         self.flush();
         self.pump_backlog();

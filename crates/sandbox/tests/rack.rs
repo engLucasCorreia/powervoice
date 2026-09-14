@@ -75,6 +75,27 @@ fn status(host: &RackHost, index: usize) -> SlotStatus {
     host.slot_info(index).unwrap().status
 }
 
+/// Ticks until the rack's background loads are done (T-803: sandboxed slots are created off
+/// the control thread).
+fn loaded(host: &mut RackHost) {
+    let t0 = Instant::now();
+    while host.is_loading() {
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "sandboxed slots never loaded"
+        );
+        host.tick();
+        thread::sleep(Duration::from_millis(2));
+    }
+    host.tick();
+}
+
+/// Where a slot that replaced its loading stand-in at the first callback is steady: its
+/// latency, the 15 ms crossfade and a block of margin.
+fn settled(latency: usize) -> usize {
+    latency + (RATE * 0.015).round() as usize + 256
+}
+
 #[test]
 fn a_sandboxed_slot_is_bit_exact_and_allocation_free_in_the_live_rack() {
     let f = factory("gain", "gain", exact_options());
@@ -85,6 +106,8 @@ fn a_sandboxed_slot_is_bit_exact_and_allocation_free_in_the_live_rack() {
         &model(vec![gain_slot("test:gain@1.0.0", -6.0)]),
     )
     .unwrap();
+    assert_eq!(status(&host, 0), SlotStatus::Loading);
+    loaded(&mut host);
     let info = host.slot_info(0).unwrap();
     assert!(info.sandboxed);
     assert_eq!(info.status, SlotStatus::Active);
@@ -94,10 +117,12 @@ fn a_sandboxed_slot_is_bit_exact_and_allocation_free_in_the_live_rack() {
     let x = noise(RATE as usize, 11);
     let y = drive(&mut host, &mut live, &x, 256);
     let want = reference(&x, -6.0);
-    assert!(y[..latency].iter().all(|v| *v == 0.0));
+    // The instance replaced its loading stand-in at the first callback (T-803): exact once
+    // that crossfade is over.
+    let s = settled(latency);
     assert_bits(
-        &y[latency..],
-        &want[..x.len() - latency],
+        &y[s..],
+        &want[s - latency..x.len() - latency],
         "live rack vs in-process Gain",
     );
     let pid = f.live_instances()[0].pid;
@@ -174,6 +199,7 @@ fn kill_9_mid_playback_bypasses_restarts_with_state_then_fails() {
         &model(vec![gain_slot("test:gain@1.0.0", -12.0)]),
     )
     .unwrap();
+    loaded(&mut host);
     let latency = host.total_latency_samples() as usize;
     let x = Arc::new(sine(RATE as usize * 30, 220.0, 0.5));
     let audio = start_audio(live, x.clone());
@@ -293,6 +319,7 @@ fn removal_and_teardown_reap_the_sandboxes() {
         ]),
     )
     .unwrap();
+    loaded(&mut host);
     let pids: Vec<u32> = f.live_instances().iter().map(|i| i.pid).collect();
     assert_eq!(pids.len(), 2);
     let x = noise(4800, 1);
@@ -338,6 +365,7 @@ fn state_round_trips_through_the_sidecar_json_and_a_module_preset() {
         &model(vec![gain_slot("test:gain@1.0.0", 0.0)]),
     )
     .unwrap();
+    loaded(&mut host);
     host.set_param(0, Gain::GAIN_DB, -9.5).unwrap();
     let saved = host.model();
 
@@ -356,12 +384,14 @@ fn state_round_trips_through_the_sidecar_json_and_a_module_preset() {
 
     let (mut reopened, mut live2) =
         RackHost::new(registry.clone(), rt(), RackOptions::default(), &back).unwrap();
+    loaded(&mut reopened);
     assert_eq!(reopened.param_value(0, Gain::GAIN_DB), Some(-9.5));
     assert_eq!(status(&reopened, 0), SlotStatus::Active);
     let x = noise(12_000, 2);
     let y = drive(&mut reopened, &mut live2, &x, 256);
     let want = reference(&x, -9.5);
-    assert_bits(&y[256..], &want[..x.len() - 256], "reopened rack");
+    let s = settled(256);
+    assert_bits(&y[s..], &want[s - 256..x.len() - 256], "reopened rack");
 
     // Module preset: saved from the live slot, applied to a fresh slot at 0 dB.
     let dir = std::env::temp_dir().join(format!("powervoice-t802-presets-{}", std::process::id()));
@@ -378,7 +408,10 @@ fn state_round_trips_through_the_sidecar_json_and_a_module_preset() {
         &model(vec![gain_slot("test:gain@1.0.0", 0.0)]),
     )
     .unwrap();
+    loaded(&mut third);
     third.apply_module_preset(0, &preset).unwrap();
+    // A preset with a plugin state replaces the instance (in the background, T-803).
+    loaded(&mut third);
     assert_eq!(third.param_value(0, Gain::GAIN_DB), Some(-9.5));
     assert_eq!(
         state_gain_db(&third.slot_state(0).unwrap()).to_bits(),
@@ -419,6 +452,7 @@ fn missing_and_unstartable_plugins_load_as_placeholders() {
     );
     let (mut host, live) =
         RackHost::new(registry_with(&[bad]), rt(), RackOptions::default(), &m).unwrap();
+    loaded(&mut host);
     match status(&host, 0) {
         SlotStatus::Failed { message } => {
             assert!(message.starts_with("Couldn't start test:gain"), "{message}");
@@ -429,7 +463,10 @@ fn missing_and_unstartable_plugins_load_as_placeholders() {
         }
         other => panic!("expected Failed, got {other:?}"),
     }
-    assert!(host.restart(0).is_err());
+    // Retry loads again in the background (T-803) and fails the same way.
+    host.restart(0).unwrap();
+    assert_eq!(status(&host, 0), SlotStatus::Loading);
+    loaded(&mut host);
     assert!(matches!(status(&host, 0), SlotStatus::Failed { .. }));
     assert_eq!(host.model(), m);
     host.teardown(live);

@@ -6,9 +6,10 @@ license.workspace = true
 publish.workspace = true
 
 # T-802 (ADR-008 + Amendment 2): the plugin sandbox process — one per plugin instance. Attaches
-# the T-801 segment, loads a plugin through a `PluginBackend` (here: the built-in test backend;
-# T-803+ add CLAP/VST3/LV2/JSFX, linked only into this binary, ADR-008 §8), runs the sandbox
-# audio thread and answers the host's control requests on stdin/stdout.
+# the T-801 segment, loads a plugin through a `PluginBackend` (the built-in test backend and,
+# T-803, CLAP; VST3/LV2/JSFX later — linked only into this binary, ADR-008 §8), runs the sandbox
+# audio thread and answers the host's control requests on stdin/stdout. T-803: also
+# `--scan <file> --format clap` (enumeration in a disposable process, ADR-008 §6).
 
 [[bin]]
 name = "powervoice-sandbox"
@@ -20,6 +21,10 @@ vox-module-api = { path = "../module-api" }
 # The test backend wraps the built-in Gain, so the proxy path can be compared bit-exactly with
 # the in-process module (T-802 acceptance).
 vox-modules = { path = "../modules" }
+# T-803: the CLAP backend (hand-written CLAP 1.2 bindings; dlopen through libloading, already in
+# the tree for the runtime-loaded LAME, ADR-007 §4).
+vox-clap-abi = { path = "../clap-abi" }
+libloading.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(unix)'.dependencies]
@@ -30,6 +35,10 @@ vox-module-api = { path = "../module-api", features = ["test-util"] }
 vox-plugin-host = { path = "../plugin-host" }
 vox-rack = { path = "../rack" }
 vox-presets = { path = "../presets" }
+# T-803: the test CLAP plugin (`cdylib`): depending on it makes cargo build the `.so` the tests
+# load (`target/<profile>/deps/libvox_test_clap.so`).
+vox-test-clap = { path = "../test-clap" }
+serde_json.workspace = true
 
 [lints]
 workspace = true

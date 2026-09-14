@@ -430,3 +430,159 @@ module presets.
   rack's slot bypass is correctly latency-matched.
 - Windows: no job object (`KILL_ON_JOB_CLOSE`) yet, no stdout redirect, and the wakeup is still
   spin-then-yield (Amendment 1 §2).
+
+## Amendment 3 — T-803 CLAP backend, enumeration and asynchronous loading, as implemented (2026-09-14)
+New crates: `vox-clap-abi` (bindings) and `vox-test-clap` (test plugin, never shipped). No new
+third-party crate.
+
+### 1. Bindings are hand-written, not clack (refines §8)
+- **`vox-clap-abi`** transcribes the CLAP 1.2 subset we use as `#[repr(C)]` types:
+  - the entry point and plugin factory, the plugin and host vtables;
+  - `clap_process`, audio buffers, parameter and gesture events, in/out event lists, streams;
+  - `params`, `state`, `latency`, `tail`, `audio-ports`, `log`, `thread-check`.
+- It is layout-tested on 64-bit targets. The headers' MIT notice is in `LICENSE-CLAP` and in
+  THIRD_PARTY_NOTICES (ADR-007 amendment).
+- Why not `clack-host`: its API isn't frozen (ADR-007 pins exact versions), and the subset is
+  about 600 lines. The plugins are loaded with `libloading`, already in the tree for LAME.
+- Only `powervoice-sandbox` and the test plugin link the bindings; the editor links none.
+
+### 2. The CLAP backend (`crates/sandbox/src/clap/`)
+**Identity.** The plugin reference is `ClapPluginRef`, the JSON `{path, id}`. The module id is
+`clap:<plugin id>`; the version comes from `Version::parse_lenient`.
+
+**Load** (main thread): dlopen → `clap_entry.init(path)` → factory → `create_plugin` → `init`.
+- The plugin needs `clap.audio-ports` with at least one input and one output: effects only.
+  `note-ports` is ignored.
+- A macOS bundle loads `X.clap/Contents/MacOS/X`.
+- At exit, `destroy`, `deinit` and the unload all run on the main thread.
+
+**Threads.**
+- The control loop now reads frames on a reader thread. The main thread (the plugin's main
+  thread) also ticks every 10 ms:
+  - `request_callback` → `on_main_thread`;
+  - `params.request_flush` while inactive → `params.flush`.
+- `start_processing` runs on the audio thread before the first chunk; `stop_processing` runs
+  there before the loop exits (`PluginInstance::audio_thread_stopping`).
+- `thread-check` answers.
+- The host log goes to the sandbox's stderr as `powervoice-sandbox: <plugin> [level] message`.
+
+**Audio** (per activation, buffers for every port at `max_block`):
+- **Mono shim, input:** every channel of the main input port gets the mono input (upmix).
+  Other input ports (side chains) get silence.
+- **Mono shim, output:** the mean of the main output port's channels (downmix). A mono port is
+  copied as is; for a stereo-only plugin this is `(L + R) / 2`, exact when the channels match.
+- `CLAP_PROCESS_ERROR` passes the chunk dry.
+- The transport pointer is null (free running).
+
+**Events** (per chunk):
+- The ring's `PARAM_VALUE`s become `clap_event_param_value`s at their chunk offset, in order,
+  with the cookie from `get_info` and −1 wildcards. This makes automation sample-accurate.
+- `RESET` → `reset()`.
+- Plugin output `PARAM_VALUE`s and gestures become wire events (mirror updates).
+
+**Schema** (`params.rs`):
+
+| CLAP | Module API |
+|---|---|
+| id | `key` = `p<clap id>`, `ParamId` = the CLAP id |
+| min, max, default | plain values; linear taper, unit `None`, no smoothing |
+| stepped | step 1 |
+| stepped 0..1 | `BOOL` |
+| enum 0..n, at most 64 values | enum labels from the plugin's `value_to_text` |
+| automatable | `AUTOMATABLE` |
+| read-only | `READ_ONLY` |
+| hidden, or the plugin's own bypass | `HIDDEN` |
+| first module-path segment | the parameter's group (groups start collapsed above 24 parameters) |
+
+Degenerate ranges become hidden, read-only 0..1 parameters.
+
+**Parameters and state.**
+- A value set while inactive is a `params.flush` with one event.
+- State goes through `clap.state` (`clap_ostream`/`clap_istream`). A plugin without it saves
+  an empty blob; its parameters still restore through the mirror.
+
+**Latency and tail.**
+- Latency is `latency.get` after `activate`; tail is `tail.get` (≥ `i32::MAX` = infinite).
+- A `request_restart` while active puts `EventKind::RESTART_REQUEST` (5, plugin → host) on the
+  event ring. The proxy raises `HostRequest::Restart` once per instance.
+- The rack then replaces the instance from its committed state (the mirror values win over
+  the blob). §2's latency change is thus a compensated restart.
+- A request made while the plugin is being activated is covered by that activation.
+
+### 3. Protocol version 2; the plugin's own parameter text
+- `ParamTexts {values}` → `Texts {texts}`, and `TextToParam {id, text}` → `Value {value}`.
+- `PluginInfo.param_text` is new (`serde` default `false`).
+- The proxy answers the host-internal `ParamText` extension (ADR-005 Amendment 4) when
+  `param_text` is set. Its calls are best-effort: 500 ms, and a timeout is not a hang.
+- The rack uses the plugin's text for `ParamChanged` text, for snapshots
+  (`RackHost::param_texts`, one batched call → `RackSlot.texts` → `ParamValueDto.text`), and to
+  parse typed text. The module API's text rules stay the fallback.
+
+### 4. Enumeration (refines §6)
+**Sandbox side.** `powervoice-sandbox --scan <file> --format clap`:
+- prints a `ScanReply` on its protocol output: `{"ok": ScanReport}` with exit code 0, or
+  `{"error": "…"}` with exit code 4 (fd 1 is pointed at stderr, as in control mode);
+- reads descriptors only, without instantiating anything. T-804 may add ports and parameters.
+
+**Editor side** (`vox_plugin_host::scan`):
+- **Paths:** the standard ones, with `$CLAP_PATH` first:
+  - Linux: `~/.clap`, `/usr/lib/clap`;
+  - macOS: `~/Library/Audio/Plug-Ins/CLAP`, `/Library/Audio/Plug-Ins/CLAP`;
+  - Windows: `%LOCALAPPDATA%\Programs\Common\CLAP`, `%COMMONPROGRAMFILES%\CLAP`.
+- **Search:** recursive to depth 8, following symlinks; macOS bundles count as files.
+- **Scans:** one process per file, cores/2 in parallel, killed after 30 s. A crash (signal),
+  a timeout or an error becomes a `ScanFailure`, logged and never fatal.
+- **Cache:** `<cache dir>/clap-scan.json` (Linux: `~/.cache/powervoice/`), written by
+  write-then-rename. Entries are keyed by path + size + mtime. Failures aren't cached: they retry
+  at the next start, and T-804's blocklist takes over.
+- **Registry:** audio effects only (`audio-effect`, without `instrument` or `note-effect`); for a
+  duplicate id the first file wins. The scan runs once per app start and every composition root
+  shares it. Real plugins are **not** behind the developer flag. `POWERVOICE_NO_PLUGIN_SCAN=1`
+  skips the scan.
+
+### 5. Asynchronous instantiation (resolves Amendment 2 §9's first limit)
+- `ModuleFactory::loads_async()` (ADR-005 Amendment 4) is `true` for `SandboxFactory`.
+- The live rack creates **and activates** such instances on a `rack-loader` thread, for:
+  - insert and `insert_module`;
+  - document open (`RackHost::new`, `load_model`);
+  - move and Retry;
+  - the restart policy, `HostRequest::Restart`, and state or preset replacement.
+- **First instance:** until it arrives, the slot is `SlotStatus::Loading`: a dry stand-in,
+  latency 0, no schema, written back verbatim.
+  - When it arrives, `RackNotice::SlotLoaded` (the engine re-sends the snapshot), and the
+    instance replaces the stand-in through ADR-005 §12's crossfade. So at document open, the
+    first latency + 15 ms of a plugin slot are dry.
+  - A failed load leaves a failed slot ("Couldn't start ‹module›: ‹reason›") with a
+    `SlotFailed` notice; Retry loads again.
+- **Replacement:** the current instance keeps playing (or stays bypassed) until it arrives.
+  - A failed slot shows `Loading` meanwhile.
+  - A value edited during the load wins over the replacement's state.
+- **Stale results** (the slot was removed, or a newer job exists) are deactivated and dropped on
+  the control thread; after teardown, on the loader thread.
+- `RackHost::is_loading()` reports loads in flight.
+- Offline renders still create instances synchronously.
+
+### 6. UI
+- `SlotStatusDto::Loading` shows a "Loading…" badge, with no message and no body.
+- Add Module lists `clap:*` modules under "Plugins (CLAP)", after the built-in categories.
+
+### 7. Test plugin
+`vox-test-clap` is a `cdylib` + `rlib` exporting `clap_entry`. It offers three plugins, all
+running the built-in Gain, so tests are bit-exact with the in-process module:
+- a mono gain with a latency of 64 samples;
+- a **stereo-only** gain, for the mono shim;
+- a gain with a `latency` parameter, which calls `request_restart` when it changes.
+
+A copy whose file name contains `crash-on-scan` aborts in `init`; `hang-on-scan` never returns
+from it. `powervoice-sandbox` dev-depends on the crate, so cargo builds the `.so` at
+`target/<profile>/deps/`, where the tests find it.
+
+### 8. Known limits (for T-804, T-806, T-901)
+- The scan reads descriptors only.
+- `params.rescan` changes are picked up at the next instantiation. State marked dirty by a
+  plugin GUI isn't refreshed at save time (T-901).
+- Not implemented: note ports, 64-bit audio, `audio-ports-config`, `configurable-audio-ports`,
+  `render`, `voice-info`, the transport, GUIs.
+- A plugin that requested a restart on every activation would restart about once per instance
+  lifetime: there is no guard beyond one request per instance.
+- Windows and macOS are only compile-checked.

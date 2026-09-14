@@ -4,12 +4,13 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use vox_module_api::{ActivateConfig, ChannelLayout, ProcessMode};
 use vox_sandbox_ipc::protocol::{
-    self, PROTOCOL_VERSION, Request, RequestBody, Response, ResponseBody,
+    self, PROTOCOL_VERSION, Request, RequestBody, Response, ResponseBody, ScanReply,
 };
 use vox_sandbox_ipc::test_plugins::{die_with_parent, process_alive};
 use vox_sandbox_ipc::{PluginEnd, Serviced, SharedRegion};
@@ -20,16 +21,26 @@ use crate::backend::{OUT_EVENT_CAPACITY, PluginBackend, PluginInstance, backends
 /// 250 ms hang timeout, ADR-008 Amendment 1 §3).
 const IDLE_TIMEOUT: Duration = Duration::from_millis(20);
 
+/// The main thread's idle tick: plugin main-thread callbacks (CLAP `request_callback`) are
+/// served within this.
+const MAIN_IDLE: Duration = Duration::from_millis(10);
+
 struct Args {
-    shm: String,
+    shm: Option<String>,
     /// Checked against `getppid()` (unix) to catch a host that died before PDEATHSIG was armed.
     #[cfg_attr(not(unix), allow(dead_code))]
     host_pid: Option<u32>,
+    /// `--scan <file>`: scan mode (T-803).
+    scan: Option<String>,
+    /// `--format <clap>` for `--scan`.
+    format: Option<String>,
 }
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
     let mut shm = None;
     let mut host_pid = None;
+    let mut scan = None;
+    let mut format = None;
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -41,12 +52,19 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
                         .ok_or("--host-pid needs a number")?,
                 );
             }
+            "--scan" => scan = Some(it.next().ok_or("--scan needs a file")?),
+            "--format" => format = Some(it.next().ok_or("--format needs a name")?),
             other => return Err(format!("unknown argument {other}")),
         }
     }
+    if scan.is_none() && shm.is_none() {
+        return Err("--shm <handle> is required".into());
+    }
     Ok(Args {
-        shm: shm.ok_or("--shm <handle> is required")?,
+        shm,
         host_pid,
+        scan,
+        format,
     })
 }
 
@@ -60,6 +78,9 @@ pub fn main() -> ExitCode {
         }
     };
     die_with_parent();
+    if let Some(file) = &args.scan {
+        return scan_mode(file, args.format.as_deref().unwrap_or("clap"));
+    }
     #[cfg(unix)]
     if let Some(pid) = args.host_pid
         // SAFETY: getppid has no preconditions.
@@ -75,10 +96,11 @@ pub fn main() -> ExitCode {
             return ExitCode::from(3);
         }
     };
-    let region = match SharedRegion::open(&args.shm) {
+    let shm = args.shm.unwrap_or_default();
+    let region = match SharedRegion::open(&shm) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("powervoice-sandbox: open {}: {e}", args.shm);
+            eprintln!("powervoice-sandbox: open {shm}: {e}");
             return ExitCode::from(3);
         }
     };
@@ -88,18 +110,82 @@ pub fn main() -> ExitCode {
         instance: None,
         audio: None,
     };
-    let mut input = io::stdin().lock();
-    // Ends when the host closes the channel (it exited or dropped us) or on a broken frame.
-    while let Ok(Some((req, payload))) = protocol::recv::<Request>(&mut input) {
-        let shutdown = matches!(req.body, RequestBody::Shutdown);
-        let (body, reply_payload) = server.handle(req.body, payload);
-        let sent = protocol::send(&mut out, &Response { id: req.id, body }, &reply_payload);
-        if shutdown || sent.is_err() {
-            break;
+    // Requests are read on their own thread, so the main thread (the plugin's main thread) can
+    // also serve the plugin's main-thread callbacks while the host is quiet.
+    let (tx, rx) = mpsc::channel::<(Request, Vec<u8>)>();
+    let reader = thread::Builder::new()
+        .name("sandbox-control-rx".into())
+        .spawn(move || {
+            let mut input = io::stdin().lock();
+            // Ends when the host closes the channel (it exited or dropped us) or on a broken
+            // frame.
+            while let Ok(Some(msg)) = protocol::recv::<Request>(&mut input) {
+                if tx.send(msg).is_err() {
+                    break;
+                }
+            }
+        });
+    if let Err(e) = reader {
+        eprintln!("powervoice-sandbox: control reader: {e}");
+        return ExitCode::from(3);
+    }
+    loop {
+        match rx.recv_timeout(MAIN_IDLE) {
+            Ok((req, payload)) => {
+                let shutdown = matches!(req.body, RequestBody::Shutdown);
+                let (body, reply_payload) = server.handle(req.body, payload);
+                let sent = protocol::send(&mut out, &Response { id: req.id, body }, &reply_payload);
+                if shutdown || sent.is_err() {
+                    break;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                if let Some(inst) = &server.instance {
+                    inst.main_thread_idle();
+                }
+                if args.host_pid.is_some_and(|pid| !process_alive(pid)) {
+                    break;
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
         }
     }
     server.stop_audio();
+    // Destroy the plugin (and unload its library) on the main thread.
+    drop(server);
     ExitCode::SUCCESS
+}
+
+/// `--scan <file> --format <format>`: prints a [`ScanReply`] and exits (0 when scanned, 4 when
+/// the file couldn't be scanned). A crash or hang in the plugin's code ends the process instead.
+fn scan_mode(file: &str, format: &str) -> ExitCode {
+    let mut out = match protocol_output() {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("powervoice-sandbox: scan output: {e}");
+            return ExitCode::from(3);
+        }
+    };
+    let reply = match format {
+        "clap" => match crate::clap::scan::scan(std::path::Path::new(file)) {
+            Ok(report) => ScanReply::Ok(report),
+            Err(e) => ScanReply::Error(e),
+        },
+        other => ScanReply::Error(format!("unknown plugin format `{other}`")),
+    };
+    let code = if matches!(reply, ScanReply::Ok(_)) {
+        0
+    } else {
+        4
+    };
+    let written = serde_json::to_writer(&mut out, &reply)
+        .map_err(io::Error::other)
+        .and_then(|()| out.flush());
+    if let Err(e) = written {
+        eprintln!("powervoice-sandbox: scan output: {e}");
+        return ExitCode::from(3);
+    }
+    ExitCode::from(code)
 }
 
 /// Where responses go: a private duplicate of stdout, with fd 1 itself redirected to stderr
@@ -232,6 +318,27 @@ impl Server {
                 self.stop_audio();
                 ok()
             }
+            RequestBody::ParamTexts { values } => match &self.instance {
+                Some(inst) => (
+                    ResponseBody::Texts {
+                        texts: values
+                            .iter()
+                            .map(|v| inst.param_to_text(v.id, v.value))
+                            .collect(),
+                    },
+                    Vec::new(),
+                ),
+                None => error("no plugin loaded"),
+            },
+            RequestBody::TextToParam { id, text } => match &self.instance {
+                Some(inst) => (
+                    ResponseBody::Value {
+                        value: inst.text_to_param(id, &text),
+                    },
+                    Vec::new(),
+                ),
+                None => error("no plugin loaded"),
+            },
         }
     }
 
@@ -313,6 +420,7 @@ fn audio_loop(mut end: PluginEnd, inst: Arc<dyn PluginInstance>, stop: Arc<Atomi
     let mut out_events = Vec::with_capacity(OUT_EVENT_CAPACITY);
     loop {
         if stop.load(Ordering::Acquire) {
+            inst.audio_thread_stopping();
             end.stop();
             return;
         }
@@ -322,6 +430,7 @@ fn audio_loop(mut end: PluginEnd, inst: Arc<dyn PluginInstance>, stop: Arc<Atomi
         }
         match served {
             Serviced::Shutdown => {
+                inst.audio_thread_stopping();
                 end.stop();
                 return;
             }
@@ -338,9 +447,15 @@ mod tests {
     #[test]
     fn args_parse() {
         let a = parse_args(["--shm", "memfd:7", "--host-pid", "12"].map(String::from)).unwrap();
-        assert_eq!((a.shm.as_str(), a.host_pid), ("memfd:7", Some(12)));
+        assert_eq!((a.shm.as_deref(), a.host_pid), (Some("memfd:7"), Some(12)));
         assert!(parse_args(["--host-pid", "x"].map(String::from)).is_err());
         assert!(parse_args(Vec::<String>::new()).is_err());
         assert!(parse_args(["--bogus"].map(String::from)).is_err());
+        let a = parse_args(["--scan", "/p/x.clap", "--format", "clap"].map(String::from)).unwrap();
+        assert_eq!(
+            (a.scan.as_deref(), a.format.as_deref(), a.shm),
+            (Some("/p/x.clap"), Some("clap"), None)
+        );
+        assert!(parse_args(["--scan"].map(String::from)).is_err());
     }
 }

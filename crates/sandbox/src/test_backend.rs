@@ -132,6 +132,7 @@ impl PluginInstance for TestPlugin {
                     value: m.param_value(p.id).unwrap_or(p.default),
                 })
                 .collect(),
+            param_text: false,
         }
     }
 

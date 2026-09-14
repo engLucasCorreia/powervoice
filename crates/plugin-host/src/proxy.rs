@@ -2,13 +2,14 @@
 
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::Duration;
 
 use vox_module_api::{
     ActivateConfig, AdapterHealth, ChannelLayout, Extension, ExtensionId, HostRequest, Module,
     ModuleDescriptor, ModuleError, ModuleState, ParamEvent, ParamFlags, ParamGroup, ParamId,
-    ParamInfo, ProcessContext, ProcessMode, ProcessStatus, StateError, Tail, validate_schema,
+    ParamInfo, ParamText, ProcessContext, ProcessMode, ProcessStatus, StateError, Tail,
+    validate_schema,
 };
 use vox_sandbox_ipc::layout::Layout;
 use vox_sandbox_ipc::protocol::{
@@ -36,6 +37,46 @@ struct Health(Arc<FaultCell>);
 impl AdapterHealth for Health {
     fn fault(&self) -> Option<String> {
         self.0.get().map(|f| f.reason().to_owned())
+    }
+}
+
+/// Parameter text requests answer within this, or the host falls back to its own formatting.
+const TEXT_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// The proxy's [`ParamText`] handle (T-803): the plugin's own text, one control round trip per
+/// call (a batch for `values_to_text`). Holds the sandbox weakly: after the proxy is dropped it
+/// answers `None`.
+struct Texts(Weak<Sandbox>);
+
+impl Texts {
+    fn call(&self, body: RequestBody) -> Option<ResponseBody> {
+        let s = self.0.upgrade().filter(|s| s.is_usable())?;
+        s.call_soft(body, TEXT_TIMEOUT).ok().map(|(b, _)| b)
+    }
+}
+
+impl ParamText for Texts {
+    fn values_to_text(&self, values: &[(ParamId, f64)]) -> Vec<Option<String>> {
+        let body = RequestBody::ParamTexts {
+            values: values
+                .iter()
+                .map(|&(id, value)| ParamValue { id, value })
+                .collect(),
+        };
+        match self.call(body) {
+            Some(ResponseBody::Texts { texts }) if texts.len() == values.len() => texts,
+            _ => vec![None; values.len()],
+        }
+    }
+
+    fn text_to_value(&self, id: ParamId, text: &str) -> Option<f64> {
+        match self.call(RequestBody::TextToParam {
+            id,
+            text: text.to_owned(),
+        })? {
+            ResponseBody::Value { value } => value.filter(|v| v.is_finite()),
+            _ => None,
+        }
     }
 }
 
@@ -72,6 +113,8 @@ pub struct ProxyModule {
     sandbox: Option<Arc<Sandbox>>,
     fault: Arc<FaultCell>,
     health: Arc<dyn AdapterHealth>,
+    /// The plugin's own parameter text, when it has one (T-803).
+    text: Option<Arc<dyn ParamText>>,
     active: Option<Active>,
     last_state: Mutex<Option<Vec<u8>>>,
 }
@@ -117,6 +160,9 @@ impl ProxyModule {
             })
             .collect();
         let fault = sandbox.fault.clone();
+        let text = info
+            .param_text
+            .then(|| Arc::new(Texts(Arc::downgrade(&sandbox))) as Arc<dyn ParamText>);
         Ok(Self {
             descriptor: spec.descriptor.clone(),
             spec,
@@ -129,6 +175,7 @@ impl ProxyModule {
             sandbox: Some(sandbox),
             health: Arc::new(Health(fault.clone())),
             fault,
+            text,
             active: None,
             last_state: Mutex::new(None),
         })
@@ -371,6 +418,15 @@ impl Module for ProxyModule {
         }
         let outcome = a.host.process(input, output);
         while let Some(ev) = a.host.pop_output_event() {
+            // T-803: the plugin asked for a restart (CLAP `request_restart`: its latency
+            // changed, …) — ADR-008 §2: replace the instance through the rack.
+            if ev.kind == EventKind::RESTART_REQUEST {
+                if !a.restart_requested {
+                    a.restart_requested = true;
+                    ctx.request(HostRequest::Restart);
+                }
+                continue;
+            }
             if ev.kind != EventKind::PARAM_VALUE {
                 continue;
             }
@@ -499,6 +555,7 @@ impl Module for ProxyModule {
     fn extension(&self, id: ExtensionId) -> Option<Extension> {
         match id {
             ExtensionId::AdapterHealth => Some(Extension::AdapterHealth(self.health.clone())),
+            ExtensionId::ParamText => self.text.clone().map(Extension::ParamText),
             _ => None,
         }
     }

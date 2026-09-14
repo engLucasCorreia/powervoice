@@ -127,3 +127,81 @@ pub fn assert_bits(got: &[f32], want: &[f32], what: &str) {
         panic!("{what}: sample {i}: got {} want {}", got[i], want[i]);
     }
 }
+
+// --- T-803: the test CLAP plugin -------------------------------------------------------------
+
+/// The test CLAP plugin (`vox-test-clap`'s `cdylib`): cargo builds it next to the test binaries
+/// because this crate dev-depends on it (`target/<profile>/deps/`), or uplifts it one level up
+/// in a workspace build.
+pub fn test_clap_library() -> std::path::PathBuf {
+    let dir = Path::new(SANDBOX)
+        .parent()
+        .expect("sandbox binary directory");
+    let name = format!(
+        "{}vox_test_clap{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    );
+    [dir.join("deps").join(&name), dir.join(&name)]
+        .into_iter()
+        .find(|p| p.exists())
+        .unwrap_or_else(|| panic!("{name} not found next to {SANDBOX}"))
+}
+
+/// A scanned-plugin record for test plugin `id`.
+pub fn test_clap_plugin(id: &str) -> vox_plugin_host::scan::ScannedPlugin {
+    vox_plugin_host::scan::ScannedPlugin {
+        id: id.to_owned(),
+        name: format!("Test {id}"),
+        vendor: "PowerVoice".into(),
+        version: "1.2.3".into(),
+        description: String::new(),
+        url: None,
+        features: vec!["audio-effect".into(), "utility".into()],
+    }
+}
+
+/// A factory for test CLAP plugin `id` loaded from `path`.
+pub fn clap_factory_at(path: &Path, id: &str, options: SandboxOptions) -> Arc<SandboxFactory> {
+    Arc::new(SandboxFactory::new(
+        vox_plugin_host::clap_spec(path, &test_clap_plugin(id)),
+        options,
+    ))
+}
+
+/// A factory for test CLAP plugin `id` (module id `clap:<id>`).
+pub fn clap_factory(id: &str, options: SandboxOptions) -> Arc<SandboxFactory> {
+    clap_factory_at(&test_clap_library(), id, options)
+}
+
+/// A state setting the CLAP gain parameter (key `p0`).
+pub fn clap_gain_state(gain_db: f64) -> ModuleState {
+    ModuleState {
+        format_version: 1,
+        params: std::collections::BTreeMap::from([("p0".to_owned(), gain_db)]),
+        blob: None,
+    }
+}
+
+/// A temporary directory removed on drop (the `/tmp` quota: never leak test dirs).
+pub struct TempDir(pub std::path::PathBuf);
+
+impl TempDir {
+    pub fn new(tag: &str) -> Self {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let p = std::env::temp_dir().join(format!(
+            "pv-{tag}-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        Self(p)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}

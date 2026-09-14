@@ -962,7 +962,7 @@ theme: ThemePref, };
  * restart is pending). `message` is pre-rendered English text shown verbatim (see the module
  * docs) — a plugin or module name isn't something the UI can key into i18n.
  */
-export type SlotStatusDto = { "kind": "active" } | { "kind": "missing", message: string, too_new: boolean, } | { "kind": "failed", message: string, } | { "kind": "restarting", message: string, };
+export type SlotStatusDto = { "kind": "active" } | { "kind": "missing", message: string, too_new: boolean, } | { "kind": "failed", message: string, } | { "kind": "restarting", message: string, } | { "kind": "loading" };
 
 /**
  * App-wide default spectral **display** settings (colormap, frequency scale, floor/ceiling, FFT

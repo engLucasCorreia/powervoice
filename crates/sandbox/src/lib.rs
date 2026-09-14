@@ -12,8 +12,13 @@
 //!   thread** (real-time priority when the OS grants it), which serves the host's chunks;
 //! - exits on `Shutdown`, when stdin closes (the host is gone), when the host process
 //!   disappears, and (Linux) when the host thread that spawned it dies (`PR_SET_PDEATHSIG`).
+//!
+//! `powervoice-sandbox --scan <file> --format clap` (T-803, ADR-008 §6) instead loads one plugin
+//! file, prints a [`vox_sandbox_ipc::protocol::ScanReply`] as JSON on its protocol output and
+//! exits: a file that crashes or hangs while being scanned takes only this process down.
 
 mod backend;
+pub mod clap;
 mod rt;
 mod server;
 pub mod test_backend;

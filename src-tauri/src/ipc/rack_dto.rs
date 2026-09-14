@@ -236,12 +236,13 @@ pub struct ParamValueDto {
 }
 
 impl ParamValueDto {
-    fn new(p: &ParamInfo, value: f64) -> Self {
+    /// With the rack's display text (a plugin's own text, T-803); `None` → Rust's formatting.
+    fn with_text(p: &ParamInfo, value: f64, text: Option<String>) -> Self {
         Self {
             id: p.id.0,
             value,
             normalized: p.to_normalized(value),
-            text: p.value_to_text(value),
+            text: text.unwrap_or_else(|| p.value_to_text(value)),
         }
     }
 }
@@ -272,9 +273,18 @@ pub struct RackLatencyDto {
 #[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
 pub enum SlotStatusDto {
     Active,
-    Missing { message: String, too_new: bool },
-    Failed { message: String },
-    Restarting { message: String },
+    Missing {
+        message: String,
+        too_new: bool,
+    },
+    Failed {
+        message: String,
+    },
+    Restarting {
+        message: String,
+    },
+    /// T-803: an out-of-process plugin is being started (the slot passes dry meanwhile).
+    Loading,
 }
 
 /// A slot's noise-print status (S3-06, SPEC-014 §2.5, §2.8). `None` (the outer `Option` this
@@ -419,6 +429,7 @@ impl From<&SlotStatus> for SlotStatusDto {
             SlotStatus::Restarting { message } => Self::Restarting {
                 message: message.clone(),
             },
+            SlotStatus::Loading => Self::Loading,
         }
     }
 }
@@ -465,7 +476,8 @@ impl From<&EngineRackSlot> for RackSlotDto {
             .params
             .iter()
             .zip(&s.values)
-            .map(|(p, &v)| ParamValueDto::new(p, v))
+            .enumerate()
+            .map(|(i, (p, &v))| ParamValueDto::with_text(p, v, s.texts.get(i).cloned()))
             .collect();
         Self {
             uid: info.uid.0,

@@ -1,4 +1,5 @@
-//! Control-channel messages, protocol version 1 (T-802, ADR-008 §4 + Amendment 2).
+//! Control-channel messages, protocol version 2 (T-802, ADR-008 §4 + Amendments 2–3; v2 = T-803:
+//! parameter text requests, `PluginInfo::param_text`, the scan report of `--scan`).
 //!
 //! Every host → sandbox [`Request`] gets exactly one [`Response`] with the same `id`, in order.
 //! Messages are JSON (`serde`; the parameter schema is the module API's own types, as in the
@@ -19,7 +20,7 @@ use vox_module_api::{ParamGroup, ParamId, ParamInfo, ProcessMode};
 use crate::control::{Frame, read_frame, write_frame};
 
 /// Bumped on any incompatible message change; checked by `Hello`.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// A host → sandbox request.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -82,6 +83,19 @@ pub enum RequestBody {
     LoadState,
     /// Stop everything and exit. → [`ResponseBody::Ok`], then the process exits.
     Shutdown,
+    /// The plugin's display text for each value (T-803). → [`ResponseBody::Texts`] (one entry
+    /// per value, `None` where the plugin has no text).
+    ParamTexts {
+        /// Values to format.
+        values: Vec<ParamValue>,
+    },
+    /// Parses `text` with the plugin's own parser (T-803). → [`ResponseBody::Value`].
+    TextToParam {
+        /// Parameter.
+        id: ParamId,
+        /// Typed text.
+        text: String,
+    },
 }
 
 /// A sandbox → host response.
@@ -108,6 +122,10 @@ pub struct PluginInfo {
     pub groups: Vec<ParamGroup>,
     /// Current value of every parameter in `params`.
     pub values: Vec<ParamValue>,
+    /// The plugin formats and parses its own parameter text (`ParamTexts`/`TextToParam`
+    /// answer it; T-803). `false`: the host formats with the module API's text rules.
+    #[serde(default)]
+    pub param_text: bool,
 }
 
 /// Response kinds.
@@ -139,11 +157,83 @@ pub enum ResponseBody {
         /// Every parameter's value.
         values: Vec<ParamValue>,
     },
+    /// Display texts (`ParamTexts`).
+    Texts {
+        /// One per requested value.
+        texts: Vec<Option<String>>,
+    },
+    /// A parsed value (`TextToParam`); `None` if the plugin couldn't parse the text.
+    Value {
+        /// Plain value.
+        value: Option<f64>,
+    },
     /// The request failed (the plugin or backend's message).
     Error {
         /// What went wrong.
         message: String,
     },
+}
+
+/// What the CLAP backend loads (T-803): the `.clap` file (bundle on macOS) and the plugin id
+/// inside it. Travels as the `Load { plugin }` reference, JSON-encoded.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClapPluginRef {
+    /// Path of the `.clap` file or bundle.
+    pub path: String,
+    /// The CLAP plugin id.
+    pub id: String,
+}
+
+impl ClapPluginRef {
+    /// The `Load { plugin }` string.
+    pub fn to_reference(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// Parses a `Load { plugin }` string.
+    pub fn parse(reference: &str) -> Result<Self, String> {
+        serde_json::from_str(reference).map_err(|e| format!("bad CLAP plugin reference: {e}"))
+    }
+}
+
+/// One plugin a scanned file offers (`powervoice-sandbox --scan`, ADR-008 §6; T-803).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScannedPlugin {
+    /// The format's plugin id (CLAP: reverse DNS).
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// Vendor.
+    pub vendor: String,
+    /// Version (free text).
+    pub version: String,
+    /// One-line description.
+    pub description: String,
+    /// Homepage.
+    pub url: Option<String>,
+    /// Feature strings (CLAP features: `"audio-effect"`, `"compressor"`, `"stereo"`, …).
+    pub features: Vec<String>,
+}
+
+/// What `powervoice-sandbox --scan <file> --format <format>` prints on its protocol output
+/// (one JSON document) before exiting 0.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanReport {
+    /// The scanned file.
+    pub path: String,
+    /// Its plugins.
+    pub plugins: Vec<ScannedPlugin>,
+}
+
+/// What `powervoice-sandbox --scan` prints (one JSON document): the report, or why the file
+/// couldn't be scanned (not a plugin, no factory, …). A crash or hang prints nothing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScanReply {
+    /// Scanned.
+    Ok(ScanReport),
+    /// Couldn't be scanned.
+    Error(String),
 }
 
 fn json_err(e: serde_json::Error) -> io::Error {
@@ -216,6 +306,16 @@ mod tests {
             RequestBody::SaveState,
             RequestBody::LoadState,
             RequestBody::Shutdown,
+            RequestBody::ParamTexts {
+                values: vec![ParamValue {
+                    id: ParamId(3),
+                    value: 0.5,
+                }],
+            },
+            RequestBody::TextToParam {
+                id: ParamId(3),
+                text: "-6 dB".into(),
+            },
         ];
         let mut buf = Vec::new();
         for (i, body) in reqs.iter().enumerate() {
@@ -254,6 +354,7 @@ mod tests {
                     id: ParamId(7),
                     value: 0.1,
                 }],
+                param_text: true,
             }),
             ResponseBody::Activated {
                 latency_samples: 3,
@@ -267,6 +368,10 @@ mod tests {
                     value: 0.25,
                 }],
             },
+            ResponseBody::Texts {
+                texts: vec![Some("-6.0 dB".into()), None],
+            },
+            ResponseBody::Value { value: Some(0.25) },
             ResponseBody::Error {
                 message: "nope".into(),
             },
@@ -289,6 +394,41 @@ mod tests {
             assert_eq!(&got.body, body);
             assert_eq!(payload, b"state");
         }
+    }
+
+    #[test]
+    fn clap_references_and_scan_reports_round_trip() {
+        let r = ClapPluginRef {
+            path: "/home/u/.clap/a|b@c.clap".into(),
+            id: "com.acme.deesser".into(),
+        };
+        assert_eq!(ClapPluginRef::parse(&r.to_reference()).unwrap(), r);
+        assert!(ClapPluginRef::parse("com.acme.deesser").is_err());
+        let report = ScanReport {
+            path: "/x.clap".into(),
+            plugins: vec![ScannedPlugin {
+                id: "com.acme.deesser".into(),
+                name: "De-esser".into(),
+                vendor: "Acme".into(),
+                version: "1.2".into(),
+                description: String::new(),
+                url: None,
+                features: vec!["audio-effect".into(), "stereo".into()],
+            }],
+        };
+        let json = serde_json::to_string(&ScanReply::Ok(report.clone())).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ScanReply>(&json).unwrap(),
+            ScanReply::Ok(report)
+        );
+        let json = serde_json::to_string(&ScanReply::Error("no".into())).unwrap();
+        assert_eq!(json, r#"{"error":"no"}"#);
+        // A v1 `Loaded` (no `param_text`) still parses.
+        let info: PluginInfo = serde_json::from_str(
+            r#"{"name":"G","vendor":"V","version":"1","params":[],"groups":[],"values":[]}"#,
+        )
+        .unwrap();
+        assert!(!info.param_text);
     }
 
     #[test]

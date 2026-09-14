@@ -849,3 +849,26 @@ For any `Module`:
   - A manual `restart` (Retry) resets the budget. Missing-module placeholders still can't be
     restarted (`NotLoaded`).
   - Invalid audio (`NonFinite`) and in-process modules never restart automatically.
+
+## Amendment 4 — asynchronous factories, `ParamText`, loading slots (T-803, 2026-09-14)
+- **`ModuleFactory::loads_async(&self) -> bool`** (default `false`): creating an instance is slow.
+  - The case: an out-of-process plugin spawns a sandbox and loads the plugin.
+  - The live rack then creates **and activates** its instances on a worker thread, so `create` and
+    `activate` must be callable from any non-audio thread.
+  - Offline renders still create them synchronously. `SandboxFactory` answers `true`.
+- **New host-internal extension:** `ExtensionId::ParamText` / `Extension::ParamText(Arc<dyn
+  ParamText>)`, id `org.powervoice.param-text/1`, never a CLAP extension.
+  - The trait has two calls: `values_to_text(&[(ParamId, f64)]) -> Vec<Option<String>>` and
+    `text_to_value(ParamId, &str) -> Option<f64>`.
+  - It is answered by out-of-process adapters whose plugin formats its own values (CLAP).
+  - Both calls may block briefly: a round trip to the plugin process, falling back to `None`.
+  - §13's "displayed text is always Rust's formatting" becomes: Rust's formatting unless the
+    module answers `ParamText`. The §3 text rules remain the fallback and the rule for our own
+    modules.
+- **Rack additions:**
+  - `SlotStatus::Loading`: a slot waiting for its first instance, or a failed slot whose
+    replacement is loading.
+  - `RackNotice::SlotLoaded`.
+  - `RackHost::is_loading()` and `RackHost::param_texts(index)`.
+  - The engine's `RackSlot.texts`, index-aligned with `values`.
+  - See ADR-008 Amendment 3 §5.

@@ -1,0 +1,15 @@
+[package]
+name = "vox-clap-abi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# T-803 (ADR-008 Amendment 3): hand-written `#[repr(C)]` bindings for the subset of the CLAP 1.2
+# C ABI PowerVoice uses — the sandbox's CLAP host and the in-repo test plugin. Transcribed from
+# the CLAP headers (MIT, see LICENSE-CLAP); no third-party crate.
+
+[dependencies]
+
+[lints]
+workspace = true

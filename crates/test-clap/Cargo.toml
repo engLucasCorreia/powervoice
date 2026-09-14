@@ -1,0 +1,27 @@
+[package]
+name = "vox-test-clap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# T-803: the in-repo **test CLAP plugin** — a `cdylib` exporting `clap_entry`, so the sandbox's
+# CLAP backend is tested through a real dlopen without depending on installed plugins. It hosts
+# the built-in Gain (bit-exact with the in-process module) behind a fixed latency. Never shipped.
+# `rlib` too: test crates dev-depend on it, which makes cargo build the `.so` next to them
+# (`target/<profile>/deps/libvox_test_clap.so`) and lets them use its constants.
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+vox-clap-abi = { path = "../clap-abi" }
+vox-module-api = { path = "../module-api" }
+vox-modules = { path = "../modules" }
+
+# The deliberate crash-on-scan abort disables core dumps first (setrlimit / prctl).
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[lints]
+workspace = true

@@ -1,6 +1,6 @@
 //! [`SandboxFactory`]: registers a sandboxed plugin in the rack's module registry.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::Duration;
@@ -10,12 +10,15 @@ use vox_module_api::{
     Version, features,
 };
 use vox_sandbox_ipc::WaitBudget;
+use vox_sandbox_ipc::protocol::{ClapPluginRef, ScannedPlugin};
 
 use crate::proxy::ProxyModule;
 use crate::sandbox::{Sandbox, SandboxFault};
 
 /// The built-in test backend's format name.
 pub const TEST_FORMAT: &str = "test";
+/// The CLAP backend's format name (T-803); module ids are `clap:<plugin id>`.
+pub const CLAP_FORMAT: &str = "clap";
 
 /// What a sandboxed module is: its registry descriptor and how the sandbox loads it.
 #[derive(Clone, Debug)]
@@ -142,6 +145,36 @@ impl ModuleFactory for SandboxFactory {
                 .push(Arc::downgrade(s));
         }
         Ok(Box::new(proxy))
+    }
+
+    /// A sandbox spawn plus a plugin load: the live rack creates these off its control thread
+    /// and shows the slot as loading (T-803).
+    fn loads_async(&self) -> bool {
+        true
+    }
+}
+
+/// A CLAP plugin's spec (T-803): module id `clap:<plugin id>`, the plugin's name, vendor,
+/// description, URL and CLAP features, version parsed leniently; loaded from `path`.
+pub fn clap_spec(path: &Path, plugin: &ScannedPlugin) -> SandboxSpec {
+    SandboxSpec {
+        descriptor: ModuleDescriptor {
+            id: format!("{CLAP_FORMAT}:{}", plugin.id),
+            version: Version::parse_lenient(&plugin.version),
+            name: LocalizedText::plain(&plugin.name),
+            vendor: plugin.vendor.clone(),
+            description: LocalizedText::plain(&plugin.description),
+            url: plugin.url.clone(),
+            features: plugin.features.clone(),
+            state_format_version: 1,
+            api_version: MODULE_API_VERSION,
+        },
+        format: CLAP_FORMAT.into(),
+        plugin: ClapPluginRef {
+            path: path.to_string_lossy().into_owned(),
+            id: plugin.id.clone(),
+        }
+        .to_reference(),
     }
 }
 

@@ -167,10 +167,27 @@ fn serve<W: Wakeup>(kind: TestPluginKind, args: &TestPluginArgs, region: SharedR
 }
 
 /// Aborts the process without leaving a core dump (the crash plugins; T-802's test backend).
+///
+/// Only for **intentional** test crashes: a deliberate abort must not reach the system's crash
+/// reporter (systemd-coredump turns every core into a "Process crashed" desktop notification).
+/// `PR_SET_DUMPABLE 0` alone isn't enough where `fs.suid_dumpable = 2` still pipes non-dumpable
+/// processes to the helper, so the core size limit goes to 0 too. The process still dies by
+/// `SIGABRT`, so the host's monitor classifies it as a crash. Real sandbox crashes never come
+/// through here and keep dumping core.
 pub fn crash_now() -> ! {
+    #[cfg(unix)]
+    // SAFETY: setrlimit with a valid struct; it only lowers this process's own core limit.
+    unsafe {
+        libc::setrlimit(
+            libc::RLIMIT_CORE,
+            &libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            },
+        );
+    }
     #[cfg(target_os = "linux")]
-    // SAFETY: PR_SET_DUMPABLE 0 only marks this process non-dumpable, so the deliberate abort
-    // below leaves no core dump (and no crash-reporter notification).
+    // SAFETY: PR_SET_DUMPABLE 0 only marks this process non-dumpable.
     unsafe {
         libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
     }

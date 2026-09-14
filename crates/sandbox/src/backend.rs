@@ -1,4 +1,5 @@
-//! The in-process plugin backend seam (T-802): T-803+ add CLAP/VST3/LV2/JSFX backends behind it.
+//! The in-process plugin backend seam (T-802): the test backend and CLAP (T-803); VST3/LV2/JSFX
+//! come later behind the same trait.
 
 use std::sync::Arc;
 
@@ -47,9 +48,26 @@ pub trait PluginInstance: Send + Sync {
     fn save_state(&self) -> Result<Vec<u8>, String>;
     /// \[main, inactive\] Loads a state [`save_state`](Self::save_state) produced.
     fn load_state(&self, data: &[u8]) -> Result<(), String>;
+    /// \[main\] Called every few milliseconds while the control loop is idle (T-803: CLAP
+    /// `request_callback` → `on_main_thread`, `request_flush` while inactive).
+    fn main_thread_idle(&self) {}
+    /// \[audio\] The audio thread is about to stop serving (before `deactivate`; CLAP
+    /// `stop_processing` belongs to the audio thread).
+    fn audio_thread_stopping(&self) {}
+    /// \[main\] The plugin's own display text for `value` (`None`: no text of its own).
+    fn param_to_text(&self, _id: ParamId, _value: f64) -> Option<String> {
+        None
+    }
+    /// \[main\] Parses `text` with the plugin's own parser (`None`: can't).
+    fn text_to_param(&self, _id: ParamId, _text: &str) -> Option<f64> {
+        None
+    }
 }
 
 /// The backends this build of the sandbox links.
 pub fn backends() -> Vec<Box<dyn PluginBackend>> {
-    vec![Box::new(crate::test_backend::TestBackend)]
+    vec![
+        Box::new(crate::test_backend::TestBackend),
+        Box::new(crate::clap::ClapBackend),
+    ]
 }

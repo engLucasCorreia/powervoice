@@ -133,6 +133,24 @@ describe("RackPanel", () => {
     teardown();
   });
 
+  it("lists installed CLAP effects under Plugins (CLAP), after the built-in categories", async () => {
+    const modules = [
+      moduleFixture("clap:com.acme.deesser", ["audio-effect", "restoration"]),
+      moduleFixture("org.powervoice.gain", ["utility"]),
+      moduleFixture("clap:com.acme.eq", ["audio-effect", "equalizer"]),
+    ];
+    const { target, el, teardown } = await setup(rackFixture([]), modules);
+    el("rack-add")?.click();
+    flushSync();
+    const groupTitles = [...target.querySelectorAll(".group-title")].map((g) => g.textContent);
+    expect(groupTitles).toEqual(["Utility", "Plugins (CLAP)"]);
+    const items = [...target.querySelectorAll('[data-testid="rack-add-item"]')].map((i) =>
+      i.getAttribute("data-module-id"),
+    );
+    expect(items).toEqual(["org.powervoice.gain", "clap:com.acme.deesser", "clap:com.acme.eq"]);
+    teardown();
+  });
+
   it("adding a module appends it at the end of the chain", async () => {
     const { target, el, teardown } = await setup(rackFixture([slotFixture(1)]), [
       moduleFixture("org.powervoice.gain", ["utility"]),

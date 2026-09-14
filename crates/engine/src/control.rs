@@ -900,7 +900,9 @@ impl Control {
         let needs_refresh = notices.iter().any(|n| {
             matches!(
                 n,
-                RackNotice::SlotFailed { .. } | RackNotice::SlotRestarted { .. }
+                RackNotice::SlotFailed { .. }
+                    | RackNotice::SlotRestarted { .. }
+                    | RackNotice::SlotLoaded { .. }
             )
         });
         for n in notices {

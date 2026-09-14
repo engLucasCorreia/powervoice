@@ -23,15 +23,20 @@ pub enum ExtensionId {
     /// [`AdapterHealth`] (T-802, ADR-005 Amendment 3): host-internal, answered only by
     /// out-of-process adapters (the plugin sandbox proxy); never a CLAP extension.
     AdapterHealth,
+    /// [`ParamText`] (T-803, ADR-005 Amendment 4): host-internal, answered only by
+    /// out-of-process adapters whose plugin formats its own parameter text; never a CLAP
+    /// extension.
+    ParamText,
 }
 
 impl ExtensionId {
     /// Every known id, in declaration order (what the host queries after `activate`).
-    pub const ALL: [ExtensionId; 4] = [
+    pub const ALL: [ExtensionId; 5] = [
         ExtensionId::Telemetry,
         ExtensionId::ResponseCurve,
         ExtensionId::NoiseProfile,
         ExtensionId::AdapterHealth,
+        ExtensionId::ParamText,
     ];
 
     /// Wire id; also the CLAP custom-extension id (ADR-006) — except
@@ -42,6 +47,7 @@ impl ExtensionId {
             Self::ResponseCurve => "org.powervoice.response-curve/1",
             Self::NoiseProfile => "org.powervoice.noise-profile/1",
             Self::AdapterHealth => "org.powervoice.adapter-health/1",
+            Self::ParamText => "org.powervoice.param-text/1",
         }
     }
 }
@@ -59,6 +65,8 @@ pub enum Extension {
     NoiseProfile(Arc<dyn NoiseProfile>),
     /// Out-of-process adapter health.
     AdapterHealth(Arc<dyn AdapterHealth>),
+    /// The plugin's own parameter text.
+    ParamText(Arc<dyn ParamText>),
 }
 
 impl Extension {
@@ -69,6 +77,7 @@ impl Extension {
             Extension::ResponseCurve(_) => ExtensionId::ResponseCurve,
             Extension::NoiseProfile(_) => ExtensionId::NoiseProfile,
             Extension::AdapterHealth(_) => ExtensionId::AdapterHealth,
+            Extension::ParamText(_) => ExtensionId::ParamText,
         }
     }
 }
@@ -109,6 +118,30 @@ pub fn adapter_health(m: &dyn Module) -> Option<Arc<dyn AdapterHealth>> {
         Some(Extension::AdapterHealth(h)) => Some(h),
         _ => None,
     }
+}
+
+/// The module's [`ParamText`] handle; `None` if absent or answered with the wrong variant.
+pub fn param_text(m: &dyn Module) -> Option<Arc<dyn ParamText>> {
+    match m.extension(ExtensionId::ParamText) {
+        Some(Extension::ParamText(t)) => Some(t),
+        _ => None,
+    }
+}
+
+/// A foreign plugin's **own parameter text** (T-803, ADR-005 Amendment 4): an out-of-process
+/// adapter whose plugin formats and parses its values itself (CLAP `value_to_text` /
+/// `text_to_value`) answers this, and the host shows that text instead of the module API's
+/// text rules (§3), which only know the schema's unit and decimals.
+///
+/// Host-internal (never a CLAP extension). Called by the host's control thread — also while the
+/// instance is live on the audio thread (`Send + Sync`; the adapter answers through its own
+/// control channel, never through `process`). Both calls may block briefly (a round trip to the
+/// plugin process) and fall back (`None`) when the plugin can't answer in time.
+pub trait ParamText: Send + Sync {
+    /// The plugin's text for each `(id, plain value)`, in order (`None` entries: no text).
+    fn values_to_text(&self, values: &[(ParamId, f64)]) -> Vec<Option<String>>;
+    /// Parses typed `text` for `id`; `None` if the plugin can't.
+    fn text_to_value(&self, id: ParamId, text: &str) -> Option<f64>;
 }
 
 /// The live fault state of an **out-of-process adapter** (T-802: the plugin sandbox proxy,

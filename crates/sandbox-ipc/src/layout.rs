@@ -204,6 +204,10 @@ impl EventKind {
     /// clear delay lines and envelopes before processing the chunk that contains `pos`. `id`
     /// and `value` are unused.
     pub const RESET: Self = Self(4);
+    /// Plugin → host (T-803): the plugin asked to be restarted (CLAP `request_restart`, e.g.
+    /// its latency changed). The proxy raises `HostRequest::Restart` (ADR-008 §2); `pos`, `id`
+    /// and `value` are unused.
+    pub const RESTART_REQUEST: Self = Self(5);
 }
 
 /// An event as carried by the rings.

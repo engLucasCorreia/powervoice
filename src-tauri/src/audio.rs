@@ -139,5 +139,9 @@ fn forward_rack_notice<R: Runtime>(app: &AppHandle<R>, notice: &RackNotice) -> t
             tracing::info!(slot = index, "rack slot restarted");
             Ok(())
         }
+        RackNotice::SlotLoaded { index, .. } => {
+            tracing::info!(slot = index, "rack slot loaded");
+            Ok(())
+        }
     }
 }

@@ -57,7 +57,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-12 | Editor view follow-ups (T-207, T-306): app-wide default display prefs in Settings (per-document ones already in the sidecar), one shared time ruler + scrollbar in EditorView (SPEC-007 §2.1), waveform zoom/scroll/selection persisted in the sidecar view, HiDPI columns | S | done |
 | H-16 | Analyzer follow-ups (T-208): floor/ceiling, frequency zoom, hover, device state, View menu toggle, settings persistence; wire `telemetry_rate_hz` (30 Hz) into VXTM/VXMT/VXSA | S | done |
 | H-19 | Real menu bar (File/Edit/View/Effects/Help dropdowns, keyboard access, shortcuts shown) replacing the flat always-visible "menu" toolbars | S | done |
-| H-20 | Save/open gaps (SPEC-005): dither None, keep FLAC when opened FLAC + full WAV promotion table, format-mapped/metadata-dropped notices, stereo→mono save warning, progressive import display | S | todo |
+| H-20 | Save/open gaps (SPEC-005): dither None, keep FLAC when opened FLAC + full WAV promotion table, format-mapped/metadata-dropped notices, stereo→mono save warning, progressive import display | S | in progress |
 | H-22 | Preset UX (T-406): rename in slot/rack menus, overwrite-confirm on save, manage dialog, import/export preset files | S | todo |
 | H-21 | Punch-in follow-ups (T-304): markers during an operation, live take drawn at the punch point, device loss per phase, talent-source exactness tests (drift, dropouts), AC-11/AC-15, Settings → Recording page | S | in progress |
 | H-18 | Shared test factories for DTOs (`ui/src/lib/test/fixtures.ts` + Rust builders) so a new DTO field touches one helper, not 20 test literals (merge-friction fix) | H | todo |
@@ -160,7 +160,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-702 | i18n audit | W1 | H | M6 | todo |
 | T-703 | Settings audit | W1 | S | M6 | todo |
 | T-704 | Performance tuning vs targets | W1 | O | M6 | todo |
-| T-705 | AppImage/deb, Win/mac build docs, README/user guide | W2 | S | T-701..T-704 | in progress |
+| T-705 | AppImage/deb, Win/mac build docs, README/user guide | W2 | S | T-701..T-704 | done (Win/mac installers documented, not built) |
 
 ## M8 — External plugins
 | ID | Title | Wave | Tier | Deps | Status |

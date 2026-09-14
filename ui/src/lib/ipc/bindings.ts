@@ -411,13 +411,23 @@ export type NormalizeTargetUnit = "db" | "pct";
  *
  * `key`/`params` is an i18n message key plus its placeholder values (CLAUDE.md: every
  * user-facing string goes through i18n) — this event never carries pre-rendered text.
+ *
+ * H-17: `cleared` (additive, defaults to `false` so older payloads still parse) instead
+ * *removes* the banner sharing `id` — for a condition that resolves itself with nothing left for
+ * the user to act on (SPEC-004 §2.5's disk-almost-full banner once space is reclaimed), unlike
+ * the device-lost→reconnected pattern above, which replaces it with an acknowledgeable one.
  */
 export type Notice = { level: NoticeLevel, key: string, params: { [key in string]: string }, persistent: boolean, 
 /**
  * Stable id for a banner that a later `Notice` can replace or clear. `None` for one-shot
  * toasts, which are never replaced (each is its own event).
  */
-id: string | null, };
+id: string | null, 
+/**
+ * `true`: remove the banner sharing `id` instead of showing anything (`level`/`key` are
+ * ignored). Only meaningful with `id: Some(..)`.
+ */
+cleared: boolean, };
 
 export type NoticeLevel = "info" | "warning" | "error";
 

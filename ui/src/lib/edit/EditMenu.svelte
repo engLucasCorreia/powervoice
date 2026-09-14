@@ -2,6 +2,7 @@
   import { hasDocument, documentState } from "../document/document.svelte";
   import { t, tDynamic } from "../i18n";
   import { dispatchAction } from "../keymap";
+  import { isPlatformMac } from "../keymap/registry";
   import { shortcutLabelForAction } from "../keymap/shortcutLabel";
   import { closeAllMenus, menubarState, moveToAdjacentMenu, toggleMenu } from "../menu/menubar.svelte";
   import { focusFirstItem, handleMenuKeydown } from "../menu/menuKeyboard";
@@ -9,6 +10,7 @@
   import MenuSeparatorRow from "../menu/MenuSeparatorRow.svelte";
   import { splitMnemonic } from "../menu/mnemonic";
   import { markersState } from "../markers/markers.svelte";
+  import { openPreferences } from "../preferences/preferences.svelte";
   import { recordState } from "../state/record.svelte";
   import { hasClipboard, editState, silence } from "../state/edit.svelte";
   import { hasSelection } from "../state/selection.svelte";
@@ -19,8 +21,12 @@
    * row. Every item with a keymap binding dispatches through the same `dispatchAction` path the
    * shortcut itself uses (Silence and the normalize favorites have no default binding — menu
    * only, `bindings.ts`).
+   *
+   * H-17: Preferences… lives here on non-macOS platforms (File → Preferences… on macOS,
+   * `DocumentMenu.svelte`) — there's no native app menu to put it in instead.
    */
   const MENU_ID = "edit" as const;
+  const showPreferencesHere = !isPlatformMac();
   const doc = documentState();
   const edit = editState();
   const rec = recordState();
@@ -263,6 +269,14 @@
             onSelect={() => select(() => dispatchAction("marker.prev"))}
           />
         </div>
+      {/if}
+      {#if showPreferencesHere}
+        <MenuSeparatorRow />
+        <MenuItemRow
+          label={t("menu.preferences")}
+          testid="menu-preferences"
+          onSelect={() => select(openPreferences)}
+        />
       {/if}
     </div>
   {/if}

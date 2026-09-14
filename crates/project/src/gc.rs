@@ -244,7 +244,7 @@ fn summarize(records: &[Record]) -> Summary {
                     .as_ref()
                     .map(|src| (src.path.clone(), src.size_bytes, src.mtime_unix_ms));
             }
-            Record::Chunks { .. } | Record::State { .. } => {}
+            Record::Chunks { .. } | Record::State { .. } | Record::TakeMarker { .. } => {}
         }
     }
     s

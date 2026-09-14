@@ -15,7 +15,8 @@ use crate::history::{
     Edit, EditOp, History, HistoryStep, MarkerMapping, MarkerOp, check_marker_bounds,
 };
 use crate::journal::{
-    CheckpointRecord, EditRecord, Journal, Record, SourceRecord, TakeModeRecord, journal_file_name,
+    CheckpointRecord, EditRecord, Journal, MarkerRecord, Record, SourceRecord, TakeModeRecord,
+    journal_file_name,
 };
 use crate::snapshot::{DocSnapshot, Marker, MarkerId, Piece, Source};
 use crate::store::{ChunkId, ChunkLocation, ChunkStore, ChunkWriter, StoreOptions, WrittenAudio};
@@ -243,6 +244,11 @@ pub struct Session {
     pub(crate) sample_rate_hz: u32,
     pub(crate) journaled_chunks: Vec<bool>,
     pub(crate) open_take: Option<OpenTake>,
+    /// H-17 (SPEC-004 §2.7): markers pressed during the open take, journaled as they happen
+    /// (`Self::note_take_marker`) — the crash-recovery source [`Self::apply_open_take_from_wav`]
+    /// applies. Live commits (`Self::commit_take`/`Self::commit_take_window`) still take their
+    /// markers as an argument, independent of this. Cleared whenever the take closes.
+    pub(crate) open_take_markers: Vec<Marker>,
     pub(crate) next_take: u32,
     /// Current store generation (`chunks.<gen>.f32`, `journal.<gen>.jsonl`; T-301 compaction).
     pub(crate) generation: u32,
@@ -352,6 +358,7 @@ impl Session {
             sample_rate_hz: config.sample_rate_hz,
             journaled_chunks: Vec::new(),
             open_take: None,
+            open_take_markers: Vec::new(),
             next_take: 1,
             generation: 0,
             store_options,
@@ -652,6 +659,25 @@ impl Session {
         Ok(())
     }
 
+    /// H-17 (SPEC-004 §2.7, overlaps H-21 "markers during an operation" — this only journals for
+    /// crash recovery; H-21 wires up the live "press M during a take" UI): journals `marker`
+    /// (`take_marker` + `fdatasync`) for the open take, so [`Self::apply_open_take_from_wav`]
+    /// restores it if the take is interrupted before it commits the normal way (Stop). Markers
+    /// committed normally still go through `commit_take`/`commit_take_window`'s own `markers`
+    /// argument, independent of this. `marker.pos_samples` is document time.
+    pub fn note_take_marker(&mut self, take: TakeId, marker: Marker) -> Result<()> {
+        match self.open_take {
+            Some(open) if open.id == take => {}
+            _ => return Err(ProjectError::NoSuchTake(take.0)),
+        }
+        self.journal.append(&[Record::TakeMarker {
+            take: take.0,
+            marker: MarkerRecord::from_marker(&marker),
+        }])?;
+        self.open_take_markers.push(marker);
+        Ok(())
+    }
+
     /// T-304 (SPEC-022 §2.10): closes a cancelled operation's take with `take_cancel` (no undo
     /// entry, the document is untouched) and deletes its take files (best effort).
     pub fn cancel_take(&mut self, take: TakeId) -> Result<()> {
@@ -660,6 +686,7 @@ impl Session {
                 self.journal
                     .append(&[Record::TakeCancel { take: take.0 }])?;
                 self.open_take = None;
+                self.open_take_markers.clear();
                 let takes_dir = self.takes_dir();
                 for part in 0.. {
                     let path = take_part_path(&takes_dir, take.0, part);
@@ -740,6 +767,7 @@ impl Session {
             }
         };
         self.open_take = Some(OpenTake { id, plan });
+        self.open_take_markers.clear();
         Ok(TakeCapture {
             id,
             wav,
@@ -774,6 +802,7 @@ impl Session {
             self.journal
                 .append(&[Record::TakeDiscard { take: open.id.0 }])?;
             self.open_take = None;
+            self.open_take_markers.clear();
             return Ok(None);
         }
         if len == 0 && finished.wav_samples > 0 {
@@ -803,6 +832,7 @@ impl Session {
         let truncated = (finished.wav_samples > len).then_some(finished.wav_samples);
         let step = self.commit_internal(&edit, Some((open.id, truncated)))?;
         self.open_take = None;
+        self.open_take_markers.clear();
         Ok(Some(step))
     }
 
@@ -814,6 +844,7 @@ impl Session {
                 self.journal
                     .append(&[Record::TakeDiscard { take: take.0 }])?;
                 self.open_take = None;
+                self.open_take_markers.clear();
                 Ok(())
             }
             _ => Err(ProjectError::NoSuchTake(take.0)),
@@ -872,8 +903,10 @@ impl Session {
 
     /// Crash recovery's "Apply as recorded" (SPEC-004 §2.7): commits the open take from its WAV
     /// (authoritative, ADR-004 §9 step 5) as one undoable "Record" edit at its insertion point,
-    /// exactly as if Stop had been pressed. Markers pressed during the take were never journaled
-    /// and are not recovered. An empty WAV closes the take with `take_discard` (`Ok(None)`).
+    /// exactly as if Stop had been pressed. Markers pressed during the take and journaled via
+    /// [`Self::note_take_marker`] are restored, clamped into the committed range exactly like
+    /// [`Self::commit_take`]'s own `markers` argument (H-17: previously such markers were never
+    /// journaled and were lost here). An empty WAV closes the take with `take_discard` (`Ok(None)`).
     pub fn apply_open_take_from_wav(&mut self) -> Result<Option<HistoryStep>> {
         let open = self.open_take.ok_or(ProjectError::NoSuchTake(0))?;
         let parts = crate::take::recover_take(&self.takes_dir(), open.id.0)?;
@@ -886,15 +919,31 @@ impl Session {
             self.cancel_take(open.id)?;
             return Ok(None);
         };
-        let Some(edit) = self.build_take_edit(&open.plan, &audio.pieces, (k_start, u64::MAX))?
-        else {
+        let window = (k_start, u64::MAX);
+        let Some(mut edit) = self.build_take_edit(&open.plan, &audio.pieces, window)? else {
             self.journal
                 .append(&[Record::TakeDiscard { take: open.id.0 }])?;
             self.open_take = None;
+            self.open_take_markers.clear();
             return Ok(None);
         };
+        if !self.open_take_markers.is_empty() {
+            let take_len: u64 = audio.pieces.iter().map(Piece::len_samples).sum();
+            let n = Self::window_len(&open.plan, take_len, window);
+            let (lo, hi) = (open.plan.at, open.plan.at.saturating_add(n));
+            for marker in &self.open_take_markers {
+                let pos = marker.pos_samples.clamp(lo, hi);
+                let end = marker.end_samples().clamp(pos, hi);
+                edit = edit.marker(MarkerOp::Add(Marker {
+                    pos_samples: pos,
+                    len_samples: end - pos,
+                    ..marker.clone()
+                }));
+            }
+        }
         let step = self.commit_internal(&edit, Some((open.id, None)))?;
         self.open_take = None;
+        self.open_take_markers.clear();
         Ok(Some(step))
     }
 
@@ -942,6 +991,7 @@ impl Session {
         let truncated = (finished.wav_samples > len).then_some(finished.wav_samples);
         let step = self.commit_internal(&edit, Some((open.id, truncated)))?;
         self.open_take = None;
+        self.open_take_markers.clear();
         Ok(Some(step))
     }
 

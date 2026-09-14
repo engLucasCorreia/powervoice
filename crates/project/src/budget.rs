@@ -8,10 +8,14 @@
 //!   a "disk almost full" warning when free space stays under the floor with nothing left.
 //! - [`Session::compact`] copies the live chunks into the next generation (ids kept), writes its
 //!   journal starting with a checkpoint, switches `meta.json` atomically and deletes the old
-//!   generation — crash-safe at every step.
+//!   generation — crash-safe at every step. H-17 item 3: [`Session::begin_compact`] +
+//!   [`PreparedCompaction::copy_chunks`] + [`Session::finish_compact`] split that into a short
+//!   snapshot, the expensive copy (needs only `&Session`, so it never blocks edits), and a short
+//!   swap; [`Session::compact`] is just those three steps run back to back.
 //! - [`Session::housekeep`] runs the three together. Nothing here runs while recording.
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 
 use crate::disk::FreeSpaceProvider;
 use crate::fs_util::{dir_size, write_file_atomic};
@@ -19,7 +23,7 @@ use crate::history::History;
 use crate::journal::{CheckpointRecord, Journal, Record, journal_file_name};
 use crate::session::{META_FILE_NAME, Meta, read_meta, remove_generation_files};
 use crate::snapshot::{DocSnapshot, Piece, Source};
-use crate::store::{ChunkId, ChunkStore};
+use crate::store::{ChunkId, ChunkLocation, ChunkStore};
 use crate::{CHUNK_ALIGN_BYTES, CHUNK_SAMPLES, ProjectError, Result, SEGMENT_BYTES, Session};
 
 const GIB: u64 = 1024 * 1024 * 1024;
@@ -147,6 +151,45 @@ pub struct HousekeepingReport {
     pub almost_full: bool,
 }
 
+/// H-17 item 3: a compaction snapshotted by [`Session::begin_compact`]. Its expensive part —
+/// reading every live chunk from the old store and writing it into the new generation's
+/// ([`Self::copy_chunks`]) — touches neither `self` nor the [`Session`] it came from, so it can
+/// run for as long as it takes (a whole document's worth of I/O) while the session keeps
+/// committing edits against the old store. [`Session::finish_compact`] re-checks what's live,
+/// copies the (usually empty) delta, and does the short atomic generation switch.
+pub struct PreparedCompaction {
+    old_store: Arc<ChunkStore>,
+    new_store: Arc<ChunkStore>,
+    live: BTreeSet<ChunkId>,
+    new_generation: u32,
+}
+
+impl PreparedCompaction {
+    /// Reads every chunk snapshotted as live from the old store and writes it into the new one.
+    /// Pure I/O against two independent chunk stores — no session state is touched, so nothing
+    /// needs to wait for it (H-17 item 3).
+    pub fn copy_chunks(&self) -> Result<Vec<ChunkLocation>> {
+        copy_live_chunks(&self.old_store, &self.new_store, &self.live)
+    }
+}
+
+/// Reads every chunk in `ids` from `old` and writes it into `new`, keeping its id.
+fn copy_live_chunks(
+    old: &ChunkStore,
+    new: &ChunkStore,
+    ids: &BTreeSet<ChunkId>,
+) -> Result<Vec<ChunkLocation>> {
+    let mut buf = vec![0f32; CHUNK_SAMPLES];
+    let mut index = Vec::with_capacity(ids.len());
+    for &id in ids {
+        let loc = old.location(id).ok_or(ProjectError::UnknownChunk(id))?;
+        let samples = &mut buf[..loc.len as usize];
+        old.read_chunk(id, 0, samples)?;
+        index.push(new.commit_chunk_with_id(id, samples)?);
+    }
+    Ok(index)
+}
+
 fn chunk_ids(snapshot: &DocSnapshot) -> impl Iterator<Item = ChunkId> + '_ {
     pieces_chunk_ids(&snapshot.pieces)
 }
@@ -262,21 +305,87 @@ impl Session {
     /// (the new files are removed by the next compaction or recovery); after it, the new one.
     /// Refused while recording. Returns the chunk-file bytes released. [`Self::store`] is a new
     /// store afterwards: hand it to every reader.
+    ///
+    /// Just [`Self::begin_compact`] + [`PreparedCompaction::copy_chunks`] + [`Self::finish_compact`]
+    /// run back to back — callers who want edits to keep committing while the (potentially slow,
+    /// whole-document) copy runs should call those directly instead (H-17 item 3;
+    /// `src-tauri`'s `DocumentService::housekeeping` does).
     pub fn compact(&mut self, extra_live: &[Piece]) -> Result<u64> {
+        let prepared = self.begin_compact(extra_live)?;
+        let index = prepared.copy_chunks()?;
+        // `finish_compact` only returns `None` when `prepared` was snapshotted from a store this
+        // session has since moved on from — impossible here, nothing runs between the two calls.
+        Ok(self
+            .finish_compact(prepared, index, extra_live)?
+            .unwrap_or(0))
+    }
+
+    /// Phase 1 of compaction (short — no chunk I/O): snapshots what's live and opens the next
+    /// generation's empty store. Needs only `&Session`: it does not touch `self` at all, so a
+    /// caller can keep committing edits against the session in between this and
+    /// [`Self::finish_compact`] without waiting on anything (H-17 item 3). Refused while
+    /// recording.
+    pub fn begin_compact(&self, extra_live: &[Piece]) -> Result<PreparedCompaction> {
         if self.open_take.is_some() {
             return Err(ProjectError::NotWhileRecording);
         }
         let live = live_chunk_ids(&self.history, extra_live);
-        let old_generation = self.generation;
-        let new_generation = old_generation + 1;
+        let new_generation = self.generation + 1;
         remove_generation_files(&self.dir, new_generation);
         let mut options = self.store_options.clone();
         options.memory_budget_bytes = self.store.memory_budget();
         let new_store = ChunkStore::create(&self.dir, new_generation, options)?;
-        // Ids are never reused: a chunk written to the old store by a job still in flight can
-        // then never be mistaken for a different chunk of the new one.
-        new_store.reserve_ids_below(self.store.chunk_count());
-        let journal = match self.stage_generation(&new_store, &live, new_generation) {
+        Ok(PreparedCompaction {
+            old_store: Arc::clone(&self.store),
+            new_store,
+            live,
+            new_generation,
+        })
+    }
+
+    /// Phase 3 of compaction (short — no chunk I/O beyond `delta`, normally empty): re-snapshots
+    /// what's live now — edits committed while [`PreparedCompaction::copy_chunks`] ran may have
+    /// made new chunks live, or the disk-pressure caller may have dropped undo entries in between
+    /// — copies just that delta, then does the same atomic generation switch [`Self::compact`]
+    /// always did: checkpoint + `meta.json` swap + old generation removal. `index` is phase 2's
+    /// copied locations. `Ok(None)` if `prepared` was snapshotted from a store this session has
+    /// moved on from (recovered, or already compacted by a concurrent attempt) instead of doing
+    /// anything — the caller's next housekeeping pass tries again; `Ok(Some(freed))` (`freed` may
+    /// be 0) whenever the switch actually happened, so the caller knows to hand the new store to
+    /// its readers. Refused while recording.
+    ///
+    /// Reserves the new store's ids below the old store's chunk count read *here* (not in
+    /// [`Self::begin_compact`]): ids are never reused, and a chunk the old store hands out during
+    /// the no-lock copy (e.g. an edit committed in the meantime) is still live and gets copied
+    /// above by id, but the new store's own auto-assigned counter must still start past it (and
+    /// past anything a job still holding the old store commits even later, ADR-004 Amendment 3) —
+    /// a count read back in [`Self::begin_compact`] could already be stale by the time the copy
+    /// finishes.
+    pub fn finish_compact(
+        &mut self,
+        prepared: PreparedCompaction,
+        mut index: Vec<ChunkLocation>,
+        extra_live: &[Piece],
+    ) -> Result<Option<u64>> {
+        if self.open_take.is_some() {
+            return Err(ProjectError::NotWhileRecording);
+        }
+        if !Arc::ptr_eq(&prepared.old_store, &self.store) {
+            return Ok(None);
+        }
+        let live_now = live_chunk_ids(&self.history, extra_live);
+        let delta: BTreeSet<ChunkId> = live_now.difference(&prepared.live).copied().collect();
+        if !delta.is_empty() {
+            index.extend(copy_live_chunks(&self.store, &prepared.new_store, &delta)?);
+        }
+        prepared
+            .new_store
+            .reserve_ids_below(self.store.chunk_count());
+        let new_store = prepared.new_store;
+        new_store.sync()?;
+        let new_generation = prepared.new_generation;
+        let old_generation = self.generation;
+        let journal = match self.finish_generation_switch(index, new_generation) {
             Ok(journal) => journal,
             Err(e) => {
                 if read_meta(&self.dir).is_some_and(|m| m.generation == new_generation) {
@@ -299,31 +408,22 @@ impl Session {
         self.generation = new_generation;
         self.meta.generation = new_generation;
         self.journaled_chunks.clear();
-        for &id in &live {
+        for &id in prepared.live.union(&delta) {
             self.mark_journaled(id);
         }
         remove_generation_files(&self.dir, old_generation);
-        Ok(freed)
+        Ok(Some(freed))
     }
 
-    fn stage_generation(
+    /// The checkpoint + `meta.json` half of the switch: journals `open` + the latest `saved`/
+    /// `state` + a checkpoint built from `index` and the *current* `self.history` (so edits
+    /// committed during the no-lock copy are included), then atomically points `meta.json` at
+    /// `new_generation`.
+    fn finish_generation_switch(
         &self,
-        new_store: &ChunkStore,
-        live: &BTreeSet<ChunkId>,
+        index: Vec<ChunkLocation>,
         new_generation: u32,
     ) -> Result<Journal> {
-        let mut buf = vec![0f32; CHUNK_SAMPLES];
-        let mut index = Vec::with_capacity(live.len());
-        for &id in live {
-            let loc = self
-                .store
-                .location(id)
-                .ok_or(ProjectError::UnknownChunk(id))?;
-            let samples = &mut buf[..loc.len as usize];
-            self.store.read_chunk(id, 0, samples)?;
-            index.push(new_store.commit_chunk_with_id(id, samples)?);
-        }
-        new_store.sync()?;
         let mut journal = Journal::create(&self.dir.join(journal_file_name(new_generation)))?;
         let mut records = vec![self.open_record.clone()];
         records.extend(self.last_saved.clone());

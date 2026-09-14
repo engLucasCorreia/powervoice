@@ -118,6 +118,11 @@ export function isUnrecoverable(id: string): boolean {
  * Recover: opens the session as the document (modified, "(recovered)", bound to its original
  * path). Runs the unsaved-changes prompt first when a modified document is open. A session with
  * nothing intact is marked so only Discard stays available.
+ *
+ * H-17 / A-015: the dialog stays open afterwards, listing whatever sessions remain — only one
+ * document can be open at a time (SPEC-004 §2.7), but the others are still there to Recover (into
+ * a second pass, replacing this one) or Discard. "Decide later" (or storage mode's "Close") is
+ * what actually closes it.
  */
 export async function recover(id: string): Promise<boolean> {
   if (busy) {
@@ -131,7 +136,6 @@ export async function recover(id: string): Promise<boolean> {
         const result = await recoveryRecover(id, takeActionFor(id));
         applyRecoveredDocument(result.document);
         sessions = sessions.filter((s) => s.id !== id);
-        mode = null;
         recovered = true;
       } catch (err) {
         if (isIpcError(err) && err.key === "error.recovery.nothing_intact") {
@@ -155,6 +159,10 @@ export function cancelDiscard(): void {
   pendingDiscard = null;
 }
 
+/**
+ * H-17 / A-015: like {@link recover}, stays open afterwards (even once the list is empty — the
+ * empty state renders its own message) — only "Decide later" / storage mode's "Close" closes it.
+ */
 export async function confirmDiscard(): Promise<void> {
   const target = pendingDiscard;
   pendingDiscard = null;
@@ -165,8 +173,6 @@ export async function confirmDiscard(): Promise<void> {
     sessions = await recoveryDiscard(target.id);
     if (mode === "storage") {
       await refreshStorage();
-    } else if (sessions.length === 0) {
-      mode = null;
     }
   } catch (err) {
     report(err);

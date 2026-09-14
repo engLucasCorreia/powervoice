@@ -10,8 +10,8 @@ use common::script::*;
 use common::*;
 use vox_project::gc::{collect_garbage, discard_session};
 use vox_project::{
-    Edit, Marker, MarkerOp, NormalizeResult, ProjectError, Session, SessionConfig, SourceInfo,
-    TAKE_LABEL_KEY, TakeMode, TakeWriterOptions, edit, normalize_peak, validate_range,
+    Edit, Marker, MarkerId, MarkerOp, NormalizeResult, ProjectError, Session, SessionConfig,
+    SourceInfo, TAKE_LABEL_KEY, TakeMode, TakeWriterOptions, edit, normalize_peak, validate_range,
 };
 
 // --- AC-9: journal fault injection --------------------------------------------------------------
@@ -269,6 +269,47 @@ fn ac10_recovery_flow() {
         discard_session(&listed[0].dir),
         Err(ProjectError::SessionLocked)
     ));
+}
+
+/// H-17 item 4 (SPEC-004 §2.7): a marker pressed during an interrupted take (journaled via
+/// `note_take_marker`, as H-21's live "press M during a take" will do) is restored by "Apply as
+/// recorded" — clamped into the committed range exactly like a normally-committed take's markers.
+/// Previously such markers were never journaled at all and were silently lost on recovery.
+#[test]
+fn interrupted_take_recovers_markers_pressed_during_it() {
+    let root = TempDir::new("take-markers");
+    let sessions = root.path().join("sessions");
+    let mut s = new_session(&sessions);
+    let take = noise(2, 120_000); // 2.5 s at 48 kHz
+    let mut capture = s
+        .begin_take(TakeMode::New, TakeWriterOptions::default())
+        .unwrap();
+    let take_id = capture.id();
+    capture.append(&take).unwrap();
+    capture.sync().unwrap();
+    // Two markers pressed during the take: one inside it, one past its end (clamped, like a
+    // marker pressed right as the take ends and extrapolated a touch too far).
+    s.note_take_marker(take_id, Marker::new(MarkerId(1), 40_000, 0, "m1"))
+        .unwrap();
+    s.note_take_marker(take_id, Marker::new(MarkerId(2), 999_999, 0, "m2"))
+        .unwrap();
+    let session_dir = s.dir().to_path_buf();
+    drop(capture);
+    drop(s); // crash: neither marker was ever part of a committed edit
+
+    let (mut r, report) = Session::recover(&session_dir, options()).unwrap();
+    assert_eq!(report.lost_changes, 0);
+    assert_eq!(report.open_take.unwrap().samples, 120_000);
+
+    let step = r.apply_open_take_from_wav().unwrap().unwrap();
+    assert_eq!(&*step.label_key, TAKE_LABEL_KEY);
+    let markers = &r.current().markers;
+    assert_eq!(markers.len(), 2);
+    assert_eq!(markers[0].pos_samples, 40_000);
+    assert_eq!(&*markers[0].name, "m1");
+    // Clamped to the end of the committed audio (120 000 samples, take starts at 0).
+    assert_eq!(markers[1].pos_samples, 120_000);
+    assert_eq!(&*markers[1].name, "m2");
 }
 
 /// "Open as new document": the take becomes its own untitled document; the original session

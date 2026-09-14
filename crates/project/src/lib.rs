@@ -54,7 +54,9 @@ pub mod store;
 pub mod take;
 pub mod vxpk;
 
-pub use budget::{DiskAction, DiskLimits, DiskUsage, HousekeepingReport};
+pub use budget::{
+    DiskAction, DiskLimits, DiskUsage, HousekeepingReport, PreparedCompaction, decide,
+};
 pub use disk::{FixedFreeSpace, FreeSpaceProvider, SystemFreeSpace};
 pub use edit::{PostEdit, Range, RangeError, Target as EditTarget, validate_range};
 pub use error::{ProjectError, Result};

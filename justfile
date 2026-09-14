@@ -18,11 +18,17 @@ test:
 # ~5 GB scratch under target/big-tests. Uses fixtures/generated/long-60min-48k-mono.wav if present.
 # H-03: first the full SPEC-017 true-peak limiter matrix (AC-3/AC-4, 44.1/48/96 kHz × ceilings ×
 # input gains × look-ahead/release, multi-threaded) and the 60 s AC-16 timing run.
+# H-17: SPEC-004 AC-3 (undo/redo on 20 000 pieces, ≤ 50 ms) and AC-11 (60-min/1000-record
+# recovery, < 5 s) on a real disk under target/big-tests.
 test-big:
     cargo test --release -p vox-modules --test true_peak_limiter -- --ignored --nocapture --test-threads=1
     mkdir -p target/big-tests
     POWERVOICE_TEST_TMP="{{justfile_directory()}}/target/big-tests" \
         cargo test --release -p vox-project --test big -- --ignored --nocapture --test-threads=1
+    POWERVOICE_TEST_TMP="{{justfile_directory()}}/target/big-tests" \
+        cargo test --release -p vox-project --test history_exact -- --ignored --nocapture --test-threads=1
+    POWERVOICE_TEST_TMP="{{justfile_directory()}}/target/big-tests" \
+        cargo test --release -p vox-project --test recovery -- --ignored --nocapture --test-threads=1
 
 # Regenerate Rust -> TS shared types (ADR-003) into ui/src/lib/ipc/bindings.ts
 gen-types:

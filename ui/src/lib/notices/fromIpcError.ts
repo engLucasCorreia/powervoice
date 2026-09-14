@@ -12,5 +12,6 @@ export function noticeFromIpcError(error: IpcError): Notice {
     params: error.params,
     persistent: false,
     id: null,
+    cleared: false,
   };
 }

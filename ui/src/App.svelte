@@ -40,6 +40,7 @@
   import { initNrCapture } from "./lib/rack/nrCapture.svelte";
   import NoticeHost from "./lib/notices/NoticeHost.svelte";
   import { initMarkers } from "./lib/markers/markers.svelte";
+  import PreferencesDialog from "./lib/preferences/PreferencesDialog.svelte";
   import RecoveryDialog from "./lib/recovery/RecoveryDialog.svelte";
   import { initRecovery } from "./lib/recovery/recovery.svelte";
   import CalibrationDialog from "./lib/record/CalibrationDialog.svelte";
@@ -243,6 +244,7 @@
 </div>
 <NoticeHost />
 <RecoveryDialog />
+<PreferencesDialog />
 <UnsavedChangesDialog />
 <ConfirmDialog />
 <RecentMissingDialog />

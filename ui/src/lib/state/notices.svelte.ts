@@ -34,8 +34,17 @@ export function noticesState(): { readonly toasts: ActiveNotice[]; readonly bann
  * `fromIpcError.ts`). A persistent notice is a banner; a banner sharing an existing banner's `id`
  * replaces it in place (e.g. a device-lost banner turning into "reconnected" — SPEC-001 §2.3). A
  * non-persistent notice is a toast that auto-dismisses after ~4s.
+ *
+ * H-17: `cleared` instead *removes* the banner sharing `id` (e.g. SPEC-004 §2.5's disk-almost-full
+ * banner once space is reclaimed) — nothing is added, so the returned id is only meaningful when
+ * something was actually removed.
  */
 export function pushNotice(notice: Notice): string {
+  if (notice.cleared) {
+    const localId = notice.id ?? "";
+    banners = banners.filter((b) => b.localId !== localId);
+    return localId;
+  }
   if (notice.persistent) {
     const localId = notice.id ?? nextLocalId();
     banners = [...banners.filter((b) => b.localId !== localId), { ...notice, localId }];

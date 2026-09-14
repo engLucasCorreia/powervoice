@@ -22,7 +22,7 @@ use crate::session::{
     META_FILE_NAME, OpenTake, SourceInfo, TAKES_DIR_NAME, TakeId, TakePlan, read_meta,
     remove_other_generations, write_lock_info,
 };
-use crate::snapshot::Source;
+use crate::snapshot::{Marker, Source};
 use crate::store::{ChunkId, ChunkLocation, ChunkStore, StoreOptions};
 use crate::{ProjectError, Result, Session};
 
@@ -101,6 +101,9 @@ pub struct Replay {
     pub state_record: Option<Record>,
     /// Open takes: take id → what `take_begin` (+ `take_window`, T-304) journaled about it.
     pub open_takes: BTreeMap<u32, TakePlan>,
+    /// H-17: markers journaled (`take_marker`, [`crate::Session::note_take_marker`]) for each
+    /// take, in document time, cleared like `open_takes` once the take closes.
+    pub take_markers: BTreeMap<u32, Vec<Marker>>,
     /// Highest take id ever begun (0: none).
     pub max_take: u32,
     /// The journal ends in `close`.
@@ -180,6 +183,7 @@ pub fn replay(records: &[Record]) -> ReplayOutcome {
         saved_record: None,
         state_record: None,
         open_takes: BTreeMap::new(),
+        take_markers: BTreeMap::new(),
         max_take: 0,
         closed: false,
     };
@@ -244,11 +248,19 @@ fn note_metadata(r: &mut Replay, record: &Record) {
         }
         Record::TakeDiscard { take } | Record::TakeCancel { take } => {
             r.open_takes.remove(take);
+            r.take_markers.remove(take);
         }
         Record::Edit(e) => {
             if let Some(take) = e.take {
                 r.open_takes.remove(&take);
+                r.take_markers.remove(&take);
             }
+        }
+        Record::TakeMarker { take, marker } => {
+            r.take_markers
+                .entry(*take)
+                .or_default()
+                .push(marker.to_marker());
         }
         _ => {}
     }
@@ -299,6 +311,7 @@ fn apply(r: &mut Replay, record: &Record) -> bool {
         | Record::TakeDiscard { .. }
         | Record::TakeWindow { .. }
         | Record::TakeCancel { .. }
+        | Record::TakeMarker { .. }
         | Record::Close => {}
     }
     note_metadata(r, record);
@@ -422,6 +435,11 @@ impl Session {
             Some(t) if t.plan.aligned && t.plan.k_start.is_none() => (None, Some(t.id)),
             other => (other, None),
         };
+        // H-17: markers journaled for the kept take (`note_take_marker`), if any — restored by
+        // `Session::apply_open_take_from_wav`.
+        let open_take_markers = open_take
+            .map(|t| rep.take_markers.get(&t.id.0).cloned().unwrap_or_default())
+            .unwrap_or_default();
         let open_take_info = match open_take {
             Some(t) => {
                 let total: u64 = crate::take::recover_take(&takes_dir, t.id.0)
@@ -475,6 +493,7 @@ impl Session {
             sample_rate_hz: meta.sample_rate_hz,
             journaled_chunks: Vec::new(),
             open_take,
+            open_take_markers,
             next_take,
             generation,
             store_options: store,

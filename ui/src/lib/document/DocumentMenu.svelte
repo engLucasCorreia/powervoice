@@ -3,12 +3,14 @@
   import { openExportDialog } from "../export/export.svelte";
   import { t } from "../i18n";
   import { dispatchAction } from "../keymap";
+  import { isPlatformMac } from "../keymap/registry";
   import { shortcutLabelForAction } from "../keymap/shortcutLabel";
   import { closeAllMenus, menubarState, moveToAdjacentMenu, toggleMenu } from "../menu/menubar.svelte";
   import { focusFirstItem, handleMenuKeydown } from "../menu/menuKeyboard";
   import MenuItemRow from "../menu/MenuItemRow.svelte";
   import MenuSeparatorRow from "../menu/MenuSeparatorRow.svelte";
   import { splitMnemonic } from "../menu/mnemonic";
+  import { openPreferences } from "../preferences/preferences.svelte";
   import { openRecoveryStorage } from "../recovery/recovery.svelte";
   import { openNewRecordingPrompt, recordState } from "../state/record.svelte";
   import { settingsState } from "../state/settings.svelte";
@@ -25,8 +27,12 @@
    * Recovery & Storage…, Close — a real dropdown replacing S1-03/S4-04/H-06/T-306/T-209's flat
    * always-visible row. "Recent Files ▸" is `RecentFilesMenu`'s old dropdown-in-a-dropdown logic,
    * folded in here since it's a File-menu submenu now, not a standalone toolbar widget.
+   *
+   * H-17: Preferences… lives here on macOS (there's no native app menu to put it in instead);
+   * everywhere else it's in `EditMenu.svelte`.
    */
   const MENU_ID = "file" as const;
+  const showPreferencesHere = isPlatformMac();
   const doc = documentState();
   const rec = recordState();
   const recent = recentFilesState();
@@ -231,6 +237,13 @@
         testid="menu-recovery"
         onSelect={() => select(() => void openRecoveryStorage())}
       />
+      {#if showPreferencesHere}
+        <MenuItemRow
+          label={t("menu.preferences")}
+          testid="menu-preferences"
+          onSelect={() => select(openPreferences)}
+        />
+      {/if}
       <MenuSeparatorRow />
       <MenuItemRow
         label={t("menu.file.close")}

@@ -34,6 +34,11 @@ crate::ipc_events!(
 ///
 /// `key`/`params` is an i18n message key plus its placeholder values (CLAUDE.md: every
 /// user-facing string goes through i18n) — this event never carries pre-rendered text.
+///
+/// H-17: `cleared` (additive, defaults to `false` so older payloads still parse) instead
+/// *removes* the banner sharing `id` — for a condition that resolves itself with nothing left for
+/// the user to act on (SPEC-004 §2.5's disk-almost-full banner once space is reclaimed), unlike
+/// the device-lost→reconnected pattern above, which replaces it with an acknowledgeable one.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "bindings.ts")]
 pub struct Notice {
@@ -44,6 +49,10 @@ pub struct Notice {
     /// Stable id for a banner that a later `Notice` can replace or clear. `None` for one-shot
     /// toasts, which are never replaced (each is its own event).
     pub id: Option<String>,
+    /// `true`: remove the banner sharing `id` instead of showing anything (`level`/`key` are
+    /// ignored). Only meaningful with `id: Some(..)`.
+    #[serde(default)]
+    pub cleared: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -63,6 +72,7 @@ impl Notice {
             params: HashMap::new(),
             persistent: false,
             id: None,
+            cleared: false,
         }
     }
 
@@ -73,6 +83,20 @@ impl Notice {
             params: HashMap::new(),
             persistent: true,
             id: Some(id.into()),
+            cleared: false,
+        }
+    }
+
+    /// H-17: removes the banner `id` (e.g. SPEC-004 §2.5's disk-almost-full banner once space is
+    /// reclaimed) instead of replacing it with anything.
+    pub fn clear_banner(id: impl Into<String>) -> Self {
+        Self {
+            level: NoticeLevel::Info,
+            key: String::new(),
+            params: HashMap::new(),
+            persistent: true,
+            id: Some(id.into()),
+            cleared: true,
         }
     }
 

@@ -244,7 +244,7 @@
       onKindDecided: (kind, reason) => {
         if (kind === "canvas2d" && reason === "unavailable") {
           queueMicrotask(() =>
-            pushNotice({ level: "info", key: "notice.renderer.fallback_spectral", params: {}, persistent: false, id: null }),
+            pushNotice({ level: "info", key: "notice.renderer.fallback_spectral", params: {}, persistent: false, id: null, cleared: false }),
           );
         }
       },
@@ -252,7 +252,7 @@
         glRenderer?.dispose();
         glRenderer = null;
         queueMicrotask(() =>
-          pushNotice({ level: "warning", key: "notice.renderer.context_lost_spectral", params: {}, persistent: false, id: null }),
+          pushNotice({ level: "warning", key: "notice.renderer.context_lost_spectral", params: {}, persistent: false, id: null, cleared: false }),
         );
       },
     });

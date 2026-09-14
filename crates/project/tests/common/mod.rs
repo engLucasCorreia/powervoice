@@ -20,9 +20,15 @@ pub struct TempDir(PathBuf);
 impl TempDir {
     pub fn new(tag: &str) -> Self {
         static N: AtomicU64 = AtomicU64::new(0);
+        static SWEEP: std::sync::Once = std::sync::Once::new();
         let base = std::env::var_os("POWERVOICE_TEST_TMP")
             .map(PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
+        // H-17 item 6: a killed test run (SIGKILL crash tests, H-05/T-301) never runs `Drop`, so
+        // its `vox-project-*` dirs leak — on `/tmp`'s tmpfs that eventually fills the quota and
+        // fails unrelated tests with `DiskFull`/EDQUOT (MEMORY.md). Sweep once per test binary,
+        // mirroring `src-tauri/src/test_util.rs::tmp_dir`.
+        SWEEP.call_once(|| sweep_finished_runs(&base));
         let path = base.join(format!(
             "vox-project-{tag}-{}-{}",
             std::process::id(),
@@ -41,6 +47,38 @@ impl TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Removes `vox-project-<tag>-<pid>-<n>` dirs under `base` whose `pid` is no longer a live
+/// process. `pid` is always the field just before the trailing counter `n`, read off from the
+/// end so it doesn't matter how many dashes `tag` itself contains. A no-op without `/proc`
+/// (H-05's crash tests — the only ones that can leak these — are Linux-only anyway).
+pub fn sweep_finished_runs(base: &Path) {
+    if !Path::new("/proc/self").exists() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(rest) = name.strip_prefix("vox-project-") else {
+            continue;
+        };
+        let fields: Vec<&str> = rest.split('-').collect();
+        if fields.len() < 2 {
+            continue;
+        }
+        let Ok(pid) = fields[fields.len() - 2].parse::<u32>() else {
+            continue;
+        };
+        if pid != std::process::id() && !Path::new(&format!("/proc/{pid}")).exists() {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
     }
 }
 

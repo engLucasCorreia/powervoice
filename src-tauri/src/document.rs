@@ -1160,9 +1160,16 @@ impl DocumentService {
     }
 
     /// SPEC-004 §2.5's disk check (after every edit and every 10 s idle): compaction, then the
-    /// oldest undo steps (OD-1 = A), via `Session::housekeep`. Skipped while recording, while a
-    /// normalize job runs and during playback (a store switch would stop it) — the next check
-    /// retries. `None` when nothing ran.
+    /// oldest undo steps (OD-1 = A). Skipped while recording, while a normalize job runs and
+    /// during playback (a store switch would stop it) — the next check retries. `None` when
+    /// nothing ran.
+    ///
+    /// H-17 item 3: unlike `Session::housekeep` (which needs `&mut Session` throughout, including
+    /// while it copies every live chunk into the next generation), this only holds the document
+    /// mutex for the cheap parts — deciding, and the final checkpoint/`meta.json` swap
+    /// (`Session::begin_compact`/`finish_compact`) — and releases it while the chunk copy
+    /// (`PreparedCompaction::copy_chunks`, potentially the whole document's worth of I/O) runs, so
+    /// edits and other commands never wait behind it.
     pub fn housekeeping(
         &self,
         free: &dyn vox_project::FreeSpaceProvider,
@@ -1178,26 +1185,76 @@ impl DocumentService {
             .as_ref()
             .map(|c| c.pieces.clone())
             .unwrap_or_default();
-        let mut guard = self.0.open.lock().unwrap();
-        let doc = guard.as_mut()?;
-        if doc.session.is_recording() {
-            return None;
-        }
-        let report = match doc
-            .session
-            .housekeep(&clip, free, &vox_project::DiskLimits::default())
-        {
-            Ok(report) => report,
-            Err(error) => {
-                tracing::warn!(%error, "session housekeeping failed");
-                return None;
+        let mut report = vox_project::HousekeepingReport::default();
+        for _ in 0..3 {
+            let prepared = {
+                let mut guard = self.0.open.lock().unwrap();
+                let doc = guard.as_mut()?;
+                if doc.session.is_recording() {
+                    report.skipped_recording = true;
+                    return Some(report);
+                }
+                let usage = doc.session.disk_usage(&clip);
+                let free_bytes = free
+                    .free_bytes(doc.session.dir())
+                    .unwrap_or(u64::MAX)
+                    .saturating_add(report.freed_bytes);
+                let limits = vox_project::DiskLimits::default();
+                match vox_project::decide(&usage, free_bytes, &limits) {
+                    vox_project::DiskAction::None => break,
+                    vox_project::DiskAction::AlmostFull => {
+                        report.almost_full = true;
+                        break;
+                    }
+                    vox_project::DiskAction::DropOldest(k) => match doc.session.drop_oldest_undo(k)
+                    {
+                        Ok(n) => report.dropped_undo += n,
+                        Err(error) => {
+                            tracing::warn!(%error, "dropping the oldest undo steps failed");
+                            return Some(report);
+                        }
+                    },
+                    vox_project::DiskAction::Compact => {}
+                }
+                match doc.session.begin_compact(&clip) {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        tracing::warn!(%error, "starting session compaction failed");
+                        return Some(report);
+                    }
+                }
+            };
+            // No document lock held here: this is the potentially slow part (reads and rewrites
+            // every live chunk), and edits keep committing against the still-current generation
+            // meanwhile.
+            let index = match prepared.copy_chunks() {
+                Ok(index) => index,
+                Err(error) => {
+                    tracing::warn!(%error, "copying chunks for compaction failed");
+                    return Some(report);
+                }
+            };
+            let mut guard = self.0.open.lock().unwrap();
+            let Some(doc) = guard.as_mut() else {
+                return Some(report);
+            };
+            match doc.session.finish_compact(prepared, index, &clip) {
+                Ok(Some(freed)) => {
+                    report.freed_bytes += freed;
+                    report.compacted = true;
+                    self.0.engine.set_document(Some(PlaybackDoc {
+                        store: Arc::clone(doc.session.store()),
+                        snapshot: doc.session.current(),
+                    }));
+                }
+                // The document moved on (closed/reopened/recovered) while the copy ran with no
+                // lock held: drop this attempt, the next housekeeping tick starts over.
+                Ok(None) => return Some(report),
+                Err(error) => {
+                    tracing::warn!(%error, "finishing session compaction failed");
+                    return Some(report);
+                }
             }
-        };
-        if report.compacted {
-            self.0.engine.set_document(Some(PlaybackDoc {
-                store: Arc::clone(doc.session.store()),
-                snapshot: doc.session.current(),
-            }));
         }
         Some(report)
     }
@@ -2823,6 +2880,64 @@ mod tests {
         let transport = service.0.engine.transport_state();
         assert_eq!(transport.doc_len_samples, samples.len() as u64);
         assert_eq!(transport.doc_rate_hz, 48_000);
+    }
+
+    /// H-17 item 3: `DocumentService::housekeeping`'s rewritten short-lock/no-lock/short-lock
+    /// orchestration (`Session::begin_compact`/`finish_compact` instead of one `&mut Session`
+    /// call) still does nothing and reports so when a fresh, tiny document is well within the
+    /// default disk limits — exercising the full loop's `DiskAction::None` exit.
+    #[test]
+    fn housekeeping_does_nothing_under_the_default_limits() {
+        let (service, _engine, dir) = service("housekeeping-noop");
+        let wav_path = dir.join("in.wav");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.05, 48_000).unwrap();
+        write_fixture_wav(
+            &wav_path,
+            &samples,
+            vox_testkit::wav::BitDepth::Float32,
+            48_000,
+        );
+        service.open(&wav_path, false).unwrap();
+
+        let free = vox_project::FixedFreeSpace::new(100 * 1024 * 1024 * 1024);
+        let report = service.housekeeping(&free).expect("a document is open");
+        assert!(!report.skipped_recording);
+        assert!(!report.compacted);
+        assert_eq!(report.dropped_undo, 0);
+        assert_eq!(report.freed_bytes, 0);
+        assert!(!report.almost_full);
+
+        // The document is still fully usable (no lock left held, no state corrupted).
+        assert_eq!(service.info().len_samples, samples.len() as u64);
+    }
+
+    /// H-17 item 3: recording still gates housekeeping out entirely, same as before the split
+    /// (SPEC-004 §2.5 "never while recording") — the short first lock sees `is_recording()` and
+    /// returns before ever calling `begin_compact`.
+    #[test]
+    fn housekeeping_is_skipped_while_recording() {
+        let (service, _engine, dir) = service("housekeeping-recording");
+        let wav_path = dir.join("in.wav");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.05, 48_000).unwrap();
+        write_fixture_wav(
+            &wav_path,
+            &samples,
+            vox_testkit::wav::BitDepth::Float32,
+            48_000,
+        );
+        service.open(&wav_path, false).unwrap();
+        {
+            let mut guard = service.0.open.lock().unwrap();
+            let doc = guard.as_mut().unwrap();
+            doc.session
+                .begin_take(TakeMode::New, TakeWriterOptions::default())
+                .unwrap();
+        }
+
+        let free = vox_project::FixedFreeSpace::new(100 * 1024 * 1024 * 1024);
+        let report = service.housekeeping(&free).expect("a document is open");
+        assert!(report.skipped_recording);
+        assert!(!report.compacted);
     }
 
     /// T-202: 8-bit WAV is now *tolerated* (SPEC-005 §2.2), not rejected — this test used to be

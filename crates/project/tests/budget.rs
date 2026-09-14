@@ -236,6 +236,64 @@ fn interrupted_compaction_leftovers_are_removed_by_recovery() {
     assert!(!session_dir.join("journal.1.jsonl").exists());
 }
 
+/// H-17 item 3: `begin_compact` only borrows `&Session`, so the expensive part of compaction
+/// (`PreparedCompaction::copy_chunks`, reading every live chunk from disk) can run on another
+/// thread while edits keep committing against the session — they used to have to wait behind
+/// the whole `compact()` call, which needed `&mut Session` throughout. The edits made during the
+/// copy still land in the switched-to generation, and the whole thing still recovers.
+#[test]
+fn compaction_copies_chunks_without_blocking_concurrent_edits() {
+    let dir = TempDir::new("compact-concurrent");
+    let mut s = session_with_history(dir.path(), 100, 5); // 600 chunks: 3 segments
+    for _ in 0..3 {
+        s.undo().unwrap().unwrap();
+    }
+    // A new edit clears the redo stack: the 3 undone normalizes' chunks become unreachable, so
+    // compaction actually has something to free.
+    let len = s.current().len_samples;
+    s.commit_edit(edit::silence(validate_range(0, 1_000, len).unwrap()))
+        .unwrap();
+    let before_compact = hash(&s);
+
+    let prepared = s.begin_compact(&[]).unwrap();
+    let index = std::thread::scope(|scope| {
+        let copier = scope.spawn(|| prepared.copy_chunks().unwrap());
+        // `prepared` only holds an `Arc` clone of the old store and an owned id snapshot — `s`
+        // itself was never borrowed by `begin_compact`, so these commits proceed immediately
+        // instead of queuing behind the copy running concurrently above.
+        let len = s.current().len_samples;
+        for i in 0..10u64 {
+            let at = i * 200;
+            s.commit_edit(edit::silence(validate_range(at, at + 10, len).unwrap()))
+                .unwrap();
+        }
+        copier.join().unwrap()
+    });
+    let after_edits = hash(&s);
+    assert_ne!(
+        after_edits, before_compact,
+        "the concurrent edits actually landed"
+    );
+
+    let freed = s.finish_compact(prepared, index, &[]).unwrap();
+    assert!(
+        freed.is_some_and(|freed| freed > 0),
+        "generation 0's now-superseded chunks are freed"
+    );
+    assert_eq!(s.generation(), 1);
+    assert_eq!(
+        hash(&s),
+        after_edits,
+        "edits made during the copy survive the switch"
+    );
+
+    let session_dir = s.dir().to_path_buf();
+    drop(s);
+    let (r, report) = Session::recover(&session_dir, StoreOptions::default()).unwrap();
+    assert_eq!(report.lost_changes, 0);
+    assert_eq!(hash(&r), after_edits);
+}
+
 /// SPEC-004 AC-4 (scaled down: 15 s instead of 60 min, 64 MiB budget): 100 whole-file
 /// normalizes all stay undoable, and the store's resident-memory counter never exceeds the
 /// budget + 128 MiB. With the disk limit raised, housekeeping does nothing.

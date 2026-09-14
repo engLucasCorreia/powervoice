@@ -76,15 +76,25 @@ fn run<R: Runtime>(app: &AppHandle<R>, documents: &DocumentService, rx: &mpsc::R
             let info: DocumentDto = documents.info().into();
             emit(app, |a| a.emit(EventName::document_changed.as_str(), info));
         }
-        if report.almost_full && !warned_full {
-            let notice = Notice::banner(
-                NoticeLevel::Warning,
-                DISK_FULL_BANNER,
-                "notice.disk.almost_full",
-            );
+        if let Some(notice) = disk_full_transition(warned_full, report.almost_full) {
             emit(app, |a| emit_notice(a, notice));
         }
         warned_full = report.almost_full;
+    }
+}
+
+/// H-17: what to tell the UI about the "Disk almost full" banner when the almost-full state moves
+/// from `was_full` to `is_full` — a banner on the rising edge, a clear on the falling edge (space
+/// was reclaimed and there's nothing left to warn about), `None` the rest of the time.
+fn disk_full_transition(was_full: bool, is_full: bool) -> Option<Notice> {
+    match (was_full, is_full) {
+        (false, true) => Some(Notice::banner(
+            NoticeLevel::Warning,
+            DISK_FULL_BANNER,
+            "notice.disk.almost_full",
+        )),
+        (true, false) => Some(Notice::clear_banner(DISK_FULL_BANNER)),
+        _ => None,
     }
 }
 
@@ -108,12 +118,31 @@ pub fn format_bytes(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::format_bytes;
+    use super::{DISK_FULL_BANNER, disk_full_transition, format_bytes};
 
     #[test]
     fn bytes_read_like_the_spec_notice() {
         assert_eq!(format_bytes(4_100_000_000), "4.1 GB");
         assert_eq!(format_bytes(67_108_864), "67 MB");
         assert_eq!(format_bytes(10), "1 MB");
+    }
+
+    /// H-17 item 5: the banner appears once, on the rising edge, and clears itself once, on the
+    /// falling edge — no repeat notices while the state doesn't change.
+    #[test]
+    fn disk_full_banner_appears_once_and_clears_once() {
+        assert!(disk_full_transition(false, false).is_none());
+        assert!(
+            disk_full_transition(true, true).is_none(),
+            "no repeat notice"
+        );
+
+        let shown = disk_full_transition(false, true).expect("rising edge");
+        assert!(shown.persistent && !shown.cleared);
+        assert_eq!(shown.id.as_deref(), Some(DISK_FULL_BANNER));
+
+        let cleared = disk_full_transition(true, false).expect("falling edge");
+        assert!(cleared.cleared, "space recovered: remove the banner");
+        assert_eq!(cleared.id.as_deref(), Some(DISK_FULL_BANNER));
     }
 }

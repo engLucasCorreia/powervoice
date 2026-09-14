@@ -485,6 +485,14 @@ pub enum Record {
     TakeCancel {
         take: u32,
     },
+    /// H-17 (SPEC-004 §2.7, overlaps H-21 "markers during an operation"): a marker pressed during
+    /// the open take, journaled as it happens (not just folded into the commit's own edit at Stop)
+    /// so a crash mid-take still recovers it (previously such markers were lost —
+    /// [`crate::Session::apply_open_take_from_wav`]'s old doc comment). Document-time position.
+    TakeMarker {
+        take: u32,
+        marker: MarkerRecord,
+    },
     State {
         state: serde_json::Value,
     },

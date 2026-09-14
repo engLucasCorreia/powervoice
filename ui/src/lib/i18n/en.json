@@ -763,5 +763,11 @@
   "notice.disk.undo_dropped": "Low disk space: the {count} oldest undo steps were removed (freed {size}).",
   "notice.disk.almost_full": "Disk almost full — save your work.",
   "error.recovery.nothing_intact": "This session can't be recovered.",
-  "error.recovery.not_found": "That recovery data no longer exists."
+  "error.recovery.not_found": "That recovery data no longer exists.",
+  "menu.preferences": "Preferences…",
+  "preferences.title": "Preferences",
+  "preferences.section.storage": "Storage",
+  "preferences.memory_budget": "Memory for audio",
+  "preferences.memory_budget.hint": "How much audio PowerVoice keeps in memory at once. The rest stays on disk and loads on demand — nothing is lost, and playback never glitches because of it.",
+  "preferences.close": "Close"
 }

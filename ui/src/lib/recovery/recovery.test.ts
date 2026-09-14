@@ -109,7 +109,26 @@ describe("recovery dialog (T-301, SPEC-004 §2.7, AC-10)", () => {
     expect(args).toMatchObject({ id: SESSION.id, takeAction: "new_document" });
     expect(documentState().current.recovered).toBe(true);
     expect(titleFor(documentState().current)).toBe("voice.wav (recovered) * — PowerVoice");
-    expect(q(target, "recovery-dialog")).toBeNull();
+    unmount(app);
+    target.remove();
+  });
+
+  /** A-015: the dialog stays open after one Recover, listing whatever sessions remain. */
+  it("stays open after Recover and lists the remaining sessions", async () => {
+    const OTHER: RecoverableSessionDto = { ...SESSION, id: "other", name: "other.wav" };
+    mockIPC((cmd) => {
+      if (cmd === "recovery_list") return [SESSION, OTHER];
+      if (cmd === "recovery_recover") return { document: RECOVERED, lost_changes: 0 };
+      return null;
+    });
+    await initRecovery();
+    const { target, app } = mountDialog();
+    q<HTMLButtonElement>(target, "recovery-recover")!.click();
+    await settle();
+    expect(q(target, "recovery-dialog")).not.toBeNull();
+    const rows = target.querySelectorAll('[data-testid="recovery-session"]');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.textContent).toContain("other.wav");
     unmount(app);
     target.remove();
   });
@@ -159,6 +178,28 @@ describe("recovery dialog (T-301, SPEC-004 §2.7, AC-10)", () => {
     const rows = target.querySelectorAll('[data-testid="recovery-session"]');
     expect(rows).toHaveLength(1);
     expect(rows[0]?.textContent).toContain("Untitled recording");
+    unmount(app);
+    target.remove();
+  });
+
+  /** A-015: stays open even once Discard empties the list — only Decide later closes it. */
+  it("stays open after discarding the last session, until Decide later", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "recovery_list") return [SESSION];
+      if (cmd === "recovery_discard") return [];
+      return null;
+    });
+    await initRecovery();
+    const { target, app } = mountDialog();
+    q<HTMLButtonElement>(target, "recovery-discard")!.click();
+    flushSync();
+    q<HTMLButtonElement>(target, "recovery-discard-proceed")!.click();
+    await settle();
+    expect(q(target, "recovery-dialog")).not.toBeNull();
+    expect(q(target, "recovery-empty")).not.toBeNull();
+    q<HTMLButtonElement>(target, "recovery-decide-later")!.click();
+    flushSync();
+    expect(q(target, "recovery-dialog")).toBeNull();
     unmount(app);
     target.remove();
   });

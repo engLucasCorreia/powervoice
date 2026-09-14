@@ -131,6 +131,7 @@ Deferred to the M8 checkpoint: VST2 via Carla, unsigned native modules, sandboxe
 ## Autonomous decisions (after D-021; owner may revisit)
 - A-010 (2026-09-14): free disk space via `libc::statvfs` on unix (already a `cfg(unix)` dep of vox-project) and `windows-sys` `GetDiskFreeSpaceExW` on Windows (already in the tree via tauri/cpal; direct `cfg(windows)` dep allowed) — no new third-party crate like `fs4`.
 - A-011 (2026-09-14): input gaps > ~2 s follow SPEC-002 §2.4 (treated as device loss: stop and keep the take), not filled with silence; shorter gaps are filled + marked (H-10).
+- A-017 (2026-09-14): UI icons = Lucide via `lucide-svelte` (ISC, in THIRD_PARTY_NOTICES via `just notices`); typography = system font stack (no bundled font). Design work goes through the `ui-ux-designer` agent (`.claude/agents/ui-ux-designer.md`) against `docs/design/design-system.md`.
 - A-016 (2026-09-14): no `PostRoll` phase event when the output is lost mid-window (no post-roll plays), and the waveform follows the record head during a record operation like the playhead during playback (H-23).
 - A-015 (2026-09-14): the recovery dialog stays open after one Recover/Discard to handle the remaining sessions; no delta-checkpoint design until AC-11 is measured on a real disk (H-17), and only proposed if it misses.
 - A-014 (2026-09-14): spectral DISPLAY prefs (colormap, scale, floor/ceiling, FFT size) persist in app `Settings` (H-12); per-document VIEW state (pane visibility, split ratio) waits for the T-306 sidecar. WebGL2 renderers are H-13; Canvas2D stays the fallback.

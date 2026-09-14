@@ -29,6 +29,14 @@ export type AcxRuleStatusDto = "pass" | "too_low" | "too_high" | "invalid" | "to
 export type AnalyzerResponseDto = "fast" | "medium" | "slow";
 
 /**
+ * The live analyzer's averaging response, persisted (SPEC-007 §2.9: "visibility and response
+ * settings are persisted"). Mirrors `vox_engine::analyzer::Response`/`AnalyzerResponseDto` — kept
+ * as its own type so `settings` doesn't depend on `ipc`/`vox_engine` (same reasoning as
+ * `MonitorMode` above, converted at the IPC boundary).
+ */
+export type AnalyzerResponsePref = "fast" | "medium" | "slow";
+
+/**
  * Basic app identity shown by the UI at startup. Returned by the `app_info` command.
  */
 export type AppInfo = { name: string, version: string, };
@@ -629,7 +637,22 @@ recent_files: Array<RecentFileEntry>,
  * H-12 (A-014): app-wide spectral display defaults, for documents with no sidecar view.
  * Additive field — the settings version stays 1.
  */
-spectral_defaults: SpectralDefaultsDto, };
+spectral_defaults: SpectralDefaultsDto, 
+/**
+ * H-16 (SPEC-007 §2.9): the live analyzer panel's visibility (shown by default; View →
+ * Analyzer toggles it). Additive field — the settings version stays 1.
+ */
+analyzer_visible: boolean, 
+/**
+ * H-16 (SPEC-007 §2.9): the analyzer's averaging response (Fast/Medium/Slow). Additive
+ * field — the settings version stays 1.
+ */
+analyzer_response: AnalyzerResponsePref, 
+/**
+ * H-16 (SPEC-007 §2.9): the analyzer's peak-hold toggle (on by default). Additive field —
+ * the settings version stays 1.
+ */
+analyzer_peak_hold: boolean, };
 
 /**
  * Slot status (SPEC-012 §2.2, §2.9). `message` is pre-rendered English text shown verbatim (see

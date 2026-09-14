@@ -210,8 +210,8 @@ impl AnalyzerPublisher {
         self.analyzer = DspAnalyzer::new(fft_size, sample_rate_hz, self.rate_hz);
     }
 
-    /// Recomputes averaging time constants for a new `TELEMETRY_RATE`.
-    #[allow(dead_code)] // wired once TELEMETRY_RATE becomes a live setting (see MEMORY.md note)
+    /// Recomputes averaging time constants for a new `TELEMETRY_RATE` (H-16: driven by
+    /// `Control::set_telemetry_rate_hz`, so the Fast/Medium/Slow EMAs stay correct at 30 Hz too).
     pub(crate) fn set_rate_hz(&mut self, rate_hz: f64) {
         self.rate_hz = rate_hz;
         self.analyzer.set_rate_hz(rate_hz);

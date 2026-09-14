@@ -76,6 +76,59 @@ impl TelemetryFrame {
 /// Receives telemetry frames on the control thread (must not block for long).
 pub type TelemetrySink = Box<dyn FnMut(&TelemetryFrame) + Send>;
 
+/// Clamps an arbitrary `Settings.telemetry_rate_hz` to the two valid values (H-16, SPEC-003 §3 /
+/// ADR-009: only 60 and 30 Hz are settable), falling back to the nearer one rather than panicking
+/// on bad input. Used both for the tick divisor below and for the rate actually handed to the
+/// analyzer's EMA time constants ([`crate::analyzer::AnalyzerPublisher::set_rate_hz`]), so the two
+/// always agree on what rate is really in effect.
+pub(crate) fn effective_telemetry_rate_hz(rate_hz: u32) -> u32 {
+    if rate_hz <= 30 { 30 } else { 60 }
+}
+
+/// Control-tick divisor for `Settings.telemetry_rate_hz`: only 60 (every control tick) and 30
+/// (every other tick) Hz are valid settings, so a plain tick counter is enough — no need for a
+/// wall-clock accumulator.
+fn rate_divisor(rate_hz: u32) -> u32 {
+    60 / effective_telemetry_rate_hz(rate_hz)
+}
+
+/// Publish-cadence gate shared by the `VXTM`/`VXMT`/`VXSA` publishers (H-16): the control tick
+/// itself always runs at a fixed 60 Hz (`control::TICK`), but the telemetry rate setting can halve
+/// how often frames actually go out without touching that tick. Call [`Self::due`] once per
+/// control tick; it returns whether this tick should publish.
+pub(crate) struct TelemetryRateGate {
+    /// Ticks between publishes (1 at 60 Hz, 2 at 30 Hz).
+    divisor: u32,
+    counter: u32,
+}
+
+impl TelemetryRateGate {
+    pub(crate) fn new(rate_hz: u32) -> Self {
+        Self {
+            divisor: rate_divisor(rate_hz),
+            counter: 0,
+        }
+    }
+
+    /// Changes the configured rate, effective immediately: the phase resets so the new rate
+    /// starts publishing right away instead of finishing out a stale offset.
+    pub(crate) fn set_rate_hz(&mut self, rate_hz: u32) {
+        self.divisor = rate_divisor(rate_hz);
+        self.counter = 0;
+    }
+
+    /// Call once per control tick; `true` on ticks that should publish.
+    pub(crate) fn due(&mut self) -> bool {
+        self.counter += 1;
+        if self.counter >= self.divisor {
+            self.counter = 0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// Linear amplitude → dBFS (`-inf` for 0).
 pub fn to_dbfs(x: f64) -> f32 {
     if x > 0.0 {
@@ -381,6 +434,54 @@ mod tests {
         assert!(f32::from_le_bytes(b[44..48].try_into().unwrap()).is_infinite());
         assert_eq!(u64::from_le_bytes(b[56..64].try_into().unwrap()), 3);
         assert_eq!(&b[68..72], &[0, 0, 0, 0]);
+    }
+
+    // --- H-16: telemetry rate gate ---------------------------------------------------------
+
+    #[test]
+    fn rate_gate_fires_every_tick_at_60hz() {
+        let mut gate = TelemetryRateGate::new(60);
+        for _ in 0..10 {
+            assert!(gate.due());
+        }
+    }
+
+    #[test]
+    fn rate_gate_fires_every_other_tick_at_30hz() {
+        let mut gate = TelemetryRateGate::new(30);
+        let fires: Vec<bool> = (0..6).map(|_| gate.due()).collect();
+        assert_eq!(fires, vec![false, true, false, true, false, true]);
+    }
+
+    #[test]
+    fn rate_gate_treats_out_of_range_rates_as_the_nearer_valid_one() {
+        assert_eq!(rate_divisor(0), 2);
+        assert_eq!(rate_divisor(1), 2);
+        assert_eq!(rate_divisor(45), 1);
+        assert_eq!(rate_divisor(60), 1);
+        assert_eq!(rate_divisor(120), 1);
+    }
+
+    /// The rate the gate's divisor implies and the rate handed to the analyzer's EMA constants
+    /// must always agree, or halving the tick rate would silently change the Fast/Medium/Slow
+    /// time constants without the analyzer knowing (SPEC-007 §4.8 step 4).
+    #[test]
+    fn effective_rate_matches_the_gates_divisor() {
+        for rate_hz in [0, 1, 29, 30, 31, 45, 59, 60, 61, 120] {
+            let effective = effective_telemetry_rate_hz(rate_hz);
+            assert_eq!(60 / rate_divisor(rate_hz), effective, "rate_hz={rate_hz}");
+        }
+    }
+
+    #[test]
+    fn rate_gate_resets_phase_on_rate_change() {
+        let mut gate = TelemetryRateGate::new(30);
+        assert!(!gate.due(), "counter is now 1 of 2");
+        gate.set_rate_hz(60);
+        assert!(
+            gate.due(),
+            "changing rate resets phase so it fires right away"
+        );
     }
 
     #[test]

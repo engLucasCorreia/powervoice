@@ -7,38 +7,74 @@
     formatHoverFreqHz,
     uForFreq,
     freqForU,
+    zoomFreqRange,
+    panFreqRange,
   } from "../spectrum/freqAxis";
+  import {
+    ANALYZER_CEIL_OPTIONS_DB,
+    ANALYZER_FLOOR_OPTIONS_DB,
+    DEFAULT_ANALYZER_CEIL_DB,
+    DEFAULT_ANALYZER_FLOOR_DB,
+    nearestAnalyzerBand,
+    yForAnalyzerDb,
+  } from "./analyzerMath";
   import { analyzerState, initAnalyzer, setAnalyzerResponse } from "./analyzer.svelte";
+  import { initOutputDeviceStatus, outputDeviceStatus } from "./outputDeviceStatus.svelte";
   import { createPeakHold, resetPeakHold, updatePeakHold, type PeakHoldBand } from "./peakHold";
 
   /**
-   * The live output analyzer panel (T-208, SPEC-007 §2.9): a filled spectrum curve on a log
-   * frequency axis (20 Hz .. min(Nyquist, 24 kHz)), a fixed −120 .. 0 dB axis (the floor/ceiling
-   * picker is a later hardening pass — see the ticket report), a Fast/Medium/Slow response
-   * selector and a peak-hold toggle. Canvas2D (SPEC-007 §4.1: the panel is small, ≤ 246 points at
-   * 60 Hz). Renders in the bottom dock, to the right of the meter bridge.
+   * The live output analyzer panel (T-208/H-16, SPEC-007 §2.9): a filled spectrum curve on a log
+   * frequency axis (20 Hz .. min(Nyquist, 24 kHz), zoomable/pannable — wheel to zoom around the
+   * pointer, drag to pan, double-click to reset), a floor/ceiling picker, a Fast/Medium/Slow
+   * response selector and a peak-hold toggle. Canvas2D (SPEC-007 §4.1: the panel is small, ≤ 246
+   * points at 60 Hz). Renders in the bottom dock, to the right of the meter bridge.
    */
 
-  const FLOOR_DB = -120;
-  const CEIL_DB = 0;
   const RESPONSES: AnalyzerResponseDto[] = ["fast", "medium", "slow"];
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
   let width = $state(0);
   let height = $state(0);
-  let peakHoldEnabled = $state(true);
   let peaks: PeakHoldBand[] = [];
   let hover: { x: number; y: number } | null = $state(null);
+  let floorDb = $state<number>(DEFAULT_ANALYZER_FLOOR_DB);
+  let ceilDb = $state<number>(DEFAULT_ANALYZER_CEIL_DB);
+  /** `null` = full range (follows the device's Nyquist rate); set once the user zooms/pans. */
+  let zoomRange: [number, number] | null = $state(null);
+  let dragStartX: number | null = null;
+  let dragStartRange: [number, number] | null = null;
+  let dragMoved = false;
 
   const analyzer = analyzerState();
+  const device = outputDeviceStatus();
   const frame = $derived(analyzer.frame);
   const nyquistHz = $derived(frame ? frame.sampleRateHz / 2 : 24_000);
-  const fRange = $derived(fullFreqRange("log", Math.min(nyquistHz, 24_000)));
+  const fullRange = $derived(fullFreqRange("log", Math.min(nyquistHz, 24_000)));
+  const displayRange = $derived(zoomRange ?? fullRange);
+  const noOutputDevice = $derived(
+    device.current === "not_selected" || device.current === "lost",
+  );
 
   $effect(() => {
     let cleanup: (() => void) | undefined;
     let cancelled = false;
-    void initAnalyzer(analyzer.response).then((c) => {
+    void initAnalyzer().then((c) => {
+      if (cancelled) {
+        c();
+      } else {
+        cleanup = c;
+      }
+    });
+    return () => {
+      cancelled = true;
+      cleanup?.();
+    };
+  });
+
+  $effect(() => {
+    let cleanup: (() => void) | undefined;
+    let cancelled = false;
+    void initOutputDeviceStatus().then((c) => {
       if (cancelled) {
         c();
       } else {
@@ -85,11 +121,14 @@
       if (f) {
         if (f.reset) {
           resetPeakHold(peaks);
+          // A device reopen/rate change invalidates a manual zoom picked against the old
+          // Nyquist rate (SPEC-007 §4.8.6 treats this exactly like the analyzer's own reset).
+          zoomRange = null;
         }
         if (peaks.length !== f.levelsDb.length) {
           peaks = createPeakHold(f.levelsDb.length);
         }
-        if (peakHoldEnabled) {
+        if (analyzer.peakHold) {
           peaks = updatePeakHold(peaks, f.levelsDb, dtS);
         }
       }
@@ -109,12 +148,11 @@
   }
 
   function yForDb(db: number): number {
-    const t = (db - FLOOR_DB) / (CEIL_DB - FLOOR_DB);
-    return (1 - Math.min(1, Math.max(0, t))) * height;
+    return yForAnalyzerDb(db, floorDb, ceilDb, height);
   }
 
   function xForFreq(freqHz: number): number {
-    const [fLo, fHi] = fRange;
+    const [fLo, fHi] = displayRange;
     return uForFreq(freqHz, fLo, fHi, "log") * width;
   }
 
@@ -142,14 +180,14 @@
     ctx.strokeStyle = gridColor;
     ctx.lineWidth = 1;
     ctx.globalAlpha = 0.6;
-    for (let db = CEIL_DB; db >= FLOOR_DB; db -= 12) {
+    for (let db = ceilDb; db >= floorDb; db -= 12) {
       const y = Math.round(yForDb(db)) + 0.5;
       ctx.beginPath();
       ctx.moveTo(0, y);
       ctx.lineTo(width, y);
       ctx.stroke();
     }
-    const [fLo, fHi] = fRange;
+    const [fLo, fHi] = displayRange;
     for (const tick of frequencyTicks(fLo, fHi, "log", width, 28)) {
       const x = Math.round(xForFreq(tick.freqHz)) + 0.5;
       ctx.beginPath();
@@ -161,11 +199,11 @@
 
     const f = frame;
     if (f && f.levelsDb.length > 0) {
-      const bottomY = yForDb(FLOOR_DB);
+      const bottomY = yForDb(floorDb);
       ctx.beginPath();
       f.levelsDb.forEach((db, k) => {
         const x = xForFreq(bandCenterHzLocal(k, f.f0Hz, f.bandsPerOctave));
-        const y = yForDb(Number.isFinite(db) ? db : FLOOR_DB);
+        const y = yForDb(Number.isFinite(db) ? db : floorDb);
         if (k === 0) {
           ctx.moveTo(x, y);
         } else {
@@ -181,7 +219,7 @@
       ctx.fillStyle = colorToken("--analyzer-fill", "rgba(127, 200, 255, 0.28)");
       ctx.fill();
 
-      if (peakHoldEnabled && peaks.length === f.levelsDb.length) {
+      if (analyzer.peakHold && peaks.length === f.levelsDb.length) {
         ctx.strokeStyle = colorToken("--analyzer-peak", "#ffb454");
         ctx.lineWidth = 1;
         ctx.beginPath();
@@ -205,7 +243,36 @@
   }
 
   function handleClick(): void {
+    if (dragMoved) {
+      // The mouseup that ends a pan also fires a click; don't reset the hold on top of it.
+      dragMoved = false;
+      return;
+    }
     resetPeakHold(peaks);
+  }
+
+  function handleDoubleClick(): void {
+    zoomRange = null;
+  }
+
+  function handleWheel(e: WheelEvent): void {
+    const rect = canvasEl?.getBoundingClientRect();
+    if (!rect || width <= 0) {
+      return;
+    }
+    e.preventDefault();
+    const [lo, hi] = displayRange;
+    const u = (e.clientX - rect.left) / width;
+    const anchorHz = freqForU(u, lo, hi, "log");
+    // SPEC-007 §2.4's wheel-zoom convention: scrolling down (deltaY > 0) zooms out.
+    const factor = e.deltaY > 0 ? Math.SQRT2 : Math.SQRT1_2;
+    zoomRange = zoomFreqRange(lo, hi, "log", anchorHz, factor, nyquistHz);
+  }
+
+  function handleMouseDown(e: MouseEvent): void {
+    dragStartX = e.clientX;
+    dragStartRange = displayRange;
+    dragMoved = false;
   }
 
   function handleMouseMove(e: MouseEvent): void {
@@ -214,20 +281,41 @@
       return;
     }
     hover = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    if (dragStartX !== null && dragStartRange && width > 0) {
+      if (Math.abs(e.clientX - dragStartX) > 2) {
+        dragMoved = true;
+      }
+      const deltaFrac = -(e.clientX - dragStartX) / width;
+      zoomRange = panFreqRange(dragStartRange[0], dragStartRange[1], "log", deltaFrac, nyquistHz);
+    }
+  }
+
+  function endDrag(): void {
+    dragStartX = null;
+    dragStartRange = null;
   }
 
   function handleMouseLeave(): void {
     hover = null;
+    endDrag();
   }
 
   const hoverText = $derived.by(() => {
     if (!hover || width <= 0) {
       return null;
     }
-    const [fLo, fHi] = fRange;
-    const freq = freqForU(hover.x / width, fLo, fHi, "log");
-    const db = FLOOR_DB + (1 - hover.y / Math.max(1, height)) * (CEIL_DB - FLOOR_DB);
-    return t("analyzer.hover", { freq: formatHoverFreqHz(freq), db: db.toFixed(1) });
+    const [fLo, fHi] = displayRange;
+    const freqHz = freqForU(hover.x / width, fLo, fHi, "log");
+    const f = frame;
+    let dbText = t("meter.silence");
+    if (f && f.levelsDb.length > 0) {
+      const band = nearestAnalyzerBand(freqHz, f.f0Hz, f.bandsPerOctave, f.levelsDb.length);
+      const db = f.levelsDb[band];
+      if (db !== undefined && Number.isFinite(db)) {
+        dbText = db.toFixed(1);
+      }
+    }
+    return t("analyzer.hover", { freq: formatHoverFreqHz(freqHz), db: dbText });
   });
 
   async function chooseResponse(r: AnalyzerResponseDto): Promise<void> {
@@ -249,8 +337,24 @@
         </button>
       {/each}
     </div>
+    <label class="axis-picker">
+      {t("analyzer.floor")}
+      <select data-testid="analyzer-floor" bind:value={floorDb}>
+        {#each ANALYZER_FLOOR_OPTIONS_DB as v (v)}
+          <option value={v}>{v}</option>
+        {/each}
+      </select>
+    </label>
+    <label class="axis-picker">
+      {t("analyzer.ceiling")}
+      <select data-testid="analyzer-ceiling" bind:value={ceilDb}>
+        {#each ANALYZER_CEIL_OPTIONS_DB as v (v)}
+          <option value={v}>{v}</option>
+        {/each}
+      </select>
+    </label>
     <label class="peak-hold">
-      <input type="checkbox" bind:checked={peakHoldEnabled} />
+      <input type="checkbox" bind:checked={analyzer.peakHold} />
       {t("analyzer.peak_hold")}
     </label>
   </div>
@@ -258,10 +362,14 @@
     <canvas
       bind:this={canvasEl}
       onclick={handleClick}
+      ondblclick={handleDoubleClick}
+      onwheel={handleWheel}
+      onmousedown={handleMouseDown}
       onmousemove={handleMouseMove}
+      onmouseup={endDrag}
       onmouseleave={handleMouseLeave}
     ></canvas>
-    {#if !frame}
+    {#if noOutputDevice}
       <div class="overlay">{t("analyzer.no_device")}</div>
     {:else if hoverText}
       <div class="hover" style:left="{hover?.x ?? 0}px">{hoverText}</div>
@@ -287,6 +395,7 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.25rem 0.5rem;
+    flex-wrap: wrap;
   }
 
   .responses {
@@ -308,6 +417,20 @@
     background: var(--accent);
     color: var(--text-on-accent);
     border-color: var(--accent);
+  }
+
+  .axis-picker {
+    display: flex;
+    align-items: center;
+    gap: 0.2rem;
+  }
+
+  .axis-picker select {
+    background: var(--surface-inset);
+    color: var(--text-secondary);
+    border: 1px solid var(--surface-border);
+    border-radius: 2px;
+    font-size: 0.7rem;
   }
 
   .peak-hold {

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import AnalyzerPanel from "./lib/analyzer/AnalyzerPanel.svelte";
+  import { analyzerState, applyAnalyzerPrefs } from "./lib/analyzer/analyzer.svelte";
   import ConfirmDialog from "./lib/document/ConfirmDialog.svelte";
   import DocumentMenu from "./lib/document/DocumentMenu.svelte";
   import SaveAsDialog from "./lib/document/SaveAsDialog.svelte";
@@ -15,6 +16,7 @@
   import MarkersProperties from "./lib/layout/MarkersProperties.svelte";
   import MeterBridge from "./lib/layout/MeterBridge.svelte";
   import Toolbar from "./lib/layout/Toolbar.svelte";
+  import ViewMenu from "./lib/layout/ViewMenu.svelte";
   import LoudnessPanel from "./lib/loudness/LoudnessPanel.svelte";
   import { initLoudness } from "./lib/loudness/loudness.svelte";
   import FavoritesMenu from "./lib/normalize/FavoritesMenu.svelte";
@@ -53,10 +55,17 @@
   // `document.svelte.ts` on open, overrides this).
   onMount(() => {
     void loadSettings().then(() => {
-      const defaults = settingsState().current?.spectral_defaults;
-      if (defaults) {
-        applySpectralDefaults(defaults);
+      const current = settingsState().current;
+      if (!current) {
+        return;
       }
+      applySpectralDefaults(current.spectral_defaults);
+      // H-16 (SPEC-007 §2.9): visibility/response/peak-hold seeded before the panel ever mounts.
+      applyAnalyzerPrefs({
+        visible: current.analyzer_visible,
+        response: current.analyzer_response,
+        peakHold: current.analyzer_peak_hold,
+      });
     });
   });
 
@@ -190,6 +199,7 @@
   <EditMenu />
   <FavoritesMenu />
   <EffectsMenu />
+  <ViewMenu />
   <Toolbar {version} />
   <div class="workspace">
     <MarkersProperties />
@@ -199,7 +209,9 @@
   <LoudnessPanel />
   <div class="bottom-dock">
     <MeterBridge />
-    <AnalyzerPanel />
+    {#if analyzerState().visible}
+      <AnalyzerPanel />
+    {/if}
   </div>
 </div>
 <NoticeHost />

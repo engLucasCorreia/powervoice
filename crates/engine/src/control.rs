@@ -62,7 +62,7 @@ use crate::rt::{
 };
 use crate::telemetry::{
     InputMeter, Meter, ModuleTelemetryPublisher, ModuleTelemetrySink, TelemetryFrame,
-    TelemetrySink, vxtm_flags,
+    TelemetryRateGate, TelemetrySink, effective_telemetry_rate_hz, vxtm_flags,
 };
 use crate::transport::{Action, Transport, TransportCommand, TransportState};
 
@@ -226,6 +226,9 @@ pub(crate) struct Control {
     /// Live output analyzer (`VXSA`, T-208): the RT tap's consumer + BH4 FFT / band / EMA
     /// pipeline, published only while at least one subscriber exists.
     analyzer: AnalyzerPublisher,
+    /// H-16 (SPEC-003 §3, ADR-009): gates how often `emit_telemetry`/`module_telemetry`/
+    /// `analyzer` actually publish, independent of the fixed 60 Hz control tick.
+    rate_gate: TelemetryRateGate,
     last_state: Option<TransportState>,
     // --- Input / recording (S1-04) ---
     /// Capture-writer on its own thread (`Engine`) or inline in the tick (`ManualEngine`).
@@ -348,6 +351,8 @@ impl Control {
             seq: 0,
             module_telemetry: ModuleTelemetryPublisher::default(),
             analyzer: AnalyzerPublisher::default(),
+            // SPEC-003 §3 factory default: 60 Hz (matches `AnalyzerPublisher::default`'s rate).
+            rate_gate: TelemetryRateGate::new(60),
             last_state: None,
             threaded,
             in_device_id: None,
@@ -1971,10 +1976,14 @@ impl Control {
         self.check_stream(now);
         self.relink_monitor();
         self.update_latency_readout(now);
-        self.emit_telemetry(now);
-        self.module_telemetry
-            .publish(self.output.as_ref().map(|out| &out.rack), now);
-        self.analyzer.publish(now);
+        // H-16: VXTM/VXMT/VXSA all honour `Settings.telemetry_rate_hz` through one shared gate,
+        // decoupled from the fixed 60 Hz control tick above.
+        if self.rate_gate.due() {
+            self.emit_telemetry(now);
+            self.module_telemetry
+                .publish(self.output.as_ref().map(|out| &out.rack), now);
+            self.analyzer.publish(now);
+        }
         self.emit_state_if_changed();
         self.emit_record_if_changed();
     }
@@ -2153,6 +2162,15 @@ impl Control {
 
     pub(crate) fn set_module_telemetry_sink(&mut self, sink: Option<ModuleTelemetrySink>) {
         self.module_telemetry.set_sink(sink);
+    }
+
+    /// H-16 (SPEC-003 §3, ADR-009): applies a new telemetry rate (60 or 30 Hz) to the
+    /// `VXTM`/`VXMT`/`VXSA` publish cadence and to the analyzer's own EMA time constants (which
+    /// assume frames arrive at this rate), effective from the next control tick.
+    pub(crate) fn set_telemetry_rate_hz(&mut self, rate_hz: u32) {
+        self.rate_gate.set_rate_hz(rate_hz);
+        self.analyzer
+            .set_rate_hz(f64::from(effective_telemetry_rate_hz(rate_hz)));
     }
 
     /// Registers a new live-analyzer subscriber (`VXSA`, T-208); returns its id.

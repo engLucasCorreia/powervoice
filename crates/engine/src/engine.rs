@@ -262,6 +262,12 @@ impl EngineHandle {
         let _ = self.call(move |c| c.set_module_telemetry_sink(sink));
     }
 
+    /// H-16 (`Settings.telemetry_rate_hz`, SPEC-003 §3): applies a new telemetry rate (60 or
+    /// 30 Hz) to the `VXTM`/`VXMT`/`VXSA` publish cadence, changeable at runtime.
+    pub fn set_telemetry_rate_hz(&self, rate_hz: u32) {
+        let _ = self.call(move |c| c.set_telemetry_rate_hz(rate_hz));
+    }
+
     /// Subscribes to the live output analyzer (`VXSA`, T-208): a BH4 FFT + 1/24-octave band +
     /// `response`-averaged spectrum of the post-rack (+ dry monitor) signal, at the telemetry
     /// rate, only while at least one subscriber exists. Returns the subscriber id.
@@ -449,6 +455,11 @@ impl ManualEngine {
     /// See [`EngineHandle::set_module_telemetry_sink`].
     pub fn set_module_telemetry_sink(&mut self, sink: Option<ModuleTelemetrySink>) {
         self.control.set_module_telemetry_sink(sink);
+    }
+
+    /// See [`EngineHandle::set_telemetry_rate_hz`].
+    pub fn set_telemetry_rate_hz(&mut self, rate_hz: u32) {
+        self.control.set_telemetry_rate_hz(rate_hz);
     }
 
     /// See [`EngineHandle::analyzer_subscribe`].

@@ -29,6 +29,9 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
       display_ceil_db: 0,
       fft_size: null,
     },
+    analyzer_visible: true,
+    analyzer_response: "medium",
+    analyzer_peak_hold: true,
     ...overrides,
   };
 }

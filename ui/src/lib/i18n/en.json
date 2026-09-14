@@ -13,6 +13,10 @@
   "analyzer.response.slow": "Slow",
   "analyzer.peak_hold": "Peak hold",
   "analyzer.hover": "{freq} · {db} dB",
+  "analyzer.floor": "Floor",
+  "analyzer.ceiling": "Ceiling",
+
+  "menu.view.analyzer": "Analyzer",
 
   "rack.ab": "A/B",
   "rack.ab_badge": "Listening only — exports always render the rack",

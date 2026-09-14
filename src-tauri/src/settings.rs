@@ -130,6 +130,23 @@ pub enum MonitorMode {
     ThroughRack,
 }
 
+// --- Live analyzer panel (SPEC-007 §2.9, H-16) --------------------------------------------------
+
+/// The live analyzer's averaging response, persisted (SPEC-007 §2.9: "visibility and response
+/// settings are persisted"). Mirrors `vox_engine::analyzer::Response`/`AnalyzerResponseDto` — kept
+/// as its own type so `settings` doesn't depend on `ipc`/`vox_engine` (same reasoning as
+/// `MonitorMode` above, converted at the IPC boundary).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum AnalyzerResponsePref {
+    Fast,
+    // SPEC-007 §2.9 factory default.
+    #[default]
+    Medium,
+    Slow,
+}
+
 // --- Normalize dialog memory (SPEC-010 §2.4, H-09) ----------------------------------------------
 
 /// The Normalize… dialog's unit toggle (SPEC-010 §2.4).
@@ -304,6 +321,15 @@ pub struct Settings {
     /// H-12 (A-014): app-wide spectral display defaults, for documents with no sidecar view.
     /// Additive field — the settings version stays 1.
     pub spectral_defaults: SpectralDefaultsDto,
+    /// H-16 (SPEC-007 §2.9): the live analyzer panel's visibility (shown by default; View →
+    /// Analyzer toggles it). Additive field — the settings version stays 1.
+    pub analyzer_visible: bool,
+    /// H-16 (SPEC-007 §2.9): the analyzer's averaging response (Fast/Medium/Slow). Additive
+    /// field — the settings version stays 1.
+    pub analyzer_response: AnalyzerResponsePref,
+    /// H-16 (SPEC-007 §2.9): the analyzer's peak-hold toggle (on by default). Additive field —
+    /// the settings version stays 1.
+    pub analyzer_peak_hold: bool,
     #[serde(flatten)]
     #[ts(skip)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -322,6 +348,9 @@ impl Default for Settings {
             normalize_dialog: NormalizeDialogPrefsDto::default(),
             recent_files: Vec::new(),
             spectral_defaults: SpectralDefaultsDto::default(),
+            analyzer_visible: true,
+            analyzer_response: AnalyzerResponsePref::default(),
+            analyzer_peak_hold: true,
             extra: serde_json::Map::new(),
         }
     }
@@ -520,8 +549,45 @@ mod tests {
         assert_eq!(settings.spectral_defaults.display_floor_db, -120.0);
         assert_eq!(settings.spectral_defaults.display_ceil_db, 0.0);
         assert_eq!(settings.spectral_defaults.fft_size, None);
+        assert!(settings.analyzer_visible);
+        assert_eq!(settings.analyzer_response, AnalyzerResponsePref::Medium);
+        assert!(settings.analyzer_peak_hold);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// H-16 (SPEC-007 §2.9): "visibility and response settings are persisted" — visibility,
+    /// response and peak-hold round-trip through save/load.
+    #[test]
+    fn analyzer_prefs_round_trip_through_save_and_load() {
+        let dir = temp_dir("analyzer-prefs");
+        let path = dir.join("settings.json");
+
+        let settings = Settings {
+            analyzer_visible: false,
+            analyzer_response: AnalyzerResponsePref::Slow,
+            analyzer_peak_hold: false,
+            ..Settings::default()
+        };
+        save(&path, &settings).unwrap();
+        let loaded = load_or_default(&path);
+
+        assert_eq!(loaded.analyzer_visible, settings.analyzer_visible);
+        assert_eq!(loaded.analyzer_response, settings.analyzer_response);
+        assert_eq!(loaded.analyzer_peak_hold, settings.analyzer_peak_hold);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An older settings file with no `analyzer_*` keys at all (pre-H-16) still loads, falling
+    /// back to the SPEC-007 §2.9 factory defaults (container-level `#[serde(default)]`).
+    #[test]
+    fn analyzer_prefs_fall_back_on_a_settings_file_that_predates_them() {
+        let json = br#"{"version":1,"monitor_mode":"dry"}"#;
+        let settings = parse_and_migrate(json).unwrap();
+        assert!(settings.analyzer_visible);
+        assert_eq!(settings.analyzer_response, AnalyzerResponsePref::Medium);
+        assert!(settings.analyzer_peak_hold);
     }
 
     /// H-12 (A-014): the spectral display defaults round-trip through save/load, same pattern as

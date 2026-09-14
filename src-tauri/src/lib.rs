@@ -39,6 +39,11 @@ pub fn run() {
             // H-11 (SPEC-002 §2.5): the engine polls this volume's free space for the recording
             // disk floor and the record panel's remaining-time display.
             let engine = audio::start(app.handle(), &settings.device, &sessions_dir)?;
+            // H-16 (SPEC-003 §3): the saved telemetry rate applies from the start, not just after
+            // the first `settings_set` (which only pushes it live on a *change*).
+            engine
+                .handle()
+                .set_telemetry_rate_hz(settings.telemetry_rate_hz);
             // S1-03: the document service shares the engine handle (`set_document` after
             // open/save-as) and owns the one open session under the OS data dir.
             let documents = document::DocumentService::new(sessions_dir, engine.handle().clone());

@@ -41,7 +41,7 @@ const FIXTURE: DocumentDto = {
   sample_rate_hz: 48_000,
   len_samples: 480_000,
   dirty: false,
-  audio_rev: 1,
+  audio_rev: 1, sidecar_dirty: false, spectral_view: null,
 };
 
 interface SpectroCall {

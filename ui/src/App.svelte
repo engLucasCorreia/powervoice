@@ -1,9 +1,11 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import ConfirmDialog from "./lib/document/ConfirmDialog.svelte";
   import DocumentMenu from "./lib/document/DocumentMenu.svelte";
   import SaveAsDialog from "./lib/document/SaveAsDialog.svelte";
   import UnsavedChangesDialog from "./lib/document/UnsavedChangesDialog.svelte";
   import { initDocument } from "./lib/document/document.svelte";
+  import { initRecentFiles } from "./lib/document/recentFiles.svelte";
   import EditMenu from "./lib/edit/EditMenu.svelte";
   import ExportDialog from "./lib/export/ExportDialog.svelte";
   import { getAppInfo } from "./lib/ipc/commands";
@@ -100,6 +102,23 @@
     };
   });
 
+  // T-306: File → Open Recent (SPEC-018 §2.12).
+  onMount(() => {
+    let disposed = false;
+    let teardown: (() => void) | null = null;
+    void initRecentFiles().then((cleanup) => {
+      if (disposed) {
+        cleanup();
+      } else {
+        teardown = cleanup;
+      }
+    });
+    return () => {
+      disposed = true;
+      teardown?.();
+    };
+  });
+
   // S2-01: cut/copy/paste/delete/trim/silence, undo/redo (Ctrl+X/C/V, Delete, Ctrl+T, Ctrl+Z,
   // Ctrl+Shift+Z) and the Edit menu's history/clipboard state.
   onMount(() => {
@@ -166,6 +185,7 @@
 </div>
 <NoticeHost />
 <UnsavedChangesDialog />
+<ConfirmDialog />
 <SaveAsDialog />
 <ExportDialog />
 <NewRecordingDialog />

@@ -23,8 +23,10 @@ import type {
   NrCaptureStartedDto,
   PeaksRequestDto,
   RackStateDto,
+  RecentFileDto,
   ResponseCurveDto,
   Settings,
+  SpectralViewDto,
   SpectroRequestDto,
   TransportStateDto,
 } from "./bindings";
@@ -184,9 +186,18 @@ export async function rackResponseCurve(
  * Opens `path` as the document (SPEC-005 §2.2-2.4: any format `vox_io::decode` supports, not
  * just WAV — T-202), replacing whatever was open. Multichannel input always downmixes by
  * average; the channel-choice dialog (T-209) will call `documentProbe` first once it exists.
+ *
+ * T-306 (SPEC-018 §2.11): `confirmAlreadyOpen` bypasses the "already open in another instance"
+ * warning — pass `true` only when re-issuing after the user picked "Open Anyway".
  */
-export async function documentOpen(path: string): Promise<DocumentDto> {
-  return invoke<DocumentDto>("document_open" satisfies CommandName, { path });
+export async function documentOpen(
+  path: string,
+  confirmAlreadyOpen = false,
+): Promise<DocumentDto> {
+  return invoke<DocumentDto>("document_open" satisfies CommandName, {
+    path,
+    confirmAlreadyOpen,
+  });
 }
 
 /**
@@ -198,14 +209,42 @@ export async function documentProbe(path: string): Promise<DocumentProbeDto> {
   return invoke<DocumentProbeDto>("document_probe" satisfies CommandName, { path });
 }
 
-/** S1-03: saves the current revision back to its bound path and format (SPEC-005 §2.7). */
-export async function documentSave(): Promise<DocumentDto> {
-  return invoke<DocumentDto>("document_save" satisfies CommandName);
+/**
+ * S1-03: saves the current revision back to its bound path and format (SPEC-005 §2.7).
+ *
+ * T-306 (SPEC-018 §2.9): `overwrite` bypasses the changed-on-disk confirmation — pass `true` only
+ * when re-issuing after the user picked "Overwrite".
+ */
+export async function documentSave(overwrite = false): Promise<DocumentDto> {
+  return invoke<DocumentDto>("document_save" satisfies CommandName, { overwrite });
 }
 
 /** S1-03: saves the current revision to `path` at `bits`, then binds the document to it. */
 export async function documentSaveAs(path: string, bits: BitDepth): Promise<DocumentDto> {
   return invoke<DocumentDto>("document_save_as" satisfies CommandName, { path, bits });
+}
+
+/**
+ * T-306 (SPEC-018 §2.6.5): records the spectral pane's current settings for the next save
+ * (fire-and-forget — a view-only change never marks the document modified).
+ */
+export async function sidecarViewSetSpectral(spectral: SpectralViewDto): Promise<void> {
+  return invoke<void>("sidecar_view_set_spectral" satisfies CommandName, { spectral });
+}
+
+/** T-306 (SPEC-018 §2.12): the current `File → Open Recent` list, most-recent-first. */
+export async function recentFilesGet(): Promise<RecentFileDto[]> {
+  return invoke<RecentFileDto[]>("recent_files_get" satisfies CommandName);
+}
+
+/** T-306: removes one entry (a missing file's "Remove", or "Remove from List"). */
+export async function recentFilesRemove(path: string): Promise<RecentFileDto[]> {
+  return invoke<RecentFileDto[]>("recent_files_remove" satisfies CommandName, { path });
+}
+
+/** T-306: empties the list (no confirmation — it deletes no user data). */
+export async function recentFilesClear(): Promise<void> {
+  return invoke<void>("recent_files_clear" satisfies CommandName);
 }
 
 /**

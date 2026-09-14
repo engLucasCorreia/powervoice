@@ -7,6 +7,7 @@ import { registerAction } from "../keymap";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { t } from "../i18n";
 import { pushNotice } from "../state/notices.svelte";
+import { applyRestoredSpectralView } from "../state/spectral.svelte";
 
 /**
  * Document store (S1-03): the open document's facts (`document_changed` event + command
@@ -22,6 +23,8 @@ const EMPTY: DocumentDto = {
   len_samples: 0,
   dirty: false,
   audio_rev: 0,
+  sidecar_dirty: false,
+  spectral_view: null,
 };
 
 const WAV_FILTERS = [{ name: "WAV", extensions: ["wav"] }];
@@ -40,6 +43,9 @@ export type UnsavedDecision = "save" | "discard" | "cancel";
 
 interface UnsavedPrompt {
   name: string;
+  /** T-306 (SPEC-018 §2.4): only `sidecar_dirty` is set — the dialog adds "Effect settings
+   * changed." */
+  effectSettingsOnly: boolean;
   resolve: (decision: UnsavedDecision) => void;
 }
 
@@ -48,15 +54,33 @@ export interface SaveAsPrompt {
   defaultBits: BitDepth;
 }
 
+/** T-306 (SPEC-018 §2.9/§2.11): a confirmation the user must answer before Open/Save proceeds. */
+export interface ConfirmPrompt {
+  kind: "already_open" | "changed_on_disk";
+  name: string;
+}
+
+interface PendingConfirmPrompt extends ConfirmPrompt {
+  resolve: (confirmed: boolean) => void;
+}
+
 let doc = $state<DocumentDto>({ ...EMPTY });
 let unsavedPrompt = $state<UnsavedPrompt | null>(null);
 let saveAsPrompt = $state<SaveAsPrompt | null>(null);
+let confirmPrompt = $state<PendingConfirmPrompt | null>(null);
+
+/** T-306: `dirty || sidecar_dirty` — the title's `*` and every unsaved-changes prompt fire on
+ * either (SPEC-018 §2.4). */
+export function isModified(info: DocumentDto): boolean {
+  return info.dirty || info.sidecar_dirty;
+}
 
 /** Read-only accessor for components. */
 export function documentState(): {
   readonly current: DocumentDto;
-  readonly unsavedPrompt: { readonly name: string } | null;
+  readonly unsavedPrompt: { readonly name: string; readonly effectSettingsOnly: boolean } | null;
   readonly saveAsPrompt: SaveAsPrompt | null;
+  readonly confirmPrompt: ConfirmPrompt | null;
 } {
   return {
     get current() {
@@ -67,6 +91,9 @@ export function documentState(): {
     },
     get saveAsPrompt() {
       return saveAsPrompt;
+    },
+    get confirmPrompt() {
+      return confirmPrompt ? { kind: confirmPrompt.kind, name: confirmPrompt.name } : null;
     },
   };
 }
@@ -82,13 +109,14 @@ function report(err: unknown): void {
 }
 
 /** "name — PowerVoice", "name * — PowerVoice" when modified, or just "PowerVoice" with none
- * open (ticket: title "‹name› — PowerVoice" with `*` when modified). */
+ * open (ticket: title "‹name› — PowerVoice" with `*` when modified — T-306 extends "modified" to
+ * `dirty || sidecar_dirty`, SPEC-018 §2.4). */
 export function titleFor(info: DocumentDto): string {
   const name = displayName(info);
   if (!name) {
     return "PowerVoice";
   }
-  return `${name}${info.dirty ? " *" : ""} — PowerVoice`;
+  return `${name}${isModified(info) ? " *" : ""} — PowerVoice`;
 }
 
 /** A document is open (S1-04: a never-saved recording has no name or path, but a rate). */
@@ -112,14 +140,23 @@ function updateWindowTitle(info: DocumentDto): void {
   }
 }
 
-function applyDoc(next: DocumentDto): void {
+/**
+ * `isOpen`: only a successful *open* restores the sidecar's spectral view (T-306, SPEC-018
+ * §2.6.5) — every other `document_changed` (an edit, a save, ...) leaves the pane's current
+ * settings alone, so a live tweak never gets clobbered by a stale value from before it was
+ * pushed to the backend (`spectral.svelte.ts`'s own debounce).
+ */
+function applyDoc(next: DocumentDto, isOpen = false): void {
   doc = next;
   updateWindowTitle(next);
+  if (isOpen && next.spectral_view) {
+    applyRestoredSpectralView(next.spectral_view);
+  }
 }
 
-async function run(command: () => Promise<DocumentDto>): Promise<boolean> {
+async function run(command: () => Promise<DocumentDto>, isOpen = false): Promise<boolean> {
   try {
-    applyDoc(await command());
+    applyDoc(await command(), isOpen);
     return true;
   } catch (err) {
     report(err);
@@ -127,8 +164,66 @@ async function run(command: () => Promise<DocumentDto>): Promise<boolean> {
   }
 }
 
-export const openDocument = (path: string): Promise<boolean> => run(() => documentOpen(path));
-export const saveDocument = (): Promise<boolean> => run(documentSave);
+function askConfirm(kind: ConfirmPrompt["kind"], name: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    confirmPrompt = { kind, name, resolve };
+  });
+}
+
+/** The `ConfirmDialog` component calls this with the user's choice. */
+export function resolveConfirmPrompt(confirmed: boolean): void {
+  const prompt = confirmPrompt;
+  confirmPrompt = null;
+  prompt?.resolve(confirmed);
+}
+
+/**
+ * T-306 (SPEC-018 §2.11): opens `path`, showing "‹name› is already open in another window" and
+ * retrying with the confirm flag if the user picks "Open Anyway". Any other failure (including a
+ * cancelled confirmation) is reported as a notice, same as [`run`].
+ */
+export async function openDocument(path: string): Promise<boolean> {
+  try {
+    applyDoc(await documentOpen(path, false), true);
+    return true;
+  } catch (err) {
+    if (isIpcError(err) && err.code === "needs_confirmation" && err.key === "dialog.already_open") {
+      const name = err.params.name ?? "";
+      if (!(await askConfirm("already_open", name))) {
+        return false;
+      }
+      return run(() => documentOpen(path, true), true);
+    }
+    report(err);
+    return false;
+  }
+}
+
+/**
+ * T-306 (SPEC-018 §2.9): saves in place, showing "‹name› was changed on disk" and retrying with
+ * `overwrite: true` if the user picks "Overwrite".
+ */
+export async function saveDocument(): Promise<boolean> {
+  try {
+    applyDoc(await documentSave(false));
+    return true;
+  } catch (err) {
+    if (
+      isIpcError(err) &&
+      err.code === "needs_confirmation" &&
+      err.key === "dialog.changed_on_disk"
+    ) {
+      const name = err.params.name ?? "";
+      if (!(await askConfirm("changed_on_disk", name))) {
+        return false;
+      }
+      return run(() => documentSave(true));
+    }
+    report(err);
+    return false;
+  }
+}
+
 export const saveDocumentAs = (path: string, bits: BitDepth): Promise<boolean> =>
   run(() => documentSaveAs(path, bits));
 
@@ -140,7 +235,7 @@ export const saveDocumentAs = (path: string, bits: BitDepth): Promise<boolean> =
  */
 async function saveForPrompt(): Promise<boolean> {
   if (doc.path) {
-    return (await saveDocument()) && !doc.dirty;
+    return (await saveDocument()) && !isModified(doc);
   }
   const path = await saveFileDialog({
     defaultPath: doc.name ?? "untitled.wav",
@@ -149,12 +244,12 @@ async function saveForPrompt(): Promise<boolean> {
   if (typeof path !== "string") {
     return false;
   }
-  return (await saveDocumentAs(path, "24")) && !doc.dirty;
+  return (await saveDocumentAs(path, "24")) && !isModified(doc);
 }
 
-function askUnsavedChanges(name: string): Promise<UnsavedDecision> {
+function askUnsavedChanges(name: string, effectSettingsOnly: boolean): Promise<UnsavedDecision> {
   return new Promise((resolve) => {
-    unsavedPrompt = { name, resolve };
+    unsavedPrompt = { name, effectSettingsOnly, resolve };
   });
 }
 
@@ -171,8 +266,8 @@ export function resolveUnsavedPrompt(decision: UnsavedDecision): void {
  * `action` never runs. Returns whether `action` ran. S1-04's New Recording uses it too.
  */
 export async function withUnsavedChangesGuard(action: () => Promise<void>): Promise<boolean> {
-  if (doc.dirty) {
-    const decision = await askUnsavedChanges(displayName(doc) ?? "");
+  if (isModified(doc)) {
+    const decision = await askUnsavedChanges(displayName(doc) ?? "", !doc.dirty && doc.sidecar_dirty);
     if (decision === "cancel") {
       return false;
     }
@@ -252,11 +347,11 @@ export async function initDocument(): Promise<() => void> {
   }
   try {
     const unlisten = await getCurrentWindow().onCloseRequested(async (event) => {
-      if (!doc.dirty) {
+      if (!isModified(doc)) {
         return;
       }
       event.preventDefault();
-      const decision = await askUnsavedChanges(displayName(doc) ?? "");
+      const decision = await askUnsavedChanges(displayName(doc) ?? "", !doc.dirty && doc.sidecar_dirty);
       if (decision === "cancel") {
         return;
       }
@@ -291,4 +386,5 @@ export function resetDocumentStateForTest(): void {
   doc = { ...EMPTY };
   unsavedPrompt = null;
   saveAsPrompt = null;
+  confirmPrompt = null;
 }

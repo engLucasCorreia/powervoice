@@ -88,6 +88,35 @@ pub(crate) fn write_file_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// Canonical form of `path` for comparison (SPEC-018 §4.6: recent-files dedup, the already-open
+/// scan, matching a session's source path): an existing file resolves symlinks/`.`/`..` via
+/// [`std::fs::canonicalize`]; a missing one falls back to lexical absolute normalization (join
+/// with the current directory if relative, then drop `.`/resolve `..` components) so a file that
+/// doesn't exist yet (or no longer does) can still be compared consistently.
+pub fn canonical_path_for_compare(path: &Path) -> std::path::PathBuf {
+    if let Ok(p) = std::fs::canonicalize(path) {
+        return p;
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    let mut out = std::path::PathBuf::new();
+    for comp in absolute.components() {
+        match comp {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
 /// Milliseconds since the Unix epoch (0 for clocks before it).
 pub(crate) fn unix_ms(t: SystemTime) -> u64 {
     t.duration_since(UNIX_EPOCH)

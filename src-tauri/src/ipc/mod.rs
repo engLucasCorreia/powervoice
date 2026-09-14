@@ -27,6 +27,8 @@ mod nr_capture_commands;
 mod nr_capture_dto;
 mod rack_commands;
 mod rack_dto;
+mod recent_files_commands;
+mod recent_files_dto;
 mod record_commands;
 mod record_dto;
 mod spectro_commands;
@@ -70,6 +72,8 @@ pub use rack_commands::*;
 pub use rack_dto::{
     NoiseProfileStatusDto, ParamChangedDto, RackLatencyDto, RackStateDto, rack_ipc_error,
 };
+pub use recent_files_commands::*;
+pub use recent_files_dto::RecentFileDto;
 pub use record_commands::*;
 pub use record_dto::{RecordStateDto, engine_monitor_mode};
 pub use spectro_commands::*;
@@ -121,6 +125,10 @@ crate::ipc_commands!(
     document_probe,
     document_save,
     document_save_as,
+    sidecar_view_set_spectral,
+    recent_files_get,
+    recent_files_remove,
+    recent_files_clear,
     peaks_get,
     spectro_attach,
     spectro_detach,
@@ -191,6 +199,10 @@ crate::ipc_commands!(
     document_probe,
     document_save,
     document_save_as,
+    sidecar_view_set_spectral,
+    recent_files_get,
+    recent_files_remove,
+    recent_files_clear,
     peaks_get,
     spectro_attach,
     spectro_detach,

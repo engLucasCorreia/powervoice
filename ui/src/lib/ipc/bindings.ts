@@ -35,7 +35,7 @@ export type BitDepth = "16" | "24" | "32f";
  */
 export type ClipboardChangedDto = { len_samples: number | null, sample_rate_hz: number | null, };
 
-export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "module_telemetry_subscribe" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_probe" | "document_save" | "document_save_as" | "peaks_get" | "spectro_attach" | "spectro_detach" | "spectro_request" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check";
+export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "module_telemetry_subscribe" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_probe" | "document_save" | "document_save_as" | "sidecar_view_set_spectral" | "recent_files_get" | "recent_files_remove" | "recent_files_clear" | "peaks_get" | "spectro_attach" | "spectro_detach" | "spectro_request" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check";
 
 /**
  * One draggable EQ-graph node (S3-07, SPEC-015 §3 "ResponseCurve components"): the band's
@@ -143,7 +143,16 @@ input_device: string | null, input_status: DeviceStatusDto, };
  * `document_changed` event payload, and the result of `document_open`/`document_save`/
  * `document_save_as`. `name: None` means no document is open.
  */
-export type DocumentDto = { name: string | null, path: string | null, sample_rate_hz: number, len_samples: number, dirty: boolean, audio_rev: number, };
+export type DocumentDto = { name: string | null, path: string | null, sample_rate_hz: number, len_samples: number, dirty: boolean, audio_rev: number, 
+/**
+ * T-306 (SPEC-018 §2.4): `*` and the close/quit prompts fire on `dirty || sidecar_dirty`.
+ */
+sidecar_dirty: boolean, 
+/**
+ * T-306 (SPEC-018 §2.6.5): the sidecar's spectral-pane settings, if any (`null` = keep the
+ * UI's current/last-used settings, SPEC-007 §2.1).
+ */
+spectral_view: SpectralViewDto | null, };
 
 /**
  * T-202: `document_probe`'s result (SPEC-005 §2.3 step 1, §2.4). `channel_peaks_dbfs` is empty
@@ -169,7 +178,7 @@ selection: [number, number] | null, playhead_samples: number, };
  */
 export type EditTargetDto = { "kind": "cursor", at_samples: number, } | { "kind": "range", start_samples: number, end_samples: number, };
 
-export type EventName = "notice" | "transport_state" | "devices_changed" | "rack_changed" | "param_changed" | "rack_latency" | "record_state" | "document_changed" | "history_state" | "clipboard_changed" | "job_progress" | "loudness_report" | "normalize_result";
+export type EventName = "notice" | "transport_state" | "devices_changed" | "rack_changed" | "param_changed" | "rack_latency" | "record_state" | "document_changed" | "history_state" | "clipboard_changed" | "job_progress" | "loudness_report" | "normalize_result" | "recent_files_changed";
 
 /**
  * Export output format and its per-format settings. FLAC's `bits` rejects `"32f"` (FLAC has no
@@ -218,7 +227,7 @@ export type IpcError = { code: IpcErrorCode, key: string, params: { [key in stri
  * ticket adds a new variant here only when its own spec names a distinct error condition, to
  * keep this a small, meaningful set rather than one variant per command.
  */
-export type IpcErrorCode = "internal" | "invalid_argument" | "not_found" | "not_while_recording" | "device_not_found" | "device_lost" | "io" | "cancelled" | "busy";
+export type IpcErrorCode = "internal" | "invalid_argument" | "not_found" | "not_while_recording" | "device_not_found" | "device_lost" | "io" | "cancelled" | "busy" | "needs_confirmation";
 
 /**
  * A long-running, cancellable job's kind (ADR-003 `job_progress`; S4-04 is the first job). New
@@ -454,6 +463,21 @@ slots: Array<RackSlotDto>,
 ab: boolean, latency_samples: number, };
 
 /**
+ * One `File → Open Recent` entry. `name`/`folder` are split out so the menu can show
+ * "‹name› — ‹folder›" without re-deriving them in the UI; `exists` is resolved within the
+ * existence-check budget (SPEC-018 §2.12) — `null` only if the check couldn't complete in time
+ * (a stalled network mount), in which case the entry is shown as if it existed.
+ */
+export type RecentFileDto = { path: string, name: string, folder: string, exists: boolean | null, };
+
+/**
+ * One `recent_files` entry. `path` is the path as opened/saved (informational — dedup and
+ * matching compare canonicalized paths, `vox_project::canonical_path_for_compare`); `opened_at`
+ * is RFC 3339 UTC.
+ */
+export type RecentFileEntry = { path: string, opened_at: string, };
+
+/**
  * The record panel state (SPEC-002 §2.1–§2.2, §2.7).
  */
 export type RecordStateDto = { 
@@ -533,13 +557,24 @@ telemetry_rate_hz: number, memory_budget_mib: number,
 /**
  * H-09/SPEC-010 §2.4: the Normalize… dialog's last applied value and unit.
  */
-normalize_dialog: NormalizeDialogPrefsDto, };
+normalize_dialog: NormalizeDialogPrefsDto, 
+/**
+ * T-306 (SPEC-018 §2.12): File → Open Recent, most-recent-first, capped at
+ * [`RECENT_FILES_MAX`]. Additive field — the settings version stays 1.
+ */
+recent_files: Array<RecentFileEntry>, };
 
 /**
  * Slot status (SPEC-012 §2.2, §2.9). `message` is pre-rendered English text shown verbatim (see
  * the module docs) — a plugin or module name isn't something the UI can key into i18n.
  */
 export type SlotStatusDto = { "kind": "active" } | { "kind": "missing", message: string, too_new: boolean, } | { "kind": "failed", message: string, };
+
+/**
+ * T-306 (SPEC-018 §2.6.5's `view.spectral`, SPEC-007 §3): per-document spectral pane settings.
+ * `fft_size: null` means Auto (SPEC-007 §2.6).
+ */
+export type SpectralViewDto = { visible: boolean, split_ratio: number, fft_size: number | null, freq_scale: string, display_floor_db: number, display_ceil_db: number, colormap: string, };
 
 /**
  * One `spectro_request`: FFT size, hop (from the zoom, SPEC-007 §4.3), window (0 = Hann) and up

@@ -425,6 +425,14 @@ pub enum Record {
         path: String,
         seq: u64,
         format: String,
+        /// T-306 (SPEC-018 §4.5): the file fingerprint (`document.audio_crc32`) as of this save,
+        /// additive so an older journal (no sidecar yet) still parses.
+        #[serde(default)]
+        audio_crc32: Option<String>,
+        /// `false` when the sidecar write failed (SPEC-018 §2.9); `None` on an older journal, or
+        /// a save with no sidecar concept (never produced by this build, kept for forward compat).
+        #[serde(default)]
+        sidecar: Option<bool>,
     },
     Checkpoint(CheckpointRecord),
     Close,
@@ -628,6 +636,8 @@ mod tests {
                 path: "/a/b.wav".into(),
                 seq: 1,
                 format: "wav24".into(),
+                audio_crc32: Some("9f3a51c2".into()),
+                sidecar: Some(true),
             },
             Record::Close,
         ]

@@ -1,62 +1,52 @@
 <script lang="ts">
-  import { t } from "../i18n";
-  import { documentState, resolveUnsavedPrompt } from "./document.svelte";
+  import { tDynamic } from "../i18n";
+  import { documentState, resolveConfirmPrompt } from "./document.svelte";
 
   /**
-   * Save / Don't Save / Cancel prompt (SPEC-004 §2.8 "simple version"), shown by the document
-   * store before Open or quit would discard unsaved changes.
+   * T-306 (SPEC-018 §2.9/§2.11): "already open in another instance" and "changed on disk"
+   * confirmations, shown by the document store before Open/Save proceeds with something that
+   * could overwrite someone else's changes. Same shape for both — only the copy differs.
    */
   const doc = documentState();
 
   function onKeydown(event: KeyboardEvent): void {
     event.stopPropagation();
     if (event.key === "Escape") {
-      resolveUnsavedPrompt("cancel");
+      resolveConfirmPrompt(false);
     }
   }
 </script>
 
-{#if doc.unsavedPrompt}
+{#if doc.confirmPrompt}
   <div class="backdrop">
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
       class="dialog"
       role="alertdialog"
       aria-modal="true"
-      aria-labelledby="unsaved-changes-title"
-      data-testid="unsaved-changes-dialog"
+      aria-labelledby="confirm-dialog-title"
+      data-testid="confirm-dialog"
+      data-kind={doc.confirmPrompt.kind}
       tabindex="-1"
       onkeydown={onKeydown}
     >
-      <h2 id="unsaved-changes-title">{t("dialog.unsaved.title")}</h2>
-      <p>{t("dialog.unsaved.message", { name: doc.unsavedPrompt.name })}</p>
-      {#if doc.unsavedPrompt.effectSettingsOnly}
-        <p data-testid="unsaved-effect-settings-changed">
-          {t("dialog.unsaved.effect_settings_changed")}
-        </p>
-      {/if}
+      <h2 id="confirm-dialog-title">{tDynamic(`dialog.${doc.confirmPrompt.kind}.title`)}</h2>
+      <p>{tDynamic(`dialog.${doc.confirmPrompt.kind}.message`, { name: doc.confirmPrompt.name })}</p>
       <div class="actions">
         <button
           type="button"
-          data-testid="unsaved-cancel"
-          onclick={() => resolveUnsavedPrompt("cancel")}
+          data-testid="confirm-cancel"
+          onclick={() => resolveConfirmPrompt(false)}
         >
-          {t("dialog.unsaved.cancel")}
-        </button>
-        <button
-          type="button"
-          data-testid="unsaved-discard"
-          onclick={() => resolveUnsavedPrompt("discard")}
-        >
-          {t("dialog.unsaved.discard")}
+          {tDynamic(`dialog.${doc.confirmPrompt.kind}.cancel`)}
         </button>
         <button
           type="button"
           class="primary"
-          data-testid="unsaved-save"
-          onclick={() => resolveUnsavedPrompt("save")}
+          data-testid="confirm-proceed"
+          onclick={() => resolveConfirmPrompt(true)}
         >
-          {t("dialog.unsaved.save")}
+          {tDynamic(`dialog.${doc.confirmPrompt.kind}.confirm`)}
         </button>
       </div>
     </div>

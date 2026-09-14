@@ -42,6 +42,8 @@ const DOC_CHANGED: DocumentDto = {
   len_samples: 480_000,
   dirty: false,
   audio_rev: 1,
+  sidecar_dirty: false,
+  spectral_view: null,
 };
 
 function marker(id: number, pos: number, len = 0, name = `m${id}`): MarkerDto {

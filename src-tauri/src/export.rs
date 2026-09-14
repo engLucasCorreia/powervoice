@@ -864,7 +864,7 @@ mod tests {
         )
         .unwrap();
         let documents = DocumentService::new(dir.join("sessions"), handle.clone());
-        documents.open(&wav_path).unwrap();
+        documents.open(&wav_path, false).unwrap();
 
         let done: Arc<Mutex<Option<JobState>>> = Arc::new(Mutex::new(None));
         let done_for_emit = Arc::clone(&done);

@@ -25,6 +25,7 @@ function settingsFixture(): Settings {
     telemetry_rate_hz: 60,
     memory_budget_mib: 2048,
     normalize_dialog: { value: -1, unit: "db" },
+    recent_files: [],
   };
 }
 

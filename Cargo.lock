@@ -3020,6 +3020,7 @@ name = "powervoice-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "crc32fast",
  "directories",
  "hound",
  "serde",

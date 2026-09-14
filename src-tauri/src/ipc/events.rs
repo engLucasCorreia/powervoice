@@ -18,7 +18,8 @@ crate::ipc_events!(
     clipboard_changed,
     job_progress,
     loudness_report,
-    normalize_result
+    normalize_result,
+    recent_files_changed
 );
 
 /// A user-facing notice (ADR-003 `notice` event). Two shapes, distinguished by `persistent`:

@@ -8,10 +8,11 @@ use std::time::{Duration, Instant};
 use common::*;
 use vox_project::gc::{
     DELETING_SUFFIX, SessionClass, classify_session, collect_garbage, discard_session,
+    find_already_open,
 };
 use vox_project::journal::{Journal, Record};
 use vox_project::{
-    ProjectError, Session, SessionConfig, StoreOptions, TakeMode, TakeWriterOptions,
+    ProjectError, Session, SessionConfig, SourceInfo, StoreOptions, TakeMode, TakeWriterOptions,
 };
 
 fn new_session(sessions: &Path) -> Session {
@@ -302,4 +303,68 @@ fn torn_take_parts_never_hide_a_take() {
         .unwrap();
     assert_eq!(empty.open_take_samples, 0);
     assert!(dir.exists() && other_dir.exists());
+}
+
+// --- T-306: second-instance detection (SPEC-018 §2.11) ------------------------------------------
+
+fn session_for_source(sessions: &Path, source_path: &Path) -> Session {
+    let mut config = SessionConfig::new(RATE);
+    config.store = StoreOptions::with_memory_budget(512 * MIB);
+    config.source = Some(SourceInfo {
+        path: source_path.to_path_buf(),
+        size_bytes: 123,
+        mtime_unix_ms: 0,
+        format: "wav".into(),
+    });
+    Session::create(sessions, config).unwrap()
+}
+
+#[test]
+fn find_already_open_matches_a_locked_session_by_canonical_source_path() {
+    let tmp = TempDir::new("gc-already-open");
+    let audio_dir = TempDir::new("gc-already-open-audio");
+    let audio = audio_dir.path().join("a.wav");
+    std::fs::write(&audio, b"not really a wav").unwrap();
+
+    let session = session_for_source(tmp.path(), &audio);
+    let canonical = vox_project::canonical_path_for_compare(&audio);
+
+    let found = find_already_open(tmp.path(), &canonical, None);
+    assert_eq!(found, Some(session.dir().to_path_buf()));
+
+    // Excluding this instance's own session id finds nothing.
+    assert_eq!(
+        find_already_open(tmp.path(), &canonical, Some(session.id())),
+        None
+    );
+
+    // A path that doesn't match any open session's source finds nothing.
+    let other = audio_dir.path().join("b.wav");
+    std::fs::write(&other, b"x").unwrap();
+    assert_eq!(
+        find_already_open(
+            tmp.path(),
+            &vox_project::canonical_path_for_compare(&other),
+            None
+        ),
+        None
+    );
+
+    session.close().unwrap();
+}
+
+#[test]
+fn find_already_open_ignores_an_unlocked_session() {
+    let tmp = TempDir::new("gc-already-open-unlocked");
+    let audio_dir = TempDir::new("gc-already-open-unlocked-audio");
+    let audio = audio_dir.path().join("a.wav");
+    std::fs::write(&audio, b"x").unwrap();
+
+    let session = session_for_source(tmp.path(), &audio);
+    let dir = session.dir().to_path_buf();
+    drop(session); // releases the advisory lock without journaling `close`
+
+    let canonical = vox_project::canonical_path_for_compare(&audio);
+    assert_eq!(find_already_open(tmp.path(), &canonical, None), None);
+    let _ = dir;
 }

@@ -283,6 +283,12 @@ impl EngineHandle {
         self.call(|c| c.rack_model())
     }
 
+    /// T-306: replaces the whole rack (a sidecar's `rack` section on document open, or a
+    /// recovered `state` record). `None` only if the engine is stopped.
+    pub fn rack_load_model(&self, model: RackModel) -> Option<Result<RackSnapshot, RackApiError>> {
+        self.call(move |c| c.rack_load_model(model))
+    }
+
     /// Arms (opens the input stream, starts the input meter) or disarms. Locked on while
     /// recording (S1-04, SPEC-002 §2.1).
     pub fn set_armed(&self, armed: bool) -> Option<RecordState> {

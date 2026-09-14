@@ -94,7 +94,7 @@ describe("WaveformView (S1-03)", () => {
       sample_rate_hz: 48_000,
       len_samples: 480_000,
       dirty: false,
-      audio_rev: 1,
+      audio_rev: 1, sidecar_dirty: false, spectral_view: null,
     };
     mockIPC((cmd) => {
       if (cmd === "document_open") {
@@ -147,7 +147,7 @@ describe("WaveformView (S1-03)", () => {
           sample_rate_hz: 48_000,
           len_samples: 480_000,
           dirty: false,
-          audio_rev: 1,
+          audio_rev: 1, sidecar_dirty: false, spectral_view: null,
         } satisfies DocumentDto;
       }
       if (cmd === "peaks_get") {
@@ -211,7 +211,7 @@ describe("WaveformView (S1-03)", () => {
       sample_rate_hz: 48_000,
       len_samples: 0, // S1-04: the take isn't committed until Stop
       dirty: false,
-      audio_rev: 0,
+      audio_rev: 0, sidecar_dirty: false, spectral_view: null,
     };
     const recordingState: RecordStateDto = {
       input_device: "Mic",
@@ -292,7 +292,7 @@ describe("WaveformView (S1-03)", () => {
       sample_rate_hz: 48_000,
       len_samples: 0,
       dirty: false,
-      audio_rev: 0,
+      audio_rev: 0, sidecar_dirty: false, spectral_view: null,
     };
     const recordingState: RecordStateDto = {
       input_device: "Mic",
@@ -398,7 +398,7 @@ describe("WaveformView selection (S2-01)", () => {
       sample_rate_hz: 48_000,
       len_samples: lenSamples,
       dirty: false,
-      audio_rev: 1,
+      audio_rev: 1, sidecar_dirty: false, spectral_view: null,
     };
     mockIPC((cmd) => {
       if (cmd === "document_open") {

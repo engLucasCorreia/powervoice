@@ -12,6 +12,7 @@
     requestSave,
     requestSaveAs,
   } from "./document.svelte";
+  import RecentFilesMenu from "./RecentFilesMenu.svelte";
 
   /**
    * File menu / toolbar (S1-03: Open, Save, Save As with bit-depth choice; S4-04: Export…;
@@ -39,6 +40,7 @@
   <button type="button" data-testid="menu-open" onclick={() => void requestOpen()}>
     {t("menu.file.open")}
   </button>
+  <RecentFilesMenu />
   <button
     type="button"
     data-testid="menu-new-recording"

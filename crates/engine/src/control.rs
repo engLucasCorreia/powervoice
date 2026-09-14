@@ -603,6 +603,31 @@ impl Control {
             .map_or_else(|| self.rack_model.clone(), |out| out.rack.model())
     }
 
+    /// T-306: replaces the whole rack (document open, sidecar carrying a rack; or recovery).
+    /// Unlike [`Self::rack_apply`], this succeeds even with no live output stream — `rack_model`
+    /// (the source of truth across output open/close, see [`Self::rack_model`]) is updated either
+    /// way, so a rack applied before the output opens is still the one it opens with.
+    pub(crate) fn rack_load_model(
+        &mut self,
+        model: RackModel,
+    ) -> Result<RackSnapshot, RackApiError> {
+        if let Some(out) = self.output.as_mut() {
+            out.rack
+                .load_model(&model)
+                .map_err(|e| RackApiError::Rack(e.to_string()))?;
+            let notices = out.rack.take_notices();
+            self.rack_model = out.rack.model();
+            for n in notices {
+                (self.events)(EngineEvent::Rack(n));
+            }
+        } else {
+            self.rack_model = model;
+        }
+        let snapshot = self.rack_snapshot();
+        (self.events)(EngineEvent::RackChanged(snapshot.clone()));
+        Ok(snapshot)
+    }
+
     /// Applies one rack command and returns the resulting snapshot.
     pub(crate) fn rack_apply(&mut self, cmd: RackCommand) -> Result<RackSnapshot, RackApiError> {
         let (result, notices) = {

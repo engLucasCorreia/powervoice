@@ -15,6 +15,8 @@ function doc(overrides: Partial<DocumentDto> = {}): DocumentDto {
     len_samples: 480_000,
     dirty: false,
     audio_rev: 1,
+    sidecar_dirty: false,
+    spectral_view: null,
     ...overrides,
   };
 }

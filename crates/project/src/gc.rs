@@ -317,6 +317,42 @@ pub(crate) fn delete_session_dir(dir: &Path) -> Result<()> {
     }
 }
 
+/// T-306 (SPEC-018 §2.11): scans `<sessions_dir>` for a session — other than `exclude_session_id`
+/// (this instance's own, if any) — whose lock is held (another running instance) and whose
+/// `meta.json` source path canonicalizes to `canonical_path`. Only `meta.json` of *locked*
+/// sessions is read (SPEC-018 §2.11: "the scan reads only `meta.json` of locked sessions"), so an
+/// unlocked (crashed/closed) session never triggers the warning.
+pub fn find_already_open(
+    sessions_dir: &Path,
+    canonical_path: &Path,
+    exclude_session_id: Option<&str>,
+) -> Option<PathBuf> {
+    let entries = fs::read_dir(sessions_dir).ok()?;
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name.ends_with(DELETING_SUFFIX) || Some(name) == exclude_session_id {
+            continue;
+        }
+        // Locked (another instance holds it) — an unlocked session is never "already open".
+        match try_lock_session(&dir) {
+            Ok(Some(_lock)) => continue, // uncontended: not open elsewhere; drop releases it
+            Ok(None) => {}               // held by another instance: keep checking
+            Err(_) => continue,
+        }
+        let Some(source) = read_meta(&dir).and_then(|m| m.source_path) else {
+            continue;
+        };
+        if crate::canonical_path_for_compare(Path::new(&source)) == canonical_path {
+            return Some(dir);
+        }
+    }
+    None
+}
+
 fn delete_in_place(dir: &Path) -> io::Result<()> {
     let mut journals = Vec::new();
     for entry in fs::read_dir(dir)? {

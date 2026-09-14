@@ -45,7 +45,7 @@ describe("DocumentMenu (S1-03)", () => {
       sample_rate_hz: 48_000,
       len_samples: 480_000,
       dirty: true,
-      audio_rev: 1,
+      audio_rev: 1, sidecar_dirty: false, spectral_view: null,
     };
     mockIPC((cmd) => {
       if (cmd === "document_open") {

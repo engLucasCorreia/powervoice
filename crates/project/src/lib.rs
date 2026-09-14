@@ -43,6 +43,7 @@ pub mod peaks_query;
 pub mod reader;
 pub mod save;
 pub mod session;
+pub mod sidecar;
 pub mod snapshot;
 pub mod store;
 pub mod take;
@@ -51,6 +52,7 @@ pub mod vxpk;
 pub use disk::{FixedFreeSpace, FreeSpaceProvider, SystemFreeSpace};
 pub use edit::{PostEdit, Range, RangeError, Target as EditTarget, validate_range};
 pub use error::{ProjectError, Result};
+pub use fs_util::canonical_path_for_compare;
 pub use history::{Edit, EditOp, History, HistoryStep, MarkerMapping, MarkerOp};
 pub use import::{
     CHANNEL_PROBE_WINDOW_S, ImportChannel, ImportProbe, ImportResult, MAX_CHANNELS,
@@ -70,6 +72,11 @@ pub use save::save_snapshot_wav;
 pub use session::{
     CloseError, FinishedTake, Session, SessionConfig, SourceInfo, TAKE_LABEL_KEY, TakeCapture,
     TakeId, TakeMode,
+};
+pub use sidecar::{
+    DocumentIdentity, MarkerItemModel, MarkerMeta, MarkerMetaTable, SaveFormatModel, SidecarDoc,
+    SidecarLoad, SidecarNotice, WriteInput, document_crc32, marker_from_item, read_sidecar,
+    sidecar_path_for, write_sidecar,
 };
 pub use snapshot::{DocSnapshot, Marker, MarkerId, Piece, Source};
 pub use store::{

@@ -70,7 +70,16 @@ function transportDto(): TransportStateDto {
 }
 
 function docDto(len_samples: number, dirty: boolean): DocumentDto {
-  return { name: "take.wav", path: "/tmp/take.wav", sample_rate_hz: 48_000, len_samples, dirty, audio_rev: 1 };
+  return {
+    name: "take.wav",
+    path: "/tmp/take.wav",
+    sample_rate_hz: 48_000,
+    len_samples,
+    dirty,
+    audio_rev: 1,
+    sidecar_dirty: false,
+    spectral_view: null,
+  };
 }
 
 function frame(flags: number, playheadSample = 0): TelemetryFrame {

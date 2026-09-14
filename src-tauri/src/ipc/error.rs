@@ -51,6 +51,11 @@ pub enum IpcErrorCode {
     /// SPEC-010 §2.1: a command that changes the document is refused because another document
     /// job is already running (H-09: a normalize job). i18n key: `error.document_busy`.
     Busy,
+    /// T-306 (SPEC-018 §2.9, §2.11): the operation needs the user to confirm before it proceeds
+    /// (a file already open in another instance, or changed on disk since it was opened). `key`
+    /// names which dialog (`dialog.already_open`/`dialog.changed_on_disk`); the UI re-issues the
+    /// command with its confirm flag set to proceed anyway.
+    NeedsConfirmation,
 }
 
 impl IpcError {

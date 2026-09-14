@@ -670,10 +670,24 @@ impl Session {
 
     /// Records a successful save of the current state (journal `saved`).
     pub fn mark_saved(&mut self, path: &Path, format: &str) -> Result<()> {
+        self.mark_saved_with_sidecar(path, format, None, None)
+    }
+
+    /// [`Self::mark_saved`], additionally recording the file fingerprint and whether the sidecar
+    /// write succeeded (SPEC-018 §4.5).
+    pub fn mark_saved_with_sidecar(
+        &mut self,
+        path: &Path,
+        format: &str,
+        audio_crc32: Option<String>,
+        sidecar: Option<bool>,
+    ) -> Result<()> {
         self.journal.append(&[Record::Saved {
             path: path.to_string_lossy().into_owned(),
             seq: self.history.current_seq(),
             format: format.to_owned(),
+            audio_crc32,
+            sidecar,
         }])?;
         self.history.mark_saved();
         Ok(())

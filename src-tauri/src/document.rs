@@ -11,10 +11,12 @@ use std::time::Duration;
 use vox_engine::record::DropoutMark;
 use vox_engine::{EngineHandle, PlaybackDoc, TransportCommand};
 use vox_project::{
-    Edit, EditTarget, FinishedTake, LufsNormalizeOutcome, Marker, MarkerId, MarkerOp,
-    NormalizeLufsPlan, NormalizeOutcome, NormalizePeakPlan, Piece, ProjectError, Range, RangeError,
-    Session, SessionConfig, SnapshotReader, TakeCapture, TakeId, TakeMode, TakeWriterOptions, edit,
-    normalize_applied_post_edit, validate_range,
+    DocumentIdentity, Edit, EditTarget, FinishedTake, LufsNormalizeOutcome, Marker, MarkerId,
+    MarkerItemModel, MarkerMetaTable, MarkerOp, NormalizeLufsPlan, NormalizeOutcome,
+    NormalizePeakPlan, Piece, ProjectError, Range, RangeError, SaveFormatModel, Session,
+    SessionConfig, SidecarNotice, SnapshotReader, TakeCapture, TakeId, TakeMode, TakeWriterOptions,
+    WrittenAudio, document_crc32, edit, marker_from_item, normalize_applied_post_edit,
+    read_sidecar, sidecar_path_for, validate_range, write_sidecar,
 };
 
 use crate::ipc::{IpcError, IpcErrorCode};
@@ -48,12 +50,65 @@ pub fn default_sessions_dir() -> PathBuf {
     }
 }
 
+/// T-306: everything about the open document's sidecar besides the session itself (SPEC-018).
+/// `project` owns the schema/read/write/digest (`vox_project::sidecar`); this is just the
+/// per-open-document state a thin `src-tauri` service needs to drive it.
+struct SidecarState {
+    /// Bridges `kind`/per-item unknown fields onto marker ids (module scope note,
+    /// `vox_project::sidecar`): `vox_project::Marker` has no `kind` field yet.
+    marker_meta: MarkerMetaTable,
+    /// Opaque view JSON (SPEC-018 §2.6.5): `Null` until the UI sends one via
+    /// `sidecar_view_set`, or until a sidecar with a `view` section is loaded.
+    view: serde_json::Value,
+    /// Baseline for `sidecar_dirty` (SPEC-018 §4.3): the persisted-content digest as of open or
+    /// the last successful sidecar write.
+    persisted_digest: u32,
+    /// Whether the sidecar *on disk* needs backing up before the next overwrite (SPEC-018 §2.8):
+    /// set when the last read couldn't fully use it, or its `version` wasn't 1.
+    needs_backup: bool,
+    /// The document's file fingerprint (SPEC-018 §4.2) as of open or the last successful save.
+    audio_crc32: u32,
+    /// The bound audio file's size/mtime as PowerVoice last recorded them (open or last save),
+    /// for the changed-on-disk pre-flight check (SPEC-018 §2.9).
+    file_size_bytes: u64,
+    file_mtime_unix_ms: u64,
+    /// `audio_rev` as of open or the last save that rewrote the audio (SPEC-018 §2.4's "audio_rev
+    /// changed since the last save or open" bullet).
+    last_saved_audio_rev: u64,
+    /// The `markers.items` the *audio file itself* currently reflects (its WAV cue chunk) — as of
+    /// open or the last full save. Save writes the audio again when the live markers differ from
+    /// this (SPEC-018 §2.4's markers bullet; every save format here is WAV, which always stores
+    /// markers, so "the container stores markers" is always true in this build — T-201's FLAC
+    /// save path doesn't exist yet).
+    last_written_markers: Vec<MarkerItemModel>,
+}
+
+impl SidecarState {
+    /// The "None" baseline (SPEC-018 §2.5: no usable sidecar, or a brand new recording): whatever
+    /// is carried over/imported becomes the baseline, so opening never sets `sidecar_dirty` by
+    /// itself.
+    fn none() -> Self {
+        Self {
+            marker_meta: MarkerMetaTable::new(),
+            view: serde_json::Value::Null,
+            persisted_digest: 0,
+            needs_backup: false,
+            audio_crc32: 0,
+            file_size_bytes: 0,
+            file_mtime_unix_ms: 0,
+            last_saved_audio_rev: 0,
+            last_written_markers: Vec::new(),
+        }
+    }
+}
+
 /// One open document: its session plus the path/format it's bound to (`None` path = never saved:
 /// a new recording, S1-04).
 struct OpenDocument {
     session: Session,
     path: Option<PathBuf>,
     save_bits: BitDepth,
+    sidecar: SidecarState,
 }
 
 /// [`DocumentService::peaks`]'s result: the buckets (or raw samples, `spp == PEAKS_RAW_SPP`) plus
@@ -76,6 +131,29 @@ pub struct DocumentInfo {
     pub len_samples: u64,
     pub dirty: bool,
     pub audio_rev: u64,
+    /// T-306 (SPEC-018 §2.4): the persisted content (save format + markers + rack) differs from
+    /// what was last written or read. Title `*` and the close/quit prompts fire on `dirty ||
+    /// sidecar_dirty`; view-only changes never set it.
+    pub sidecar_dirty: bool,
+    /// T-306 (SPEC-018 §2.6.5): the sidecar's `view.spectral` section, if the open sidecar (or a
+    /// prior `set_spectral_view` this session) has one. `None` means "no opinion" — the UI keeps
+    /// its current settings / the app's last-used defaults (SPEC-007 §2.1).
+    pub spectral_view: Option<SpectralViewInfo>,
+}
+
+/// T-306 (SPEC-018 §2.6.5's `view.spectral`): SPEC-007 §3's per-document spectral pane settings.
+/// Plain data — [`crate::ipc::document_dto::SpectralViewDto`] is the ts-rs wire type
+/// (module doc: DTOs live in the `ipc`/`settings` layer, not here).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpectralViewInfo {
+    pub visible: bool,
+    pub split_ratio: f64,
+    /// `None` = Auto (SPEC-007 §2.6).
+    pub fft_size: Option<u32>,
+    pub freq_scale: String,
+    pub display_floor_db: f64,
+    pub display_ceil_db: f64,
+    pub colormap: String,
 }
 
 /// S2-01: the in-app clipboard (SPEC-008 §2.6), same-document only for now (cleared whenever a
@@ -261,6 +339,19 @@ struct Inner {
     /// concurrent edit can't race the job's eventual commit (which re-checks the snapshot anyway,
     /// [`DocumentService::finish_normalize_peak`]/[`Self::finish_normalize_lufs`]).
     normalize_busy: Mutex<bool>,
+    /// T-306: the last open/save's sidecar notice (mismatch/corrupt/too_new/unreadable/
+    /// items_dropped/save-failed), if any — [`DocumentService::take_sidecar_notice`] drains it.
+    /// A side channel rather than a return value so `open`/`save`/`save_as` keep returning
+    /// [`DocumentInfo`] like every other command result.
+    pending_sidecar_notice: Mutex<Option<SidecarNoticeInfo>>,
+}
+
+/// A sidecar-related notice for the command handler to turn into a `notice` event (SPEC-018
+/// §2.5/§2.9's notice keys). `params` are already i18n `with_param` pairs (e.g. `file`, `count`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SidecarNoticeInfo {
+    pub key: &'static str,
+    pub params: Vec<(&'static str, String)>,
 }
 
 /// S4-04: the read-only facts and handles an export job needs. Exports never touch the document
@@ -302,6 +393,29 @@ fn no_document() -> IpcError {
 /// Save of a never-saved document (S1-04 recording): the frontend routes it to Save As.
 fn untitled() -> IpcError {
     IpcError::new(IpcErrorCode::InvalidArgument, "error.document.untitled")
+}
+
+/// SPEC-018 §2.11: `path` is already open (and locked) in another PowerVoice instance. The UI
+/// shows "Open Anyway" / "Cancel" and re-issues `document_open` with `confirm_already_open: true`
+/// on "Open Anyway".
+fn already_open_error(path: &Path) -> IpcError {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    IpcError::new(IpcErrorCode::NeedsConfirmation, "dialog.already_open").with_param("name", name)
+}
+
+/// SPEC-018 §2.9: the bound file's size or mtime changed since PowerVoice opened or last saved
+/// it. The UI shows "Overwrite" / "Save As…" / "Cancel" and re-issues `document_save` with
+/// `overwrite: true` on "Overwrite".
+fn changed_on_disk_error(path: &Path) -> IpcError {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    IpcError::new(IpcErrorCode::NeedsConfirmation, "dialog.changed_on_disk")
+        .with_param("name", name)
 }
 
 /// SPEC-008 §2.2/§4.3: no selection (or an empty one) where one is required.
@@ -416,7 +530,122 @@ fn format_tag(bits: BitDepth) -> &'static str {
     }
 }
 
-fn info_of(doc: Option<&OpenDocument>) -> DocumentInfo {
+/// T-306 (SPEC-018 §2.6.2): `container` is always `"wav"` today — Save/Save As only ever writes
+/// WAV (T-201's FLAC save path is a separate, not-yet-implemented ticket) — so this only maps
+/// `bits` to `sample_format`/`dither`.
+fn save_format_model(bits: BitDepth) -> SaveFormatModel {
+    let (sample_format, dither) = match bits {
+        BitDepth::Bit16 => ("pcm16", "tpdf"),
+        BitDepth::Bit24 => ("pcm24", "tpdf"),
+        BitDepth::Bit32Float => ("f32", "none"),
+    };
+    SaveFormatModel {
+        container: "wav".to_string(),
+        sample_format: sample_format.to_string(),
+        dither: dither.to_string(),
+        extra: Default::default(),
+    }
+}
+
+/// The `markers.items` a save/digest would use right now: the live markers, with each one's
+/// sidecar `kind`/extra carried through [`SidecarState::marker_meta`] (module scope note,
+/// `vox_project::sidecar`).
+fn current_marker_items(doc: &OpenDocument) -> Vec<MarkerItemModel> {
+    doc.sidecar
+        .marker_meta
+        .build_items(&doc.session.current().markers)
+}
+
+/// The live rack as the opaque `rack` Value the sidecar stores (ADR-001 rule 4: `project` never
+/// depends on `rack`, so this conversion — `RackModel`'s own `serde`, per SPEC-018 §4.1 — happens
+/// here, in `src-tauri`, or in `engine`, never in `vox_project`).
+fn current_rack_value(engine: &EngineHandle) -> serde_json::Value {
+    engine
+        .rack_model()
+        .and_then(|m| serde_json::to_value(&m).ok())
+        .unwrap_or_else(|| serde_json::json!({"slots": []}))
+}
+
+/// SPEC-018 §4.3: `sidecar_dirty` compares the *current* persisted-content digest against
+/// `doc.sidecar.persisted_digest`'s baseline (recorded at open and after every successful sidecar
+/// write).
+fn sidecar_dirty_of(engine: &EngineHandle, doc: &OpenDocument) -> bool {
+    let save_format = save_format_model(doc.save_bits);
+    let markers = current_marker_items(doc);
+    let rack = current_rack_value(engine);
+    vox_project::sidecar::persisted_digest(&save_format, &markers, &rack)
+        != doc.sidecar.persisted_digest
+}
+
+/// Builds the [`SidecarNoticeInfo`] for one of [`SidecarNotice`]'s variants (SPEC-018 §2.5's
+/// notice keys — `key()` already gives the i18n key; this adds the `file`/`count` params).
+fn sidecar_notice_info(notice: &SidecarNotice, sidecar_path: &Path) -> SidecarNoticeInfo {
+    let file = sidecar_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut params = vec![("file", file)];
+    if let SidecarNotice::ItemsDropped(n) = notice {
+        params.push(("count", n.to_string()));
+    }
+    SidecarNoticeInfo {
+        key: notice.i18n_key(),
+        params,
+    }
+}
+
+/// `t`'s milliseconds since the Unix epoch (0 on error/before-epoch, like `document.rs`'s other
+/// best-effort file-fact readers).
+fn unix_ms_of(t: std::time::SystemTime) -> u64 {
+    t.duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// SPEC-018 §2.9: has `path` changed size or mtime since PowerVoice opened it or last saved it?
+/// A file that no longer exists is not "changed" here (no prompt needed — Save recreates it).
+fn changed_on_disk(doc: &OpenDocument, path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    let mtime_ms = meta.modified().map(unix_ms_of).unwrap_or(0);
+    meta.len() != doc.sidecar.file_size_bytes || mtime_ms != doc.sidecar.file_mtime_unix_ms
+}
+
+/// `doc.sidecar.view["spectral"]` -> [`SpectralViewInfo`] (SPEC-018 §2.6.5: "all fields are
+/// optional on read... a missing or invalid field takes its default" — here that just means the
+/// whole section is absent, since the UI already has SPEC-007 defaults to fall back to).
+fn spectral_view_of(view: &serde_json::Value) -> Option<SpectralViewInfo> {
+    let s = view.get("spectral")?;
+    Some(SpectralViewInfo {
+        visible: s.get("visible")?.as_bool()?,
+        split_ratio: s.get("split_ratio")?.as_f64()?,
+        fft_size: match s.get("fft_size") {
+            Some(serde_json::Value::Number(n)) => n.as_u64().map(|n| n as u32),
+            _ => None,
+        },
+        freq_scale: s
+            .get("freq_scale")
+            .and_then(|v| v.as_str())
+            .unwrap_or("log")
+            .to_string(),
+        display_floor_db: s
+            .get("display_floor_db")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(-120.0),
+        display_ceil_db: s
+            .get("display_ceil_db")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0),
+        colormap: s
+            .get("colormap")
+            .and_then(|v| v.as_str())
+            .unwrap_or("inferno")
+            .to_string(),
+    })
+}
+
+fn info_of(engine: &EngineHandle, doc: Option<&OpenDocument>) -> DocumentInfo {
     let Some(doc) = doc else {
         return DocumentInfo::default();
     };
@@ -432,6 +661,8 @@ fn info_of(doc: Option<&OpenDocument>) -> DocumentInfo {
         len_samples: snapshot.len_samples,
         dirty: doc.session.is_dirty(),
         audio_rev: snapshot.audio_rev,
+        sidecar_dirty: sidecar_dirty_of(engine, doc),
+        spectral_view: spectral_view_of(&doc.sidecar.view),
     }
 }
 
@@ -472,12 +703,13 @@ impl DocumentService {
             open: Mutex::new(None),
             clipboard: Mutex::new(None),
             normalize_busy: Mutex::new(false),
+            pending_sidecar_notice: Mutex::new(None),
         }))
     }
 
     /// The currently open document (or [`DocumentInfo::default`] when none is open).
     pub fn info(&self) -> DocumentInfo {
-        info_of(self.0.open.lock().unwrap().as_ref())
+        info_of(&self.0.engine, self.0.open.lock().unwrap().as_ref())
     }
 
     /// Imports `path` as a new session (SPEC-005 §2.2-2.4, T-202 `vox_project::import_file`) and
@@ -488,17 +720,34 @@ impl DocumentService {
     /// whatever was open before (the frontend is responsible for the
     /// unsaved-changes prompt — SPEC-004 §2.8 "simple version", ticket scope — before calling
     /// this).
-    pub fn open(&self, path: &Path) -> Result<DocumentInfo, IpcError> {
+    /// `confirm_already_open` bypasses SPEC-018 §2.11's "already open in another instance"
+    /// warning (the UI re-issues with `true` after "Open Anyway").
+    pub fn open(&self, path: &Path, confirm_already_open: bool) -> Result<DocumentInfo, IpcError> {
         if self.is_recording() {
             return Err(IpcError::not_while_recording());
         }
+        // T-306 (SPEC-018 §2.11): warn if another instance already holds this file open.
+        if !confirm_already_open {
+            let canonical = vox_project::canonical_path_for_compare(path);
+            if vox_project::gc::find_already_open(&self.0.sessions_dir, &canonical, None).is_some()
+            {
+                return Err(already_open_error(path));
+            }
+        }
         let probe = vox_project::probe_for_import(path).map_err(document_error)?;
         let save_bits = save_bits_for_import(path, &probe.container);
-        let mut session = Session::create(
-            &self.0.sessions_dir,
-            SessionConfig::new(probe.sample_rate_hz),
-        )
-        .map_err(document_error)?;
+        let mut config = SessionConfig::new(probe.sample_rate_hz);
+        // T-306 (SPEC-018 §2.11): `meta.json`'s `source_path` is what the already-open scan
+        // matches on — without it, no session would ever look "already open".
+        if let Ok(source_meta) = std::fs::metadata(path) {
+            config.source = Some(vox_project::SourceInfo {
+                path: path.to_path_buf(),
+                size_bytes: source_meta.len(),
+                mtime_unix_ms: source_meta.modified().map(unix_ms_of).unwrap_or(0),
+                format: probe.container.clone(),
+            });
+        }
+        let mut session = Session::create(&self.0.sessions_dir, config).map_err(document_error)?;
         let cancel = vox_project::CancelToken::new();
         let import = vox_project::import_file(
             &mut session,
@@ -514,22 +763,78 @@ impl DocumentService {
                 return Err(document_error(err));
             }
         };
-        let snapshot = import.snapshot;
+        let mut snapshot = import.snapshot;
+
+        // T-306 (SPEC-018 §2.5): read and classify the sidecar, if any.
+        let identity = DocumentIdentity {
+            sample_rate_hz: session.sample_rate_hz(),
+            len_samples: snapshot.len_samples,
+            audio_crc32: document_crc32(session.store(), &snapshot).unwrap_or(0),
+        };
+        let sidecar_path = sidecar_path_for(path);
+        let load = read_sidecar(&sidecar_path, identity);
+        let mut sidecar = SidecarState::none();
+        sidecar.needs_backup = load.needs_backup;
+        sidecar.audio_crc32 = identity.audio_crc32;
+        if let Some(sidecar_doc) = &load.doc {
+            // Markers: re-floor with the sidecar's (authoritative, SPEC-009 §2.13), same
+            // mechanism `import_file` used for the WAV cue markers — valid here because nothing
+            // has edited the document yet (`Session::set_floor`'s only precondition).
+            sidecar.marker_meta = MarkerMetaTable::from_items(&load.markers);
+            let sidecar_markers: Vec<Marker> = load.markers.iter().map(marker_from_item).collect();
+            let audio = WrittenAudio {
+                pieces: snapshot.pieces.to_vec(),
+                chunks: Vec::new(),
+                len_samples: snapshot.len_samples,
+            };
+            if let Ok(reflowed) = session.set_floor(&audio, sidecar_markers) {
+                snapshot = reflowed;
+            }
+            // Rack (ADR-001 rule 4: `project` keeps `rack` opaque; the conversion is `RackModel`'s
+            // own serde, run here). A malformed section never blocks opening (SPEC-018 §2.5): the
+            // carried-over rack stays in place instead.
+            if let Ok(model) =
+                serde_json::from_value::<vox_rack::RackModel>(sidecar_doc.rack.clone())
+            {
+                let _ = self.0.engine.rack_load_model(model);
+            }
+            sidecar.view = sidecar_doc.view.clone();
+        }
+        if let Some(notice) = &load.notice {
+            self.set_sidecar_notice(sidecar_notice_info(notice, &sidecar_path));
+        }
+
         let store = Arc::clone(session.store());
-        self.0
-            .engine
-            .set_document(Some(PlaybackDoc { store, snapshot }));
+        self.0.engine.set_document(Some(PlaybackDoc {
+            store,
+            snapshot: Arc::clone(&snapshot),
+        }));
         // S2-01: a new document replaces the clipboard (same-document only, SPEC-008 §2.6) — its
         // pieces reference the session that's about to close.
         *self.0.clipboard.lock().unwrap() = None;
+
+        let meta = std::fs::metadata(path).ok();
+        sidecar.file_size_bytes = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+        sidecar.file_mtime_unix_ms = meta
+            .and_then(|m| m.modified().ok())
+            .map(unix_ms_of)
+            .unwrap_or(0);
+        let save_format = save_format_model(save_bits);
+        let markers = sidecar.marker_meta.build_items(&snapshot.markers);
+        let rack = current_rack_value(&self.0.engine);
+        sidecar.persisted_digest =
+            vox_project::sidecar::persisted_digest(&save_format, &markers, &rack);
+        sidecar.last_saved_audio_rev = snapshot.audio_rev;
+        sidecar.last_written_markers = markers;
 
         let mut guard = self.0.open.lock().unwrap();
         let previous = guard.replace(OpenDocument {
             session,
             path: Some(path.to_path_buf()),
             save_bits,
+            sidecar,
         });
-        let info = info_of(guard.as_ref());
+        let info = info_of(&self.0.engine, guard.as_ref());
         drop(guard);
         if let Some(previous) = previous {
             close_with_retry(previous.session);
@@ -537,26 +842,81 @@ impl DocumentService {
         Ok(info)
     }
 
-    /// Writes the current revision back to its bound path at its bound format (SPEC-005 §2.7).
-    /// The frontend routes "Save" with no bound path (an untitled recording, S1-04) through
-    /// `document_save_as` instead; here it is refused (`error.document.untitled`).
-    pub fn save(&self) -> Result<DocumentInfo, IpcError> {
+    /// Drains the last open/save's sidecar notice, if any (see [`Inner::pending_sidecar_notice`]).
+    pub fn take_sidecar_notice(&self) -> Option<SidecarNoticeInfo> {
+        self.0.pending_sidecar_notice.lock().unwrap().take()
+    }
+
+    fn set_sidecar_notice(&self, notice: SidecarNoticeInfo) {
+        *self.0.pending_sidecar_notice.lock().unwrap() = Some(notice);
+    }
+
+    /// T-306 (SPEC-018 §2.6.5): merges `spectral` into the open document's `view` JSON for the
+    /// next save — a no-op (not an error) with no document open. Never touches `sidecar_dirty`
+    /// (§2.4: "view state never marks the document modified" — the digest excludes `view`).
+    /// Other `view` sections (waveform/markers_panel/rack_panel), if a loaded sidecar had them,
+    /// are preserved untouched: this only ever replaces the `spectral` key.
+    pub fn set_spectral_view(&self, spectral: SpectralViewInfo) {
+        let mut guard = self.0.open.lock().unwrap();
+        let Some(doc) = guard.as_mut() else {
+            return;
+        };
+        let mut view = match std::mem::take(&mut doc.sidecar.view) {
+            serde_json::Value::Object(map) => map,
+            _ => serde_json::Map::new(),
+        };
+        view.insert(
+            "spectral".to_string(),
+            serde_json::json!({
+                "visible": spectral.visible,
+                "split_ratio": spectral.split_ratio,
+                "fft_size": spectral.fft_size,
+                "freq_scale": spectral.freq_scale,
+                "display_floor_db": spectral.display_floor_db,
+                "display_ceil_db": spectral.display_ceil_db,
+                "colormap": spectral.colormap,
+            }),
+        );
+        doc.sidecar.view = serde_json::Value::Object(view);
+    }
+
+    /// Writes the current revision back to its bound path at its bound format (SPEC-005 §2.7,
+    /// extended by SPEC-018 §2.3/§2.4/§2.9): a **sidecar-only** write when nothing that would
+    /// change the audio bytes changed (§2.4) — full save otherwise. The frontend routes "Save"
+    /// with no bound path (an untitled recording, S1-04) through `document_save_as` instead; here
+    /// it is refused (`error.document.untitled`).
+    ///
+    /// `overwrite` bypasses SPEC-018 §2.9's changed-on-disk confirmation (the UI re-issues with
+    /// `true` after "Overwrite").
+    pub fn save(&self, overwrite: bool) -> Result<DocumentInfo, IpcError> {
         let mut guard = self.0.open.lock().unwrap();
         let doc = guard.as_mut().ok_or_else(no_document)?;
         let path = doc.path.clone().ok_or_else(untitled)?;
         let bits = doc.save_bits;
-        save_to(doc, &path, bits)?;
-        Ok(info_of(guard.as_ref()))
+        if !overwrite && changed_on_disk(doc, &path) {
+            return Err(changed_on_disk_error(&path));
+        }
+        if let Some(notice) = save_to(doc, &self.0.engine, &path, bits)? {
+            self.set_sidecar_notice(notice);
+        }
+        Ok(info_of(&self.0.engine, guard.as_ref()))
     }
 
-    /// Writes the current revision to `path` at `bits`, then binds the document to it.
+    /// Writes the current revision to `path` at `bits` (always a full save, SPEC-018 §2.3), then
+    /// binds the document to it.
     pub fn save_as(&self, path: &Path, bits: BitDepth) -> Result<DocumentInfo, IpcError> {
         let mut guard = self.0.open.lock().unwrap();
         let doc = guard.as_mut().ok_or_else(no_document)?;
-        save_to(doc, path, bits)?;
+        // Force a full save: a different path (or, potentially, format) is never a sidecar-only
+        // write. Bumping the recorded audio_rev back one guarantees `save_to`'s "audio changed"
+        // check fires even when Save As targets the very same content just saved in place.
+        doc.sidecar.last_saved_audio_rev = doc.sidecar.last_saved_audio_rev.wrapping_sub(1);
+        if let Some(notice) = save_to(doc, &self.0.engine, path, bits)? {
+            self.set_sidecar_notice(notice);
+        }
         doc.path = Some(path.to_path_buf());
         doc.save_bits = bits;
-        Ok(info_of(guard.as_ref()))
+        Ok(info_of(&self.0.engine, guard.as_ref()))
     }
 
     /// `(audio_rev, sample_rate_hz, buckets)` for `[start, start + count)` at `spp` (S1-02
@@ -666,6 +1026,7 @@ impl DocumentService {
                 session,
                 path: None,
                 save_bits,
+                sidecar: SidecarState::none(),
             });
         }
         let doc = guard.as_mut().ok_or_else(no_document)?;
@@ -673,7 +1034,7 @@ impl DocumentService {
             .session
             .begin_take(TakeMode::New, TakeWriterOptions::default())
             .map_err(document_error)?;
-        let info = info_of(guard.as_ref());
+        let info = info_of(&self.0.engine, guard.as_ref());
         drop(guard);
         if let Some(previous) = previous {
             close_with_retry(previous.session);
@@ -752,6 +1113,7 @@ impl DocumentService {
                             session: fresh,
                             path: None,
                             save_bits,
+                            sidecar: SidecarState::none(),
                         }) {
                             tracing::warn!(
                                 session = %broken.session.id(),
@@ -779,7 +1141,7 @@ impl DocumentService {
             store: Arc::clone(doc.session.store()),
             snapshot: step.snapshot,
         }));
-        Ok(Some(info_of(guard.as_ref())))
+        Ok(Some(info_of(&self.0.engine, guard.as_ref())))
     }
 
     // --- S2-01: selection, cut/copy/paste/delete/trim/silence, undo/redo -------------------
@@ -1342,20 +1704,130 @@ impl DocumentService {
     }
 }
 
-fn save_to(doc: &mut OpenDocument, path: &Path, bits: BitDepth) -> Result<(), IpcError> {
-    let snapshot = doc.session.current();
-    let markers = snapshot.markers.to_vec();
-    let mut reader = SnapshotReader::new(Arc::clone(doc.session.store()), snapshot);
-    vox_project::save_snapshot_wav(&mut reader, path, bits.into(), &markers).map_err(|err| {
-        match err {
-            ProjectError::Wav(io_err) => io_save_error(io_err),
-            other => document_error(other),
+/// CRC-32 (SPEC-018 §4.2's `crc32-ieee/f32le/v1`) of `path` — a WAV file — decoded the way a
+/// reader (or this app, on the next open) would: `vox_io::WavSource::read_mono` applies exactly
+/// the `q / 2^(bits-1)` int-to-float conversion `document_crc32`'s callers assume, streaming so a
+/// long save doesn't need the whole file in memory twice.
+fn wav_file_crc32(path: &Path) -> vox_io::Result<u32> {
+    let (_, _, mut source) = vox_io::read_wav(path)?;
+    let mut hasher = crc32fast::Hasher::new();
+    let mut buf = vec![0f32; vox_project::CHUNK_SAMPLES];
+    loop {
+        let n = source.read_mono(&mut buf)?;
+        if n == 0 {
+            break;
         }
-    })?;
+        for &s in &buf[..n] {
+            hasher.update(&s.to_le_bytes());
+        }
+    }
+    Ok(hasher.finalize())
+}
+
+/// Writes the current revision to `path` (SPEC-005 §2.7, extended by SPEC-018 §2.3/§2.4/§2.8/
+/// §2.9): the audio only when [`Self`]... — see [`DocumentService::save`]'s doc comment for the
+/// "needs a full save" rule. The sidecar is always (re)written. On success, `Ok(None)`; on a
+/// sidecar-write failure *after* a successful (or skipped, unchanged) audio write, `Ok(Some(_))`
+/// with the notice the caller should surface — the save itself is not an error (SPEC-018 §2.9:
+/// "the audio save stands... `sidecar_dirty` stays set").
+fn save_to(
+    doc: &mut OpenDocument,
+    engine: &EngineHandle,
+    path: &Path,
+    bits: BitDepth,
+) -> Result<Option<SidecarNoticeInfo>, IpcError> {
+    let snapshot = doc.session.current();
+    let save_format = save_format_model(bits);
+    let markers = current_marker_items(doc);
+    let rack = current_rack_value(engine);
+
+    let needs_full = snapshot.audio_rev != doc.sidecar.last_saved_audio_rev
+        || markers != doc.sidecar.last_written_markers
+        || bits != doc.save_bits
+        || std::fs::metadata(path).is_err();
+
+    if needs_full {
+        let wav_markers: Vec<Marker> = markers.iter().map(marker_from_item).collect();
+        let mut reader =
+            SnapshotReader::new(Arc::clone(doc.session.store()), Arc::clone(&snapshot));
+        vox_project::save_snapshot_wav(&mut reader, path, bits.into(), &wav_markers).map_err(
+            |err| match err {
+                ProjectError::Wav(io_err) => io_save_error(io_err),
+                other => document_error(other),
+            },
+        )?;
+    }
+
+    let audio_crc32 = wav_file_crc32(path).unwrap_or(doc.sidecar.audio_crc32);
+    let file_meta = std::fs::metadata(path).ok();
+    let write_input = vox_project::WriteInput {
+        file_name: path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        file_size_bytes: file_meta.as_ref().map(std::fs::Metadata::len).unwrap_or(0),
+        file_mtime: file_meta
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .map(vox_project::sidecar::system_time_to_rfc3339)
+            .unwrap_or_default(),
+        sample_rate_hz: doc.session.sample_rate_hz(),
+        len_samples: snapshot.len_samples,
+        audio_crc32,
+        save_format: save_format.clone(),
+        markers: &markers,
+        rack: rack.clone(),
+        view: doc.sidecar.view.clone(),
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        written_at: vox_project::sidecar::system_time_to_rfc3339(std::time::SystemTime::now()),
+    };
+    let sidecar_path = sidecar_path_for(path);
+    let sidecar_written =
+        write_sidecar(&sidecar_path, &write_input, doc.sidecar.needs_backup).is_ok();
+
+    // Journal `saved` regardless of the sidecar outcome (SPEC-018 §2.9): the audio save (or the
+    // decision to keep its bytes) stands either way.
     doc.session
-        .mark_saved(path, format_tag(bits))
+        .mark_saved_with_sidecar(
+            path,
+            format_tag(bits),
+            Some(vox_project::sidecar::crc32_to_hex(audio_crc32)),
+            Some(sidecar_written),
+        )
         .map_err(document_error)?;
-    Ok(())
+
+    doc.sidecar.audio_crc32 = audio_crc32;
+    doc.sidecar.file_size_bytes = file_meta.as_ref().map(std::fs::Metadata::len).unwrap_or(0);
+    doc.sidecar.file_mtime_unix_ms = file_meta
+        .as_ref()
+        .and_then(|m| m.modified().ok())
+        .map(unix_ms_of)
+        .unwrap_or(0);
+    doc.sidecar.last_saved_audio_rev = snapshot.audio_rev;
+
+    if sidecar_written {
+        doc.sidecar.needs_backup = false;
+        doc.sidecar.last_written_markers = markers.clone();
+        doc.sidecar.persisted_digest =
+            vox_project::sidecar::persisted_digest(&save_format, &markers, &rack);
+        Ok(None)
+    } else {
+        // `sidecar.persisted_digest`/`needs_backup` are left untouched: `sidecar_dirty` stays
+        // set, and the next Save retries a sidecar-only write (SPEC-018 §2.9).
+        let key = if save_format.container == "flac" {
+            "notice.save.sidecar_failed.flac"
+        } else {
+            "notice.save.sidecar_failed"
+        };
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Ok(Some(SidecarNoticeInfo {
+            key,
+            params: vec![("name", name)],
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -1462,7 +1934,7 @@ mod tests {
             48_000,
         );
 
-        let info = service.open(&wav_path).unwrap();
+        let info = service.open(&wav_path, false).unwrap();
         assert_eq!(info.name.as_deref(), Some("in.wav"));
         assert_eq!(info.sample_rate_hz, 48_000);
         assert_eq!(info.len_samples, samples.len() as u64);
@@ -1500,7 +1972,7 @@ mod tests {
         }
         w.finalize().unwrap();
 
-        let info = service.open(&wav_path).unwrap();
+        let info = service.open(&wav_path, false).unwrap();
         assert_eq!(info.sample_rate_hz, 48_000);
         assert_eq!(info.len_samples, 3);
     }
@@ -1539,7 +2011,7 @@ mod tests {
             .unwrap();
         assert!(status.success());
 
-        let err = service.open(&wav_path).unwrap_err();
+        let err = service.open(&wav_path, false).unwrap_err();
         assert_eq!(err.code, IpcErrorCode::InvalidArgument);
         assert_eq!(err.key, "error.open.unsupported_codec");
     }
@@ -1547,7 +2019,7 @@ mod tests {
     #[test]
     fn open_reports_a_missing_file() {
         let (service, _engine, dir) = service("missing");
-        let err = service.open(&dir.join("nope.wav")).unwrap_err();
+        let err = service.open(&dir.join("nope.wav"), false).unwrap_err();
         assert_eq!(err.code, IpcErrorCode::NotFound);
         assert_eq!(err.key, "error.open.not_found");
     }
@@ -1564,12 +2036,12 @@ mod tests {
             48_000,
         );
 
-        let info = service.open(&wav_path).unwrap();
+        let info = service.open(&wav_path, false).unwrap();
         assert_eq!(info.path.as_deref(), Some(wav_path.to_str().unwrap()));
 
         // Save (no path change): open -> save with no edits round trips bit-exactly (SPEC-005
         // AC-2), same format (Int24) as the source.
-        service.save().unwrap();
+        service.save(false).unwrap();
         let (decoded, _info) = vox_testkit::wav::read_wav_file(&wav_path).unwrap();
         let (_rate, _channels, mut source) = vox_io::read_wav(&wav_path).unwrap();
         let mut original = vec![0.0f32; samples.len()];
@@ -1612,7 +2084,7 @@ mod tests {
             vox_testkit::wav::BitDepth::Float32,
             48_000,
         );
-        let info = service.open(&wav_path).unwrap();
+        let info = service.open(&wav_path, false).unwrap();
         let spectro = SpectroService::new(SpectroConfig {
             workers: 1,
             cache_cap_bytes: None,
@@ -1651,7 +2123,7 @@ mod tests {
         let peaks_err = service.peaks(64, 0, 4).unwrap_err();
         assert_eq!(peaks_err.code, IpcErrorCode::NotFound);
         assert_eq!(peaks_err.key, "error.document.none");
-        let save_err = service.save().unwrap_err();
+        let save_err = service.save(false).unwrap_err();
         assert_eq!(save_err.key, "error.document.none");
     }
 
@@ -1669,7 +2141,7 @@ mod tests {
             vox_testkit::wav::BitDepth::Float32,
             48_000,
         );
-        service.open(&wav_path).unwrap();
+        service.open(&wav_path, false).unwrap();
 
         let raw = service.peaks(vox_project::PEAKS_RAW_SPP, 10, 5).unwrap();
         for (i, &(mn, mx)) in raw.buckets.iter().enumerate() {
@@ -1713,7 +2185,7 @@ mod tests {
 
         let (service, _engine, _dir2) = service("sixty-min");
         let start = std::time::Instant::now();
-        let info = service.open(&wav_path).unwrap();
+        let info = service.open(&wav_path, false).unwrap();
         let open_elapsed = start.elapsed();
 
         let peaks_start = std::time::Instant::now();
@@ -1748,8 +2220,8 @@ mod tests {
             48_000,
         );
 
-        service.open(&a_path).unwrap();
-        let info = service.open(&b_path).unwrap();
+        service.open(&a_path, false).unwrap();
+        let info = service.open(&b_path, false).unwrap();
         assert_eq!(info.name.as_deref(), Some("b.wav"));
         let transport = service.0.engine.transport_state();
         assert_eq!(
@@ -1782,7 +2254,10 @@ mod tests {
         let transport = service.0.engine.transport_state();
         assert_eq!(transport.doc_len_samples, samples.len() as u64);
 
-        assert_eq!(service.save().unwrap_err().key, "error.document.untitled");
+        assert_eq!(
+            service.save(false).unwrap_err().key,
+            "error.document.untitled"
+        );
         let saved = dir.join("take.wav");
         let info = service.save_as(&saved, BitDepth::Bit24).unwrap();
         assert_eq!(info.name.as_deref(), Some("take.wav"));
@@ -1798,13 +2273,13 @@ mod tests {
             .unwrap();
         assert_eq!((info.name, info.len_samples), (None, 0));
         assert_eq!(
-            service.open(&saved).unwrap_err().code,
+            service.open(&saved, false).unwrap_err().code,
             IpcErrorCode::NotWhileRecording
         );
         service.discard_take(capture.id());
         drop(capture);
         assert_eq!(
-            service.open(&saved).unwrap().name.as_deref(),
+            service.open(&saved, false).unwrap().name.as_deref(),
             Some("take.wav")
         );
     }
@@ -1908,7 +2383,7 @@ mod tests {
     fn open_test_doc(service: &DocumentService, dir: &Path, samples: &[f32]) {
         let path = dir.join("in.wav");
         write_fixture_wav(&path, samples, vox_testkit::wav::BitDepth::Float32, 48_000);
-        service.open(&path).unwrap();
+        service.open(&path, false).unwrap();
     }
 
     #[test]
@@ -2795,7 +3270,7 @@ mod tests {
 
         // A second document service (a fresh session dir) opens the saved file back.
         let reopened = DocumentService::new(dir.join("sessions2"), service.0.engine.clone());
-        reopened.open(&save_path).unwrap();
+        reopened.open(&save_path, false).unwrap();
         let markers = reopened.markers_get();
         assert_eq!(markers.len(), 2);
         assert_eq!((markers[0].pos_samples, markers[0].len_samples), (0, 0));
@@ -2804,5 +3279,258 @@ mod tests {
             (markers[1].pos_samples, markers[1].len_samples),
             (48_000, 9_600)
         );
+    }
+
+    // --- T-306: sidecar round trip, identity, sidecar-only saves, notices --------------------
+
+    fn gain_rack_model(gain_db: f64) -> vox_rack::RackModel {
+        vox_rack::RackModel {
+            slots: vec![vox_rack::SlotModel {
+                module: "org.powervoice.gain@1.0.0".to_string(),
+                bypass: false,
+                state: serde_json::json!({"format_version": 1, "params": {"gain_db": gain_db}}),
+                extra: Default::default(),
+            }],
+        }
+    }
+
+    #[test]
+    fn rack_and_view_survive_a_save_and_reopen_round_trip() {
+        let (service, _engine, dir) = service("rack-view-round-trip");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.2, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+
+        service
+            .0
+            .engine
+            .rack_load_model(gain_rack_model(-6.123456789012345))
+            .unwrap()
+            .unwrap();
+        service.set_spectral_view(SpectralViewInfo {
+            visible: true,
+            split_ratio: 62.5,
+            fft_size: Some(4096),
+            freq_scale: "linear".to_string(),
+            display_floor_db: -100.0,
+            display_ceil_db: -10.0,
+            colormap: "viridis".to_string(),
+        });
+
+        let save_path = dir.join("with-rack.wav");
+        let saved_info = service.save_as(&save_path, BitDepth::Bit24).unwrap();
+        assert!(
+            !saved_info.sidecar_dirty,
+            "a fresh save is never sidecar_dirty"
+        );
+
+        // Clear the shared engine's rack so the reopened document can only get it back from the
+        // sidecar, not from carry-over (proves the round trip, not a false positive).
+        service
+            .0
+            .engine
+            .rack_load_model(vox_rack::RackModel::default())
+            .unwrap()
+            .unwrap();
+
+        let reopened = DocumentService::new(dir.join("sessions2"), service.0.engine.clone());
+        let info = reopened.open(&save_path, false).unwrap();
+        assert!(
+            reopened.take_sidecar_notice().is_none(),
+            "a matching sidecar posts no notice"
+        );
+
+        let reloaded_model = reopened.0.engine.rack_model().unwrap();
+        assert_eq!(reloaded_model.slots.len(), 1);
+        assert_eq!(reloaded_model.slots[0].module, "org.powervoice.gain@1.0.0");
+        let gain_db = reloaded_model.slots[0].state["params"]["gain_db"]
+            .as_f64()
+            .unwrap();
+        assert_eq!(
+            gain_db.to_bits(),
+            (-6.123456789012345f64).to_bits(),
+            "rack parameters round-trip bit-exactly (AC-3)"
+        );
+
+        let view = info
+            .spectral_view
+            .expect("the saved spectral view loads back");
+        assert!(view.visible);
+        assert!((view.split_ratio - 62.5).abs() < 1e-9);
+        assert_eq!(view.fft_size, Some(4096));
+        assert_eq!(view.freq_scale, "linear");
+        assert_eq!(view.colormap, "viridis");
+
+        assert!(
+            !info.sidecar_dirty,
+            "opening a file with a matching sidecar never sets * (SPEC-018 §2.5)"
+        );
+    }
+
+    #[test]
+    fn sidecar_dirty_reflects_rack_changes_and_clears_when_reverted() {
+        let (service, _engine, dir) = service("sidecar-dirty");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.2, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let save_path = dir.join("a.wav");
+        service.save_as(&save_path, BitDepth::Bit24).unwrap();
+        assert!(!service.info().sidecar_dirty);
+
+        service
+            .0
+            .engine
+            .rack_load_model(gain_rack_model(-3.0))
+            .unwrap()
+            .unwrap();
+        assert!(
+            service.info().sidecar_dirty,
+            "a rack parameter change sets sidecar_dirty (AC-11)"
+        );
+
+        service
+            .0
+            .engine
+            .rack_load_model(vox_rack::RackModel::default())
+            .unwrap()
+            .unwrap();
+        assert!(
+            !service.info().sidecar_dirty,
+            "reverting to the saved rack clears sidecar_dirty without a save (AC-11)"
+        );
+    }
+
+    #[test]
+    fn a_rack_only_change_triggers_a_sidecar_only_save_leaving_the_wav_untouched() {
+        let (service, _engine, dir) = service("sidecar-only-save");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.2, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let save_path = dir.join("a.wav");
+        service.save_as(&save_path, BitDepth::Bit24).unwrap();
+
+        let before_bytes = std::fs::read(&save_path).unwrap();
+        let before_mtime = std::fs::metadata(&save_path).unwrap().modified().unwrap();
+
+        service
+            .0
+            .engine
+            .rack_load_model(gain_rack_model(-3.0))
+            .unwrap()
+            .unwrap();
+        assert!(service.info().sidecar_dirty);
+
+        service.save(false).unwrap();
+        assert!(!service.info().sidecar_dirty);
+
+        let after_bytes = std::fs::read(&save_path).unwrap();
+        let after_mtime = std::fs::metadata(&save_path).unwrap().modified().unwrap();
+        assert_eq!(
+            before_bytes, after_bytes,
+            "a sidecar-only save leaves the WAV bytes untouched (AC-11)"
+        );
+        assert_eq!(
+            before_mtime, after_mtime,
+            "a sidecar-only save leaves the WAV mtime untouched (AC-11)"
+        );
+
+        let sidecar_path = vox_project::sidecar_path_for(&save_path);
+        assert!(sidecar_path.exists());
+    }
+
+    #[test]
+    fn identity_mismatch_ignores_the_sidecar_and_carries_the_rack_over() {
+        let (service, _engine, dir) = service("identity-mismatch");
+        let samples_a = vox_testkit::signal::sine(440.0, -6.0, 0.2, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples_a);
+        let a_path = dir.join("a.wav");
+        service.save_as(&a_path, BitDepth::Bit24).unwrap();
+
+        // A sidecar-only save so `a.wav.vo.json` carries a rack.
+        service
+            .0
+            .engine
+            .rack_load_model(gain_rack_model(-9.0))
+            .unwrap()
+            .unwrap();
+        service.save(false).unwrap();
+
+        // `b.wav`: same length/rate, different samples (so a different `audio_crc32`) — copy
+        // `a.wav`'s sidecar next to it verbatim (SPEC-018 AC-7's setup).
+        let samples_b: Vec<f32> = samples_a.iter().map(|s| s * 0.99).collect();
+        let b_path = dir.join("b.wav");
+        write_fixture_wav(
+            &b_path,
+            &samples_b,
+            vox_testkit::wav::BitDepth::Float32,
+            48_000,
+        );
+        std::fs::copy(
+            vox_project::sidecar_path_for(&a_path),
+            vox_project::sidecar_path_for(&b_path),
+        )
+        .unwrap();
+
+        // Clear the shared engine's rack: if the (wrong) sidecar were applied anyway, this
+        // assertion below would catch it.
+        service
+            .0
+            .engine
+            .rack_load_model(vox_rack::RackModel::default())
+            .unwrap()
+            .unwrap();
+
+        let reopened = DocumentService::new(dir.join("sessions2"), service.0.engine.clone());
+        reopened.open(&b_path, false).unwrap();
+        let notice = reopened
+            .take_sidecar_notice()
+            .expect("a mismatched sidecar posts a notice");
+        assert_eq!(notice.key, "notice.sidecar.mismatch");
+
+        let rack_after = reopened.0.engine.rack_model().unwrap();
+        assert!(
+            rack_after.slots.is_empty(),
+            "a mismatched sidecar is ignored; the carried-over rack stands"
+        );
+    }
+
+    #[test]
+    fn corrupt_sidecar_never_blocks_opening_and_posts_a_notice() {
+        let (service, _engine, dir) = service("corrupt-sidecar");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.1, 48_000).unwrap();
+        let path = dir.join("a.wav");
+        write_fixture_wav(&path, &samples, vox_testkit::wav::BitDepth::Float32, 48_000);
+        std::fs::write(vox_project::sidecar_path_for(&path), b"not json at all").unwrap();
+
+        let info = service.open(&path, false).unwrap();
+        assert_eq!(
+            info.sample_rate_hz, 48_000,
+            "the document still opens fully"
+        );
+        let notice = service
+            .take_sidecar_notice()
+            .expect("a corrupt sidecar posts a notice");
+        assert_eq!(notice.key, "notice.sidecar.corrupt");
+    }
+
+    #[test]
+    fn opening_a_file_already_open_in_another_instance_needs_confirmation() {
+        let dir = tmp_dir("already-open");
+        let sessions = dir.join("sessions");
+        let engine1 = test_engine();
+        let engine2 = test_engine();
+        let service1 = DocumentService::new(sessions.clone(), engine1.handle());
+        let service2 = DocumentService::new(sessions, engine2.handle());
+
+        let path = dir.join("a.wav");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.1, 48_000).unwrap();
+        write_fixture_wav(&path, &samples, vox_testkit::wav::BitDepth::Float32, 48_000);
+
+        service1.open(&path, false).unwrap();
+
+        let err = service2.open(&path, false).unwrap_err();
+        assert_eq!(err.code, IpcErrorCode::NeedsConfirmation);
+        assert_eq!(err.key, "dialog.already_open");
+
+        // "Open Anyway": re-issuing with the confirm flag proceeds normally.
+        let info = service2.open(&path, true).unwrap();
+        assert_eq!(info.name.as_deref(), Some("a.wav"));
     }
 }

@@ -7,7 +7,7 @@ use ts_rs::TS;
 
 use crate::document::{
     ClipboardInfo, DocumentInfo, EditResult, HistoryState, MarkerInfo, MarkerRangeEditKind,
-    PasteTarget,
+    PasteTarget, SpectralViewInfo,
 };
 
 /// `document_changed` event payload, and the result of `document_open`/`document_save`/
@@ -21,6 +21,11 @@ pub struct DocumentDto {
     pub len_samples: u64,
     pub dirty: bool,
     pub audio_rev: u64,
+    /// T-306 (SPEC-018 §2.4): `*` and the close/quit prompts fire on `dirty || sidecar_dirty`.
+    pub sidecar_dirty: bool,
+    /// T-306 (SPEC-018 §2.6.5): the sidecar's spectral-pane settings, if any (`null` = keep the
+    /// UI's current/last-used settings, SPEC-007 §2.1).
+    pub spectral_view: Option<SpectralViewDto>,
 }
 
 impl From<DocumentInfo> for DocumentDto {
@@ -32,6 +37,50 @@ impl From<DocumentInfo> for DocumentDto {
             len_samples: info.len_samples,
             dirty: info.dirty,
             audio_rev: info.audio_rev,
+            sidecar_dirty: info.sidecar_dirty,
+            spectral_view: info.spectral_view.map(SpectralViewDto::from),
+        }
+    }
+}
+
+/// T-306 (SPEC-018 §2.6.5's `view.spectral`, SPEC-007 §3): per-document spectral pane settings.
+/// `fft_size: null` means Auto (SPEC-007 §2.6).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct SpectralViewDto {
+    pub visible: bool,
+    pub split_ratio: f64,
+    pub fft_size: Option<u32>,
+    pub freq_scale: String,
+    pub display_floor_db: f64,
+    pub display_ceil_db: f64,
+    pub colormap: String,
+}
+
+impl From<SpectralViewInfo> for SpectralViewDto {
+    fn from(v: SpectralViewInfo) -> Self {
+        Self {
+            visible: v.visible,
+            split_ratio: v.split_ratio,
+            fft_size: v.fft_size,
+            freq_scale: v.freq_scale,
+            display_floor_db: v.display_floor_db,
+            display_ceil_db: v.display_ceil_db,
+            colormap: v.colormap,
+        }
+    }
+}
+
+impl From<SpectralViewDto> for SpectralViewInfo {
+    fn from(v: SpectralViewDto) -> Self {
+        Self {
+            visible: v.visible,
+            split_ratio: v.split_ratio,
+            fft_size: v.fft_size,
+            freq_scale: v.freq_scale,
+            display_floor_db: v.display_floor_db,
+            display_ceil_db: v.display_ceil_db,
+            colormap: v.colormap,
         }
     }
 }

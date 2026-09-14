@@ -10,6 +10,7 @@ import {
   requestOpen,
   requestSave,
   resetDocumentStateForTest,
+  resolveConfirmPrompt,
   resolveUnsavedPrompt,
   saveDocument,
   saveDocumentAs,
@@ -24,6 +25,8 @@ function doc(overrides: Partial<DocumentDto> = {}): DocumentDto {
     len_samples: 480_000,
     dirty: false,
     audio_rev: 1,
+    sidecar_dirty: false,
+    spectral_view: null,
     ...overrides,
   };
 }
@@ -46,6 +49,12 @@ describe("titleFor (ticket: title '‹name› — PowerVoice' with * when modifi
   it("shows the name, and a modified marker when dirty", () => {
     expect(titleFor(doc({ name: "take.wav", dirty: false }))).toBe("take.wav — PowerVoice");
     expect(titleFor(doc({ name: "take.wav", dirty: true }))).toBe("take.wav * — PowerVoice");
+  });
+
+  it("T-306: also shows * when only sidecar_dirty is set (SPEC-018 §2.4)", () => {
+    expect(titleFor(doc({ name: "take.wav", dirty: false, sidecar_dirty: true }))).toBe(
+      "take.wav * — PowerVoice",
+    );
   });
 });
 
@@ -273,5 +282,84 @@ describe("requestSave / Save As prompt", () => {
     resetDocumentStateForTest();
     cancelSaveAsPrompt();
     expect(documentState().saveAsPrompt).toBeNull();
+  });
+});
+
+describe("T-306: already-open / changed-on-disk confirmations", () => {
+  it("openDocument passes confirmAlreadyOpen: false, then re-issues true after confirming", async () => {
+    const calls: unknown[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "document_open") {
+        calls.push(args);
+        const confirmed = (args as { confirmAlreadyOpen: boolean }).confirmAlreadyOpen;
+        if (!confirmed) {
+          throw { code: "needs_confirmation", key: "dialog.already_open", params: { name: "a.wav" } };
+        }
+        return doc({ path: "/home/user/a.wav", name: "a.wav" });
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+
+    const pending = openDocument("/home/user/a.wav");
+    // Wait for the first (mocked, async transport) call to reject and the prompt to appear.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(documentState().confirmPrompt).toEqual({ kind: "already_open", name: "a.wav" });
+    resolveConfirmPrompt(true);
+    expect(await pending).toBe(true);
+    expect(calls).toEqual([
+      { path: "/home/user/a.wav", confirmAlreadyOpen: false },
+      { path: "/home/user/a.wav", confirmAlreadyOpen: true },
+    ]);
+    expect(documentState().current.name).toBe("a.wav");
+  });
+
+  it("openDocument stays closed when the already-open confirmation is cancelled", async () => {
+    let secondCallMade = false;
+    mockIPC((cmd, args) => {
+      if (cmd === "document_open") {
+        const confirmed = (args as { confirmAlreadyOpen: boolean }).confirmAlreadyOpen;
+        if (!confirmed) {
+          throw { code: "needs_confirmation", key: "dialog.already_open", params: { name: "a.wav" } };
+        }
+        secondCallMade = true;
+        return doc();
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+
+    const pending = openDocument("/home/user/a.wav");
+    await new Promise((r) => setTimeout(r, 0));
+    resolveConfirmPrompt(false);
+    expect(await pending).toBe(false);
+    expect(secondCallMade).toBe(false);
+  });
+
+  it("saveDocument passes overwrite: false, then re-issues true after confirming", async () => {
+    const calls: unknown[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "document_save") {
+        calls.push(args);
+        const overwrite = (args as { overwrite: boolean }).overwrite;
+        if (!overwrite) {
+          throw {
+            code: "needs_confirmation",
+            key: "dialog.changed_on_disk",
+            params: { name: "take.wav" },
+          };
+        }
+        return doc({ dirty: false });
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+
+    const pending = saveDocument();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(documentState().confirmPrompt).toEqual({
+      kind: "changed_on_disk",
+      name: "take.wav",
+    });
+    resolveConfirmPrompt(true);
+    expect(await pending).toBe(true);
+    expect(calls).toEqual([{ overwrite: false }, { overwrite: true }]);
   });
 });

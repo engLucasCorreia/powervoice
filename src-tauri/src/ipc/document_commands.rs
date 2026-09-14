@@ -13,7 +13,7 @@ use crate::ipc::document_dto::{
 };
 use crate::ipc::error::IpcError;
 use crate::ipc::events::EventName;
-use crate::settings::BitDepth;
+use crate::settings::{BitDepth, SettingsStore};
 
 /// ADR-003 §2's request cap: 65 536 buckets, or 1 Mi samples in `RAW` mode (4 MiB either way).
 const MAX_BUCKETS: u32 = 65_536;
@@ -75,14 +75,65 @@ pub(crate) async fn run_blocking<T: Send + 'static>(
 pub async fn document_open<R: Runtime>(
     app: AppHandle<R>,
     doc: State<'_, DocumentService>,
+    settings: State<'_, SettingsStore>,
     path: String,
+    confirm_already_open: bool,
 ) -> Result<DocumentDto, IpcError> {
     let doc = (*doc).clone();
-    let info: DocumentDto = run_blocking(move || doc.open(std::path::Path::new(&path)))
-        .await?
-        .into();
+    let doc_for_notice = doc.clone();
+    let path_buf = std::path::PathBuf::from(&path);
+    let info: DocumentDto =
+        run_blocking(move || doc.open(std::path::Path::new(&path), confirm_already_open))
+            .await?
+            .into();
     emit_document_changed(&app, &info);
+    emit_sidecar_notice(&app, &doc_for_notice);
+    // SPEC-018 §2.12: only a *successful* open (import completed) reaches here.
+    touch_recent_file(&app, &settings, &path_buf);
     Ok(info)
+}
+
+/// T-306 (SPEC-018 §2.12): moves `path` to the top of Settings' `recent_files` and emits
+/// `recent_files_changed`. Called only after a successful open/Save As (never a cancelled or
+/// failed one, and never for a session/temp path).
+fn touch_recent_file<R: Runtime>(
+    app: &AppHandle<R>,
+    settings: &SettingsStore,
+    path: &std::path::Path,
+) {
+    let mut current = settings.get();
+    crate::settings::touch_recent_file(&mut current.recent_files, path);
+    match settings.set(current) {
+        Ok(saved) => {
+            let dtos: Vec<crate::ipc::recent_files_dto::RecentFileDto> =
+                saved.recent_files.iter().map(Into::into).collect();
+            if let Err(error) = app.emit(EventName::recent_files_changed.as_str(), dtos) {
+                tracing::warn!(%error, "emitting recent_files_changed failed");
+            }
+        }
+        Err(error) => tracing::warn!(%error, "recording a recent file failed"),
+    }
+}
+
+/// T-306: turns the last open/save's pending sidecar notice, if any, into a `notice` event
+/// (SPEC-018 §2.5/§2.9's notice keys).
+fn emit_sidecar_notice<R: Runtime>(app: &AppHandle<R>, doc: &DocumentService) {
+    let Some(info) = doc.take_sidecar_notice() else {
+        return;
+    };
+    use crate::ipc::events::{Notice, NoticeLevel, emit_notice};
+    let level = if info.key.contains("sidecar_failed") {
+        NoticeLevel::Error
+    } else {
+        NoticeLevel::Warning
+    };
+    let mut notice = Notice::toast(level, info.key);
+    for (name, value) in info.params {
+        notice = notice.with_param(name, value);
+    }
+    if let Err(error) = emit_notice(app, notice) {
+        tracing::warn!(%error, "emitting a sidecar notice failed");
+    }
 }
 
 /// Probes `path` without importing it (SPEC-005 §2.3 step 1, §2.4): container/codec/rate/
@@ -106,10 +157,13 @@ pub async fn document_probe(path: String) -> Result<DocumentProbeDto, IpcError> 
 pub async fn document_save<R: Runtime>(
     app: AppHandle<R>,
     doc: State<'_, DocumentService>,
+    overwrite: bool,
 ) -> Result<DocumentDto, IpcError> {
     let doc = (*doc).clone();
-    let info: DocumentDto = run_blocking(move || doc.save()).await?.into();
+    let doc_for_notice = doc.clone();
+    let info: DocumentDto = run_blocking(move || doc.save(overwrite)).await?.into();
     emit_document_changed(&app, &info);
+    emit_sidecar_notice(&app, &doc_for_notice);
     Ok(info)
 }
 
@@ -118,15 +172,38 @@ pub async fn document_save<R: Runtime>(
 pub async fn document_save_as<R: Runtime>(
     app: AppHandle<R>,
     doc: State<'_, DocumentService>,
+    settings: State<'_, SettingsStore>,
     path: String,
     bits: BitDepth,
 ) -> Result<DocumentDto, IpcError> {
     let doc = (*doc).clone();
+    let doc_for_notice = doc.clone();
+    let path_buf = std::path::PathBuf::from(&path);
     let info: DocumentDto = run_blocking(move || doc.save_as(std::path::Path::new(&path), bits))
         .await?
         .into();
     emit_document_changed(&app, &info);
+    emit_sidecar_notice(&app, &doc_for_notice);
+    // SPEC-018 §2.12: Save As always touches the list (a new recording's first save included).
+    touch_recent_file(&app, &settings, &path_buf);
     Ok(info)
+}
+
+/// T-306 (SPEC-018 §2.6.5): records the spectral pane's current settings for the next save.
+/// Fire-and-forget (no result, no `document_changed`): a view-only change never marks the
+/// document modified (§2.4), so there is nothing for the title bar or `sidecar_dirty` to react
+/// to. The caller (the spectral pane store) debounces its own calls.
+#[tauri::command]
+pub async fn sidecar_view_set_spectral(
+    doc: State<'_, DocumentService>,
+    spectral: crate::ipc::document_dto::SpectralViewDto,
+) -> Result<(), IpcError> {
+    let doc = (*doc).clone();
+    run_blocking(move || {
+        doc.set_spectral_view(spectral.into());
+        Ok(())
+    })
+    .await
 }
 
 /// `count` buckets of `(min, max)` (or raw samples below `PEAKS_RAW_SPP`'s pyramid floor) as a

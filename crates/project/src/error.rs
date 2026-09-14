@@ -84,6 +84,15 @@ pub enum ProjectError {
     /// channel/rate configuration, which never happens here (mono, the document's own rate).
     #[error("loudness measurement failed: {0}")]
     Loudness(#[from] vox_dsp::loudness::LoudnessError),
+    /// T-306 (SPEC-018 §2.9): the sidecar file can't be replaced (a read-only attribute on
+    /// Windows, or a directory in its place) — the audio is left untouched.
+    #[error("the sidecar file can't be replaced")]
+    SidecarLocked,
+    /// T-306 (SPEC-018 §2.8): backing up an unreadable/too-new/mismatched/old-version sidecar to
+    /// `.bak` failed before the new one would have been written — the Save fails and nothing is
+    /// touched.
+    #[error("backing up the sidecar failed: {0}")]
+    SidecarBackupFailed(#[source] io::Error),
 }
 
 impl ProjectError {
@@ -122,6 +131,8 @@ impl ProjectError {
             | ProjectError::InvalidTakeFile(_)
             | ProjectError::Loudness(_)
             | ProjectError::Json(_) => "error.internal",
+            ProjectError::SidecarLocked => "error.save.sidecar_locked",
+            ProjectError::SidecarBackupFailed(_) => "error.save.sidecar_backup",
             // T-202: SPEC-005 §2.5's specific open/import error keys, when the wrapped `IoError`
             // says which one applies; every other `IoError` (write/encode failures, plain I/O)
             // keeps the general `error.io` key.

@@ -39,6 +39,9 @@ vox-project = { path = "../crates/project" }
 vox-io = { path = "../crates/io" }
 # S4-04: export resampling (`vox_dsp::resample::resample_offline`) and the FTZ/DAZ render guard.
 vox-dsp = { path = "../crates/dsp" }
+# T-306: fingerprints the just-written save file the same way `vox_project::sidecar` does
+# (ADR-004: "CRC uses crc32fast"), by decoding it the way a reader would (SPEC-018 §4.2).
+crc32fast = { workspace = true }
 
 [dev-dependencies]
 # S1-03: WAV fixtures for the `document` module's tests (dev-only, PROMPT §4).

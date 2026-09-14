@@ -20,7 +20,7 @@ describe("UnsavedChangesDialog (SPEC-004 §2.8)", () => {
       sample_rate_hz: 48_000,
       len_samples: 480_000,
       dirty: true,
-      audio_rev: 1,
+      audio_rev: 1, sidecar_dirty: false, spectral_view: null,
     };
     mockIPC((cmd) => (cmd === "document_open" ? dirty : null));
     await openDocument("/home/user/take.wav");

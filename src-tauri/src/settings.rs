@@ -202,6 +202,45 @@ pub fn default_memory_budget_mib(total_ram_bytes: u64) -> u32 {
     quarter_mib.clamp(512, 4096) as u32
 }
 
+// --- Recent files (T-306, SPEC-018 §2.12) --------------------------------------------------------
+
+/// At most this many entries, most-recent-first (SPEC-018 §2.12 `recent_max`).
+pub const RECENT_FILES_MAX: usize = 10;
+
+/// One `recent_files` entry. `path` is the path as opened/saved (informational — dedup and
+/// matching compare canonicalized paths, `vox_project::canonical_path_for_compare`); `opened_at`
+/// is RFC 3339 UTC.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct RecentFileEntry {
+    pub path: String,
+    pub opened_at: String,
+}
+
+/// Moves `path` to the front of `recent_files` (adding it if new), de-duplicated by canonical
+/// path (SPEC-018 §2.12/§4.6), capped at [`RECENT_FILES_MAX`]. Session/temp paths are never
+/// passed here — that's the caller's job (only a successful open/Save As touches this list).
+pub fn touch_recent_file(recent_files: &mut Vec<RecentFileEntry>, path: &Path) {
+    let canonical = vox_project::canonical_path_for_compare(path);
+    recent_files
+        .retain(|e| vox_project::canonical_path_for_compare(Path::new(&e.path)) != canonical);
+    recent_files.insert(
+        0,
+        RecentFileEntry {
+            path: path.to_string_lossy().into_owned(),
+            opened_at: vox_project::sidecar::system_time_to_rfc3339(std::time::SystemTime::now()),
+        },
+    );
+    recent_files.truncate(RECENT_FILES_MAX);
+}
+
+/// Removes the entry whose canonical path matches `path` (`recent_files_remove`), if any.
+pub fn remove_recent_file(recent_files: &mut Vec<RecentFileEntry>, path: &str) {
+    let canonical = vox_project::canonical_path_for_compare(Path::new(path));
+    recent_files
+        .retain(|e| vox_project::canonical_path_for_compare(Path::new(&e.path)) != canonical);
+}
+
 // --- Settings root -------------------------------------------------------------------------------
 
 /// The whole settings file. `#[serde(default)]` at the container level means any field missing
@@ -225,6 +264,9 @@ pub struct Settings {
     pub memory_budget_mib: u32,
     /// H-09/SPEC-010 §2.4: the Normalize… dialog's last applied value and unit.
     pub normalize_dialog: NormalizeDialogPrefsDto,
+    /// T-306 (SPEC-018 §2.12): File → Open Recent, most-recent-first, capped at
+    /// [`RECENT_FILES_MAX`]. Additive field — the settings version stays 1.
+    pub recent_files: Vec<RecentFileEntry>,
     #[serde(flatten)]
     #[ts(skip)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -241,6 +283,7 @@ impl Default for Settings {
             telemetry_rate_hz: 60,
             memory_budget_mib: default_memory_budget_mib(total_ram_bytes()),
             normalize_dialog: NormalizeDialogPrefsDto::default(),
+            recent_files: Vec::new(),
             extra: serde_json::Map::new(),
         }
     }
@@ -596,5 +639,96 @@ mod tests {
         let json = serde_json::to_string(&Settings::default()).unwrap();
         let parsed: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, Settings::default());
+    }
+
+    // --- T-306: recent files (SPEC-018 §2.12, AC-16) -------------------------------------------
+
+    #[test]
+    fn touch_recent_file_orders_most_recent_first_and_dedups_by_path() {
+        let mut recent = Vec::new();
+        touch_recent_file(&mut recent, Path::new("/vo/A.wav"));
+        touch_recent_file(&mut recent, Path::new("/vo/B.wav"));
+        touch_recent_file(&mut recent, Path::new("/vo/C.wav"));
+        touch_recent_file(&mut recent, Path::new("/vo/A.wav"));
+
+        let paths: Vec<&str> = recent.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, vec!["/vo/A.wav", "/vo/C.wav", "/vo/B.wav"]);
+    }
+
+    #[test]
+    fn twelve_distinct_opens_keep_the_ten_newest() {
+        let mut recent = Vec::new();
+        for i in 0..12 {
+            touch_recent_file(&mut recent, Path::new(&format!("/vo/{i}.wav")));
+        }
+        assert_eq!(recent.len(), RECENT_FILES_MAX);
+        let paths: Vec<&str> = recent.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "/vo/11.wav",
+                "/vo/10.wav",
+                "/vo/9.wav",
+                "/vo/8.wav",
+                "/vo/7.wav",
+                "/vo/6.wav",
+                "/vo/5.wav",
+                "/vo/4.wav",
+                "/vo/3.wav",
+                "/vo/2.wav",
+            ]
+        );
+    }
+
+    #[test]
+    fn dedup_is_by_canonical_path_not_the_literal_string() {
+        let dir = temp_dir("recent-canonical");
+        let path = dir.join("a.wav");
+        std::fs::write(&path, b"x").unwrap();
+        let mut recent = Vec::new();
+        touch_recent_file(&mut recent, &path);
+        // `./dir/../dir/a.wav` normalizes to the same file lexically even without the file
+        // existing at that literal path, and an existing file also resolves through a symlink.
+        let via_dotdot = dir
+            .parent()
+            .unwrap()
+            .join(dir.file_name().unwrap())
+            .join("..")
+            .join(dir.file_name().unwrap())
+            .join("a.wav");
+        touch_recent_file(&mut recent, &via_dotdot);
+        assert_eq!(
+            recent.len(),
+            1,
+            "the same file reached two ways is one entry"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn remove_recent_file_drops_the_matching_entry_only() {
+        let mut recent = Vec::new();
+        touch_recent_file(&mut recent, Path::new("/vo/A.wav"));
+        touch_recent_file(&mut recent, Path::new("/vo/B.wav"));
+        remove_recent_file(&mut recent, "/vo/A.wav");
+        let paths: Vec<&str> = recent.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, vec!["/vo/B.wav"]);
+    }
+
+    #[test]
+    fn recent_files_round_trip_through_save_and_load_with_atomic_settings_write() {
+        let dir = temp_dir("recent-persist");
+        let path = dir.join("settings.json");
+        let mut settings = Settings::default();
+        touch_recent_file(&mut settings.recent_files, Path::new("/vo/A.wav"));
+        touch_recent_file(&mut settings.recent_files, Path::new("/vo/B.wav"));
+        save(&path, &settings).unwrap();
+
+        let loaded = load_or_default(&path);
+        assert_eq!(loaded.recent_files.len(), 2);
+        assert_eq!(loaded.recent_files[0].path, "/vo/B.wav");
+        assert!(!loaded.recent_files[0].opened_at.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

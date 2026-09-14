@@ -1,3 +1,4 @@
+import { sidecarViewSetSpectral } from "../ipc/commands";
 import { registerAction } from "../keymap";
 import type { ColormapName } from "../spectrogram/colormap";
 import type { FreqScale } from "../spectrum/freqAxis";
@@ -8,12 +9,44 @@ import type { FreqScale } from "../spectrum/freqAxis";
  * frequency scale, AC-8) plus the FFT size (which does trigger a new `spectro_request`, since it
  * changes the tile grid). Registers the Shift+D toggle (SPEC-007 §2.1).
  *
- * **Deferred (lean first version):** SPEC-007 §2.1/§2.12/AC-12 says visibility, ratio and display
- * settings "survive a restart" — this ticket keeps them in memory only (like the waveform's own
- * zoom, which also isn't persisted yet). Persisting them needs new fields on the Rust `Settings`
- * DTO (`src-tauri/src/settings.rs`) plus `just gen-types`; out of this UI-only ticket's scope —
- * left as a follow-up for a hardening ticket.
+ * **T-306 (SPEC-018 §2.6.5):** per-document persistence. Every mutator debounces a
+ * `sidecar_view_set_spectral` call (the Rust side merges it into the open document's sidecar
+ * `view` for the next Save — never marks the document modified, SPEC-018 §2.4); restoring on
+ * open is `document.svelte.ts`'s job (it owns `document_changed`'s `spectral_view`). A document
+ * without a sidecar leaves this store's current values alone (the app's "last-used" defaults,
+ * SPEC-007 §2.1) — there is nothing to apply.
+ *
+ * **Still deferred:** the waveform's own zoom/scroll/selection view state (SPEC-018 §2.6.5's
+ * `waveform` section) — `EditorView.svelte` keeps that as local, unlifted `$state`, not a store;
+ * lifting it is a larger refactor left for a follow-up (ticket report).
  */
+
+/** Debounce for pushing a settings change to the backend (matches the digest-baseline debounce
+ * SPEC-018 §4.3 uses on the Rust side; not itself normative, just a sane UI-side default). */
+const PERSIST_DEBOUNCE_MS = 250;
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+
+function schedulePersist(): void {
+  if (persistTimer !== null) {
+    clearTimeout(persistTimer);
+  }
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    void sidecarViewSetSpectral({
+      visible: state.visible,
+      split_ratio: state.splitRatio,
+      fft_size: state.fftSize,
+      freq_scale: state.freqScale,
+      display_floor_db: state.floorDb,
+      display_ceil_db: state.ceilDb,
+      colormap: state.colormap,
+    }).catch(() => {
+      // Fire-and-forget: a view-only change never blocks the UI or shows a notice on failure
+      // (there is no document open, or the IPC call itself failed) — the next Save just won't
+      // carry this particular tweak.
+    });
+  }, PERSIST_DEBOUNCE_MS);
+}
 
 export const FLOOR_RANGE_DB: readonly [number, number] = [-150, -30];
 export const CEIL_RANGE_DB: readonly [number, number] = [-60, 6];
@@ -93,27 +126,35 @@ export function spectralState(): SpectralStateApi {
     },
     toggle() {
       state = { ...state, visible: !state.visible };
+      schedulePersist();
     },
     setVisible(visible: boolean) {
       state = { ...state, visible };
+      schedulePersist();
     },
     setSplitRatio(pct: number) {
       state = { ...state, splitRatio: Math.min(100, Math.max(0, pct)) };
+      schedulePersist();
     },
     setFreqScale(scale: FreqScale) {
       state = { ...state, freqScale: scale };
+      schedulePersist();
     },
     setColormap(name: ColormapName) {
       state = { ...state, colormap: name };
+      schedulePersist();
     },
     setFloorDb(db: number) {
       state = { ...state, ...clampFloorCeil(db, state.ceilDb) };
+      schedulePersist();
     },
     setCeilDb(db: number) {
       state = { ...state, ...clampFloorCeil(state.floorDb, db) };
+      schedulePersist();
     },
     setFftSize(size: number | null) {
       state = { ...state, fftSize: size };
+      schedulePersist();
     },
   };
 }
@@ -123,7 +164,43 @@ export function initSpectral(): () => void {
   return registerAction("spectral.toggle", () => spectralState().toggle());
 }
 
+/**
+ * T-306: applies a sidecar's restored spectral settings (`document.svelte.ts`, right after a
+ * successful open) — sets the state directly, without re-scheduling a persist (there is nothing
+ * new to write back; it's exactly what was just read). Invalid enum values are ignored rather
+ * than defaulted, so an unrecognized future value doesn't clobber the current setting.
+ */
+export function applyRestoredSpectralView(view: {
+  visible: boolean;
+  split_ratio: number;
+  fft_size: number | null;
+  freq_scale: string;
+  display_floor_db: number;
+  display_ceil_db: number;
+  colormap: string;
+}): void {
+  const freqScale: FreqScale | null = view.freq_scale === "log" || view.freq_scale === "linear" ? view.freq_scale : null;
+  const colormap: ColormapName | null =
+    view.colormap === "inferno" || view.colormap === "viridis" || view.colormap === "gray"
+      ? view.colormap
+      : null;
+  const { floorDb, ceilDb } = clampFloorCeil(view.display_floor_db, view.display_ceil_db);
+  state = {
+    visible: view.visible,
+    splitRatio: Math.min(100, Math.max(0, view.split_ratio)),
+    freqScale: freqScale ?? state.freqScale,
+    colormap: colormap ?? state.colormap,
+    floorDb,
+    ceilDb,
+    fftSize: view.fft_size,
+  };
+}
+
 /** Test/teardown helper. */
 export function resetSpectralForTest(): void {
+  if (persistTimer !== null) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
   state = { ...DEFAULTS };
 }

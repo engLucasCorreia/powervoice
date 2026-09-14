@@ -361,7 +361,7 @@ mod tests {
             vox_testkit::wav::BitDepth::Float32,
         )
         .unwrap();
-        documents.open(&path).unwrap();
+        documents.open(&path, false).unwrap();
     }
 
     /// A snapshot of one `NormalizeEvent`, captured by a test-only emitter (mirrors `export.rs`'s

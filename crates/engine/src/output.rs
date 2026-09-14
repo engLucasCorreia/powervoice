@@ -2,10 +2,12 @@
 //! commands, pulls current-epoch packets from the playback ring (≈5 ms fades on start, stop and
 //! seek; a start while audible waits for a fade-out, and a rack reset waits until the rack's
 //! latency has drained that fade-out), runs the live rack in sub-blocks of at most `MAX_BLOCK`,
-//! adds the Dry monitor signal after the rack (S1-04, SPEC-002 §2.7: unity gain, 10 ms fades,
-//! simple fill-level ring without the T-107 drift servo), writes the mono result to every device
-//! channel, meters the rack output and reports one [`RtEvent::Block`] (heard position, heard
-//! time, peak, energy) to the control thread.
+//! mixes the drift-corrected monitor signal in (T-107, SPEC-002 §2.7, ADR-002 §4 step 3–4:
+//! Through rack into the rack input with the playback, Dry after the rack; see `monitor`), writes
+//! the mono result to every device channel, meters the rack output and reports one
+//! [`RtEvent::Block`] (heard position, heard time, output latency, peak, energy) to the control
+//! thread. While the monitor feeds the rack, a transport restart skips the rack reset: the live
+//! input keeps flowing through it, so a reset would cut the talent's monitored voice.
 //!
 //! RT contract: no allocation, locks, I/O or panics; the FTZ/DAZ guard is entered first. The
 //! callback owns the `LiveRack` and the ring ends. When the stream ends the backend drops the
@@ -20,6 +22,7 @@ use vox_dsp::fp::DenormalGuard;
 use vox_rack::{LiveRack, MAX_BLOCK, Transport};
 
 use crate::backend::{OutputCallback, OutputTimestamp};
+use crate::monitor::MonitorOut;
 use crate::rt::{
     AudioCmd, FADE_MS, MAX_AUDIO_CMDS_PER_CALLBACK, PACKET_FRAMES, PLAYBACK_RING_PACKETS,
     PREBUFFER_MS, Packet, RtCounters, RtEvent, packet_flags,
@@ -32,12 +35,9 @@ pub(crate) struct OutputParts {
     pub(crate) cmds: Consumer<AudioCmd>,
     pub(crate) events: Producer<RtEvent>,
     pub(crate) counters: Arc<RtCounters>,
-    /// Consumer of this output stream's monitor ring (the input callback produces).
-    pub(crate) monitor: Consumer<f32>,
+    /// The output side of this stream's monitor ring (the input callback produces).
+    pub(crate) monitor: MonitorOut,
 }
-
-/// Monitoring fade (SPEC-002 §2.7: ≤ 10 ms).
-const MONITOR_FADE_MS: f64 = 10.0;
 
 /// Where a dropped callback leaves its [`OutputParts`].
 pub(crate) type PartsSlot = Arc<Mutex<Option<OutputParts>>>;
@@ -98,13 +98,6 @@ struct State {
     underrun: bool,
     rack_in: Vec<f32>,
     rack_out: Vec<f32>,
-    /// Dry monitoring target and its gain ramp.
-    mon_on: bool,
-    mon_gain: f32,
-    mon_step: f32,
-    /// Monitor-ring fill to reach before the input is heard (F*); more than 4·F* drops back to F*.
-    mon_prefill: usize,
-    mon_primed: bool,
 }
 
 fn emit(parts: &mut OutputParts, e: RtEvent) {
@@ -178,59 +171,15 @@ impl State {
                 }
                 Mode::Idle => {}
             },
-            AudioCmd::Monitor { on, prefill_frames } => {
-                if on && !self.mon_on {
-                    // Start from a fresh fill: drop whatever an earlier monitoring pass left.
-                    Self::discard_monitor(parts, 0);
-                    self.mon_primed = false;
-                }
-                self.mon_on = on;
-                if on {
-                    self.mon_prefill =
-                        (prefill_frames as usize).clamp(1, crate::input::MONITOR_RING_FRAMES / 2);
-                }
-            }
+            AudioCmd::Monitor {
+                tap,
+                in_rate_hz,
+                target_frames,
+                ending,
+            } => parts
+                .monitor
+                .command(tap, in_rate_hz, target_frames, ending),
         }
-    }
-
-    /// Drops monitor-ring samples beyond the newest `keep`.
-    fn discard_monitor(parts: &mut OutputParts, keep: usize) {
-        let n = parts.monitor.slots().saturating_sub(keep);
-        if n > 0
-            && let Ok(chunk) = parts.monitor.read_chunk(n)
-        {
-            chunk.commit_all();
-        }
-    }
-
-    /// Next Dry monitor sample (0 while off, priming or after an underrun), with the fade.
-    fn monitor_sample(&mut self, parts: &mut OutputParts) -> f32 {
-        if !self.mon_primed {
-            if self.mon_on && parts.monitor.slots() >= self.mon_prefill {
-                self.mon_primed = true;
-            } else {
-                if !self.mon_on {
-                    self.mon_gain = 0.0;
-                }
-                return 0.0;
-            }
-        }
-        let Ok(x) = parts.monitor.pop() else {
-            // Underrun: re-prime (a short gap; the drift servo is T-107).
-            self.mon_primed = false;
-            return 0.0;
-        };
-        if self.mon_on {
-            if self.mon_gain < 1.0 {
-                self.mon_gain = (self.mon_gain + self.mon_step).min(1.0);
-            }
-        } else {
-            self.mon_gain = (self.mon_gain - self.mon_step).max(0.0);
-            if self.mon_gain <= 0.0 {
-                self.mon_primed = false;
-            }
-        }
-        x * self.mon_gain
     }
 
     /// Waiting: drops stale packets at the head, then starts once the prebuffer (or the document
@@ -263,10 +212,14 @@ impl State {
         }
         if frames >= self.prebuffer_frames || end {
             if self.reset_pending {
-                if self.quiet < latency {
-                    return;
+                // T-107: never reset a rack the live monitor signal flows through (it would cut
+                // the talent's voice); the playback fade-out/in already keeps the start clean.
+                if !parts.monitor.feeds_rack() {
+                    if self.quiet < latency {
+                        return;
+                    }
+                    parts.live.reset();
                 }
-                parts.live.reset();
                 self.reset_pending = false;
             }
             self.mode = Mode::Playing;
@@ -406,7 +359,6 @@ impl OutputCb {
     ) -> Self {
         let rate = f64::from(dev_rate_hz.max(1));
         let fade_len = (rate * FADE_MS / 1000.0).round().max(1.0);
-        let mon_fade_len = (rate * MONITOR_FADE_MS / 1000.0).round().max(1.0);
         let max_block = MAX_BLOCK as usize;
         Self {
             st: State {
@@ -428,11 +380,6 @@ impl OutputCb {
                 underrun: false,
                 rack_in: vec![0.0; max_block],
                 rack_out: vec![0.0; max_block],
-                mon_on: false,
-                mon_gain: 0.0,
-                mon_step: (1.0 / mon_fade_len) as f32,
-                mon_prefill: 1,
-                mon_primed: false,
             },
             parts: Some(parts),
             slot,
@@ -472,10 +419,8 @@ impl OutputCallback for OutputCb {
         let mut peak = 0.0f32;
         let mut sum_sq = 0.0f64;
         let mut done = 0;
-        if st.mon_on && st.mon_primed && parts.monitor.slots() > 4 * st.mon_prefill {
-            // Overrun (clock drift without the T-107 servo): drop back to F*.
-            State::discard_monitor(parts, st.mon_prefill);
-        }
+        // T-107: priming, overrun handling and the drift servo, once per callback.
+        parts.monitor.begin(ts.now_ns, frames);
         while done < frames {
             let mut n = (frames - done).min(st.rack_in.len());
             if st.mode == Mode::Waiting {
@@ -494,6 +439,11 @@ impl OutputCallback for OutputCb {
             for i in 0..n {
                 st.rack_in[i] = st.sample(parts);
             }
+            // T-107 (SPEC-002 §2.7): the Through-rack tap joins the playback at the rack input.
+            parts.monitor.render(n);
+            for (x, &w) in st.rack_in[..n].iter_mut().zip(parts.monitor.wet()) {
+                *x += w;
+            }
             let transport = Transport {
                 playing,
                 position_samples: sub_pos,
@@ -506,7 +456,7 @@ impl OutputCallback for OutputCb {
                 peak = peak.max(s.abs());
                 sum_sq += f64::from(s) * f64::from(s);
                 // Dry monitoring: after the rack, unity gain (never recorded, never metered).
-                let y = s + st.monitor_sample(parts);
+                let y = s + parts.monitor.dry()[i];
                 let base = (done + i) * channels;
                 data[base..base + channels].fill(y);
             }
@@ -524,12 +474,15 @@ impl OutputCallback for OutputCb {
             };
             p.saturating_sub(latency_doc).max(start)
         });
+        let heard_time_ns = ts.to_app_ns(ts.playback_ns);
         emit(
             parts,
             RtEvent::Block {
                 epoch: block_epoch,
                 heard_pos,
-                heard_time_ns: ts.to_app_ns(ts.playback_ns),
+                heard_time_ns,
+                latency_ns: u32::try_from(heard_time_ns.saturating_sub(ts.now_ns))
+                    .unwrap_or(u32::MAX),
                 frames: frames as u32,
                 peak,
                 sum_sq,

@@ -512,11 +512,22 @@ fn input_dropout_is_filled_with_silence_and_reported() {
     assert_eq!(r.fake.rt_violations(), 0, "a callback allocated");
 }
 
+/// A 997 Hz tone at −20 dBFS peak on channel 1 (channel 2 silent).
+fn tone_997(frame: u64, ch: usize) -> f32 {
+    if ch == 0 {
+        (0.1 * (std::f64::consts::TAU * 997.0 * frame as f64 / 48_000.0).sin()) as f32
+    } else {
+        0.0
+    }
+}
+
 /// SPEC-002 §2.7 (Dry): the input is heard after the rack at unity gain only while armed; Off is
-/// silent; disarming fades out.
+/// silent; disarming fades out. T-107: the monitor path always runs through the drift-corrected
+/// resampler (ADR-002 §6 — not bit-transparent), so unity gain is judged by level: the −20 dBFS
+/// peak tone comes out at −23.01 dB RMS.
 #[test]
 fn dry_monitoring_is_heard_only_while_armed() {
-    let mut r = rig(src, true, Some(1));
+    let mut r = rig_with_mic(mic_fixed(tone_997, 256), true, Some(1));
     r.run_ms(20);
     // Off: arming alone is silent.
     r.arm();
@@ -524,24 +535,18 @@ fn dry_monitoring_is_heard_only_while_armed() {
     assert!(r.output().iter().all(|&x| x == 0.0), "Off is silent");
     assert!(!r.eng.record_state().monitoring);
 
-    // Dry while armed: the output carries the input channel bit-exact (after the fade-in).
+    // Dry while armed: the output carries the input channel at unity gain (after the fade-in).
     let st = r.eng.set_monitor_mode(MonitorMode::Dry);
     assert!(st.monitoring, "{st:?}");
-    assert!(r.last_frame().flags & vxtm_flags::MONITORING == 0 || st.monitoring);
     r.run_ms(300);
     assert!(r.last_frame().flags & vxtm_flags::MONITORING != 0);
     let out = r.output();
-    let n = out.len();
-    let win = &out[n - 4_800..n - 4_736];
-    let span = r.frame_at(r.fake.now_ns()) + 4_800;
-    let found = (0..span).any(|k| {
-        win.iter()
-            .enumerate()
-            .all(|(i, &x)| x.to_bits() == src(k + i as u64, 0).to_bits())
-    });
+    let win = &out[out.len() - 9_600..];
+    let rms_db =
+        10.0 * (win.iter().map(|&x| f64::from(x).powi(2)).sum::<f64>() / win.len() as f64).log10();
     assert!(
-        found,
-        "the monitored output is the input channel at unity gain"
+        (rms_db + 23.01).abs() < 0.05,
+        "the monitored output is the input channel at unity gain: {rms_db} dB"
     );
 
     // Disarm: monitoring stops (after a ≤ 10 ms fade).

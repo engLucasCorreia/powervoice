@@ -50,6 +50,7 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     },
     default_format: { sample_rate_hz: 48_000, bit_depth: "24" },
     monitor_mode: "off",
+    monitor_hint_shown: false,
     telemetry_rate_hz: 60,
     memory_budget_mib: 2048,
     normalize_dialog: { value: -1, unit: "db" },

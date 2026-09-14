@@ -14,6 +14,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use rtrb::{Consumer, Producer, RingBuffer};
+use vox_dsp::async_resample::MonitorResampler;
 use vox_dsp::capture_resample::CaptureResampler;
 use vox_project::{FreeSpaceProvider, TakeCapture};
 use vox_rack::{
@@ -36,8 +37,11 @@ use crate::devices::{
 use crate::engine::{Clock, DevicesView, EngineConfig, EngineEvent, EventSink, PlaybackDoc};
 use crate::input::{
     CAPTURE_RING_SECONDS, GAP_EVENT_CAPACITY, GapEvent, INPUT_CMD_CAPACITY, INPUT_EVENT_CAPACITY,
-    InputCmd, InputEvent, InputShared, InputSide, InputSideParts, MONITOR_RING_FRAMES, MonitorSlot,
-    MonitorTx, input_callback, stop_code, take_monitor,
+    InputCmd, InputEvent, InputShared, InputSide, InputSideParts, MonitorSlot, MonitorTx,
+    input_callback, stop_code, take_monitor,
+};
+use crate::monitor::{
+    self, MONITOR_RING_FRAMES, MonitorLink, MonitorOut, MonitorTap, StreamLatency,
 };
 use crate::output::{OutputCb, OutputParts, PartsSlot, take_parts};
 use crate::prefs::DevicePrefs;
@@ -69,8 +73,9 @@ const FORCE_FINISH_NS: u64 = 1_000_000_000;
 const DISK_CHECK_INTERVAL_NS: u64 = 1_000_000_000;
 /// Inline (manual) writer: sync the take WAV every this many ticks (~1 s).
 const INLINE_SYNC_TICKS: u32 = 60;
-/// Callback period assumed for the monitor fill target when a stream doesn't report one.
-const UNKNOWN_PERIOD_FRAMES: u32 = 1024;
+/// T-107 (SPEC-002 §2.7: "recomputed within 1 s of any change"): the monitoring latency readout
+/// is recomputed this often (and at once after a mode change).
+const LATENCY_READOUT_INTERVAL_NS: u64 = 500_000_000;
 
 /// Messages to the control thread.
 pub(crate) enum ControlMsg {
@@ -94,7 +99,6 @@ struct OutputStream {
     rate_hz: u32,
     doc_rate_hz: u32,
     buffer: BufferRequest,
-    nominal_frames: Option<u32>,
     /// Generation of this stream's monitor ring.
     monitor_gen: u32,
     /// The document rate converts to the stream rate (else the reader streams nothing).
@@ -230,10 +234,23 @@ pub(crate) struct Control {
     armed: bool,
     record_rate_hz: u32,
     monitor_mode: MonitorMode,
+    /// Monitoring is audible (a tap other than Off was sent).
     monitor_active: bool,
+    /// T-107: the input pushes into the monitor ring (linked and armed/recording, any mode).
+    monitor_feeding: bool,
+    /// T-107: the last `AudioCmd::Monitor` sent: (tap, input rate, F* in input frames).
+    monitor_sent: Option<(MonitorTap, u32, u32)>,
     /// Producer of the current output's monitor ring while no input stream holds it.
     monitor_tx: Option<MonitorTx>,
     monitor_gen: u32,
+    /// T-107 (SPEC-002 §4.4): observed input/output periods and latencies (F*, readout).
+    in_lat: StreamLatency,
+    out_lat: StreamLatency,
+    /// T-107: the published latency readout (µs, 0.1 ms steps), its last recompute time, and
+    /// whether a monitoring change asks for a recompute now.
+    monitor_latency_us: Option<u32>,
+    latency_checked_ns: Option<u64>,
+    latency_dirty: bool,
     recording: Option<Recording>,
     in_meter: InputMeter,
     last_record: Option<RecordState>,
@@ -334,8 +351,15 @@ impl Control {
             record_rate_hz: record_rate_hz.max(1),
             monitor_mode: MonitorMode::Off,
             monitor_active: false,
+            monitor_feeding: false,
+            monitor_sent: None,
             monitor_tx: None,
             monitor_gen: 0,
+            in_lat: StreamLatency::default(),
+            out_lat: StreamLatency::default(),
+            monitor_latency_us: None,
+            latency_checked_ns: None,
+            latency_dirty: false,
             recording: None,
             in_meter: InputMeter::default(),
             last_record: None,
@@ -1084,6 +1108,7 @@ impl Control {
         let (ev_tx, ev_rx) = RingBuffer::new(RT_EVENT_CAPACITY);
         let (mon_tx, mon_rx) = RingBuffer::new(MONITOR_RING_FRAMES);
         let counters = Arc::new(RtCounters::default());
+        let link = Arc::new(MonitorLink::default());
         let slot: PartsSlot = Arc::new(Mutex::new(None));
         let parts = OutputParts {
             live,
@@ -1091,7 +1116,7 @@ impl Control {
             cmds: cmd_rx,
             events: ev_tx,
             counters: counters.clone(),
-            monitor: mon_rx,
+            monitor: MonitorOut::new(mon_rx, link.clone(), counters.clone(), rate),
         };
         let cb = OutputCb::new(parts, slot.clone(), rate, doc_rate);
         match self.backend.open_output(req, Box::new(cb)) {
@@ -1113,7 +1138,13 @@ impl Control {
                 });
                 self.last_underruns = 0;
                 self.monitor_gen = self.monitor_gen.wrapping_add(1);
-                self.monitor_tx = Some((self.monitor_gen, mon_tx));
+                self.monitor_tx = Some(MonitorTx {
+                    generation: self.monitor_gen,
+                    producer: mon_tx,
+                    link,
+                    pushed: 0,
+                });
+                self.out_lat.reset(nominal_frames);
                 Ok(OutputStream {
                     handle,
                     slot,
@@ -1126,7 +1157,6 @@ impl Control {
                     rate_hz: rate,
                     doc_rate_hz: doc_rate,
                     buffer,
-                    nominal_frames,
                     monitor_gen: self.monitor_gen,
                     playable,
                 })
@@ -1253,6 +1283,7 @@ impl Control {
         match self.build_input(&req) {
             Ok(inp) => {
                 self.in_meter.reset(inp.rate_hz);
+                self.in_lat.reset(inp.nominal_frames);
                 self.input = Some(inp);
                 self.device_event(DeviceEvent::Opened {
                     dir: Direction::Input,
@@ -1276,7 +1307,7 @@ impl Control {
         let shared = Arc::new(InputShared::default());
         let slot: MonitorSlot = Arc::new(Mutex::new(None));
         let monitor = self.monitor_tx.take();
-        let monitor_gen = monitor.as_ref().map(|m| m.0);
+        let monitor_gen = monitor.as_ref().map(|m| m.generation);
         let side = InputSide::new(InputSideParts {
             cmds: cmd_rx,
             events: ev_tx,
@@ -1315,13 +1346,13 @@ impl Control {
     /// Takes a dropped input callback's monitor producer back if it still feeds the current
     /// output's ring.
     fn repark_monitor(&mut self, slot: &MonitorSlot) {
-        if let Some((gen_id, p)) = take_monitor(slot)
+        if let Some(m) = take_monitor(slot)
             && self
                 .output
                 .as_ref()
-                .is_some_and(|o| o.monitor_gen == gen_id)
+                .is_some_and(|o| o.monitor_gen == m.generation)
         {
-            self.monitor_tx = Some((gen_id, p));
+            self.monitor_tx = Some(m);
         }
     }
 
@@ -1350,10 +1381,12 @@ impl Control {
             };
             std::iter::from_fn(|| inp.events.pop().ok()).collect()
         };
+        let mut period_grew = false;
         for e in events {
             match e {
                 InputEvent::Block {
                     frames,
+                    latency_ns,
                     peak,
                     sum_sq,
                     clipped,
@@ -1361,6 +1394,7 @@ impl Control {
                     captured,
                     end_ns,
                 } => {
+                    period_grew |= self.in_lat.observe(frames, latency_ns);
                     self.in_meter.add(frames, peak, sum_sq, clipped);
                     if capturing && let Some(rec) = self.recording.as_mut() {
                         rec.captured = captured;
@@ -1373,6 +1407,10 @@ impl Control {
                     }
                 }
             }
+        }
+        if period_grew {
+            // T-107: a longer input period raises F* (ADR-002 §6: max observed period).
+            self.update_monitor();
         }
     }
 
@@ -1390,6 +1428,15 @@ impl Control {
             finishing: self.recording.as_ref().is_some_and(|r| r.stop_at.is_some()),
             monitor: self.monitor_mode,
             monitoring: self.monitor_active,
+            monitor_latency_us: self.monitor_latency_us,
+            monitor_underruns: self
+                .output
+                .as_ref()
+                .map_or(0, |o| o.counters.mon_underruns.load(Ordering::Relaxed)),
+            monitor_overruns: self
+                .output
+                .as_ref()
+                .map_or(0, |o| o.counters.mon_overruns.load(Ordering::Relaxed)),
             dropout_count: self
                 .recording
                 .as_ref()
@@ -1495,6 +1542,8 @@ impl Control {
         self.monitor_mode = mode;
         self.relink_monitor();
         self.update_monitor();
+        self.latency_dirty = true;
+        self.update_latency_readout(self.now());
         self.emit_record_if_changed();
         self.record_state()
     }
@@ -1730,66 +1779,128 @@ impl Control {
         }
     }
 
-    // --- Monitoring (S1-04: Off / Dry) -----------------------------------------------------
+    // --- Monitoring (S1-04 Off/Dry; T-107 Through rack, drift servo, latency readout) ---------
 
-    /// Monitoring off on both streams (the next [`Self::update_monitor`] recomputes it).
+    /// Monitoring off on both streams (the next [`Self::update_monitor`] recomputes it). The
+    /// input stops pushing, so the output's fade-out fits what the ring still holds (`ending`).
     fn monitor_reset(&mut self) {
         self.monitor_active = false;
+        self.monitor_feeding = false;
         if let Some(i) = self.input.as_mut() {
             let _ = i.cmds.push(InputCmd::Monitor(false));
         }
+        let (in_rate_hz, target_frames) = self.monitor_sent.map_or((0, 0), |s| (s.1, s.2));
         self.audio_cmd(AudioCmd::Monitor {
-            on: false,
-            prefill_frames: 0,
+            tap: MonitorTap::Off,
+            in_rate_hz,
+            target_frames,
+            ending: true,
         });
+        self.monitor_sent = None;
+        self.latency_dirty = true;
     }
 
-    /// Dry monitoring is audible while armed or recording, with both streams open at one rate
-    /// and linked through the current monitor ring (no drift servo / rate conversion yet: T-107).
+    /// The linked (input rate, output rate): both streams open, the input feeding the current
+    /// output's monitor ring, a rate pair the monitor resampler supports (ADR-002 §6: any
+    /// nominal mismatch, e.g. 48 kHz in → 44.1 kHz out).
+    fn monitor_link(&self) -> Option<(u32, u32)> {
+        match (&self.input, &self.output) {
+            (Some(i), Some(o))
+                if i.monitor_gen == Some(o.monitor_gen)
+                    && MonitorResampler::supports(i.rate_hz, o.rate_hz) =>
+            {
+                Some((i.rate_hz, o.rate_hz))
+            }
+            _ => None,
+        }
+    }
+
+    /// T-107 (SPEC-002 §2.7): while linked, the input feeds the monitor ring whenever it is
+    /// armed or recording — whatever the mode, so a mode switch is only a ≤ 10 ms fade on the
+    /// output side — and the output hears it through the mode's tap with the servo target F*
+    /// (max input period + max output period + 1 ms). Idempotent: sends only changes.
     fn update_monitor(&mut self) {
-        let linked = match (&self.input, &self.output) {
-            (Some(i), Some(o)) => i.rate_hz == o.rate_hz && i.monitor_gen == Some(o.monitor_gen),
-            _ => false,
+        let Some((in_rate, out_rate)) = self.monitor_link() else {
+            if self.monitor_feeding || self.monitor_sent.is_some() {
+                self.monitor_reset();
+            }
+            return;
         };
-        let want = linked
-            && (self.armed || self.recording.is_some())
-            && self.monitor_mode == MonitorMode::Dry;
-        if want == self.monitor_active {
+        let feeding = self.armed || self.recording.is_some();
+        let tap = match self.monitor_mode {
+            _ if !feeding => MonitorTap::Off,
+            MonitorMode::Off => MonitorTap::Off,
+            MonitorMode::Dry => MonitorTap::Dry,
+            MonitorMode::ThroughRack => MonitorTap::Rack,
+        };
+        if feeding != self.monitor_feeding {
+            self.monitor_feeding = feeding;
+            if let Some(i) = self.input.as_mut() {
+                let _ = i.cmds.push(InputCmd::Monitor(feeding));
+            }
+        }
+        self.monitor_active = tap != MonitorTap::Off;
+        let target = monitor::target_frames(&self.in_lat, in_rate, &self.out_lat, out_rate);
+        let cmd = (tap, in_rate, target);
+        if self.monitor_sent != Some(cmd) {
+            self.monitor_sent = Some(cmd);
+            self.latency_dirty = true;
+            self.audio_cmd(AudioCmd::Monitor {
+                tap,
+                in_rate_hz: in_rate,
+                target_frames: target,
+                ending: !feeding,
+            });
+        }
+    }
+
+    /// T-107 (SPEC-002 §2.7, §4.4): recomputes the latency readout at most every 0.5 s, or at
+    /// once after a monitoring change; rounded to 0.1 ms so it settles.
+    fn update_latency_readout(&mut self, now: u64) {
+        let due = self.latency_dirty
+            || self
+                .latency_checked_ns
+                .is_none_or(|t| now.saturating_sub(t) >= LATENCY_READOUT_INTERVAL_NS);
+        if !due {
             return;
         }
-        self.monitor_active = want;
-        let prefill = match (&self.input, &self.output) {
-            (Some(i), Some(o)) => {
-                // F* = input period + output period + 1 ms (ADR-002 §6).
-                i.nominal_frames.unwrap_or(UNKNOWN_PERIOD_FRAMES)
-                    + o.nominal_frames.unwrap_or(UNKNOWN_PERIOD_FRAMES)
-                    + o.rate_hz / 1000
-            }
+        self.latency_checked_ns = Some(now);
+        self.latency_dirty = false;
+        self.monitor_latency_us = self.latency_readout_us();
+    }
+
+    /// Input latency + F* + rack latency (through-rack only; bypassed modules keep theirs) +
+    /// output latency, in µs rounded to 100 µs. `None` while the mode is Off, unlinked or not
+    /// measured yet.
+    fn latency_readout_us(&self) -> Option<u32> {
+        if self.monitor_mode == MonitorMode::Off {
+            return None;
+        }
+        let (in_rate, out_rate) = self.monitor_link()?;
+        if !self.in_lat.measured() || !self.out_lat.measured() {
+            return None;
+        }
+        let rack = match (self.monitor_mode, self.output.as_ref()) {
+            (MonitorMode::ThroughRack, Some(o)) => o.rack.total_latency_samples(),
             _ => 0,
         };
-        if let Some(i) = self.input.as_mut() {
-            let _ = i.cmds.push(InputCmd::Monitor(want));
-        }
-        self.audio_cmd(AudioCmd::Monitor {
-            on: want,
-            prefill_frames: prefill,
-        });
+        let ns = monitor::readout_ns(&self.in_lat, in_rate, &self.out_lat, out_rate, rack);
+        Some(u32::try_from((ns + 50_000) / 100_000 * 100).unwrap_or(u32::MAX))
     }
 
     /// After the output was rebuilt, an armed (not recording) input feeds a stale monitor ring:
     /// reopen it so it takes the new ring's producer.
     fn relink_monitor(&mut self) {
-        if self.monitor_mode != MonitorMode::Dry || self.recording.is_some() || !self.armed {
+        if self.monitor_mode == MonitorMode::Off || self.recording.is_some() || !self.armed {
             return;
         }
         let stale = match (&self.input, &self.output) {
             (Some(i), Some(o)) => {
-                i.rate_hz == o.rate_hz
-                    && i.monitor_gen != Some(o.monitor_gen)
+                i.monitor_gen != Some(o.monitor_gen)
                     && self
                         .monitor_tx
                         .as_ref()
-                        .is_some_and(|m| m.0 == o.monitor_gen)
+                        .is_some_and(|m| m.generation == o.monitor_gen)
             }
             _ => false,
         };
@@ -1817,6 +1928,7 @@ impl Control {
         }
         self.check_stream(now);
         self.relink_monitor();
+        self.update_latency_readout(now);
         self.emit_telemetry(now);
         self.module_telemetry
             .publish(self.output.as_ref().map(|out| &out.rack), now);
@@ -1836,16 +1948,19 @@ impl Control {
             }
             std::iter::from_fn(|| out.events.pop().ok()).collect()
         };
+        let mut period_grew = false;
         for e in events {
             match e {
                 RtEvent::Block {
                     epoch,
                     heard_pos,
                     heard_time_ns,
+                    latency_ns,
                     frames,
                     peak,
                     sum_sq,
                 } => {
+                    period_grew |= self.out_lat.observe(frames, latency_ns);
                     self.meter.add(peak, sum_sq, frames);
                     if let Some(pos) = heard_pos
                         && self.transport.playing()
@@ -1865,6 +1980,10 @@ impl Control {
                     }
                 }
             }
+        }
+        if period_grew {
+            // T-107: a longer output period raises F* (ADR-002 §6: max observed period).
+            self.update_monitor();
         }
     }
 

@@ -234,6 +234,11 @@ impl RecordingService {
         Ok(RecordStateDto::from(&st))
     }
 
+    /// Emits a notice through the recording events (T-107: the one-time headphone hint).
+    pub fn notify(&self, notice: Notice) {
+        (self.0.emit)(RecordingEvent::Notice(notice));
+    }
+
     pub fn stop(&self) -> Result<RecordStateDto, IpcError> {
         let st = self.0.engine.record_stop().ok_or_else(engine_stopped)?;
         Ok(RecordStateDto::from(&st))

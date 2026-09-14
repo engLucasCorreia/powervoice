@@ -2,6 +2,8 @@
 //!
 //! - [`fp`]: the flush-to-zero / denormals-are-zero guard for audio threads and offline renders.
 //! - [`resample`]: fixed-ratio streaming sample-rate conversion (document → device rate).
+//! - [`async_resample`]: adjustable-ratio (drift-corrected) resampling of the monitor ring in the
+//!   RT output callback (T-107, ADR-002 §6) — allocation-free after construction.
 //! - [`capture_resample`]: push-based streaming resampling for the capture-writer thread (H-06,
 //!   device rate → document rate) — off the audio thread only, never the RT input callback.
 //! - [`eq`]: parametric-EQ biquads, Butterworth cascades and smoothed bands (SPEC-015).
@@ -15,6 +17,7 @@
 //!   rule (T-204, SPEC-007 §4.2–§4.4) — off the audio thread only (engine tile workers).
 
 pub mod acx;
+pub mod async_resample;
 pub mod capture_resample;
 pub mod dither;
 pub mod dynamics;

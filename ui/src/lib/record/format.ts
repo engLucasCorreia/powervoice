@@ -22,3 +22,23 @@ export function formatRemaining(totalSeconds: number): string {
 /** H-11 (SPEC-002 §3 `disk_warn_min`): remaining recording time below this many minutes turns
  * the display amber and asks for confirmation before Record. */
 export const DISK_WARN_MINUTES = 10;
+
+/** T-107 (SPEC-002 §3 `monitor_warn_ms`): monitoring latency at or above this is amber. */
+export const MONITOR_WARN_AMBER_MS = 20;
+/** T-107 (SPEC-002 §3 `monitor_warn_ms`): monitoring latency at or above this is red. */
+export const MONITOR_WARN_RED_MS = 40;
+
+export type MonitorLatencyLevel = "ok" | "amber" | "red";
+
+/** T-107 (SPEC-002 §2.7, AC-12): the warning level of a monitoring latency readout (ms). */
+export function monitorLatencyLevel(ms: number): MonitorLatencyLevel {
+  if (ms >= MONITOR_WARN_RED_MS) {
+    return "red";
+  }
+  return ms >= MONITOR_WARN_AMBER_MS ? "amber" : "ok";
+}
+
+/** T-107: the latency readout (µs from the engine) in 0.1 ms, e.g. `23.7`. */
+export function formatLatencyMs(us: number): string {
+  return (us / 1000).toFixed(1);
+}

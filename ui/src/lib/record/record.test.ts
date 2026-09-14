@@ -21,7 +21,13 @@ import {
 } from "../state/record.svelte";
 import { initTransport, resetTransportForTest } from "../state/transport.svelte";
 import { PeakBallistics } from "./ballistics";
-import { DISK_WARN_MINUTES, formatElapsed, formatRemaining } from "./format";
+import {
+  DISK_WARN_MINUTES,
+  formatElapsed,
+  formatLatencyMs,
+  formatRemaining,
+  monitorLatencyLevel,
+} from "./format";
 import RecordControls from "./RecordControls.svelte";
 
 let calls: Array<{ cmd: string; args: unknown }> = [];
@@ -31,6 +37,7 @@ let inputDevice: string | null = "Mic";
 let failRecordStart = false;
 let dropoutCount = 0;
 let diskRemainingS: number | null = null;
+let monitorLatencyUs: number | null = null;
 
 function recDto(): RecordStateDto {
   return {
@@ -44,6 +51,8 @@ function recDto(): RecordStateDto {
     finishing: false,
     monitor: "off",
     monitoring: false,
+    monitor_latency_us: monitorLatencyUs,
+    monitor_dropouts: 0,
     dropout_count: dropoutCount,
     disk_remaining_s: diskRemainingS,
   };
@@ -88,6 +97,7 @@ beforeEach(() => {
   failRecordStart = false;
   dropoutCount = 0;
   diskRemainingS = null;
+  monitorLatencyUs = null;
   mockIPC(
     (cmd, args) => {
       calls.push({ cmd, args });
@@ -369,6 +379,47 @@ describe("record panel (S1-04)", () => {
     resolveLowDiskPrompt(true);
     await settle();
     expect(recordCalls()).toEqual([{ cmd: "record_start", args: { replace: false } }]);
+    teardown();
+  });
+
+  it("T-107 (SPEC-002 AC-12): latency warnings — none below 20 ms, amber from 20 ms, red from 40 ms", () => {
+    expect(monitorLatencyLevel(19.9)).toBe("ok");
+    expect(monitorLatencyLevel(20.0)).toBe("amber");
+    expect(monitorLatencyLevel(39.9)).toBe("amber");
+    expect(monitorLatencyLevel(40.0)).toBe("red");
+    expect(formatLatencyMs(23_700)).toBe("23.7");
+  });
+
+  it("T-107: shows the monitoring latency readout with its warning, and offers Through rack", async () => {
+    const { el, teardown } = await setup();
+    expect(document.querySelector('[data-testid="record-monitor-latency"]')).toBeNull();
+    const cases: Array<[number, "ok" | "amber" | "red"]> = [
+      [19_900, "ok"],
+      [20_000, "amber"],
+      [39_900, "amber"],
+      [40_000, "red"],
+    ];
+    for (const [us, level] of cases) {
+      monitorLatencyUs = us;
+      await emit("record_state", recDto());
+      await settle();
+      const readout = el("record-monitor-latency");
+      expect(readout.textContent?.trim()).toBe(`Monitoring latency ${(us / 1000).toFixed(1)} ms`);
+      expect(readout.classList.contains("amber")).toBe(level === "amber");
+      expect(readout.classList.contains("red")).toBe(level === "red");
+      if (level === "red") {
+        expect(readout.title).toContain("smaller buffer size");
+      } else if (level === "amber") {
+        expect(readout.title).toBe("You may hear your voice delayed.");
+      }
+    }
+    const select = el("record-monitor") as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(["off", "dry", "through_rack"]);
+    select.value = "through_rack";
+    // Svelte 5 delegates `change` to the root: the event must bubble.
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    expect(recordCalls().at(-1)).toEqual({ cmd: "record_set_monitor", args: { mode: "through_rack" } });
     teardown();
   });
 });

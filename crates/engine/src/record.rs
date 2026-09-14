@@ -1,4 +1,5 @@
-//! Recording (S1-04, SPEC-002 §2.1–§2.3, §2.7 Off/Dry): the public types of the record API.
+//! Recording (S1-04, SPEC-002 §2.1–§2.3) and monitoring (§2.7, T-107): the public types of the
+//! record API.
 //!
 //! Flow (the app owns the [`vox_project::Session`], the engine owns streams and threads):
 //! 1. [`crate::EngineHandle::set_armed`] opens the input stream (the input meter starts). Its
@@ -33,7 +34,8 @@ pub const DISK_WARN_MINUTES: u64 = 10;
 /// device loss (stop, keep the take up to the gap), not a fillable dropout.
 pub const DROPOUT_FILL_MAX_S: u64 = 2;
 
-/// Monitoring mode (SPEC-002 §2.7). Through-rack monitoring is T-107 (not in this slice).
+/// Monitoring mode (SPEC-002 §2.7). Audible only while armed or recording; switching fades over
+/// ≤ 10 ms; never recorded (the take is always the dry input).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MonitorMode {
     /// No monitoring (factory default).
@@ -41,6 +43,9 @@ pub enum MonitorMode {
     Off,
     /// The input is added to the output after the rack, at unity gain, while armed or recording.
     Dry,
+    /// T-107: the input is added to the rack input, together with any playback (one shared rack,
+    /// ADR-002 §4), so the talent hears the processed voice.
+    ThroughRack,
 }
 
 /// The record panel's state (`EngineEvent::Record`).
@@ -66,6 +71,16 @@ pub struct RecordState {
     pub monitor: MonitorMode,
     /// Monitoring is audible now (armed or recording, mode ≠ off, output open).
     pub monitoring: bool,
+    /// T-107 (SPEC-002 §2.7, §4.4): the monitoring latency readout in µs (multiples of 100):
+    /// input latency + monitor buffer target F* + rack latency (through-rack only) + output
+    /// latency. `None` while the mode is Off, a stream is closed or not yet measured. Recomputed
+    /// at least every 0.5 s.
+    pub monitor_latency_us: Option<u32>,
+    /// T-107: monitor underruns (fade out/in; SPEC-002 §2.7's monitor-dropout counter) since the
+    /// output stream opened. The take is unaffected (no marker).
+    pub monitor_underruns: u32,
+    /// T-107: monitor overruns (dropped back to F* with a crossfade) since the output opened.
+    pub monitor_overruns: u32,
     /// H-10 item 4: dropout events so far this take (SPEC-002 §2.1/§2.2's live amber counter),
     /// `0` while not recording. Read from [`crate::input::InputShared::dropout_events`] each
     /// tick — the same count [`RecordingResult::dropouts`] reports at Stop.

@@ -757,6 +757,27 @@ impl FakeBackend {
             .and_then(|s| s.record.clone())
     }
 
+    /// T-107: moves out what an output stream recorded so far (recording continues), so long
+    /// simulated runs can analyze the output in pieces instead of holding all of it.
+    pub fn take_recorded_output(&self, id: StreamId) -> Option<RecordedOutput> {
+        self.lock()
+            .slots
+            .iter_mut()
+            .find(|s| s.info.id == id)
+            .and_then(|s| s.record.as_mut().map(std::mem::take))
+    }
+
+    /// T-107: the simulated (app-clock) time of frame `frame` of stream `id` — an input frame's
+    /// capture time or an output frame's playback time, at the device's true (skewed) rate.
+    /// Dropped input frames count (see [`FakeEvent::InputDropout`]).
+    pub fn frame_time_ns(&self, id: StreamId, frame: u64) -> Option<u64> {
+        self.lock()
+            .slots
+            .iter()
+            .find(|s| s.info.id == id)
+            .map(|s| s.frame_time(frame))
+    }
+
     /// Advances simulated time by `ns`, running callbacks and events due until then.
     pub fn advance_by(&self, ns: u64) {
         let t = self.now_ns().saturating_add(ns);

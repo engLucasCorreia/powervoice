@@ -12,8 +12,9 @@ use vox_project::{VxpkHeader, encode_vxpk};
 
 use crate::ipc::error::IpcError;
 use crate::ipc::record_dto::RecordStateDto;
+use crate::ipc::{Notice, NoticeLevel};
 use crate::recording::RecordingService;
-use crate::settings::{DefaultFormatDto, MonitorMode, SettingsStore};
+use crate::settings::{DefaultFormatDto, MonitorMode, Settings, SettingsStore};
 
 /// ADR-003 §2's request cap, same as `document_commands::peaks_get`.
 const MAX_LIVE_PEAKS_BUCKETS: u32 = 65_536;
@@ -92,7 +93,8 @@ pub async fn record_peaks_get(
     Ok(Response::new(encode_vxpk(&header, &peaks.buckets)))
 }
 
-/// Sets the monitoring mode and saves it as the preference (SPEC-002 §2.7).
+/// Sets the monitoring mode and saves it as the preference (SPEC-002 §2.7). The first time
+/// monitoring is enabled, a one-time "use headphones" hint is shown.
 #[tauri::command]
 pub async fn record_set_monitor(
     rec: State<'_, RecordingService>,
@@ -101,10 +103,46 @@ pub async fn record_set_monitor(
 ) -> Result<RecordStateDto, IpcError> {
     let service = rec.inner().clone();
     let state = blocking(move || service.set_monitor(mode)).await?;
-    let mut saved = settings.get();
-    if saved.monitor_mode != mode {
-        saved.monitor_mode = mode;
+    let before = settings.get();
+    let mut saved = before.clone();
+    let hint = apply_monitor_pref(&mut saved, mode);
+    if saved != before {
         settings.set(saved)?;
     }
+    if hint {
+        rec.notify(Notice::toast(
+            NoticeLevel::Info,
+            "notice.monitor.headphones",
+        ));
+    }
     Ok(state)
+}
+
+/// T-107 (SPEC-002 §2.7, AC-12): saves `mode` as the preference; returns whether the one-time
+/// headphone hint is due — the first time monitoring is enabled (remembered in the settings).
+fn apply_monitor_pref(saved: &mut Settings, mode: MonitorMode) -> bool {
+    saved.monitor_mode = mode;
+    let hint = mode != MonitorMode::Off && !saved.monitor_hint_shown;
+    saved.monitor_hint_shown |= hint;
+    hint
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// AC-12: the feedback hint appears only the first time monitoring is enabled — not for Off,
+    /// not again after it was shown (in any mode), and it survives as a saved setting.
+    #[test]
+    fn headphone_hint_is_shown_once() {
+        let mut s = Settings::default();
+        assert!(!apply_monitor_pref(&mut s, MonitorMode::Off));
+        assert!(!s.monitor_hint_shown);
+        assert!(apply_monitor_pref(&mut s, MonitorMode::Dry));
+        assert!(s.monitor_hint_shown);
+        assert_eq!(s.monitor_mode, MonitorMode::Dry);
+        assert!(!apply_monitor_pref(&mut s, MonitorMode::Off));
+        assert!(!apply_monitor_pref(&mut s, MonitorMode::ThroughRack));
+        assert_eq!(s.monitor_mode, MonitorMode::ThroughRack);
+    }
 }

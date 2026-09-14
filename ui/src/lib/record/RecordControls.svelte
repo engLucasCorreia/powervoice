@@ -8,21 +8,36 @@
     toggleArm,
     toggleRecord,
   } from "../state/record.svelte";
-  import { DISK_WARN_MINUTES, formatElapsed, formatRemaining } from "./format";
+  import {
+    DISK_WARN_MINUTES,
+    formatElapsed,
+    formatLatencyMs,
+    formatRemaining,
+    monitorLatencyLevel,
+  } from "./format";
 
   /**
    * Record panel controls (S1-04, SPEC-002 §2.1–§2.2, §2.7): Input (arm) toggle, Record/Stop
-   * button (Shift+R), elapsed time, clip lamp (click to clear), monitoring Off/Dry, and (H-11)
-   * the estimated remaining recording time on the session volume (amber below
-   * `DISK_WARN_MINUTES`).
+   * button (Shift+R), elapsed time, clip lamp (click to clear), monitoring Off / Dry / Through
+   * rack with the monitoring latency readout (T-107: amber ≥ 20 ms, red ≥ 40 ms), and (H-11) the
+   * estimated remaining recording time on the session volume (amber below `DISK_WARN_MINUTES`).
    */
   const rec = recordState();
   const noInput = $derived(rec.state.input_device === null);
   const busy = $derived(rec.state.recording || rec.state.finishing);
   const elapsed = $derived(formatElapsed(rec.elapsedSamples, rec.state.input_rate_hz ?? 0));
-  const monitor = $derived<MonitorMode>(rec.state.monitor === "off" ? "off" : "dry");
+  const monitor = $derived<MonitorMode>(rec.state.monitor);
   const diskRemaining = $derived(rec.state.disk_remaining_s);
   const diskLow = $derived(diskRemaining !== null && diskRemaining < DISK_WARN_MINUTES * 60);
+  const latencyUs = $derived(rec.state.monitor_latency_us);
+  const latencyLevel = $derived(latencyUs === null ? "ok" : monitorLatencyLevel(latencyUs / 1000));
+  const latencyTitle = $derived(
+    latencyLevel === "red"
+      ? t("record.monitor_warn_red")
+      : latencyLevel === "amber"
+        ? t("record.monitor_warn_amber")
+        : t("record.monitor_latency_title"),
+  );
 </script>
 
 <div class="record" role="group" aria-label={t("record.group")} data-testid="record-controls">
@@ -87,8 +102,20 @@
     >
       <option value="off">{t("record.monitor.off")}</option>
       <option value="dry">{t("record.monitor.dry")}</option>
+      <option value="through_rack">{t("record.monitor.through_rack")}</option>
     </select>
   </label>
+  {#if latencyUs !== null}
+    <span
+      class="monitor-latency"
+      class:amber={latencyLevel === "amber"}
+      class:red={latencyLevel === "red"}
+      data-testid="record-monitor-latency"
+      title={latencyTitle}
+    >
+      {t("record.monitor_latency", { ms: formatLatencyMs(latencyUs) })}
+    </span>
+  {/if}
 </div>
 
 <style>
@@ -165,6 +192,28 @@
     border-radius: 4px;
     background: var(--meter-yellow);
     color: var(--surface-panel);
+  }
+
+  .monitor-latency {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .monitor-latency.amber,
+  .monitor-latency.red {
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    color: var(--surface-panel);
+  }
+
+  .monitor-latency.amber {
+    background: var(--meter-yellow);
+  }
+
+  .monitor-latency.red {
+    background: var(--meter-red);
+    color: var(--text-primary);
   }
 
   .monitor {

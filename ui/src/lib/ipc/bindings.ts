@@ -486,6 +486,17 @@ finishing: boolean, monitor: MonitorMode,
  */
 monitoring: boolean, 
 /**
+ * T-107 (SPEC-002 §2.7, §4.4): the monitoring latency readout in µs (0.1 ms steps) — input
+ * latency + monitor buffer + rack latency (through-rack only) + output latency; `None` while
+ * the mode is Off or a stream is closed. Amber ≥ 20 ms, red ≥ 40 ms (UI).
+ */
+monitor_latency_us: number | null, 
+/**
+ * T-107: monitor dropouts (underruns faded out/in, overruns dropped back) since the output
+ * opened. The take is unaffected.
+ */
+monitor_dropouts: number, 
+/**
  * H-10 item 4: dropout events so far this take (SPEC-002 §2.1's live amber counter), `0`
  * while not recording.
  */
@@ -510,6 +521,11 @@ export type ResponseCurveDto = { freqs_hz: Array<number>, sample_rate_hz: number
  * preserved").
  */
 export type Settings = { version: number, device: DevicePrefsDto, default_format: DefaultFormatDto, monitor_mode: MonitorMode, 
+/**
+ * T-107 (SPEC-002 §2.7): the one-time "use headphones" hint was shown (it appears the first
+ * time monitoring is enabled).
+ */
+monitor_hint_shown: boolean, 
 /**
  * SPEC-003 §3: {30, 60} Hz, default 60 (measured free on WebKitGTK, ADR-009 §3).
  */

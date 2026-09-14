@@ -36,6 +36,8 @@ const IDLE: RecordStateDto = {
   finishing: false,
   monitor: "off",
   monitoring: false,
+  monitor_latency_us: null,
+  monitor_dropouts: 0,
   dropout_count: 0,
   disk_remaining_s: null,
 };

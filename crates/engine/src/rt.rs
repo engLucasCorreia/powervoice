@@ -3,6 +3,8 @@
 
 use std::sync::atomic::AtomicU32;
 
+use crate::monitor::MonitorTap;
+
 /// Samples per playback packet (ADR-002 §5).
 pub(crate) const PACKET_FRAMES: usize = 256;
 /// Playback ring capacity in packets (ADR-002 §2).
@@ -59,20 +61,28 @@ pub(crate) enum AudioCmd {
     Seek { epoch: u32, pos: u64 },
     /// Fade out and go idle (reports [`RtEvent::Stopped`]).
     Stop,
-    /// Dry monitoring on/off (≤ 10 ms fade, SPEC-002 §2.7); `prefill_frames` = the monitor-ring
-    /// fill F* to reach before the input is heard (ADR-002 §6).
-    Monitor { on: bool, prefill_frames: u32 },
+    /// Monitoring (T-107, SPEC-002 §2.7, ADR-002 §6): the tap (≤ 10 ms fades), the linked input
+    /// rate (0: unlinked), the servo target F* in input frames, and whether the input is ending
+    /// (disarm/close: the fade-out then fits what the ring still holds).
+    Monitor {
+        tap: MonitorTap,
+        in_rate_hz: u32,
+        target_frames: u32,
+        ending: bool,
+    },
 }
 
 /// Output callback → control (ADR-002 §4 step 5, §7).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum RtEvent {
     /// One per callback. `heard_pos`: heard document position of the first frame (`None` when
-    /// not playing); `heard_time_ns`: app-clock time it is heard (cpal `playback` instant).
+    /// not playing); `heard_time_ns`: app-clock time it is heard (cpal `playback` instant);
+    /// `latency_ns`: `playback − callback` (T-107: the monitoring latency readout).
     Block {
         epoch: u32,
         heard_pos: Option<u64>,
         heard_time_ns: u64,
+        latency_ns: u32,
         frames: u32,
         peak: f32,
         sum_sq: f64,
@@ -88,4 +98,8 @@ pub(crate) enum RtEvent {
 pub(crate) struct RtCounters {
     pub(crate) underruns: AtomicU32,
     pub(crate) dropped_events: AtomicU32,
+    /// T-107: monitor-ring underruns (fade out, re-prime; SPEC-002 §2.7 monitor dropouts).
+    pub(crate) mon_underruns: AtomicU32,
+    /// T-107: monitor-ring overruns (drop back to F* with a crossfade, ADR-002 §6).
+    pub(crate) mon_overruns: AtomicU32,
 }

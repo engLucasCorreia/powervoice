@@ -217,6 +217,9 @@ pub struct Settings {
     pub device: DevicePrefsDto,
     pub default_format: DefaultFormatDto,
     pub monitor_mode: MonitorMode,
+    /// T-107 (SPEC-002 §2.7): the one-time "use headphones" hint was shown (it appears the first
+    /// time monitoring is enabled).
+    pub monitor_hint_shown: bool,
     /// SPEC-003 §3: {30, 60} Hz, default 60 (measured free on WebKitGTK, ADR-009 §3).
     pub telemetry_rate_hz: u32,
     pub memory_budget_mib: u32,
@@ -234,6 +237,7 @@ impl Default for Settings {
             device: DevicePrefsDto::default(),
             default_format: DefaultFormatDto::default(),
             monitor_mode: MonitorMode::default(),
+            monitor_hint_shown: false,
             telemetry_rate_hz: 60,
             memory_budget_mib: default_memory_budget_mib(total_ram_bytes()),
             normalize_dialog: NormalizeDialogPrefsDto::default(),

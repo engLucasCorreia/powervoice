@@ -74,6 +74,8 @@ function setupIpc(spectroRequests: SpectroCall[]): void {
           finishing: false,
           monitor: "off",
           monitoring: false,
+          monitor_latency_us: null,
+          monitor_dropouts: 0,
           dropout_count: 0,
           disk_remaining_s: null,
         } satisfies RecordStateDto;
@@ -160,6 +162,8 @@ describe("SpectralView (T-207, SPEC-007 essential subset)", () => {
       finishing: false,
       monitor: "off",
       monitoring: true,
+      monitor_latency_us: null,
+      monitor_dropouts: 0,
       dropout_count: 0,
       disk_remaining_s: null,
     } satisfies RecordStateDto);

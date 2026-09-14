@@ -29,6 +29,13 @@ pub struct RecordStateDto {
     pub monitor: MonitorMode,
     /// Monitoring is audible now.
     pub monitoring: bool,
+    /// T-107 (SPEC-002 §2.7, §4.4): the monitoring latency readout in µs (0.1 ms steps) — input
+    /// latency + monitor buffer + rack latency (through-rack only) + output latency; `None` while
+    /// the mode is Off or a stream is closed. Amber ≥ 20 ms, red ≥ 40 ms (UI).
+    pub monitor_latency_us: Option<u32>,
+    /// T-107: monitor dropouts (underruns faded out/in, overruns dropped back) since the output
+    /// opened. The take is unaffected.
+    pub monitor_dropouts: u32,
     /// H-10 item 4: dropout events so far this take (SPEC-002 §2.1's live amber counter), `0`
     /// while not recording.
     pub dropout_count: u32,
@@ -51,19 +58,23 @@ impl From<&RecordState> for RecordStateDto {
             monitor: match s.monitor {
                 EngineMonitorMode::Off => MonitorMode::Off,
                 EngineMonitorMode::Dry => MonitorMode::Dry,
+                EngineMonitorMode::ThroughRack => MonitorMode::ThroughRack,
             },
             monitoring: s.monitoring,
+            monitor_latency_us: s.monitor_latency_us,
+            monitor_dropouts: s.monitor_underruns.saturating_add(s.monitor_overruns),
             dropout_count: s.dropout_count,
             disk_remaining_s: s.disk_remaining_s,
         }
     }
 }
 
-/// Settings monitor mode → engine. Through-rack monitoring is T-107; until then it monitors dry.
+/// Settings monitor mode → engine.
 pub fn engine_monitor_mode(mode: MonitorMode) -> EngineMonitorMode {
     match mode {
         MonitorMode::Off => EngineMonitorMode::Off,
-        MonitorMode::Dry | MonitorMode::ThroughRack => EngineMonitorMode::Dry,
+        MonitorMode::Dry => EngineMonitorMode::Dry,
+        MonitorMode::ThroughRack => EngineMonitorMode::ThroughRack,
     }
 }
 
@@ -84,26 +95,30 @@ mod tests {
             input_rate_hz: Some(48_000),
             recording: true,
             finishing: false,
-            monitor: EngineMonitorMode::Dry,
+            monitor: EngineMonitorMode::ThroughRack,
             monitoring: true,
+            monitor_latency_us: Some(23_700),
+            monitor_underruns: 2,
+            monitor_overruns: 1,
             dropout_count: 3,
             disk_remaining_s: Some(120),
         };
         let dto = RecordStateDto::from(&s);
         assert_eq!(dto.input_channel, 2);
         assert_eq!(dto.input_status, DeviceStatusDto::Healthy);
-        assert_eq!(dto.monitor, MonitorMode::Dry);
+        assert_eq!(dto.monitor, MonitorMode::ThroughRack);
+        assert_eq!(dto.monitor_latency_us, Some(23_700));
+        assert_eq!(dto.monitor_dropouts, 3);
         assert_eq!(dto.dropout_count, 3);
         assert_eq!(dto.disk_remaining_s, Some(120));
         let json = serde_json::to_string(&dto).unwrap();
-        assert!(json.contains("\"monitor\":\"dry\""), "{json}");
-        assert_eq!(
-            engine_monitor_mode(MonitorMode::ThroughRack),
-            EngineMonitorMode::Dry
-        );
-        assert_eq!(
-            engine_monitor_mode(MonitorMode::Off),
-            EngineMonitorMode::Off
-        );
+        assert!(json.contains("\"monitor\":\"through_rack\""), "{json}");
+        for (mode, engine) in [
+            (MonitorMode::Off, EngineMonitorMode::Off),
+            (MonitorMode::Dry, EngineMonitorMode::Dry),
+            (MonitorMode::ThroughRack, EngineMonitorMode::ThroughRack),
+        ] {
+            assert_eq!(engine_monitor_mode(mode), engine);
+        }
     }
 }

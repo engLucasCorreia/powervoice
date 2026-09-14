@@ -20,6 +20,10 @@
 //! - Internals: `input` (the RT input callback: meter, clip, capture + monitor rings),
 //!   `capture` (the capture-writer and take-sync threads).
 //!
+//! Monitoring (T-107, SPEC-002 §2.7, ADR-002 §6): Off / Dry / Through rack.
+//! - Internals: `monitor` (the drift-corrected input → output monitor path and the latency
+//!   readout), `drift` (the fill-level PI servo).
+//!
 //! Spectral display (T-204, SPEC-007):
 //! - [`spectro`]: the spectrogram tile service (worker threads, content-keyed tile cache,
 //!   `VXST` frames).
@@ -29,8 +33,10 @@ mod capture;
 mod control;
 pub mod device_state;
 pub mod devices;
+mod drift;
 mod engine;
 mod input;
+mod monitor;
 mod output;
 pub mod prefs;
 mod rack_api;

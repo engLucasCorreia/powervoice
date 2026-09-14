@@ -22,11 +22,10 @@ use vox_dsp::fp::DenormalGuard;
 
 use crate::backend::{InputTimestamp, frames_to_ns};
 use crate::devices::{InputChannel, MonoInput};
+use crate::monitor::MonitorLink;
 
 /// Capture ring length (ADR-002 §2).
 pub(crate) const CAPTURE_RING_SECONDS: usize = 10;
-/// Monitor ring capacity (ADR-002 §2).
-pub(crate) const MONITOR_RING_FRAMES: usize = 8192;
 /// Control → input command ring capacity.
 pub(crate) const INPUT_CMD_CAPACITY: usize = 64;
 /// Input → control event ring capacity (ADR-002 §2).
@@ -60,9 +59,11 @@ pub(crate) enum InputCmd {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum InputEvent {
     /// One per call: meter values of the block; `captured` = take samples so far, reached at app
-    /// time `end_ns` (the end of the block).
+    /// time `end_ns` (the end of the block); `latency_ns` = the callback's app time − `end_ns`
+    /// (the device's input latency, T-107's monitoring readout).
     Block {
         frames: u32,
+        latency_ns: u32,
         peak: f32,
         sum_sq: f64,
         clipped: bool,
@@ -140,8 +141,15 @@ impl InputShared {
     }
 }
 
-/// Monitor-ring producer tagged with the generation of the output stream whose ring it feeds.
-pub(crate) type MonitorTx = (u32, Producer<f32>);
+/// Monitor-ring producer tagged with the generation of the output stream whose ring it feeds,
+/// with that ring's stamp (T-107: the output's phase-compensated fill) and the frames pushed so
+/// far (moves with the producer when another input stream takes it over).
+pub(crate) struct MonitorTx {
+    pub(crate) generation: u32,
+    pub(crate) producer: Producer<f32>,
+    pub(crate) link: Arc<MonitorLink>,
+    pub(crate) pushed: u64,
+}
 /// Where a dropped input callback leaves its monitor producer.
 pub(crate) type MonitorSlot = Arc<Mutex<Option<MonitorTx>>>;
 
@@ -393,10 +401,13 @@ impl InputSide {
             sum_sq += f64::from(s) * f64::from(s);
         }
         if self.monitor_on
-            && let Some((_, p)) = self.monitor.as_mut()
+            && let Some(m) = self.monitor.as_mut()
         {
-            // A full monitor ring drops the rest (the output side re-primes).
-            let _ = p.push_partial_slice(x);
+            // A full monitor ring drops the rest (the output side drops back to F*). The stamp
+            // follows the push: the output measures the fill against this callback's time.
+            let (pushed, _) = m.producer.push_partial_slice(x);
+            m.pushed = m.pushed.wrapping_add(pushed.len() as u64);
+            m.link.publish(m.pushed, ts.now_ns);
         }
         if self.capturing {
             self.capture_block(x, t0);
@@ -413,14 +424,16 @@ impl InputSide {
         } else {
             self.last_capture_end_ns = None;
         }
+        let end_ns = t0.saturating_add(frames_to_ns(frames, self.rate_hz));
         self.emit(InputEvent::Block {
             frames: frames as u32,
+            latency_ns: u32::try_from(ts.now_ns.saturating_sub(end_ns)).unwrap_or(u32::MAX),
             peak,
             sum_sq,
             clipped: peak >= CLIP_THRESHOLD,
             capturing: self.capturing,
             captured: self.captured,
-            end_ns: t0.saturating_add(frames_to_ns(frames, self.rate_hz)),
+            end_ns,
         });
     }
 }

@@ -90,6 +90,7 @@ fn p95(mut samples: Vec<f64>) -> f64 {
 /// AC-18: a sidecar write (serialize -> temp -> `fdatasync` -> rename) takes ≤ 150 ms p95 over 20
 /// runs, at 10 000 markers and a 16-slot rack holding 1 MiB of blobs in total.
 #[test]
+#[ignore = "wall-clock AC-18 budget: release-only, run via `just test-big` (flaky in debug builds under parallel load)"]
 fn ac18_sidecar_write_is_within_the_150ms_p95_budget() {
     let dir = TempDir::new("ac18-write");
     let path = dir.path().join("a.wav.vo.json");
@@ -123,6 +124,7 @@ fn ac18_sidecar_write_is_within_the_150ms_p95_budget() {
 /// `read_sidecar`'s classify step (SPEC-018 §4.4 steps 1-6); resolving the rack into live module
 /// instances is `rack`'s job (ADR-001 rule 4), out of `project`'s scope to measure.
 #[test]
+#[ignore = "wall-clock AC-18 budget: release-only, run via `just test-big` (flaky in debug builds under parallel load)"]
 fn ac18_sidecar_read_and_validate_is_within_the_150ms_p95_budget() {
     let dir = TempDir::new("ac18-read");
     let path = dir.path().join("a.wav.vo.json");

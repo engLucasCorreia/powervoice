@@ -541,14 +541,23 @@ mod tests {
         assert_eq!(wait_for_finish(&events), JobState::Done);
         assert!(!documents.is_normalize_busy());
 
-        let got = events.lock().unwrap().clone();
-        let result = got
-            .iter()
-            .find_map(|e| match e {
+        // `normalize_result` is a separate emit just after the terminal `job_progress`, so under
+        // load it can land a moment later — poll for it instead of racing it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let result = loop {
+            let found = events.lock().unwrap().iter().find_map(|e| match e {
                 TestEvent::Result(dto) if dto.job_id == job_id => Some(*dto),
                 _ => None,
-            })
-            .expect("expected a normalize_result event");
+            });
+            if let Some(dto) = found {
+                break dto;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "expected a normalize_result event"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
         assert!(result.result.changed);
         assert_eq!(result.kind, JobKind::NormalizeLufs);
 

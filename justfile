@@ -30,6 +30,8 @@ test-big:
         cargo test --release -p vox-project --test history_exact -- --ignored --nocapture --test-threads=1
     POWERVOICE_TEST_TMP="{{justfile_directory()}}/target/big-tests" \
         cargo test --release -p vox-project --test recovery -- --ignored --nocapture --test-threads=1
+    POWERVOICE_TEST_TMP="{{justfile_directory()}}/target/big-tests" \
+        cargo test --release -p vox-project --test sidecar_perf -- --ignored --nocapture --test-threads=1
 
 # Regenerate Rust -> TS shared types (ADR-003) into ui/src/lib/ipc/bindings.ts
 gen-types:

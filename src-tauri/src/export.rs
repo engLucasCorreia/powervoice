@@ -408,10 +408,24 @@ fn run_pipeline(
     check_cancelled(cancel)?;
     match format {
         ExportFormat::Wav(bits) => {
-            vox_io::write_wav(path, target_rate_hz, bits, &resampled).map_err(io_error)?;
+            vox_io::write_wav(
+                path,
+                target_rate_hz,
+                bits,
+                vox_io::DitherMode::Tpdf,
+                &resampled,
+            )
+            .map_err(io_error)?;
         }
         ExportFormat::Flac(bits) => {
-            vox_io::write_flac(path, target_rate_hz, bits, &resampled).map_err(io_error)?;
+            vox_io::write_flac(
+                path,
+                target_rate_hz,
+                bits,
+                vox_io::DitherMode::Tpdf,
+                &resampled,
+            )
+            .map_err(io_error)?;
         }
         ExportFormat::Mp3(settings) => {
             vox_io::encode_mp3(path, target_rate_hz, &resampled, settings).map_err(io_error)?;
@@ -554,7 +568,14 @@ mod tests {
         )
         .unwrap();
         let gained_path = dir.join("gained.wav");
-        vox_io::write_wav(&gained_path, 48_000, vox_io::BitDepth::Int24, &rendered).unwrap();
+        vox_io::write_wav(
+            &gained_path,
+            48_000,
+            vox_io::BitDepth::Int24,
+            vox_io::DitherMode::Tpdf,
+            &rendered,
+        )
+        .unwrap();
         let (decoded, _info) = vox_testkit::wav::read_wav_file(&gained_path).unwrap();
         let peak = vox_testkit::measure::peak_dbfs(&decoded);
         assert!(

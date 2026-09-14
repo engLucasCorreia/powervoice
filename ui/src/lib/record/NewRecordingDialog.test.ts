@@ -49,6 +49,7 @@ function settingsFixture(): Settings {
       punch_xfade_ms: 10,
     },
     record_offsets: [],
+    save_dither: "tpdf",
   };
 }
 

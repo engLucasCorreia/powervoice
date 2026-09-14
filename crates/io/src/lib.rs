@@ -32,7 +32,11 @@ pub use encoder::{Encoder, FlacEncoder, Mp3Encoder, WavEncoder};
 pub use error::{IoError, Result};
 pub use flac::{FlacBitDepth, write_flac};
 pub use mp3::{Mp3Settings, encode_mp3, mp3_available};
+/// H-20 (SPEC-005 §2.7/§2.8): re-exported so `write_wav`/`write_flac` callers don't need a direct
+/// `vox_dsp` dependency just to name the dither mode (mirrors `dither`'s own module doc: `wav` and
+/// `flac` already call through `vox_dsp::dither`).
+pub use vox_dsp::dither::DitherMode;
 pub use wav::{
     BitDepth, SampleFormat, WavFormat, WavMarker, WavSource, WavStreamWriter, WriteReport,
-    read_wav, read_wav_markers, write_wav, write_wav_with_markers,
+    read_wav, read_wav_markers, wav_has_foreign_metadata, write_wav, write_wav_with_markers,
 };

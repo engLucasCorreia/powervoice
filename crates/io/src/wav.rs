@@ -10,7 +10,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use vox_dsp::dither::StreamingQuantizer;
+use vox_dsp::dither::{DitherMode, StreamingQuantizer};
 
 use crate::atomic::{finish, temp_path_for};
 use crate::error::{IoError, Result};
@@ -185,15 +185,17 @@ pub struct WriteReport {
 ///
 /// 16/24-bit writes apply deterministic, seeded TPDF dither per 4096-sample block, skipping
 /// blocks that are already exactly representable at `bits` (grid-exact passthrough: an open→save
-/// round trip of an unedited file, and digital silence, come out bit-exact — SPEC-005 §2.8).
-/// 32-bit float is written bit-exact, never dithered, and never clips.
+/// round trip of an unedited file, and digital silence, come out bit-exact — SPEC-005 §2.8), or
+/// plain rounding with no added noise when `dither` is [`DitherMode::None`] (H-20). 32-bit float
+/// is written bit-exact, never dithered (whatever `dither` is), and never clips.
 pub fn write_wav(
     path: impl AsRef<Path>,
     sample_rate_hz: u32,
     bits: BitDepth,
+    dither: DitherMode,
     samples: &[f32],
 ) -> Result<WriteReport> {
-    write_wav_with_markers(path, sample_rate_hz, bits, samples, &[])
+    write_wav_with_markers(path, sample_rate_hz, bits, dither, samples, &[])
 }
 
 /// A marker as read from, or to be written to, a WAV `cue `/`LIST adtl` chunk pair (SPEC-005
@@ -220,10 +222,11 @@ pub fn write_wav_with_markers(
     path: impl AsRef<Path>,
     sample_rate_hz: u32,
     bits: BitDepth,
+    dither: DitherMode,
     samples: &[f32],
     markers: &[WavMarker],
 ) -> Result<WriteReport> {
-    let mut writer = WavStreamWriter::create(path, sample_rate_hz, bits)?;
+    let mut writer = WavStreamWriter::create(path, sample_rate_hz, bits, dither)?;
     if let Err(e) = writer.write_block(samples) {
         writer.abort();
         return Err(e);
@@ -256,8 +259,15 @@ pub struct WavStreamWriter {
 }
 
 impl WavStreamWriter {
-    /// Opens `path`'s temp file (ADR-004 §8) and starts a streaming WAV write at `bits`.
-    pub fn create(path: impl AsRef<Path>, sample_rate_hz: u32, bits: BitDepth) -> Result<Self> {
+    /// Opens `path`'s temp file (ADR-004 §8) and starts a streaming WAV write at `bits`, dithered
+    /// per `dither` (H-20: TPDF or plain rounding; irrelevant for [`BitDepth::Float32`], which is
+    /// never dithered).
+    pub fn create(
+        path: impl AsRef<Path>,
+        sample_rate_hz: u32,
+        bits: BitDepth,
+        dither: DitherMode,
+    ) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let tmp = temp_path_for(&path);
         let spec = bits.hound_spec(sample_rate_hz);
@@ -274,8 +284,8 @@ impl WavStreamWriter {
         };
         let quantizer = match bits {
             BitDepth::Float32 => None,
-            BitDepth::Int16 => Some((StreamingQuantizer::new(16), 16)),
-            BitDepth::Int24 => Some((StreamingQuantizer::new(24), 24)),
+            BitDepth::Int16 => Some((StreamingQuantizer::new(16, dither), 16)),
+            BitDepth::Int24 => Some((StreamingQuantizer::new(24, dither), 24)),
         };
         Ok(WavStreamWriter {
             writer,
@@ -362,6 +372,40 @@ impl WavStreamWriter {
 pub fn read_wav_markers(path: impl AsRef<Path>) -> Result<Vec<WavMarker>> {
     let bytes = std::fs::read(path.as_ref())?;
     Ok(parse_wav_markers(&bytes).unwrap_or_default())
+}
+
+/// H-20 (SPEC-005 §2.10): does `path` carry a `LIST INFO`, `bext`, `iXML` or `smpl` chunk — the
+/// metadata PowerVoice reads on open but never writes back? A hand-rolled top-level chunk walk
+/// (like [`parse_wav_markers`]'s), because symphonia's WAV reader only surfaces `LIST INFO` as
+/// metadata and silently skips every chunk type it doesn't know (`crate::decode`'s module docs).
+/// `false` for a file that doesn't parse as RIFF/WAVE at all (never fails the caller's flow on its
+/// account, same convention as [`read_wav_markers`]).
+pub fn wav_has_foreign_metadata(path: impl AsRef<Path>) -> Result<bool> {
+    let bytes = std::fs::read(path.as_ref())?;
+    Ok(scan_for_foreign_metadata(&bytes))
+}
+
+fn scan_for_foreign_metadata(bytes: &[u8]) -> bool {
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return false;
+    }
+    let mut cur = Cursor::new(&bytes[12..]);
+    while cur.remaining() >= 8 {
+        let Some(id) = cur.tag() else { break };
+        let Some(size) = cur.u32().map(|n| n as usize) else {
+            break;
+        };
+        let Some(body) = cur.take(size) else { break };
+        if size % 2 == 1 {
+            cur.take(1);
+        }
+        match &id {
+            b"bext" | b"iXML" | b"smpl" | b"id3 " | b"ID3 " => return true,
+            b"LIST" if body.len() >= 4 && &body[0..4] == b"INFO" => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// A byte cursor over one RIFF chunk's body, used by [`parse_wav_markers`].
@@ -641,7 +685,8 @@ mod tests {
         let tmp = temp_path_for(&path);
         std::fs::create_dir(&tmp).unwrap();
 
-        let err = write_wav(&path, 48_000, BitDepth::Int16, &[0.0; 10]).unwrap_err();
+        let err =
+            write_wav(&path, 48_000, BitDepth::Int16, DitherMode::Tpdf, &[0.0; 10]).unwrap_err();
         assert!(matches!(err, IoError::Io(_)));
         assert_eq!(std::fs::read(&path).unwrap(), b"OLD-CONTENT");
 
@@ -653,7 +698,14 @@ mod tests {
     fn write_wav_leaves_no_temp_file_on_success() {
         let dir = tmp_dir("atomic-ok");
         let path = dir.join("out.wav");
-        write_wav(&path, 48_000, BitDepth::Float32, &[0.1, -0.2, 0.3]).unwrap();
+        write_wav(
+            &path,
+            48_000,
+            BitDepth::Float32,
+            DitherMode::Tpdf,
+            &[0.1, -0.2, 0.3],
+        )
+        .unwrap();
         assert!(path.exists());
         let mut entries: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
@@ -705,7 +757,15 @@ mod tests {
                 name: "".into(), // empty name -> "Marker N" on read
             },
         ];
-        write_wav_with_markers(&path, 48_000, BitDepth::Int24, &[0.0; 100_000], &markers).unwrap();
+        write_wav_with_markers(
+            &path,
+            48_000,
+            BitDepth::Int24,
+            DitherMode::Tpdf,
+            &[0.0; 100_000],
+            &markers,
+        )
+        .unwrap();
 
         let read_back = read_wav_markers(&path).unwrap();
         assert_eq!(read_back.len(), 3);
@@ -742,7 +802,15 @@ mod tests {
     fn no_markers_writes_no_cue_or_adtl_chunk() {
         let dir = tmp_dir("no-markers");
         let path = dir.join("plain.wav");
-        write_wav_with_markers(&path, 48_000, BitDepth::Int16, &[0.0; 10], &[]).unwrap();
+        write_wav_with_markers(
+            &path,
+            48_000,
+            BitDepth::Int16,
+            DitherMode::Tpdf,
+            &[0.0; 10],
+            &[],
+        )
+        .unwrap();
         let bytes = std::fs::read(&path).unwrap();
         assert!(!contains(&bytes, b"cue "));
         assert!(!contains(&bytes, b"LIST"));
@@ -758,7 +826,14 @@ mod tests {
     fn read_wav_markers_of_a_plain_file_with_no_cue_chunk_is_empty() {
         let dir = tmp_dir("plain-no-markers");
         let path = dir.join("plain.wav");
-        write_wav(&path, 48_000, BitDepth::Float32, &[0.1, 0.2, 0.3]).unwrap();
+        write_wav(
+            &path,
+            48_000,
+            BitDepth::Float32,
+            DitherMode::Tpdf,
+            &[0.1, 0.2, 0.3],
+        )
+        .unwrap();
         assert!(read_wav_markers(&path).unwrap().is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -781,7 +856,15 @@ mod tests {
             len_samples: 0,
             name: "M".into(),
         }];
-        write_wav_with_markers(&path, 48_000, BitDepth::Int16, &[0.0; 100], &markers).unwrap();
+        write_wav_with_markers(
+            &path,
+            48_000,
+            BitDepth::Int16,
+            DitherMode::Tpdf,
+            &[0.0; 100],
+            &markers,
+        )
+        .unwrap();
         let bytes = std::fs::read(&path).unwrap();
         let riff_size = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
         assert_eq!(riff_size, bytes.len() - 8);
@@ -814,10 +897,19 @@ mod tests {
         let samples = streaming_signal(200_000);
 
         let whole_path = dir.join("whole.wav");
-        write_wav(&whole_path, 48_000, BitDepth::Int16, &samples).unwrap();
+        write_wav(
+            &whole_path,
+            48_000,
+            BitDepth::Int16,
+            DitherMode::Tpdf,
+            &samples,
+        )
+        .unwrap();
 
         let streamed_path = dir.join("streamed.wav");
-        let mut writer = WavStreamWriter::create(&streamed_path, 48_000, BitDepth::Int16).unwrap();
+        let mut writer =
+            WavStreamWriter::create(&streamed_path, 48_000, BitDepth::Int16, DitherMode::Tpdf)
+                .unwrap();
         // Blocks are a multiple of DITHER_BLOCK_SAMPLES (4096): 16 * 4096 = 65 536, matching
         // `vox_project::CHUNK_SAMPLES`.
         for block in samples.chunks(65_536) {
@@ -835,17 +927,68 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// H-20: `DitherMode::None` writes plain-rounded (never dithered) 16-bit data, and the
+    /// streaming writer matches a whole-buffer `write_wav` call at that mode too.
+    #[test]
+    fn write_wav_with_dither_none_matches_plain_rounding_and_streams_identically() {
+        let dir = tmp_dir("dither-none");
+        let samples = streaming_signal(200_000);
+
+        let whole_path = dir.join("whole.wav");
+        write_wav(
+            &whole_path,
+            48_000,
+            BitDepth::Int16,
+            DitherMode::None,
+            &samples,
+        )
+        .unwrap();
+
+        let streamed_path = dir.join("streamed.wav");
+        let mut writer =
+            WavStreamWriter::create(&streamed_path, 48_000, BitDepth::Int16, DitherMode::None)
+                .unwrap();
+        for block in samples.chunks(65_536) {
+            writer.write_block(block).unwrap();
+        }
+        writer.finish(&[]).unwrap();
+        assert_eq!(
+            std::fs::read(&whole_path).unwrap(),
+            std::fs::read(&streamed_path).unwrap(),
+            "streaming must match a whole-buffer write in None mode too"
+        );
+
+        // The written int16 samples equal plain rounding of the f32 input — no TPDF noise.
+        let (decoded, _) = read_back_samples(&whole_path);
+        for (i, (&x, &got)) in samples.iter().zip(decoded.iter()).enumerate() {
+            let plain = ((f64::from(x) * 32_768.0).round() / 32_768.0) as f32;
+            assert!(
+                (got - plain).abs() < 1e-6,
+                "sample {i}: got {got}, expected plain rounding {plain}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn stream_writer_matches_write_wav_float32() {
         let dir = tmp_dir("stream-32f");
         let samples = streaming_signal(150_000);
 
         let whole_path = dir.join("whole.wav");
-        write_wav(&whole_path, 48_000, BitDepth::Float32, &samples).unwrap();
+        write_wav(
+            &whole_path,
+            48_000,
+            BitDepth::Float32,
+            DitherMode::Tpdf,
+            &samples,
+        )
+        .unwrap();
 
         let streamed_path = dir.join("streamed.wav");
         let mut writer =
-            WavStreamWriter::create(&streamed_path, 48_000, BitDepth::Float32).unwrap();
+            WavStreamWriter::create(&streamed_path, 48_000, BitDepth::Float32, DitherMode::Tpdf)
+                .unwrap();
         for block in samples.chunks(65_536) {
             writer.write_block(block).unwrap();
         }
@@ -881,7 +1024,8 @@ mod tests {
         ];
 
         let path = dir.join("out.wav");
-        let mut writer = WavStreamWriter::create(&path, 48_000, BitDepth::Int24).unwrap();
+        let mut writer =
+            WavStreamWriter::create(&path, 48_000, BitDepth::Int24, DitherMode::Tpdf).unwrap();
         for block in samples.chunks(65_536) {
             writer.write_block(block).unwrap();
         }
@@ -902,7 +1046,8 @@ mod tests {
         let path = dir.join("out.wav");
         std::fs::write(&path, b"OLD-CONTENT").unwrap();
 
-        let mut writer = WavStreamWriter::create(&path, 48_000, BitDepth::Int16).unwrap();
+        let mut writer =
+            WavStreamWriter::create(&path, 48_000, BitDepth::Int16, DitherMode::Tpdf).unwrap();
         writer.write_block(&[0.0; 10]).unwrap();
         writer.abort();
 

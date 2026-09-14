@@ -1,11 +1,18 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it } from "vitest";
-import type { DocumentDto, DocumentProbeDto, JobProgressDto, Settings } from "../ipc/bindings";
-import { clearNotices } from "../state/notices.svelte";
+import type {
+  DocumentDto,
+  DocumentProbeDto,
+  ImportStartedDto,
+  JobProgressDto,
+  Settings,
+} from "../ipc/bindings";
+import { clearNotices, noticesState } from "../state/notices.svelte";
 import { loadSettings, resetSettingsStateForTest } from "../state/settings.svelte";
 import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 import {
   applyImportJobProgress,
+  applyImportStarted,
   cancelImportJob,
   cancelSaveAsPrompt,
   confirmSaveAsPrompt,
@@ -82,6 +89,7 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
       punch_xfade_ms: 10,
     },
     record_offsets: [],
+    save_dither: "tpdf",
     ...overrides,
   };
 }
@@ -170,7 +178,9 @@ describe("openDocument / saveDocument / saveDocumentAs", () => {
       path: "/home/user/out.wav",
       container: "wav",
       bits: "32f",
+      dither: "tpdf",
       confirmClip: false,
+      confirmMultichannel: false,
     });
     expect(documentState().current.name).toBe("out.wav");
   });
@@ -332,12 +342,14 @@ describe("requestSave / Save As prompt", () => {
       }
       throw new Error(`unmocked command: ${cmd}`);
     });
-    await confirmSaveAsPrompt("wav", "16");
+    await confirmSaveAsPrompt("wav", "16", "tpdf");
     expect(savedArgs).toEqual({
       path: "/home/user/out.wav",
       container: "wav",
       bits: "16",
+      dither: "tpdf",
       confirmClip: false,
+      confirmMultichannel: false,
     });
     expect(documentState().saveAsPrompt).toBeNull();
   });
@@ -351,7 +363,7 @@ describe("requestSave / Save As prompt", () => {
       saveAsCalled = true;
       throw new Error(`unexpected command: ${cmd}`);
     });
-    await confirmSaveAsPrompt("wav", "24");
+    await confirmSaveAsPrompt("wav", "24", "tpdf");
     expect(saveAsCalled).toBe(false);
   });
 
@@ -443,8 +455,8 @@ describe("T-306: already-open / changed-on-disk confirmations", () => {
     resolveConfirmPrompt(true);
     expect(await pending).toBe(true);
     expect(calls).toEqual([
-      { overwrite: false, confirmClip: false },
-      { overwrite: true, confirmClip: false },
+      { overwrite: false, confirmClip: false, confirmMultichannel: false },
+      { overwrite: true, confirmClip: false, confirmMultichannel: false },
     ]);
   });
 });
@@ -581,8 +593,8 @@ describe("T-209: clip prompt (SPEC-005 §2.8)", () => {
     resolveClipPrompt("clip");
     expect(await pending).toBe(true);
     expect(calls).toEqual([
-      { overwrite: false, confirmClip: false },
-      { overwrite: false, confirmClip: true },
+      { overwrite: false, confirmClip: false, confirmMultichannel: false },
+      { overwrite: false, confirmClip: true, confirmMultichannel: false },
     ]);
   });
 
@@ -622,7 +634,9 @@ describe("T-209: clip prompt (SPEC-005 §2.8)", () => {
       path: "/home/user/take.wav",
       container: "wav",
       bits: "32f",
+      dither: "tpdf",
       confirmClip: false,
+      confirmMultichannel: false,
     });
   });
 
@@ -677,6 +691,7 @@ describe("T-209: compressed-source Save routes to Save As (SPEC-005 §2.6)", () 
       suggestedName: "take.wav",
       defaultContainer: "wav",
       defaultBits: "24",
+      defaultDither: "tpdf",
     });
   });
 
@@ -693,6 +708,7 @@ describe("T-209: compressed-source Save routes to Save As (SPEC-005 §2.6)", () 
       suggestedName: "take.flac",
       defaultContainer: "flac",
       defaultBits: "24",
+      defaultDither: "tpdf",
     });
   });
 });
@@ -705,7 +721,14 @@ describe("T-209: import job progress (SPEC-005 §2.3)", () => {
 
     const started: JobProgressDto = { job_id: 7, kind: "import", state: "running", fraction: 0 };
     applyImportJobProgress(started);
-    expect(documentState().importJob).toEqual({ jobId: 7, fraction: 0, state: "running" });
+    expect(documentState().importJob).toEqual({
+      jobId: 7,
+      fraction: 0,
+      state: "running",
+      name: "",
+      sampleRateHz: 0,
+      lenSamples: null,
+    });
 
     const progressed: JobProgressDto = {
       job_id: 7,
@@ -749,5 +772,125 @@ describe("T-209: import job progress (SPEC-005 §2.3)", () => {
     cancelImportJob();
     await new Promise((r) => setTimeout(r, 0));
     expect(called).toBe(false);
+  });
+});
+
+describe("H-20: progressive import display (SPEC-005 §2.3)", () => {
+  it("import_started shows the document shell (name/rate/length) ahead of the decode loop", () => {
+    const started: ImportStartedDto = {
+      job_id: 9,
+      name: "podcast.wav",
+      sample_rate_hz: 48_000,
+      len_samples: 960_000,
+    };
+    applyImportStarted(started);
+    expect(documentState().importJob).toEqual({
+      jobId: 9,
+      fraction: 0,
+      state: "running",
+      name: "podcast.wav",
+      sampleRateHz: 48_000,
+      lenSamples: 960_000,
+    });
+  });
+
+  it("import_started leaves lenSamples null for a container with no stated sample count", () => {
+    applyImportStarted({
+      job_id: 1,
+      name: "stream.mp3",
+      sample_rate_hz: 44_100,
+      len_samples: null,
+    });
+    expect(documentState().importJob?.lenSamples).toBeNull();
+  });
+
+  it("job_progress preserves the shell import_started set, updating only fraction/state", () => {
+    applyImportStarted({
+      job_id: 5,
+      name: "take.wav",
+      sample_rate_hz: 48_000,
+      len_samples: 48_000,
+    });
+    applyImportJobProgress({ job_id: 5, kind: "import", state: "running", fraction: 0.6 });
+    expect(documentState().importJob).toEqual({
+      jobId: 5,
+      fraction: 0.6,
+      state: "running",
+      name: "take.wav",
+      sampleRateHz: 48_000,
+      lenSamples: 48_000,
+    });
+  });
+
+  it("cancelling mid-import leaves the previously open document untouched (no partial document)", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "document_open") {
+        return doc({ path: "/home/user/take.wav", name: "take.wav" });
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    await openDocument("/home/user/take.wav");
+    const before = documentState().current;
+    expect(before.name).toBe("take.wav");
+
+    // A second import starts (its shell shows immediately) and is then cancelled before the
+    // decode loop finishes — `document_open`'s promise rejects with `error.cancelled`, mirroring
+    // `document_open_cancel` racing the blocking import thread.
+    applyImportStarted({
+      job_id: 42,
+      name: "other.wav",
+      sample_rate_hz: 48_000,
+      len_samples: 96_000,
+    });
+    expect(documentState().importJob?.name).toBe("other.wav");
+    // The document store itself is untouched while the shell is showing.
+    expect(documentState().current).toEqual(before);
+
+    mockIPC(() => {
+      throw { code: "cancelled", key: "error.cancelled", params: {} };
+    });
+    const ok = await openDocument("/home/user/other.wav");
+    expect(ok).toBe(false);
+    expect(documentState().current).toEqual(before);
+  });
+
+  it("a failed import restores the previous document and posts a notice", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "document_open") {
+        return doc({ path: "/home/user/take.wav", name: "take.wav" });
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    await openDocument("/home/user/take.wav");
+    const before = documentState().current;
+
+    applyImportStarted({
+      job_id: 43,
+      name: "broken.wav",
+      sample_rate_hz: 48_000,
+      len_samples: 96_000,
+    });
+    mockIPC(() => {
+      throw { code: "io", key: "error.open.io", params: {} };
+    });
+    const ok = await openDocument("/home/user/broken.wav");
+    expect(ok).toBe(false);
+    expect(documentState().current).toEqual(before);
+    expect(noticesState().toasts.some((n) => n.key === "error.open.io")).toBe(true);
+  });
+
+  it("applyImportJobProgress restores the window title on a cancelled/failed job (no lingering 'Opening…' title)", () => {
+    applyImportStarted({
+      job_id: 8,
+      name: "take.wav",
+      sample_rate_hz: 48_000,
+      len_samples: 48_000,
+    });
+    // Cancelling doesn't throw even without a live Tauri window (jsdom/Vitest) — `updateWindowTitle`
+    // catches the missing `getCurrentWindow` API.
+    expect(() =>
+      applyImportJobProgress({ job_id: 8, kind: "import", state: "cancelled", fraction: 0.3 }),
+    ).not.toThrow();
+    expect(documentState().importJob?.state).toBe("cancelled");
   });
 });

@@ -40,6 +40,7 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
       punch_xfade_ms: 10,
     },
     record_offsets: [],
+    save_dither: "tpdf",
     recent_files: [],
     spectral_defaults: {
       freq_scale: "log",

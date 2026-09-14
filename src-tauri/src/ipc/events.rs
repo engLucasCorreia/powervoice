@@ -22,7 +22,8 @@ crate::ipc_events!(
     recent_files_changed,
     record_phase,
     record_finished,
-    calibration_result
+    calibration_result,
+    import_started
 );
 
 /// A user-facing notice (ADR-003 `notice` event). Two shapes, distinguished by `persistent`:
@@ -181,6 +182,30 @@ pub fn emit_job_progress<R: tauri::Runtime>(
 ) -> tauri::Result<()> {
     use tauri::Emitter as _;
     app.emit(EventName::job_progress.as_str(), progress)
+}
+
+/// H-20 (SPEC-005 §2.3): the import job's document shell — file name, rate and (when the container
+/// states one) length — emitted once, right after the probe and before the decode loop starts.
+/// The frontend uses it to show "the document shell" ("‹name›" in the title, an estimated ruler
+/// length) immediately, well before `document_changed` arrives at commit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct ImportStartedDto {
+    pub job_id: u32,
+    pub name: String,
+    pub sample_rate_hz: u32,
+    /// `None` when the container doesn't state a sample count (SPEC-005 §2.3: "estimated for
+    /// formats without a sample count" — the UI shows an indeterminate shell then).
+    pub len_samples: Option<u64>,
+}
+
+/// Emits an `import_started` event (H-20).
+pub fn emit_import_started<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    info: ImportStartedDto,
+) -> tauri::Result<()> {
+    use tauri::Emitter as _;
+    app.emit(EventName::import_started.as_str(), info)
 }
 
 /// Emits a `loudness_report` event (S4-01): the loudness analysis job's finished report, once its

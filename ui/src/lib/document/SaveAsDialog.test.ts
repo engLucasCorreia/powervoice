@@ -63,7 +63,9 @@ describe("SaveAsDialog (ticket: Save As with bit-depth choice)", () => {
       path: "/home/user/out.wav",
       container: "wav",
       bits: "16",
+      dither: "tpdf",
       confirmClip: false,
+      confirmMultichannel: false,
     });
     expect(documentState().saveAsPrompt).toBeNull();
 
@@ -113,8 +115,72 @@ describe("SaveAsDialog (ticket: Save As with bit-depth choice)", () => {
       path: "/home/user/out.flac",
       container: "flac",
       bits: "24",
+      dither: "tpdf",
       confirmClip: false,
+      confirmMultichannel: false,
     });
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("H-20 (SPEC-005 §2.7): shows the Dither row for integer targets, TPDF preselected, and sends the chosen mode", async () => {
+    openSaveAsPrompt();
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(SaveAsDialog, { target });
+    flushSync();
+
+    const ditherRadios = target.querySelectorAll<HTMLInputElement>('input[name="save-as-dither"]');
+    expect([...ditherRadios].map((r) => r.value)).toEqual(["tpdf", "none"]);
+    expect(ditherRadios[0]!.checked).toBe(true);
+
+    const none = [...ditherRadios].find((r) => r.value === "none")!;
+    none.click();
+    flushSync();
+
+    let savedArgs: unknown;
+    mockIPC((cmd, args) => {
+      if (cmd === "plugin:dialog|save") {
+        return "/home/user/out.wav";
+      }
+      if (cmd === "document_save_as") {
+        savedArgs = args;
+        return {
+          name: "out.wav",
+          path: "/home/user/out.wav",
+          sample_rate_hz: 48_000,
+          len_samples: 0,
+          dirty: false,
+          audio_rev: 1,
+        };
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    target.querySelector<HTMLButtonElement>('[data-testid="save-as-choose"]')!.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+
+    expect((savedArgs as { dither: string }).dither).toBe("none");
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("H-20 (SPEC-005 §2.7): hides the Dither row for a 32-bit float target (never dithers)", () => {
+    openSaveAsPrompt();
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(SaveAsDialog, { target });
+    flushSync();
+
+    const bit32 = [
+      ...target.querySelectorAll<HTMLInputElement>('input[name="save-as-bits"]'),
+    ].find((r) => r.value === "32f")!;
+    bit32.click();
+    flushSync();
+
+    expect(target.querySelectorAll('input[name="save-as-dither"]').length).toBe(0);
 
     unmount(app);
     target.remove();

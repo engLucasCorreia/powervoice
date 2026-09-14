@@ -13,8 +13,11 @@ use crate::ipc::document_dto::{
 };
 use crate::ipc::error::IpcError;
 use crate::ipc::events::EventName;
-use crate::ipc::{IpcErrorCode, JobKind, JobProgressDto, JobState, emit_job_progress};
-use crate::settings::{BitDepth, MultichannelPolicy, SettingsStore};
+use crate::ipc::{
+    ImportStartedDto, IpcErrorCode, JobKind, JobProgressDto, JobState, emit_import_started,
+    emit_job_progress,
+};
+use crate::settings::{BitDepth, MultichannelPolicy, SaveDitherPref, SettingsStore};
 
 /// ADR-003 §2's request cap: 65 536 buckets, or 1 Mi samples in `RAW` mode (4 MiB either way).
 const MAX_BUCKETS: u32 = 65_536;
@@ -119,12 +122,16 @@ pub async fn document_open<R: Runtime>(
     let doc_for_notice = doc.clone();
     let path_buf = std::path::PathBuf::from(&path);
 
+    // H-20 (SPEC-005 §2.3): probed unconditionally now (not only when a channel choice is still
+    // needed) — its `sample_rate_hz`/`len_samples` are also the document shell's, shown to the UI
+    // right away via `import_started`, before the (potentially slow) decode loop even starts.
+    let probe_path = path_buf.clone();
+    let doc_for_probe = doc.clone();
+    let probe = run_blocking(move || doc_for_probe.probe(&probe_path)).await?;
+
     let downmix = match channel_choice {
         Some(choice) => choice.into(),
         None => {
-            let probe_path = path_buf.clone();
-            let doc_for_probe = doc.clone();
-            let probe = run_blocking(move || doc_for_probe.probe(&probe_path)).await?;
             let policy = settings.get().multichannel_policy;
             match resolve_policy_downmix(&probe, policy) {
                 Some(downmix) => downmix,
@@ -134,6 +141,21 @@ pub async fn document_open<R: Runtime>(
     };
 
     let (job_id, cancel) = doc.start_import_job();
+    let shell_name = path_buf
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if let Err(error) = emit_import_started(
+        &app,
+        ImportStartedDto {
+            job_id,
+            name: shell_name,
+            sample_rate_hz: probe.sample_rate_hz,
+            len_samples: probe.len_samples,
+        },
+    ) {
+        tracing::warn!(%error, "emitting import_started failed");
+    }
     if let Err(error) = emit_job_progress(
         &app,
         JobProgressDto {
@@ -255,24 +277,24 @@ fn touch_recent_file<R: Runtime>(
     }
 }
 
-/// T-306: turns the last open/save's pending sidecar notice, if any, into a `notice` event
-/// (SPEC-018 §2.5/§2.9's notice keys).
+/// T-306/H-20: turns the last open/save's pending sidecar/format notices, if any, into `notice`
+/// events (SPEC-018 §2.5/§2.9's notice keys; H-20's `format_mapped`/`metadata_dropped`) — a single
+/// save can now surface more than one (e.g. metadata dropped *and* markers not in FLAC).
 fn emit_sidecar_notice<R: Runtime>(app: &AppHandle<R>, doc: &DocumentService) {
-    let Some(info) = doc.take_sidecar_notice() else {
-        return;
-    };
     use crate::ipc::events::{Notice, NoticeLevel, emit_notice};
-    let level = if info.key.contains("sidecar_failed") {
-        NoticeLevel::Error
-    } else {
-        NoticeLevel::Warning
-    };
-    let mut notice = Notice::toast(level, info.key);
-    for (name, value) in info.params {
-        notice = notice.with_param(name, value);
-    }
-    if let Err(error) = emit_notice(app, notice) {
-        tracing::warn!(%error, "emitting a sidecar notice failed");
+    for info in doc.take_sidecar_notices() {
+        let level = if info.key.contains("sidecar_failed") {
+            NoticeLevel::Error
+        } else {
+            NoticeLevel::Warning
+        };
+        let mut notice = Notice::toast(level, info.key);
+        for (name, value) in info.params {
+            notice = notice.with_param(name, value);
+        }
+        if let Err(error) = emit_notice(app, notice) {
+            tracing::warn!(%error, "emitting a sidecar notice failed");
+        }
     }
 }
 
@@ -296,27 +318,34 @@ pub async fn document_probe(path: String) -> Result<DocumentProbeDto, IpcError> 
 ///
 /// T-209: `confirm_clip` bypasses SPEC-005 §2.8's clip prompt (the UI re-issues with `true` after
 /// "Clip and save"; `dialog.overs`'s `count`/`peak_dbfs` params come from the first refusal).
+/// H-20: `confirm_multichannel` bypasses SPEC-005 §2.4's "saving replaces the stereo source with
+/// mono" warning (`dialog.multichannel_source`, shown at most once per document).
 #[tauri::command]
 pub async fn document_save<R: Runtime>(
     app: AppHandle<R>,
     doc: State<'_, DocumentService>,
     overwrite: bool,
     confirm_clip: bool,
+    confirm_multichannel: bool,
 ) -> Result<DocumentDto, IpcError> {
     let doc = (*doc).clone();
     let doc_for_notice = doc.clone();
-    let info: DocumentDto = run_blocking(move || doc.save(overwrite, confirm_clip))
-        .await?
-        .into();
+    let info: DocumentDto =
+        run_blocking(move || doc.save(overwrite, confirm_clip, confirm_multichannel))
+            .await?
+            .into();
     emit_document_changed(&app, &info);
     emit_sidecar_notice(&app, &doc_for_notice);
     Ok(info)
 }
 
-/// Saves the current revision to `path` in `container` at `bits` (SPEC-005 §2.7), then binds the
-/// document to it. T-209: `container`/`bits` reach the saver from the Save As dialog's format row
-/// (WAV 16/24/32-bit float or FLAC 16/24); `confirm_clip` — see [`document_save`]'s doc comment.
+/// Saves the current revision to `path` in `container` at `bits`/`dither` (SPEC-005 §2.7), then
+/// binds the document to it. T-209: `container`/`bits` reach the saver from the Save As dialog's
+/// format row (WAV 16/24/32-bit float or FLAC 16/24); H-20: `dither` is the dialog's Dither row
+/// (TPDF/None, shown for 16/24-bit only); `confirm_clip`/`confirm_multichannel` — see
+/// [`document_save`]'s doc comment.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn document_save_as<R: Runtime>(
     app: AppHandle<R>,
     doc: State<'_, DocumentService>,
@@ -324,7 +353,9 @@ pub async fn document_save_as<R: Runtime>(
     path: String,
     container: crate::ipc::document_dto::SaveContainerDto,
     bits: BitDepth,
+    dither: SaveDitherPref,
     confirm_clip: bool,
+    confirm_multichannel: bool,
 ) -> Result<DocumentDto, IpcError> {
     let doc = (*doc).clone();
     let doc_for_notice = doc.clone();
@@ -334,7 +365,9 @@ pub async fn document_save_as<R: Runtime>(
             std::path::Path::new(&path),
             container.into(),
             bits,
+            dither,
             confirm_clip,
+            confirm_multichannel,
         )
     })
     .await?
@@ -640,6 +673,8 @@ mod tests {
             channel_peaks_dbfs: vec![-6.0, -60.0],
             identical_channels: identical,
             suggested_channel: suggested,
+            bits_per_sample: Some(24),
+            has_foreign_metadata: false,
         }
     }
 
@@ -656,6 +691,8 @@ mod tests {
             channel_peaks_dbfs: Vec::new(),
             identical_channels: false,
             suggested_channel: None,
+            bits_per_sample: Some(24),
+            has_foreign_metadata: false,
         }
     }
 

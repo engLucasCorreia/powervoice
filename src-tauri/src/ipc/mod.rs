@@ -64,8 +64,9 @@ pub use document_dto::{
 pub use dto::AppInfo;
 pub use error::{IpcError, IpcErrorCode};
 pub use events::{
-    EVENT_NAME_VARIANTS, EVENT_NAMES, EventName, JobKind, JobProgressDto, JobState, Notice,
-    NoticeLevel, emit_job_progress, emit_loudness_report, emit_normalize_result, emit_notice,
+    EVENT_NAME_VARIANTS, EVENT_NAMES, EventName, ImportStartedDto, JobKind, JobProgressDto,
+    JobState, Notice, NoticeLevel, emit_import_started, emit_job_progress, emit_loudness_report,
+    emit_normalize_result, emit_notice,
 };
 pub use export_commands::*;
 pub use export_dto::{

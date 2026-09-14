@@ -13,7 +13,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use vox_io::{BitDepth, write_wav};
+use vox_io::{BitDepth, DitherMode, write_wav};
 
 fn tmp_path(tag: &str) -> PathBuf {
     static N: AtomicU64 = AtomicU64::new(0);
@@ -78,7 +78,7 @@ fn wav_bytes_are_unchanged_by_the_dither_move_and_streaming_refactor() {
     ];
     for (tag, bits, expected_len, expected_hash) in cases {
         let path = tmp_path(tag);
-        write_wav(&path, 48_000, bits, &samples).unwrap();
+        write_wav(&path, 48_000, bits, DitherMode::Tpdf, &samples).unwrap();
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(bytes.len(), expected_len, "{tag}-bit: file length changed");
         assert_eq!(

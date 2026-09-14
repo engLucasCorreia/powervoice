@@ -13,6 +13,19 @@
 /// Every other block is dithered in full.
 pub const DITHER_BLOCK_SAMPLES: usize = 4096;
 
+/// H-20 (SPEC-005 §2.7/§2.8, `save_dither` parameter): the dither mode Save As offers for 16/24-bit
+/// targets, remembered as a preference. `Tpdf` is the SPEC-005 default; `None` rounds half away
+/// from zero with no added noise, for every sample (not only off-grid ones) — exactly what
+/// `vox_testkit::encode_int_sample` does, so a `None`-dithered save matches testkit's own encoder
+/// bit-exactly (AC-4). 32-bit float targets never dither regardless of this mode (never
+/// constructed with a [`StreamingQuantizer`] at all).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DitherMode {
+    #[default]
+    Tpdf,
+    None,
+}
+
 /// PCG32 XSH-RR (O'Neill 2014), the same construction as `vox_testkit::prng::Pcg32` but
 /// reimplemented here: `dsp` must not pull in `testkit` outside `dev-dependencies` (ADR-001 §3,
 /// §6). Fixed seed and stream, reset at the start of every save, so saving the same document
@@ -77,8 +90,8 @@ fn is_grid_exact(x: f32, scale: f32) -> bool {
 ///
 /// Equivalent to feeding the whole buffer to a single-call [`StreamingQuantizer`]; this is the
 /// convenient whole-buffer form callers that already hold everything in memory (FLAC export) use.
-pub fn quantize_dithered(samples: &[f32], bits: u32) -> (Vec<i32>, usize) {
-    let mut q = StreamingQuantizer::new(bits);
+pub fn quantize_dithered(samples: &[f32], bits: u32, mode: DitherMode) -> (Vec<i32>, usize) {
+    let mut q = StreamingQuantizer::new(bits, mode);
     let mut out = Vec::with_capacity(samples.len());
     let clipped = q.push(samples, &mut out);
     (out, clipped)
@@ -98,18 +111,22 @@ pub fn quantize_dithered(samples: &[f32], bits: u32) -> (Vec<i32>, usize) {
 pub struct StreamingQuantizer {
     rng: DitherRng,
     bits: u32,
+    mode: DitherMode,
     /// Total samples pushed so far, tracked only for the debug-build alignment assertion.
     pos: u64,
 }
 
 impl StreamingQuantizer {
-    /// A fresh quantizer for `bits`-bit output (16 or 24), RNG reset to the fixed seed (SPEC-005
-    /// §2.8: reset at the start of every save).
-    pub fn new(bits: u32) -> Self {
+    /// A fresh quantizer for `bits`-bit output (16 or 24) in `mode`, RNG reset to the fixed seed
+    /// (SPEC-005 §2.8: reset at the start of every save) — the RNG is always constructed, even in
+    /// [`DitherMode::None`] (where it is simply never drawn from), so switching modes never
+    /// changes the PRNG's state machine.
+    pub fn new(bits: u32, mode: DitherMode) -> Self {
         debug_assert!(bits == 16 || bits == 24);
         StreamingQuantizer {
             rng: DitherRng::new(),
             bits,
+            mode,
             pos: 0,
         }
     }
@@ -130,7 +147,12 @@ impl StreamingQuantizer {
         let mut clipped = 0usize;
         out.reserve(samples.len());
         for block in samples.chunks(DITHER_BLOCK_SAMPLES) {
-            let grid_exact = block.iter().all(|&x| is_grid_exact(x, scale));
+            // `DitherMode::None` (SPEC-005 §2.8 "Dither None rounds half away from zero") applies
+            // plain rounding to *every* sample uniformly — grid-exactness is irrelevant (an exact
+            // value rounds to itself either way) and the RNG is never drawn from, so a `None` save
+            // draws zero PRNG samples regardless of length.
+            let grid_exact =
+                self.mode == DitherMode::None || block.iter().all(|&x| is_grid_exact(x, scale));
             for &x in block {
                 if x.abs() > 1.0 {
                     clipped += 1;
@@ -157,7 +179,7 @@ mod tests {
     fn grid_exact_16_bit_values_round_trip_without_dither() {
         // Every value already an exact 16-bit grid point (i / 32768 for i in range).
         let samples: Vec<f32> = (-100..100).map(|i| i as f32 / 32_768.0).collect();
-        let (q, clipped) = quantize_dithered(&samples, 16);
+        let (q, clipped) = quantize_dithered(&samples, 16, DitherMode::Tpdf);
         assert_eq!(clipped, 0);
         let back: Vec<i32> = (-100..100).collect();
         assert_eq!(q, back, "grid-exact block must not be dithered");
@@ -166,7 +188,7 @@ mod tests {
     #[test]
     fn silence_stays_silence() {
         let samples = vec![0.0f32; DITHER_BLOCK_SAMPLES * 3];
-        let (q, clipped) = quantize_dithered(&samples, 16);
+        let (q, clipped) = quantize_dithered(&samples, 16, DitherMode::Tpdf);
         assert_eq!(clipped, 0);
         assert!(q.iter().all(|&v| v == 0));
     }
@@ -176,8 +198,8 @@ mod tests {
         let samples: Vec<f32> = (0..10_000)
             .map(|i| (i as f32 * 0.0137).sin() * 0.6)
             .collect();
-        let (a, _) = quantize_dithered(&samples, 16);
-        let (b, _) = quantize_dithered(&samples, 16);
+        let (a, _) = quantize_dithered(&samples, 16, DitherMode::Tpdf);
+        let (b, _) = quantize_dithered(&samples, 16, DitherMode::Tpdf);
         assert_eq!(
             a, b,
             "the RNG resets every call, so output is deterministic"
@@ -187,7 +209,7 @@ mod tests {
     #[test]
     fn out_of_range_samples_are_counted_and_clamped() {
         let samples = [1.5f32, -2.0, 0.0];
-        let (q, clipped) = quantize_dithered(&samples, 16);
+        let (q, clipped) = quantize_dithered(&samples, 16, DitherMode::Tpdf);
         assert_eq!(clipped, 2);
         assert_eq!(q[0], ((1i64 << 15) - 1) as i32);
         assert_eq!(q[1], -(1i64 << 15) as i32);
@@ -200,7 +222,7 @@ mod tests {
         let samples: Vec<f32> = (0..DITHER_BLOCK_SAMPLES)
             .map(|i| ((i as f32) * 0.3).sin() * 0.7 + 1.0 / 16_777_216.0)
             .collect();
-        let (q, _) = quantize_dithered(&samples, 16);
+        let (q, _) = quantize_dithered(&samples, 16, DitherMode::Tpdf);
         for (i, (&x, &v)) in samples.iter().zip(q.iter()).enumerate() {
             let plain = (f64::from(x) * 32_768.0).round() as i64;
             assert!(
@@ -224,12 +246,91 @@ mod tests {
             })
             .collect();
 
-        let (one_shot, one_shot_clipped) = quantize_dithered(&samples, 16);
+        let (one_shot, one_shot_clipped) = quantize_dithered(&samples, 16, DitherMode::Tpdf);
 
         // Feed it through in CHUNK_SAMPLES-sized blocks (65 536 = 16 * DITHER_BLOCK_SAMPLES), the
         // same block size `save_snapshot_wav` uses, so the last block is short and unaligned.
         const CHUNK_SAMPLES: usize = 65_536;
-        let mut streaming = StreamingQuantizer::new(16);
+        let mut streaming = StreamingQuantizer::new(16, DitherMode::Tpdf);
+        let mut out = Vec::new();
+        let mut streaming_clipped = 0usize;
+        for block in samples.chunks(CHUNK_SAMPLES) {
+            streaming_clipped += streaming.push(block, &mut out);
+        }
+
+        assert_eq!(streaming_clipped, one_shot_clipped);
+        assert_eq!(out, one_shot);
+    }
+
+    // --- H-20: DitherMode::None -------------------------------------------------------------
+
+    /// SPEC-005 §2.8: "Dither None rounds half away from zero" — for *every* sample uniformly,
+    /// not only the grid-exact ones (unlike TPDF, which only skips dither when the whole block is
+    /// grid-exact). Off-grid values here would be dithered under TPDF; under `None` they land
+    /// exactly on plain rounding instead — this is also testkit's `encode_int_sample` rule (AC-4).
+    #[test]
+    fn dither_none_rounds_plainly_with_no_added_noise_even_off_grid() {
+        let samples: Vec<f32> = (0..DITHER_BLOCK_SAMPLES)
+            .map(|i| ((i as f32) * 0.3).sin() * 0.7 + 1.0 / 16_777_216.0)
+            .collect();
+        let (q, _) = quantize_dithered(&samples, 16, DitherMode::None);
+        for (i, (&x, &v)) in samples.iter().zip(q.iter()).enumerate() {
+            let plain = (f64::from(x) * 32_768.0).round() as i64;
+            assert_eq!(
+                i64::from(v),
+                plain,
+                "sample {i}: None-dithered {v} != plain-rounded {plain}"
+            );
+        }
+    }
+
+    /// Half-LSB boundaries round half away from zero (not to even), at 16-bit scale.
+    #[test]
+    fn dither_none_rounds_half_lsb_boundaries_away_from_zero() {
+        let half_lsb = 0.5 / 32_768.0;
+        let samples = [half_lsb, -half_lsb, 3.0 * half_lsb, -3.0 * half_lsb];
+        let (q, clipped) = quantize_dithered(&samples, 16, DitherMode::None);
+        assert_eq!(clipped, 0);
+        assert_eq!(q, vec![1, -1, 2, -2]);
+    }
+
+    /// `DitherMode::None` never draws from the PRNG, so it must add no noise where TPDF would —
+    /// the two modes diverge on off-grid content...
+    #[test]
+    fn dither_none_differs_from_tpdf_on_off_grid_content() {
+        let samples: Vec<f32> = (0..DITHER_BLOCK_SAMPLES)
+            .map(|i| ((i as f32) * 0.7).sin() * 0.6 + 1.0 / 16_777_216.0)
+            .collect();
+        let (none, _) = quantize_dithered(&samples, 16, DitherMode::None);
+        let (tpdf, _) = quantize_dithered(&samples, 16, DitherMode::Tpdf);
+        assert_ne!(
+            none, tpdf,
+            "TPDF must add dither noise that plain rounding doesn't"
+        );
+    }
+
+    /// ...and agree on grid-exact content, where TPDF already skips dithering (SPEC-005 §2.8's
+    /// grid-exact passthrough applies regardless of the chosen dither mode).
+    #[test]
+    fn dither_none_matches_tpdf_on_grid_exact_content() {
+        let samples: Vec<f32> = (-100..100).map(|i| i as f32 / 32_768.0).collect();
+        let (none, _) = quantize_dithered(&samples, 16, DitherMode::None);
+        let (tpdf, _) = quantize_dithered(&samples, 16, DitherMode::Tpdf);
+        assert_eq!(none, tpdf);
+    }
+
+    /// H-02's streaming contract holds for `None` too: feeding the document through
+    /// `StreamingQuantizer` in `CHUNK_SAMPLES`-sized blocks matches one whole-buffer call.
+    #[test]
+    fn streaming_none_mode_matches_one_shot_quantization() {
+        let n = DITHER_BLOCK_SAMPLES * 5 + 321; // several full blocks plus a short tail
+        let samples: Vec<f32> = (0..n)
+            .map(|i| ((i as f32 * 12.9898).sin() * 43_758.547).fract() * 1.6 - 0.8)
+            .collect();
+        let (one_shot, one_shot_clipped) = quantize_dithered(&samples, 24, DitherMode::None);
+
+        const CHUNK_SAMPLES: usize = 65_536;
+        let mut streaming = StreamingQuantizer::new(24, DitherMode::None);
         let mut out = Vec::new();
         let mut streaming_clipped = 0usize;
         for block in samples.chunks(CHUNK_SAMPLES) {

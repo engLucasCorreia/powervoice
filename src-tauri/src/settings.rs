@@ -253,6 +253,21 @@ impl Default for SpectralDefaultsDto {
     }
 }
 
+// --- Save dither preference (H-20, SPEC-005 §2.7/§2.8, §3 `save_dither`) -----------------------
+
+/// Save As's Dither row (shown only for 16/24-bit targets — a 32-bit float target never dithers):
+/// `Tpdf` is the SPEC-005 default; `None` rounds half away from zero with no added noise. Chosen
+/// per save (`document_save_as`'s `dither` argument) and remembered here for the dialog's next
+/// default (SPEC-005 §3: "remembered as a preference").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum SaveDitherPref {
+    #[default]
+    Tpdf,
+    None,
+}
+
 // --- Multichannel open policy (T-209, SPEC-005 §2.4, §3 `multichannel_policy`) -----------------
 
 /// Settings → Files' remembered policy for opening a multichannel file: "Ask" (default) shows the
@@ -477,6 +492,9 @@ pub struct Settings {
     /// T-304 (SPEC-022 §2.13): recording offsets per (host, input, output, device rate).
     /// Additive field — the settings version stays 1.
     pub record_offsets: Vec<RecordOffsetEntry>,
+    /// H-20 (SPEC-005 §2.7/§3 `save_dither`): the Save As dialog's remembered Dither choice.
+    /// Additive field — the settings version stays 1.
+    pub save_dither: SaveDitherPref,
     #[serde(flatten)]
     #[ts(skip)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -502,6 +520,7 @@ impl Default for Settings {
             renderer_preference: RendererPreference::default(),
             record: RecordPrefsDto::default(),
             record_offsets: Vec::new(),
+            save_dither: SaveDitherPref::default(),
             extra: serde_json::Map::new(),
         }
     }
@@ -783,6 +802,29 @@ mod tests {
         let json = br#"{"version":1,"monitor_mode":"dry"}"#;
         let settings = parse_and_migrate(json).unwrap();
         assert_eq!(settings.spectral_defaults, SpectralDefaultsDto::default());
+    }
+
+    /// H-20 (SPEC-005 §3 `save_dither` "remembered as a preference"): round-trips through
+    /// save/load, and an older settings file with no `save_dither` key falls back to `Tpdf`
+    /// (container-level `#[serde(default)]`, same convention as `multichannel_policy`).
+    #[test]
+    fn save_dither_round_trips_and_falls_back_to_tpdf() {
+        let dir = temp_dir("save-dither");
+        let path = dir.join("settings.json");
+
+        let settings = Settings {
+            save_dither: SaveDitherPref::None,
+            ..Settings::default()
+        };
+        save(&path, &settings).unwrap();
+        let loaded = load_or_default(&path);
+        assert_eq!(loaded.save_dither, SaveDitherPref::None);
+
+        let json = br#"{"version":1,"monitor_mode":"dry"}"#;
+        let migrated = parse_and_migrate(json).unwrap();
+        assert_eq!(migrated.save_dither, SaveDitherPref::Tpdf);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// T-209 (SPEC-005 §2.4 "remembered policy"): round-trips through save/load, and an older

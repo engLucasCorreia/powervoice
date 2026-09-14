@@ -69,6 +69,11 @@ pub struct ImportProbe {
     pub identical_channels: bool,
     /// The silent-channel hint's preselected channel index (SPEC-005 §2.4), if any.
     pub suggested_channel: Option<usize>,
+    /// H-20 (SPEC-005 §2.6): the codec's reported bit depth, when it has one (WAV PCM variants,
+    /// FLAC) — the save-format promotion table's input alongside `codec`/`container`.
+    pub bits_per_sample: Option<u32>,
+    /// H-20 (SPEC-005 §2.10): the source carries metadata PowerVoice doesn't preserve.
+    pub has_foreign_metadata: bool,
 }
 
 /// Probes `path` (container/codec/rate/channels, SPEC-005 §2.3 step 1) and, for multichannel
@@ -111,6 +116,8 @@ pub fn probe_for_import(path: &Path) -> Result<ImportProbe> {
         channel_peaks_dbfs,
         identical_channels,
         suggested_channel,
+        bits_per_sample: info.track.bits_per_sample,
+        has_foreign_metadata: info.has_foreign_metadata,
     })
 }
 
@@ -123,6 +130,10 @@ pub struct ImportResult {
     pub source_channels: u16,
     pub damaged_packets: usize,
     pub non_finite_replaced: usize,
+    /// H-20 (SPEC-005 §2.10): the source carries metadata PowerVoice doesn't preserve on save
+    /// (`LIST INFO`, `bext`, `iXML`, `smpl`, ID3/Vorbis comments) — drives
+    /// `notice.save.metadata_dropped` at the document's first Save.
+    pub has_foreign_metadata: bool,
 }
 
 /// Streams `path` through [`vox_io::decode`], downmixing by `downmix` (SPEC-005 §2.4, §4.3), into
@@ -212,6 +223,7 @@ pub fn import_file(
         source_channels: channel_count,
         damaged_packets,
         non_finite_replaced: source.non_finite_replaced(),
+        has_foreign_metadata: info.has_foreign_metadata,
     })
 }
 

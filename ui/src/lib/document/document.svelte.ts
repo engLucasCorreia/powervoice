@@ -7,9 +7,11 @@ import type {
   DocumentProbeDto,
   DownmixChoiceDto,
   EventName,
+  ImportStartedDto,
   IpcError,
   JobProgressDto,
   SaveContainerDto,
+  SaveDitherPref,
 } from "../ipc/bindings";
 import {
   documentClose,
@@ -97,11 +99,14 @@ export interface SaveAsPrompt {
   suggestedName: string;
   defaultContainer: SaveContainerDto;
   defaultBits: BitDepth;
+  /** H-20 (SPEC-005 §3 `save_dither`): the remembered Settings preference. */
+  defaultDither: SaveDitherPref;
 }
 
-/** T-306 (SPEC-018 §2.9/§2.11): a confirmation the user must answer before Open/Save proceeds. */
+/** T-306/H-20 (SPEC-018 §2.9/§2.11, SPEC-005 §2.4): a confirmation the user must answer before
+ * Open/Save proceeds. */
 export interface ConfirmPrompt {
-  kind: "already_open" | "changed_on_disk";
+  kind: "already_open" | "changed_on_disk" | "multichannel_source";
   name: string;
 }
 
@@ -132,12 +137,16 @@ interface PendingClipPrompt extends ClipPrompt {
   resolve: (decision: ClipDecision) => void;
 }
 
-/** T-209 (SPEC-005 §2.3): the import job's progress, for `NormalizeProgressDialog` (shared
- * progress-dialog shape across every job in the app). */
+/** T-209/H-20 (SPEC-005 §2.3): the import job's progress, plus (H-20) the document shell shown
+ * immediately from `import_started` — file name, rate and (when the container states one)
+ * length — well before the import completes and `document_changed` swaps in the real document. */
 export interface ImportJobState {
   jobId: number;
   fraction: number;
   state: "running" | "done" | "cancelled" | "failed";
+  name: string;
+  sampleRateHz: number;
+  lenSamples: number | null;
 }
 
 let doc = $state<DocumentDto>({ ...EMPTY });
@@ -345,31 +354,87 @@ function isOversError(err: unknown): err is IpcError & { params: Record<string, 
   return isIpcError(err) && err.code === "needs_confirmation" && err.key === "dialog.overs";
 }
 
-/** T-209: ensures the `job_progress` listener (kind `import`) is attached, so `importJob` tracks
- * an import started by this or another call (mirrors `state/normalize.svelte.ts`'s
- * `ensureListening`). */
+/** H-20 (SPEC-005 §2.4): `dialog.multichannel_source`'s `name` param. */
+function isMultichannelSourceError(err: unknown): err is IpcError & { params: { name: string } } {
+  return (
+    isIpcError(err) && err.code === "needs_confirmation" && err.key === "dialog.multichannel_source"
+  );
+}
+
+/** T-209/H-20: ensures the `job_progress` (kind `import`) and `import_started` listeners are
+ * attached, so `importJob` tracks an import started by this or another call (mirrors
+ * `state/normalize.svelte.ts`'s `ensureListening`). */
 async function ensureImportProgressListening(): Promise<void> {
   if (unlistenImportProgress) {
     return;
   }
   try {
-    unlistenImportProgress = await listen<JobProgressDto>(
+    const unlistenProgress = await listen<JobProgressDto>(
       "job_progress" satisfies EventName,
       (event) => applyImportJobProgress(event.payload),
     );
+    const unlistenStarted = await listen<ImportStartedDto>(
+      "import_started" satisfies EventName,
+      (event) => applyImportStarted(event.payload),
+    );
+    unlistenImportProgress = () => {
+      unlistenProgress();
+      unlistenStarted();
+    };
   } catch {
     // Not running inside a real Tauri window (e.g. Vitest) — tests drive the store functions
     // directly instead.
   }
 }
 
+/**
+ * H-20 (SPEC-005 §2.3): "the editor immediately shows the document shell" — applies
+ * `import_started`, before the (potentially slow) decode loop even starts. The OS window title
+ * reflects it too ("Opening ‹name›… — PowerVoice"); a cancelled/failed import restores the
+ * previous document's title (`applyImportJobProgress`), and a successful one is overwritten by
+ * the `document_open` command's own `document_changed` at commit.
+ */
+export function applyImportStarted(payload: ImportStartedDto): void {
+  importJob = {
+    jobId: payload.job_id,
+    fraction: 0,
+    state: "running",
+    name: payload.name,
+    sampleRateHz: payload.sample_rate_hz,
+    lenSamples: payload.len_samples,
+  };
+  try {
+    void getCurrentWindow()
+      .setTitle(`${t("document.opening", { name: payload.name })} — PowerVoice`)
+      .catch(() => {});
+  } catch {
+    // Not running inside a Tauri window (e.g. Vitest) — nothing to update.
+  }
+}
+
 /** Applies one `job_progress` event to the store (kind `import` only) — a pure function so it's
- * directly testable (mirrors `state/normalize.svelte.ts`'s `applyNormalizeJobProgress`). */
+ * directly testable (mirrors `state/normalize.svelte.ts`'s `applyNormalizeJobProgress`). Preserves
+ * the document shell fields `import_started` set; a cancelled/failed job restores the window title
+ * to the (unchanged) current document's (SPEC-005 §2.3 "Cancel": no partial document is ever left
+ * open, so the title must not keep showing the abandoned import). */
 export function applyImportJobProgress(payload: JobProgressDto): void {
   if (payload.kind !== "import") {
     return;
   }
-  importJob = { jobId: payload.job_id, fraction: payload.fraction, state: payload.state };
+  importJob =
+    importJob && importJob.jobId === payload.job_id
+      ? { ...importJob, fraction: payload.fraction, state: payload.state }
+      : {
+          jobId: payload.job_id,
+          fraction: payload.fraction,
+          state: payload.state,
+          name: "",
+          sampleRateHz: 0,
+          lenSamples: null,
+        };
+  if (payload.state === "cancelled" || payload.state === "failed") {
+    updateWindowTitle(doc);
+  }
 }
 
 /** Cancels the running import job (`document_open_cancel`, best-effort). */
@@ -419,14 +484,16 @@ export async function openDocument(path: string): Promise<boolean> {
  * `overwrite: true` if the user picks "Overwrite". T-209 (SPEC-005 §2.8): also shows the clip
  * prompt on `dialog.overs` — "Clip and save" retries with `confirmClip: true`; "Save as 32-bit
  * float instead" saves the bound path as WAV 32-bit float instead (never clips); "Cancel" leaves
- * the document untouched.
+ * the document untouched. H-20 (SPEC-005 §2.4): also shows "saving replaces the stereo source
+ * with mono" on `dialog.multichannel_source` — Save retries with `confirmMultichannel: true`.
  */
 export async function saveDocument(): Promise<boolean> {
   let overwrite = false;
   let confirmClip = false;
+  let confirmMultichannel = false;
   for (;;) {
     try {
-      applyDoc(await documentSave(overwrite, confirmClip));
+      applyDoc(await documentSave(overwrite, confirmClip, confirmMultichannel));
       return true;
     } catch (err) {
       if (
@@ -455,6 +522,13 @@ export async function saveDocument(): Promise<boolean> {
         confirmClip = true;
         continue;
       }
+      if (isMultichannelSourceError(err)) {
+        if (!(await askConfirm("multichannel_source", err.params.name))) {
+          return false;
+        }
+        confirmMultichannel = true;
+        continue;
+      }
       report(err);
       return false;
     }
@@ -465,24 +539,29 @@ export const saveDocumentAs = (
   path: string,
   container: SaveContainerDto,
   bits: BitDepth,
+  dither: SaveDitherPref = "tpdf",
   confirmClip = false,
-): Promise<boolean> => run(() => documentSaveAs(path, container, bits, confirmClip));
+  confirmMultichannel = false,
+): Promise<boolean> =>
+  run(() => documentSaveAs(path, container, bits, dither, confirmClip, confirmMultichannel));
 
 /**
- * T-209 (SPEC-005 §2.8): drives a `document_save_as` call through the clip prompt, like
- * {@link saveDocument} does for plain Save — used by the Save As dialog's native picker
- * ({@link confirmSaveAsPrompt}), which can't just call {@link saveDocumentAs} directly since it
- * also needs to react to `dialog.overs`.
+ * T-209/H-20 (SPEC-005 §2.4/§2.8): drives a `document_save_as` call through the clip prompt and
+ * the multichannel-source warning, like {@link saveDocument} does for plain Save — used by the
+ * Save As dialog's native picker ({@link confirmSaveAsPrompt}), which can't just call
+ * {@link saveDocumentAs} directly since it also needs to react to those confirmations.
  */
 async function saveAsWithClipHandling(
   path: string,
   container: SaveContainerDto,
   bits: BitDepth,
+  dither: SaveDitherPref,
 ): Promise<boolean> {
   let confirmClip = false;
+  let confirmMultichannel = false;
   for (;;) {
     try {
-      applyDoc(await documentSaveAs(path, container, bits, confirmClip));
+      applyDoc(await documentSaveAs(path, container, bits, dither, confirmClip, confirmMultichannel));
       return true;
     } catch (err) {
       if (isOversError(err)) {
@@ -494,9 +573,16 @@ async function saveAsWithClipHandling(
           return false;
         }
         if (decision === "float") {
-          return saveDocumentAs(withExtension(path, "wav"), "wav", "32f");
+          return saveDocumentAs(withExtension(path, "wav"), "wav", "32f", dither);
         }
         confirmClip = true;
+        continue;
+      }
+      if (isMultichannelSourceError(err)) {
+        if (!(await askConfirm("multichannel_source", err.params.name))) {
+          return false;
+        }
+        confirmMultichannel = true;
         continue;
       }
       report(err);
@@ -525,7 +611,7 @@ async function saveForPrompt(): Promise<boolean> {
   if (typeof path !== "string") {
     return false;
   }
-  return (await saveDocumentAs(path, "wav", "24")) && !isModified(doc);
+  return (await saveDocumentAs(path, "wav", "24", "tpdf")) && !isModified(doc);
 }
 
 function askUnsavedChanges(name: string, effectSettingsOnly: boolean): Promise<UnsavedDecision> {
@@ -586,6 +672,8 @@ export function openSaveAsPrompt(): void {
       : (doc.name ?? "untitled.wav"),
     defaultContainer: isFlac ? "flac" : "wav",
     defaultBits: "24",
+    // H-20 (SPEC-005 §3 `save_dither`): the dialog's remembered preference.
+    defaultDither: settingsState().current?.save_dither ?? "tpdf",
   };
 }
 
@@ -593,10 +681,15 @@ export function cancelSaveAsPrompt(): void {
   saveAsPrompt = null;
 }
 
-/** Confirms the Save As prompt: shows the native save dialog, then saves in `container` at `bits`
- * if a path was chosen (running the clip prompt like plain Save, SPEC-005 §2.8). Called by
- * `SaveAsDialog` once the user picked a format/bit depth. */
-export async function confirmSaveAsPrompt(container: SaveContainerDto, bits: BitDepth): Promise<void> {
+/** Confirms the Save As prompt: shows the native save dialog, then saves in `container` at
+ * `bits`/`dither` if a path was chosen (running the clip and multichannel-source prompts like
+ * plain Save, SPEC-005 §2.4/§2.8). Called by `SaveAsDialog` once the user picked a format/bit
+ * depth/dither. Also remembers `dither` in Settings (SPEC-005 §3: "remembered as a preference"). */
+export async function confirmSaveAsPrompt(
+  container: SaveContainerDto,
+  bits: BitDepth,
+  dither: SaveDitherPref,
+): Promise<void> {
   const suggested = saveAsPrompt?.suggestedName ?? "untitled.wav";
   saveAsPrompt = null;
   const ext = container === "flac" ? "flac" : "wav";
@@ -605,7 +698,10 @@ export async function confirmSaveAsPrompt(container: SaveContainerDto, bits: Bit
     filters: container === "flac" ? FLAC_FILTERS : WAV_FILTERS,
   });
   if (typeof path === "string") {
-    await saveAsWithClipHandling(path, container, bits);
+    if (dither !== settingsState().current?.save_dither) {
+      void saveSettings({ save_dither: dither });
+    }
+    await saveAsWithClipHandling(path, container, bits, dither);
   }
 }
 

@@ -189,6 +189,7 @@ fn markers_lists_cue_points_and_regions() {
         &with_markers,
         info.sample_rate,
         vox_io::BitDepth::Int16,
+        vox_io::DitherMode::Tpdf,
         &samples,
         &markers,
     )

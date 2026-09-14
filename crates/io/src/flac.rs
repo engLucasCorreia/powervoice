@@ -49,7 +49,7 @@ use flacenc::config;
 use flacenc::error::Verify;
 use flacenc::source::MemSource;
 
-use vox_dsp::dither::quantize_dithered;
+use vox_dsp::dither::{DitherMode, quantize_dithered};
 
 use crate::atomic::{finish, temp_path_for};
 use crate::decode::DecodeSource;
@@ -85,9 +85,10 @@ pub fn write_flac(
     path: impl AsRef<Path>,
     sample_rate_hz: u32,
     bits: FlacBitDepth,
+    dither: DitherMode,
     samples: &[f32],
 ) -> Result<WriteReport> {
-    write_flac_impl(path, sample_rate_hz, bits, samples, |_tmp| {})
+    write_flac_impl(path, sample_rate_hz, bits, dither, samples, |_tmp| {})
 }
 
 /// [`write_flac`]'s body, with a hook that runs on the temp file after it's written but before
@@ -97,11 +98,12 @@ fn write_flac_impl(
     path: impl AsRef<Path>,
     sample_rate_hz: u32,
     bits: FlacBitDepth,
+    dither: DitherMode,
     samples: &[f32],
     after_write: impl FnOnce(&Path),
 ) -> Result<WriteReport> {
     let path = path.as_ref();
-    let (values, clipped) = quantize_dithered(samples, bits.bits());
+    let (values, clipped) = quantize_dithered(samples, bits.bits(), dither);
     let tmp = temp_path_for(path);
     if let Err(e) = write_temp(&tmp, sample_rate_hz, bits, &values) {
         let _ = std::fs::remove_file(&tmp);
@@ -243,8 +245,15 @@ mod tests {
         let wav_path = dir.join("decoded.wav");
 
         let samples = sine(997.0, -20.0, 0.5, 48_000);
-        write_flac(&flac_path, 48_000, FlacBitDepth::Int24, &samples).unwrap();
-        let expected = quantize_dithered(&samples, 24).0;
+        write_flac(
+            &flac_path,
+            48_000,
+            FlacBitDepth::Int24,
+            DitherMode::Tpdf,
+            &samples,
+        )
+        .unwrap();
+        let expected = quantize_dithered(&samples, 24, DitherMode::Tpdf).0;
 
         let status = Command::new("flac")
             .args(["-d", "-f", "-o"])
@@ -276,8 +285,15 @@ mod tests {
         // paths are exercised in the same file.
         let mut samples = vec![0.0f32; 4096];
         samples.extend(sine(440.0, -6.0, 0.2, 48_000));
-        write_flac(&flac_path, 48_000, FlacBitDepth::Int16, &samples).unwrap();
-        let expected = quantize_dithered(&samples, 16).0;
+        write_flac(
+            &flac_path,
+            48_000,
+            FlacBitDepth::Int16,
+            DitherMode::Tpdf,
+            &samples,
+        )
+        .unwrap();
+        let expected = quantize_dithered(&samples, 16, DitherMode::Tpdf).0;
 
         let status = Command::new("flac")
             .args(["-d", "-f", "-o"])
@@ -309,7 +325,7 @@ mod tests {
             for &bits in &[FlacBitDepth::Int16, FlacBitDepth::Int24] {
                 let path = dir.join(format!("out-{rate_hz}-{}.flac", bits.bits()));
                 let samples = sine(997.0, -20.0, 2.3, rate_hz);
-                write_flac(&path, rate_hz, bits, &samples).unwrap();
+                write_flac(&path, rate_hz, bits, DitherMode::Tpdf, &samples).unwrap();
 
                 let out = Command::new("flac")
                     .args(["-t", "-w"])
@@ -343,8 +359,15 @@ mod tests {
 
         let mut samples = vec![0.0f32; BLOCK_SIZE]; // grid-exact: not dithered
         samples.extend(sine(440.0, -6.0, 1.3, 48_000)); // off-grid tail: dithered
-        write_flac(&path, 48_000, FlacBitDepth::Int16, &samples).unwrap();
-        let expected = quantize_dithered(&samples, 16).0;
+        write_flac(
+            &path,
+            48_000,
+            FlacBitDepth::Int16,
+            DitherMode::Tpdf,
+            &samples,
+        )
+        .unwrap();
+        let expected = quantize_dithered(&samples, 16, DitherMode::Tpdf).0;
 
         let (info, mut source) = DecodeSource::open(&path).unwrap();
         assert_eq!(info.track.sample_rate_hz, 48_000);
@@ -366,6 +389,45 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// H-20: `DitherMode::None` reaches the FLAC encoder too — the decoded values match plain
+    /// rounding (`quantize_dithered(.., DitherMode::None)`), not TPDF.
+    #[test]
+    fn write_flac_with_dither_none_matches_plain_rounding() {
+        let dir = tmp_dir("dither-none");
+        let path = dir.join("out.flac");
+
+        let samples = sine(440.0, -6.0, 0.3, 48_000);
+        write_flac(
+            &path,
+            48_000,
+            FlacBitDepth::Int16,
+            DitherMode::None,
+            &samples,
+        )
+        .unwrap();
+        let expected_none = quantize_dithered(&samples, 16, DitherMode::None).0;
+        let expected_tpdf = quantize_dithered(&samples, 16, DitherMode::Tpdf).0;
+        assert_ne!(
+            expected_none, expected_tpdf,
+            "the fixture must actually exercise off-grid content"
+        );
+
+        let (_info, mut source) = DecodeSource::open(&path).unwrap();
+        let scale = (1i64 << 15) as f32;
+        let mut decoded = Vec::with_capacity(expected_none.len());
+        let mut buf = [0f32; BLOCK_SIZE];
+        loop {
+            let n = source.read_frames(&mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            decoded.extend(buf[..n].iter().map(|s| (s * scale).round() as i32));
+        }
+        assert_eq!(decoded, expected_none);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// SPEC-005 §2.11 acceptance test: a temp file that's corrupted after `flacenc` writes it (but
     /// before verify-before-rename runs) must fail the export — `write_flac` reports the error and
     /// leaves the target and the directory exactly as they were, instead of renaming corrupt bytes
@@ -377,12 +439,19 @@ mod tests {
         std::fs::write(&path, b"OLD-CONTENT").unwrap();
         let samples = sine(997.0, -20.0, 0.3, 48_000);
 
-        let err = write_flac_impl(&path, 48_000, FlacBitDepth::Int16, &samples, |tmp| {
-            let mut bytes = std::fs::read(tmp).unwrap();
-            let corrupt_at = bytes.len() - 10;
-            bytes[corrupt_at] ^= 0xFF;
-            std::fs::write(tmp, &bytes).unwrap();
-        })
+        let err = write_flac_impl(
+            &path,
+            48_000,
+            FlacBitDepth::Int16,
+            DitherMode::Tpdf,
+            &samples,
+            |tmp| {
+                let mut bytes = std::fs::read(tmp).unwrap();
+                let corrupt_at = bytes.len() - 10;
+                bytes[corrupt_at] ^= 0xFF;
+                std::fs::write(tmp, &bytes).unwrap();
+            },
+        )
         .unwrap_err();
         assert!(
             matches!(
@@ -416,7 +485,14 @@ mod tests {
         let tmp = temp_path_for(&path);
         std::fs::create_dir(&tmp).unwrap();
 
-        let err = write_flac(&path, 48_000, FlacBitDepth::Int16, &[0.0; 10]).unwrap_err();
+        let err = write_flac(
+            &path,
+            48_000,
+            FlacBitDepth::Int16,
+            DitherMode::Tpdf,
+            &[0.0; 10],
+        )
+        .unwrap_err();
         assert!(matches!(err, IoError::Io(_)));
         assert_eq!(std::fs::read(&path).unwrap(), b"OLD-CONTENT");
 
@@ -428,7 +504,14 @@ mod tests {
     fn write_flac_leaves_no_temp_file_on_success() {
         let dir = tmp_dir("atomic-ok");
         let path = dir.join("out.flac");
-        write_flac(&path, 48_000, FlacBitDepth::Int16, &[0.1, -0.2, 0.3]).unwrap();
+        write_flac(
+            &path,
+            48_000,
+            FlacBitDepth::Int16,
+            DitherMode::Tpdf,
+            &[0.1, -0.2, 0.3],
+        )
+        .unwrap();
         assert!(path.exists());
         let mut entries: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()

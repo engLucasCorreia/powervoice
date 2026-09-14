@@ -33,6 +33,7 @@ import type {
   RecoveredTakeActionDto,
   ResponseCurveDto,
   SaveContainerDto,
+  SaveDitherPref,
   Settings,
   SpectralViewDto,
   SpectroRequestDto,
@@ -357,26 +358,41 @@ export async function documentProbe(path: string): Promise<DocumentProbeDto> {
  * when re-issuing after the user picked "Overwrite".
  * T-209 (SPEC-005 §2.8): `confirmClip` bypasses the clip prompt — pass `true` only when
  * re-issuing after the user picked "Clip and save".
+ * H-20 (SPEC-005 §2.4): `confirmMultichannel` bypasses the "saving replaces the stereo source
+ * with mono" warning — pass `true` only when re-issuing after the user picked Save.
  */
-export async function documentSave(overwrite = false, confirmClip = false): Promise<DocumentDto> {
-  return invoke<DocumentDto>("document_save" satisfies CommandName, { overwrite, confirmClip });
+export async function documentSave(
+  overwrite = false,
+  confirmClip = false,
+  confirmMultichannel = false,
+): Promise<DocumentDto> {
+  return invoke<DocumentDto>("document_save" satisfies CommandName, {
+    overwrite,
+    confirmClip,
+    confirmMultichannel,
+  });
 }
 
 /**
- * S1-03/T-209: saves the current revision to `path` in `container` at `bits`, then binds the
- * document to it. `confirmClip` — see {@link documentSave}'s doc comment.
+ * S1-03/T-209/H-20: saves the current revision to `path` in `container` at `bits`/`dither`, then
+ * binds the document to it. `confirmClip`/`confirmMultichannel` — see {@link documentSave}'s doc
+ * comment.
  */
 export async function documentSaveAs(
   path: string,
   container: SaveContainerDto,
   bits: BitDepth,
+  dither: SaveDitherPref,
   confirmClip = false,
+  confirmMultichannel = false,
 ): Promise<DocumentDto> {
   return invoke<DocumentDto>("document_save_as" satisfies CommandName, {
     path,
     container,
     bits,
+    dither,
     confirmClip,
+    confirmMultichannel,
   });
 }
 

@@ -23,7 +23,7 @@ use vox_project::{
 };
 
 use crate::ipc::{IpcError, IpcErrorCode};
-use crate::settings::BitDepth;
+use crate::settings::{BitDepth, SaveDitherPref};
 
 /// Every completed retry-with-backoff attempt at closing a superseded session waits this long
 /// (ADR-002: the reader thread drops its `Arc<ChunkStore>` asynchronously after
@@ -111,9 +111,24 @@ struct OpenDocument {
     session: Session,
     path: Option<PathBuf>,
     save_bits: BitDepth,
-    /// T-209 (SPEC-005 §2.6/§2.7): the container Save writes — `Wav` unless an explicit Save As
-    /// chose `Flac` (see [`SaveContainer`]'s doc for why import never sets this to `Flac`).
+    /// T-209/H-20 (SPEC-005 §2.6/§2.7): the container Save writes — `Wav` unless the source was
+    /// FLAC (H-20: FLAC keeps FLAC, §2.6's promotion table) or an explicit Save As chose one.
     save_container: SaveContainer,
+    /// H-20 (SPEC-005 §3 `save_dither`): the dither mode Save writes at — the last explicit Save
+    /// As choice, or the SPEC-005 default (`Tpdf`) until one is made.
+    save_dither: SaveDitherPref,
+    /// H-20 (SPEC-005 §2.4 "saving over a multichannel source"): the source's original channel
+    /// count (1 for a mono source or a new recording), recorded at open/recovery.
+    source_channels: u16,
+    /// H-20: the first Save/Save As over a multichannel source has shown its warning — later
+    /// saves of the same document never ask again (SPEC-005 AC-10: "exactly once per document").
+    multichannel_warned: bool,
+    /// H-20 (SPEC-005 §2.10): the source carried metadata PowerVoice doesn't preserve (`LIST
+    /// INFO`, `bext`, `iXML`, `smpl`, ID3/Vorbis comments), recorded at open.
+    had_foreign_metadata: bool,
+    /// H-20: `notice.save.metadata_dropped` has already been shown once for this document (SPEC-
+    /// 005 §2.10: "the first Save").
+    metadata_notice_shown: bool,
     sidecar: SidecarState,
     /// T-301 (SPEC-004 §2.7): opened by crash recovery — modified and titled "(recovered)"
     /// until the first save.
@@ -134,6 +149,11 @@ impl OpenDocument {
             path,
             save_bits,
             save_container: SaveContainer::Wav,
+            save_dither: SaveDitherPref::default(),
+            source_channels: 1,
+            multichannel_warned: false,
+            had_foreign_metadata: false,
+            metadata_notice_shown: false,
             sidecar,
             recovered: false,
             state_digest: None,
@@ -415,11 +435,13 @@ struct Inner {
     /// concurrent edit can't race the job's eventual commit (which re-checks the snapshot anyway,
     /// [`DocumentService::finish_normalize_peak`]/[`Self::finish_normalize_lufs`]).
     normalize_busy: Mutex<bool>,
-    /// T-306: the last open/save's sidecar notice (mismatch/corrupt/too_new/unreadable/
-    /// items_dropped/save-failed), if any — [`DocumentService::take_sidecar_notice`] drains it.
-    /// A side channel rather than a return value so `open`/`save`/`save_as` keep returning
-    /// [`DocumentInfo`] like every other command result.
-    pending_sidecar_notice: Mutex<Option<SidecarNoticeInfo>>,
+    /// T-306/H-20: the last open/save's sidecar/format notices (mismatch/corrupt/too_new/
+    /// unreadable/items_dropped/save-failed/format_mapped/metadata_dropped/markers_not_in_flac),
+    /// if any — [`DocumentService::take_sidecar_notices`] drains them. A side channel rather than
+    /// a return value so `open`/`save`/`save_as` keep returning [`DocumentInfo`] like every other
+    /// command result. H-20 made this a `Vec`: a single save can now carry more than one notice
+    /// (e.g. metadata dropped *and* markers not in FLAC).
+    pending_sidecar_notice: Mutex<Vec<SidecarNoticeInfo>>,
     /// T-301 (SPEC-004 §2.4): the memory budget new sessions get and `set_memory_budget_mib`
     /// applies live.
     memory_budget_bytes: AtomicU64,
@@ -604,35 +626,72 @@ fn check_folder_writable(path: &Path) -> Result<(), IpcError> {
     }
 }
 
-/// `WavSource`'s container format → the save format a document opened from it keeps (SPEC-005
-/// §2.6, restricted to this ticket's three supported variants — 8-bit/A-law/µ-law/32-int/64-float
-/// mapping is deferred, S1-02 ticket scope already documents that read of those variants is
-/// rejected, so no mapping table is needed here).
-fn save_bits_for(format: vox_io::WavFormat) -> BitDepth {
-    match (format.sample_format, format.bits_per_sample) {
-        (vox_io::SampleFormat::Float, 32) => BitDepth::Bit32Float,
-        (vox_io::SampleFormat::Int, 16) => BitDepth::Bit16,
-        _ => BitDepth::Bit24,
+/// H-20 (SPEC-005 §2.6): the save format (container + bit depth) an imported document keeps, and
+/// whether that's a **mapped** format — different from the source, which fires
+/// `notice.open.format_mapped` at open.
+///
+/// Dispatches on `probe.codec` — symphonia's PCM decoder short name (`pcm_s16le`, `pcm_u8`,
+/// `pcm_alaw`, …) — rather than `probe.container`, because it doesn't matter whether `hound` could
+/// have parsed the file (every WAV variant SPEC-005 §2.2 tolerates decodes through the same `pcm`
+/// codec family). **Fixes a real bug found while implementing this**: the previous
+/// `save_bits_for_import` compared `probe.container` against the literal `"wav"`, but symphonia's
+/// WAV reader's `format_info().short_name` is actually `"wave"` — that comparison never matched,
+/// so *every* WAV import (via the T-209 `document_open` job path) silently fell through to the
+/// lossy-import default of WAV 24-bit, regardless of its real bit depth. `vox_io::probe`/
+/// `vox_project::probe_for_import` already carry `codec` and (H-20 addition) `bits_per_sample`, so
+/// this needs no extra file read.
+fn save_format_for_import(probe: &ImportProbe) -> (SaveContainer, BitDepth, bool) {
+    match probe.container.as_str() {
+        "wave" => match probe.codec.as_str() {
+            "pcm_s16le" | "pcm_s16be" => (SaveContainer::Wav, BitDepth::Bit16, false),
+            "pcm_s24le" | "pcm_s24be" => (SaveContainer::Wav, BitDepth::Bit24, false),
+            "pcm_f32le" | "pcm_f32be" => (SaveContainer::Wav, BitDepth::Bit32Float, false),
+            // SPEC-005 §2.6: 8-bit unsigned, A-law and µ-law all map to WAV 16-bit.
+            "pcm_u8" | "pcm_alaw" | "pcm_mulaw" => (SaveContainer::Wav, BitDepth::Bit16, true),
+            // 32-bit int and 64-bit float map to WAV 32-bit float (the only written format that
+            // keeps everything PowerVoice holds internally).
+            "pcm_s32le" | "pcm_s32be" | "pcm_f64le" | "pcm_f64be" => {
+                (SaveContainer::Wav, BitDepth::Bit32Float, true)
+            }
+            // A PCM variant this table doesn't name yet: the safe SPEC-005 §2.6 default.
+            _ => (SaveContainer::Wav, BitDepth::Bit24, true),
+        },
+        // SPEC-005 §2.6: an opened FLAC saves as FLAC — ≤16-bit stays FLAC 16 (8/12-bit promoted
+        // losslessly, no notice), 17-24-bit stays FLAC 24 (no notice), 25-32-bit is promoted (and
+        // dithered) down to FLAC 24, with the format-mapped notice.
+        "flac" => match probe.bits_per_sample {
+            Some(bits) if bits <= 16 => (SaveContainer::Flac, BitDepth::Bit16, false),
+            Some(bits) if bits <= 24 => (SaveContainer::Flac, BitDepth::Bit24, false),
+            Some(_) => (SaveContainer::Flac, BitDepth::Bit24, true),
+            None => (SaveContainer::Flac, BitDepth::Bit24, false),
+        },
+        // MP3/M4A/Ogg Vorbis (SPEC-005 §2.6): Save always acts as Save As at WAV 24-bit; the
+        // table has no notice at open for these.
+        _ => (SaveContainer::Wav, BitDepth::Bit24, false),
     }
 }
 
-/// T-202: the save format an *imported* document keeps (SPEC-005 §2.6), generalized beyond
-/// `save_bits_for`'s plain-WAV table to every format `vox_project::import_file` now accepts.
-///
-/// **Scope note:** this reuses `save_bits_for`'s exact table for a WAV `hound` can parse (16/24-
-/// bit int, 32-bit float — a cheap header-only re-open; `vox_io::read_wav` never reads samples
-/// until `read_mono` is called, so this costs one extra file open, not a second decode). Every
-/// WAV variant hound can't parse (8-bit/A-law/µ-law/32-bit int/64-bit float/`EXTENSIBLE`) and
-/// every lossy/FLAC container default to WAV 24-bit, matching SPEC-005 §2.6's "lossy imports
-/// default to WAV 24-bit" — the exact variant->16/32f promotion table for those, and lossy
-/// imports' Save-acts-as-Save-As routing, are Save's job (T-201, out of this ticket's scope).
-fn save_bits_for_import(path: &Path, container: &str) -> BitDepth {
-    if container == "wav"
-        && let Ok((_, _, source)) = vox_io::read_wav(path)
-    {
-        return save_bits_for(source.format());
-    }
-    BitDepth::Bit24
+/// H-20 (SPEC-005 §2.6): "This ‹from› ‹container› will be saved as ‹to›" — the two bit-depth
+/// descriptions `notice.open.format_mapped` needs, derived the same way
+/// [`save_format_for_import`] decided the mapping.
+fn format_mapped_notice_params(probe: &ImportProbe, to: BitDepth) -> (&'static str, &'static str) {
+    let from = match probe.codec.as_str() {
+        "pcm_u8" => "8-bit",
+        "pcm_alaw" => "A-law",
+        "pcm_mulaw" => "µ-law",
+        "pcm_s32le" | "pcm_s32be" => "32-bit int",
+        "pcm_f64le" | "pcm_f64be" => "64-bit float",
+        _ => match probe.bits_per_sample {
+            Some(bits) if bits > 24 => "25-32-bit",
+            _ => "unusual",
+        },
+    };
+    let to = match to {
+        BitDepth::Bit16 => "16-bit",
+        BitDepth::Bit24 => "24-bit",
+        BitDepth::Bit32Float => "32-bit float",
+    };
+    (from, to)
 }
 
 impl From<BitDepth> for vox_io::BitDepth {
@@ -645,11 +704,19 @@ impl From<BitDepth> for vox_io::BitDepth {
     }
 }
 
-/// T-209 (SPEC-005 §2.6/§2.7): the container Save/Save As writes. Import always keeps `Wav`
-/// (deviation note: SPEC-005 §2.6's table has an opened FLAC keep FLAC as its save format; T-202's
-/// existing `save_bits_for_import` doesn't distinguish FLAC's own bit depth yet and already
-/// defaulted every non-WAV import to WAV 24-bit — this ticket doesn't change that, see the ticket
-/// report). Only an explicit Save As can choose `Flac`.
+/// H-20 (SPEC-005 §2.8): Save As's Dither row -> `vox_dsp::dither::DitherMode`.
+impl From<SaveDitherPref> for vox_io::DitherMode {
+    fn from(pref: SaveDitherPref) -> Self {
+        match pref {
+            SaveDitherPref::Tpdf => vox_io::DitherMode::Tpdf,
+            SaveDitherPref::None => vox_io::DitherMode::None,
+        }
+    }
+}
+
+/// T-209/H-20 (SPEC-005 §2.6/§2.7): the container Save/Save As writes. Import keeps `Flac` for a
+/// FLAC source and `Wav` for everything else (§2.6's table — [`save_format_for_import`]); an
+/// explicit Save As can freely choose either.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SaveContainer {
     Wav,
@@ -685,6 +752,22 @@ fn clip_confirmation_error(overs: OversInfo) -> IpcError {
         .with_param("peak_dbfs", format!("{:.2}", overs.peak_dbfs))
 }
 
+/// H-20 (SPEC-005 §2.4 "Saving over a multichannel source"): "‹name› is a stereo file. Saving
+/// replaces it with a mono file." The UI's **Save**/primary choice re-issues with
+/// `confirm_multichannel: true`; **Cancel** does nothing (a dedicated **Save As…** shortcut from
+/// inside this dialog is deferred — the menu's own Save As… already covers it, ticket report).
+fn multichannel_confirmation_error(path: &Path) -> IpcError {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    IpcError::new(
+        IpcErrorCode::NeedsConfirmation,
+        "dialog.multichannel_source",
+    )
+    .with_param("name", name)
+}
+
 fn format_tag(container: SaveContainer, bits: BitDepth) -> &'static str {
     match (container, bits) {
         (SaveContainer::Wav, BitDepth::Bit16) => "wav16",
@@ -695,21 +778,35 @@ fn format_tag(container: SaveContainer, bits: BitDepth) -> &'static str {
     }
 }
 
-/// T-209 (SPEC-005 §2.6, §2.11): maps `container`/`bits` to the sidecar's `save_format` fields.
-fn save_format_model(container: SaveContainer, bits: BitDepth) -> SaveFormatModel {
-    let (container_str, sample_format, dither) = match (container, bits) {
-        (SaveContainer::Wav, BitDepth::Bit16) => ("wav", "pcm16", "tpdf"),
-        (SaveContainer::Wav, BitDepth::Bit24) => ("wav", "pcm24", "tpdf"),
-        (SaveContainer::Wav, BitDepth::Bit32Float) => ("wav", "f32", "none"),
-        (SaveContainer::Flac, BitDepth::Bit16) => ("flac", "pcm16", "tpdf"),
+/// T-209/H-20 (SPEC-005 §2.6, §2.8, §2.11): maps `container`/`bits`/`dither` to the sidecar's
+/// `save_format` fields. A float target never dithers (`dither` is ignored: always `"none"`),
+/// whatever `dither` says.
+fn save_format_model(
+    container: SaveContainer,
+    bits: BitDepth,
+    dither: SaveDitherPref,
+) -> SaveFormatModel {
+    let (container_str, sample_format) = match (container, bits) {
+        (SaveContainer::Wav, BitDepth::Bit16) => ("wav", "pcm16"),
+        (SaveContainer::Wav, BitDepth::Bit24) => ("wav", "pcm24"),
+        (SaveContainer::Wav, BitDepth::Bit32Float) => ("wav", "f32"),
+        (SaveContainer::Flac, BitDepth::Bit16) => ("flac", "pcm16"),
         // FLAC never carries 32-bit float (`invalid_flac_bit_depth` refuses that combination
         // before this is reached); every other bit depth requested with FLAC saves as 24-bit.
-        (SaveContainer::Flac, _) => ("flac", "pcm24", "tpdf"),
+        (SaveContainer::Flac, _) => ("flac", "pcm24"),
+    };
+    let dither_str = if bits == BitDepth::Bit32Float {
+        "none"
+    } else {
+        match dither {
+            SaveDitherPref::Tpdf => "tpdf",
+            SaveDitherPref::None => "none",
+        }
     };
     SaveFormatModel {
         container: container_str.to_string(),
         sample_format: sample_format.to_string(),
-        dither: dither.to_string(),
+        dither: dither_str.to_string(),
         extra: Default::default(),
     }
 }
@@ -737,7 +834,7 @@ fn current_rack_value(engine: &EngineHandle) -> serde_json::Value {
 /// `doc.sidecar.persisted_digest`'s baseline (recorded at open and after every successful sidecar
 /// write).
 fn sidecar_dirty_of(engine: &EngineHandle, doc: &OpenDocument) -> bool {
-    let save_format = save_format_model(doc.save_container, doc.save_bits);
+    let save_format = save_format_model(doc.save_container, doc.save_bits, doc.save_dither);
     let markers = current_marker_items(doc);
     let rack = current_rack_value(engine);
     vox_project::sidecar::persisted_digest(&save_format, &markers, &rack)
@@ -873,8 +970,8 @@ fn info_of(engine: &EngineHandle, doc: Option<&OpenDocument>) -> DocumentInfo {
 }
 
 /// The save format a recovered document keeps: its last save's (`wav16`/`wav24`/`wav32f`/
-/// `flac16`/`flac24`, T-209), else the source file's (SPEC-005 §2.6, always `Wav` — see
-/// [`SaveContainer`]'s doc), else WAV 24-bit.
+/// `flac16`/`flac24`, T-209), else the source file's (SPEC-005 §2.6, H-20:
+/// [`save_format_for_import`] — FLAC keeps FLAC), else WAV 24-bit.
 fn save_format_for_recovery(report: &vox_project::RecoveryReport) -> (SaveContainer, BitDepth) {
     match report.saved.as_ref().map(|s| s.format.as_str()) {
         Some("wav16") => return (SaveContainer::Wav, BitDepth::Bit16),
@@ -885,10 +982,13 @@ fn save_format_for_recovery(report: &vox_project::RecoveryReport) -> (SaveContai
         _ => {}
     }
     match &report.source {
-        Some(source) if source.path.exists() => (
-            SaveContainer::Wav,
-            save_bits_for_import(&source.path, &source.format),
-        ),
+        Some(source) if source.path.exists() => match vox_project::probe_for_import(&source.path) {
+            Ok(probe) => {
+                let (container, bits, _mapped) = save_format_for_import(&probe);
+                (container, bits)
+            }
+            Err(_) => (SaveContainer::Wav, BitDepth::Bit24),
+        },
         _ => (SaveContainer::Wav, BitDepth::Bit24),
     }
 }
@@ -941,7 +1041,7 @@ impl DocumentService {
             open: Mutex::new(None),
             clipboard: Mutex::new(None),
             normalize_busy: Mutex::new(false),
-            pending_sidecar_notice: Mutex::new(None),
+            pending_sidecar_notice: Mutex::new(Vec::new()),
             memory_budget_bytes: AtomicU64::new(StoreOptions::default().memory_budget_bytes),
             session_dirs: Mutex::new(()),
             import_jobs: Mutex::new(HashMap::new()),
@@ -1090,7 +1190,7 @@ impl DocumentService {
             (sidecar.file_size_bytes, sidecar.file_mtime_unix_ms) = file_facts(p);
         }
         let snapshot = session.current();
-        let save_format = save_format_model(save_container, save_bits);
+        let save_format = save_format_model(save_container, save_bits, SaveDitherPref::default());
         let markers = sidecar.marker_meta.build_items(&snapshot.markers);
         let rack = current_rack_value(&self.0.engine);
         sidecar.persisted_digest =
@@ -1375,7 +1475,7 @@ impl DocumentService {
             }
         }
         let probe = vox_project::probe_for_import(path).map_err(document_error)?;
-        let save_bits = save_bits_for_import(path, &probe.container);
+        let (save_container, save_bits, format_mapped) = save_format_for_import(&probe);
         let mut config = SessionConfig::new(probe.sample_rate_hz);
         // T-306 (SPEC-018 §2.11): `meta.json`'s `source_path` is what the already-open scan
         // matches on — without it, no session would ever look "already open".
@@ -1444,7 +1544,15 @@ impl DocumentService {
             sidecar.view = sidecar_doc.view.clone();
         }
         if let Some(notice) = &load.notice {
-            self.set_sidecar_notice(sidecar_notice_info(notice, &sidecar_path));
+            self.push_sidecar_notice(sidecar_notice_info(notice, &sidecar_path));
+        }
+        // H-20 (SPEC-005 §2.6): the source format/depth was mapped to a different save format.
+        if format_mapped {
+            let (from, to) = format_mapped_notice_params(&probe, save_bits);
+            self.push_sidecar_notice(SidecarNoticeInfo {
+                key: "notice.open.format_mapped",
+                params: vec![("from", from.to_string()), ("to", to.to_string())],
+            });
         }
 
         let store = Arc::clone(session.store());
@@ -1462,7 +1570,7 @@ impl DocumentService {
             .and_then(|m| m.modified().ok())
             .map(unix_ms_of)
             .unwrap_or(0);
-        let save_format = save_format_model(SaveContainer::Wav, save_bits);
+        let save_format = save_format_model(save_container, save_bits, SaveDitherPref::default());
         let markers = sidecar.marker_meta.build_items(&snapshot.markers);
         let rack = current_rack_value(&self.0.engine);
         sidecar.persisted_digest =
@@ -1470,13 +1578,12 @@ impl DocumentService {
         sidecar.last_saved_audio_rev = snapshot.audio_rev;
         sidecar.last_written_markers = markers;
 
+        let mut doc = OpenDocument::new(session, Some(path.to_path_buf()), save_bits, sidecar);
+        doc.save_container = save_container;
+        doc.source_channels = import.source_channels;
+        doc.had_foreign_metadata = import.has_foreign_metadata;
         let mut guard = self.0.open.lock().unwrap();
-        let previous = guard.replace(OpenDocument::new(
-            session,
-            Some(path.to_path_buf()),
-            save_bits,
-            sidecar,
-        ));
+        let previous = guard.replace(doc);
         let info = info_of(&self.0.engine, guard.as_ref());
         drop(guard);
         if let Some(previous) = previous {
@@ -1485,13 +1592,14 @@ impl DocumentService {
         Ok(info)
     }
 
-    /// Drains the last open/save's sidecar notice, if any (see [`Inner::pending_sidecar_notice`]).
-    pub fn take_sidecar_notice(&self) -> Option<SidecarNoticeInfo> {
-        self.0.pending_sidecar_notice.lock().unwrap().take()
+    /// Drains the last open/save's sidecar/format notices, if any (H-20: now possibly more than
+    /// one — see [`Inner::pending_sidecar_notice`]).
+    pub fn take_sidecar_notices(&self) -> Vec<SidecarNoticeInfo> {
+        std::mem::take(&mut self.0.pending_sidecar_notice.lock().unwrap())
     }
 
-    fn set_sidecar_notice(&self, notice: SidecarNoticeInfo) {
-        *self.0.pending_sidecar_notice.lock().unwrap() = Some(notice);
+    fn push_sidecar_notice(&self, notice: SidecarNoticeInfo) {
+        self.0.pending_sidecar_notice.lock().unwrap().push(notice);
     }
 
     /// T-306 (SPEC-018 §2.6.5): merges `spectral` into the open document's `view` JSON for the
@@ -1565,12 +1673,22 @@ impl DocumentService {
     /// "Clip and save"; picking "Save as 32-bit float instead" is a `document_save_as` call to the
     /// same path at `Bit32Float` instead, which never needs this flag — float overs are never a
     /// clip). The check only runs for an integer save format (16/24-bit, WAV or FLAC).
-    pub fn save(&self, overwrite: bool, confirm_clip: bool) -> Result<DocumentInfo, IpcError> {
+    ///
+    /// `confirm_multichannel` bypasses SPEC-005 §2.4's "saving replaces the stereo source with
+    /// mono" warning (the UI re-issues with `true` after the user picks Save) — shown at most once
+    /// per document ([`OpenDocument::multichannel_warned`]).
+    pub fn save(
+        &self,
+        overwrite: bool,
+        confirm_clip: bool,
+        confirm_multichannel: bool,
+    ) -> Result<DocumentInfo, IpcError> {
         let mut guard = self.0.open.lock().unwrap();
         let doc = guard.as_mut().ok_or_else(no_document)?;
         let path = doc.path.clone().ok_or_else(untitled)?;
         let container = doc.save_container;
         let bits = doc.save_bits;
+        let dither = doc.save_dither;
         if !overwrite && changed_on_disk(doc, &path) {
             return Err(changed_on_disk_error(&path));
         }
@@ -1580,25 +1698,31 @@ impl DocumentService {
         if !confirm_clip && let Some(overs) = check_overs(doc, bits)? {
             return Err(clip_confirmation_error(overs));
         }
-        if let Some(notice) = save_to(doc, &self.0.engine, &path, container, bits)? {
-            self.set_sidecar_notice(notice);
+        if !confirm_multichannel && doc.source_channels > 1 && !doc.multichannel_warned {
+            return Err(multichannel_confirmation_error(&path));
         }
+        for notice in save_to(doc, &self.0.engine, &path, container, bits, dither)? {
+            self.push_sidecar_notice(notice);
+        }
+        doc.multichannel_warned = true;
         doc.recovered = false;
         Ok(info_of(&self.0.engine, guard.as_ref()))
     }
 
-    /// Writes the current revision to `path` in `container` at `bits` (always a full save,
-    /// SPEC-018 §2.3), then binds the document to it. `error.save.flac_needs_int_bits` for
+    /// Writes the current revision to `path` in `container` at `bits`/`dither` (always a full
+    /// save, SPEC-018 §2.3), then binds the document to it. `error.save.flac_needs_int_bits` for
     /// `Flac` + `Bit32Float` (SPEC-005 §2.6/§2.11 — FLAC has no float format).
     ///
-    /// `confirm_clip`: see [`Self::save`]'s doc comment — same contract, checked against the
-    /// requested `bits` (not the document's currently bound one).
+    /// `confirm_clip`/`confirm_multichannel`: see [`Self::save`]'s doc comment — same contract,
+    /// checked against the requested `bits` (not the document's currently bound one).
     pub fn save_as(
         &self,
         path: &Path,
         container: SaveContainer,
         bits: BitDepth,
+        dither: SaveDitherPref,
         confirm_clip: bool,
+        confirm_multichannel: bool,
     ) -> Result<DocumentInfo, IpcError> {
         if container == SaveContainer::Flac && bits == BitDepth::Bit32Float {
             return Err(invalid_flac_bit_depth());
@@ -1608,16 +1732,21 @@ impl DocumentService {
         if !confirm_clip && let Some(overs) = check_overs(doc, bits)? {
             return Err(clip_confirmation_error(overs));
         }
+        if !confirm_multichannel && doc.source_channels > 1 && !doc.multichannel_warned {
+            return Err(multichannel_confirmation_error(path));
+        }
         // Force a full save: a different path (or, potentially, format) is never a sidecar-only
         // write. Bumping the recorded audio_rev back one guarantees `save_to`'s "audio changed"
         // check fires even when Save As targets the very same content just saved in place.
         doc.sidecar.last_saved_audio_rev = doc.sidecar.last_saved_audio_rev.wrapping_sub(1);
-        if let Some(notice) = save_to(doc, &self.0.engine, path, container, bits)? {
-            self.set_sidecar_notice(notice);
+        for notice in save_to(doc, &self.0.engine, path, container, bits, dither)? {
+            self.push_sidecar_notice(notice);
         }
         doc.path = Some(path.to_path_buf());
         doc.save_bits = bits;
         doc.save_container = container;
+        doc.save_dither = dither;
+        doc.multichannel_warned = true;
         doc.recovered = false;
         Ok(info_of(&self.0.engine, guard.as_ref()))
     }
@@ -2652,9 +2781,10 @@ fn save_to(
     path: &Path,
     container: SaveContainer,
     bits: BitDepth,
-) -> Result<Option<SidecarNoticeInfo>, IpcError> {
+    dither: SaveDitherPref,
+) -> Result<Vec<SidecarNoticeInfo>, IpcError> {
     let snapshot = doc.session.current();
-    let save_format = save_format_model(container, bits);
+    let save_format = save_format_model(container, bits, dither);
     let markers = current_marker_items(doc);
     let rack = current_rack_value(engine);
 
@@ -2662,6 +2792,7 @@ fn save_to(
         || markers != doc.sidecar.last_written_markers
         || bits != doc.save_bits
         || container != doc.save_container
+        || dither != doc.save_dither
         || std::fs::metadata(path).is_err();
 
     // SPEC-004 §2.6, AC-12: leftovers of an interrupted save by a dead process go first.
@@ -2674,14 +2805,20 @@ fn save_to(
         match container {
             SaveContainer::Wav => {
                 let wav_markers: Vec<Marker> = markers.iter().map(marker_from_item).collect();
-                vox_project::save_snapshot_wav(&mut reader, path, bits.into(), &wav_markers)
-                    .map_err(|err| match err {
-                        ProjectError::Wav(io_err) => io_save_error(io_err),
-                        other => document_error(other),
-                    })?;
+                vox_project::save_snapshot_wav(
+                    &mut reader,
+                    path,
+                    bits.into(),
+                    dither.into(),
+                    &wav_markers,
+                )
+                .map_err(|err| match err {
+                    ProjectError::Wav(io_err) => io_save_error(io_err),
+                    other => document_error(other),
+                })?;
             }
             SaveContainer::Flac => {
-                save_snapshot_flac(&mut reader, path, flac_bits(bits)).map_err(
+                save_snapshot_flac(&mut reader, path, flac_bits(bits), dither.into()).map_err(
                     |err| match err {
                         ProjectError::Wav(io_err) => io_save_error(io_err),
                         other => document_error(other),
@@ -2751,6 +2888,12 @@ fn save_to(
         .unwrap_or(0);
     doc.sidecar.last_saved_audio_rev = snapshot.audio_rev;
 
+    let name = || {
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    let mut notices = Vec::new();
     if sidecar_written {
         doc.sidecar.needs_backup = false;
         doc.sidecar.last_written_markers = markers.clone();
@@ -2760,16 +2903,11 @@ fn save_to(
         // sidecar write already has a more urgent notice below, and the sidecar (M3+) is where
         // markers actually survive a FLAC save, so that notice matters more when it's missing too.
         if markers_not_in_flac {
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            return Ok(Some(SidecarNoticeInfo {
+            notices.push(SidecarNoticeInfo {
                 key: "notice.save.markers_not_in_flac",
-                params: vec![("name", name), ("count", markers.len().to_string())],
-            }));
+                params: vec![("name", name()), ("count", markers.len().to_string())],
+            });
         }
-        Ok(None)
     } else {
         // `sidecar.persisted_digest`/`needs_backup` are left untouched: `sidecar_dirty` stays
         // set, and the next Save retries a sidecar-only write (SPEC-018 §2.9).
@@ -2778,15 +2916,22 @@ fn save_to(
         } else {
             "notice.save.sidecar_failed"
         };
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        Ok(Some(SidecarNoticeInfo {
+        notices.push(SidecarNoticeInfo {
             key,
-            params: vec![("name", name)],
-        }))
+            params: vec![("name", name())],
+        });
     }
+    // H-20 (SPEC-005 §2.10): "the first Save over a source that had such metadata" — shown once
+    // per document, whether the audio was actually rewritten this call or not (a sidecar-only
+    // save still counts as "a Save" for this purpose).
+    if doc.had_foreign_metadata && !doc.metadata_notice_shown {
+        doc.metadata_notice_shown = true;
+        notices.push(SidecarNoticeInfo {
+            key: "notice.save.metadata_dropped",
+            params: vec![("name", name())],
+        });
+    }
+    Ok(notices)
 }
 
 #[cfg(test)]
@@ -3058,7 +3203,7 @@ mod tests {
 
         // Save (no path change): open -> save with no edits round trips bit-exactly (SPEC-005
         // AC-2), same format (Int24) as the source.
-        service.save(false, false).unwrap();
+        service.save(false, false, false).unwrap();
         let (decoded, _info) = vox_testkit::wav::read_wav_file(&wav_path).unwrap();
         let (_rate, _channels, mut source) = vox_io::read_wav(&wav_path).unwrap();
         let mut original = vec![0.0f32; samples.len()];
@@ -3072,6 +3217,8 @@ mod tests {
                 &save_as_path,
                 SaveContainer::Wav,
                 BitDepth::Bit32Float,
+                SaveDitherPref::Tpdf,
+                false,
                 false,
             )
             .unwrap();
@@ -3101,7 +3248,14 @@ mod tests {
 
         let flac_path = dir.join("out.flac");
         let info = service
-            .save_as(&flac_path, SaveContainer::Flac, BitDepth::Bit16, false)
+            .save_as(
+                &flac_path,
+                SaveContainer::Flac,
+                BitDepth::Bit16,
+                SaveDitherPref::Tpdf,
+                false,
+                false,
+            )
             .unwrap();
         assert_eq!(info.path.as_deref(), Some(flac_path.to_str().unwrap()));
         assert!(!info.dirty);
@@ -3125,7 +3279,387 @@ mod tests {
         // A second Save (in place, no edits) at the bound FLAC format is a no-op write that
         // still round-trips — proves `doc.save_container` was actually rebound, not just the
         // one Save As call.
-        service.save(false, false).unwrap();
+        service.save(false, false, false).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- H-20 item 2: keep the source format --------------------------------------------------
+
+    /// H-20 (SPEC-005 §2.6): opening a FLAC source keeps FLAC as the save format *without* an
+    /// explicit Save As — plain `document_open` + `document_save` (this bug: `save_bits_for_import`
+    /// compared `probe.container` against the literal `"wav"`, but symphonia's WAV reader's
+    /// `format_info().short_name` is actually `"wave"`, so that branch never matched and every
+    /// import — WAV included — silently fell back to the lossy-import default of WAV 24-bit).
+    #[test]
+    fn opening_a_flac_source_keeps_flac_as_the_save_format_without_save_as() {
+        if std::process::Command::new("flac")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipping: flac CLI not installed");
+            return;
+        }
+        let (service, _engine, dir) = service("flac-keeps-flac");
+        let samples = vox_testkit::signal::sine(997.0, -6.0, 0.1, 48_000).unwrap();
+        let wav_path = dir.join("in.wav");
+        write_fixture_wav(
+            &wav_path,
+            &samples,
+            vox_testkit::wav::BitDepth::Int24,
+            48_000,
+        );
+        let flac_path = dir.join("in.flac");
+        let status = std::process::Command::new("flac")
+            .args(["-f", "--totally-silent", "-o"])
+            .arg(&flac_path)
+            .arg(&wav_path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        service.open(&flac_path, false).unwrap();
+        // Plain Save (never Save As): the document must already be bound to FLAC.
+        service.save(false, false, false).unwrap();
+
+        // Decodes back through the general decoder (proves it's still really a FLAC file, not a
+        // WAV silently written over the `.flac` path).
+        let (decode_info, _) = vox_io::DecodeSource::open(&flac_path).unwrap();
+        assert_eq!(decode_info.container, "flac");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// H-20 (SPEC-005 §2.6 promotion table): direct unit coverage of every row, including the ones
+    /// no integration test builds a real file for (FLAC 25-32-bit, big-endian PCM codec names that
+    /// never occur in a real WAV but are handled defensively).
+    #[test]
+    fn save_format_for_import_matches_the_spec_005_promotion_table() {
+        fn probe_of(container: &str, codec: &str, bits_per_sample: Option<u32>) -> ImportProbe {
+            ImportProbe {
+                container: container.to_string(),
+                codec: codec.to_string(),
+                sample_rate_hz: 48_000,
+                channels: vec![vox_project::ImportChannel {
+                    label: "Mono".to_string(),
+                    is_lfe: false,
+                }],
+                len_samples: Some(48_000),
+                channel_peaks_dbfs: Vec::new(),
+                identical_channels: false,
+                suggested_channel: None,
+                bits_per_sample,
+                has_foreign_metadata: false,
+            }
+        }
+        // clippy::type_complexity: named here purely to keep the table below legible.
+        type Case = (
+            &'static str,
+            &'static str,
+            Option<u32>,
+            SaveContainer,
+            BitDepth,
+            bool,
+        );
+        let cases: &[Case] = &[
+            (
+                "wave",
+                "pcm_s16le",
+                Some(16),
+                SaveContainer::Wav,
+                BitDepth::Bit16,
+                false,
+            ),
+            (
+                "wave",
+                "pcm_s24le",
+                Some(24),
+                SaveContainer::Wav,
+                BitDepth::Bit24,
+                false,
+            ),
+            (
+                "wave",
+                "pcm_f32le",
+                Some(32),
+                SaveContainer::Wav,
+                BitDepth::Bit32Float,
+                false,
+            ),
+            (
+                "wave",
+                "pcm_u8",
+                Some(8),
+                SaveContainer::Wav,
+                BitDepth::Bit16,
+                true,
+            ),
+            (
+                "wave",
+                "pcm_alaw",
+                None,
+                SaveContainer::Wav,
+                BitDepth::Bit16,
+                true,
+            ),
+            (
+                "wave",
+                "pcm_mulaw",
+                None,
+                SaveContainer::Wav,
+                BitDepth::Bit16,
+                true,
+            ),
+            (
+                "wave",
+                "pcm_s32le",
+                None,
+                SaveContainer::Wav,
+                BitDepth::Bit32Float,
+                true,
+            ),
+            (
+                "wave",
+                "pcm_f64le",
+                None,
+                SaveContainer::Wav,
+                BitDepth::Bit32Float,
+                true,
+            ),
+            (
+                "flac",
+                "flac",
+                Some(8),
+                SaveContainer::Flac,
+                BitDepth::Bit16,
+                false,
+            ),
+            (
+                "flac",
+                "flac",
+                Some(16),
+                SaveContainer::Flac,
+                BitDepth::Bit16,
+                false,
+            ),
+            (
+                "flac",
+                "flac",
+                Some(17),
+                SaveContainer::Flac,
+                BitDepth::Bit24,
+                false,
+            ),
+            (
+                "flac",
+                "flac",
+                Some(24),
+                SaveContainer::Flac,
+                BitDepth::Bit24,
+                false,
+            ),
+            (
+                "flac",
+                "flac",
+                Some(25),
+                SaveContainer::Flac,
+                BitDepth::Bit24,
+                true,
+            ),
+            (
+                "flac",
+                "flac",
+                Some(32),
+                SaveContainer::Flac,
+                BitDepth::Bit24,
+                true,
+            ),
+            (
+                "mp3",
+                "mp3",
+                None,
+                SaveContainer::Wav,
+                BitDepth::Bit24,
+                false,
+            ),
+            (
+                "isomp4",
+                "aac",
+                None,
+                SaveContainer::Wav,
+                BitDepth::Bit24,
+                false,
+            ),
+            (
+                "ogg",
+                "vorbis",
+                None,
+                SaveContainer::Wav,
+                BitDepth::Bit24,
+                false,
+            ),
+        ];
+        for &(container, codec, bits, want_container, want_bits, want_mapped) in cases {
+            let probe = probe_of(container, codec, bits);
+            let (got_container, got_bits, got_mapped) = save_format_for_import(&probe);
+            assert_eq!(
+                got_container, want_container,
+                "{container}/{codec}/{bits:?}"
+            );
+            assert_eq!(got_bits, want_bits, "{container}/{codec}/{bits:?}");
+            assert_eq!(got_mapped, want_mapped, "{container}/{codec}/{bits:?}");
+        }
+    }
+
+    // --- H-20 item 3: notices -------------------------------------------------------------------
+
+    /// H-20 (SPEC-005 §2.6 "notice at open"): an 8-bit WAV posts `notice.open.format_mapped` and
+    /// ends up bound to WAV 16-bit — `(u - 128) * 256` exactly (SPEC-005 AC-17).
+    #[test]
+    fn open_of_an_eight_bit_wav_posts_the_format_mapped_notice_and_saves_as_sixteen_bit() {
+        let (service, _engine, dir) = service("format-mapped-8bit");
+        let wav_path = dir.join("in.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 48_000,
+            bits_per_sample: 8,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(&wav_path, spec).unwrap();
+        // hound's 8-bit samples are signed i8 offsets from the unsigned byte (module doc of the
+        // sibling `open_accepts_an_8_bit_wav_via_the_symphonia_decode_path` test).
+        for v in [-128i32, 0, 127] {
+            w.write_sample(v).unwrap();
+        }
+        w.finalize().unwrap();
+
+        service.open(&wav_path, false).unwrap();
+        let notices = service.take_sidecar_notices();
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].key, "notice.open.format_mapped");
+        assert_eq!(
+            notices[0].params,
+            vec![("from", "8-bit".to_string()), ("to", "16-bit".to_string())]
+        );
+
+        let out_path = dir.join("out.wav");
+        service
+            .save_as(
+                &out_path,
+                SaveContainer::Wav,
+                BitDepth::Bit16,
+                SaveDitherPref::Tpdf,
+                false,
+                false,
+            )
+            .unwrap();
+        let (_, _, mut source) = vox_io::read_wav(&out_path).unwrap();
+        assert_eq!(source.format().bits_per_sample, 16);
+        let mut decoded = vec![0.0f32; 3];
+        source.read_mono(&mut decoded).unwrap();
+        for (byte, got) in [0u8, 128, 255].iter().zip(decoded.iter()) {
+            let expected = ((f32::from(*byte) - 128.0) * 256.0) / 32_768.0;
+            assert!(
+                (got - expected).abs() < 1e-6,
+                "got {got}, expected {expected}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A native 16/24-bit or 32-bit float WAV never posts `notice.open.format_mapped` (SPEC-005
+    /// §2.6's table: "—" for those rows).
+    #[test]
+    fn open_of_a_native_wav_posts_no_format_mapped_notice() {
+        let (service, _engine, dir) = service("format-mapped-none");
+        let wav_path = dir.join("in.wav");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.05, 48_000).unwrap();
+        write_fixture_wav(
+            &wav_path,
+            &samples,
+            vox_testkit::wav::BitDepth::Int24,
+            48_000,
+        );
+
+        service.open(&wav_path, false).unwrap();
+        assert!(
+            service.take_sidecar_notices().is_empty(),
+            "a native 24-bit WAV needs no format-mapped notice"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// H-20 (SPEC-005 §2.10): the first Save over a source with `LIST INFO`/`bext`/etc metadata
+    /// posts `notice.save.metadata_dropped` exactly once — a second Save stays silent.
+    #[test]
+    fn save_posts_the_metadata_dropped_notice_once_for_a_wav_with_foreign_metadata() {
+        let (service, _engine, dir) = service("metadata-dropped");
+        let wav_path = dir.join("in.wav");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.05, 48_000).unwrap();
+        write_fixture_wav(
+            &wav_path,
+            &samples,
+            vox_testkit::wav::BitDepth::Int24,
+            48_000,
+        );
+        // Append a raw `bext` chunk after the fact — symphonia's WAV reader doesn't surface it as
+        // metadata at all (only `LIST INFO` gets that treatment), so this also exercises H-20's
+        // raw chunk scan (`vox_io::wav_has_foreign_metadata`), not just the symphonia-side check.
+        let mut bytes = std::fs::read(&wav_path).unwrap();
+        let body = vec![0u8; 8];
+        bytes.extend_from_slice(b"bext");
+        bytes.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&body);
+        let riff_size = (bytes.len() - 8) as u32;
+        bytes[4..8].copy_from_slice(&riff_size.to_le_bytes());
+        std::fs::write(&wav_path, &bytes).unwrap();
+
+        service.open(&wav_path, false).unwrap();
+        service.save(false, false, false).unwrap();
+        let notices = service.take_sidecar_notices();
+        assert_eq!(
+            notices
+                .iter()
+                .filter(|n| n.key == "notice.save.metadata_dropped")
+                .count(),
+            1,
+            "the first Save must post the notice exactly once"
+        );
+
+        service.save(false, false, false).unwrap();
+        let notices = service.take_sidecar_notices();
+        assert!(
+            !notices
+                .iter()
+                .any(|n| n.key == "notice.save.metadata_dropped"),
+            "a later Save must not repeat it"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// H-20 (SPEC-005 §2.4 "Saving over a multichannel source"): the first Save over a stereo
+    /// source needs confirmation; confirming (or a later Save) never asks again (AC-10: "exactly
+    /// once per document").
+    #[test]
+    fn save_over_a_multichannel_source_needs_confirmation_exactly_once() {
+        let (service, _engine, dir) = service("multichannel-warn");
+        let left = vox_testkit::signal::sine(400.0, -10.0, 0.05, 48_000).unwrap();
+        let right = vox_testkit::signal::sine(900.0, -14.0, 0.05, 48_000).unwrap();
+        let mut interleaved = Vec::with_capacity(left.len() * 2);
+        for (&l, &r) in left.iter().zip(right.iter()) {
+            interleaved.push(l);
+            interleaved.push(r);
+        }
+        let stereo_path = dir.join("stereo.wav");
+        write_wav_file_multi(&stereo_path, &interleaved, 2, 48_000);
+        service.open(&stereo_path, false).unwrap();
+
+        let err = service.save(false, false, false).unwrap_err();
+        assert_eq!(err.code, IpcErrorCode::NeedsConfirmation);
+        assert_eq!(err.key, "dialog.multichannel_source");
+
+        service.save(false, false, true).unwrap();
+        // A second Save never asks again.
+        service.save(false, false, false).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3148,6 +3682,8 @@ mod tests {
                 &dir.join("out.flac"),
                 SaveContainer::Flac,
                 BitDepth::Bit32Float,
+                SaveDitherPref::Tpdf,
+                false,
                 false,
             )
             .unwrap_err();
@@ -3174,7 +3710,14 @@ mod tests {
         // No overs yet (every sample is within [-1, 1]): Save As 16-bit needs no confirmation.
         let clean_path = dir.join("clean.wav");
         service
-            .save_as(&clean_path, SaveContainer::Wav, BitDepth::Bit16, false)
+            .save_as(
+                &clean_path,
+                SaveContainer::Wav,
+                BitDepth::Bit16,
+                SaveDitherPref::Tpdf,
+                false,
+                false,
+            )
             .unwrap();
 
         // Push 3 samples over 0 dBFS on the still-open document, peak +3.52 dBFS (SPEC-005 AC-6's
@@ -3199,7 +3742,14 @@ mod tests {
         // "Cancel": no confirmation given, no file and no temp written.
         let over_path = dir.join("over.wav");
         let err = service
-            .save_as(&over_path, SaveContainer::Wav, BitDepth::Bit16, false)
+            .save_as(
+                &over_path,
+                SaveContainer::Wav,
+                BitDepth::Bit16,
+                SaveDitherPref::Tpdf,
+                false,
+                false,
+            )
             .unwrap_err();
         assert_eq!(err.code, IpcErrorCode::NeedsConfirmation);
         assert_eq!(err.key, "dialog.overs");
@@ -3220,7 +3770,14 @@ mod tests {
 
         // "Clip and save": confirm_clip re-issues the same request and it clips.
         let info = service
-            .save_as(&over_path, SaveContainer::Wav, BitDepth::Bit16, true)
+            .save_as(
+                &over_path,
+                SaveContainer::Wav,
+                BitDepth::Bit16,
+                SaveDitherPref::Tpdf,
+                true,
+                false,
+            )
             .unwrap();
         assert!(!info.dirty);
         let (decoded, _) = vox_testkit::wav::read_wav_file(&over_path).unwrap();
@@ -3245,7 +3802,14 @@ mod tests {
         // exactly (SPEC-005 §2.8: "32-bit float is written bit-exact ... overs are preserved").
         let float_path = dir.join("float.wav");
         service
-            .save_as(&float_path, SaveContainer::Wav, BitDepth::Bit32Float, false)
+            .save_as(
+                &float_path,
+                SaveContainer::Wav,
+                BitDepth::Bit32Float,
+                SaveDitherPref::Tpdf,
+                false,
+                false,
+            )
             .unwrap();
         let (decoded_f, _) = vox_testkit::wav::read_wav_file(&float_path).unwrap();
         assert!((decoded_f[100] - 1.5).abs() < 1e-6);
@@ -3276,6 +3840,8 @@ mod tests {
                 &dir.join("out.wav"),
                 SaveContainer::Wav,
                 BitDepth::Bit16,
+                SaveDitherPref::Tpdf,
+                false,
                 false,
             )
             .unwrap();
@@ -3311,7 +3877,14 @@ mod tests {
         let (decoded, _) = vox_testkit::wav::read_wav_file(&{
             let out = dir.join("check.wav");
             service
-                .save_as(&out, SaveContainer::Wav, BitDepth::Bit32Float, false)
+                .save_as(
+                    &out,
+                    SaveContainer::Wav,
+                    BitDepth::Bit32Float,
+                    SaveDitherPref::Tpdf,
+                    false,
+                    true, // H-20: the source is stereo (picked channel), so this needs confirming
+                )
                 .unwrap();
             out
         })
@@ -3479,7 +4052,7 @@ mod tests {
         let peaks_err = service.peaks(64, 0, 4).unwrap_err();
         assert_eq!(peaks_err.code, IpcErrorCode::NotFound);
         assert_eq!(peaks_err.key, "error.document.none");
-        let save_err = service.save(false, false).unwrap_err();
+        let save_err = service.save(false, false, false).unwrap_err();
         assert_eq!(save_err.key, "error.document.none");
     }
 
@@ -3611,12 +4184,19 @@ mod tests {
         assert_eq!(transport.doc_len_samples, samples.len() as u64);
 
         assert_eq!(
-            service.save(false, false).unwrap_err().key,
+            service.save(false, false, false).unwrap_err().key,
             "error.document.untitled"
         );
         let saved = dir.join("take.wav");
         let info = service
-            .save_as(&saved, SaveContainer::Wav, BitDepth::Bit24, false)
+            .save_as(
+                &saved,
+                SaveContainer::Wav,
+                BitDepth::Bit24,
+                SaveDitherPref::Tpdf,
+                false,
+                false,
+            )
             .unwrap();
         assert_eq!(info.name.as_deref(), Some("take.wav"));
         assert!(!info.dirty);
@@ -4729,7 +5309,14 @@ mod tests {
 
         let save_path = dir.join("with-markers.wav");
         service
-            .save_as(&save_path, SaveContainer::Wav, BitDepth::Bit24, false)
+            .save_as(
+                &save_path,
+                SaveContainer::Wav,
+                BitDepth::Bit24,
+                SaveDitherPref::Tpdf,
+                false,
+                false,
+            )
             .unwrap();
 
         // A second document service (a fresh session dir) opens the saved file back.
@@ -4789,7 +5376,14 @@ mod tests {
 
         let save_path = dir.join("with-rack.wav");
         let saved_info = service
-            .save_as(&save_path, SaveContainer::Wav, BitDepth::Bit24, false)
+            .save_as(
+                &save_path,
+                SaveContainer::Wav,
+                BitDepth::Bit24,
+                SaveDitherPref::Tpdf,
+                false,
+                false,
+            )
             .unwrap();
         assert!(
             !saved_info.sidecar_dirty,
@@ -4808,7 +5402,7 @@ mod tests {
         let reopened = DocumentService::new(dir.join("sessions2"), service.0.engine.clone());
         let info = reopened.open(&save_path, false).unwrap();
         assert!(
-            reopened.take_sidecar_notice().is_none(),
+            reopened.take_sidecar_notices().is_empty(),
             "a matching sidecar posts no notice"
         );
 
@@ -4872,7 +5466,14 @@ mod tests {
         open_test_doc(&service, &dir, &samples);
         let save_path = dir.join("a.wav");
         service
-            .save_as(&save_path, SaveContainer::Wav, BitDepth::Bit24, false)
+            .save_as(
+                &save_path,
+                SaveContainer::Wav,
+                BitDepth::Bit24,
+                SaveDitherPref::Tpdf,
+                false,
+                false,
+            )
             .unwrap();
         assert!(!service.info().sidecar_dirty);
         assert!(!service.info().dirty);
@@ -4939,7 +5540,14 @@ mod tests {
         open_test_doc(&service, &dir, &samples);
         let save_path = dir.join("a.wav");
         service
-            .save_as(&save_path, SaveContainer::Wav, BitDepth::Bit24, false)
+            .save_as(
+                &save_path,
+                SaveContainer::Wav,
+                BitDepth::Bit24,
+                SaveDitherPref::Tpdf,
+                false,
+                false,
+            )
             .unwrap();
         assert!(!service.info().sidecar_dirty);
 
@@ -4973,7 +5581,14 @@ mod tests {
         open_test_doc(&service, &dir, &samples);
         let save_path = dir.join("a.wav");
         service
-            .save_as(&save_path, SaveContainer::Wav, BitDepth::Bit24, false)
+            .save_as(
+                &save_path,
+                SaveContainer::Wav,
+                BitDepth::Bit24,
+                SaveDitherPref::Tpdf,
+                false,
+                false,
+            )
             .unwrap();
 
         let before_bytes = std::fs::read(&save_path).unwrap();
@@ -4987,7 +5602,7 @@ mod tests {
             .unwrap();
         assert!(service.info().sidecar_dirty);
 
-        service.save(false, false).unwrap();
+        service.save(false, false, false).unwrap();
         assert!(!service.info().sidecar_dirty);
 
         let after_bytes = std::fs::read(&save_path).unwrap();
@@ -5012,7 +5627,14 @@ mod tests {
         open_test_doc(&service, &dir, &samples_a);
         let a_path = dir.join("a.wav");
         service
-            .save_as(&a_path, SaveContainer::Wav, BitDepth::Bit24, false)
+            .save_as(
+                &a_path,
+                SaveContainer::Wav,
+                BitDepth::Bit24,
+                SaveDitherPref::Tpdf,
+                false,
+                false,
+            )
             .unwrap();
 
         // A sidecar-only save so `a.wav.vo.json` carries a rack.
@@ -5022,7 +5644,7 @@ mod tests {
             .rack_load_model(gain_rack_model(-9.0))
             .unwrap()
             .unwrap();
-        service.save(false, false).unwrap();
+        service.save(false, false, false).unwrap();
 
         // `b.wav`: same length/rate, different samples (so a different `audio_crc32`) — copy
         // `a.wav`'s sidecar next to it verbatim (SPEC-018 AC-7's setup).
@@ -5052,7 +5674,9 @@ mod tests {
         let reopened = DocumentService::new(dir.join("sessions2"), service.0.engine.clone());
         reopened.open(&b_path, false).unwrap();
         let notice = reopened
-            .take_sidecar_notice()
+            .take_sidecar_notices()
+            .into_iter()
+            .next()
             .expect("a mismatched sidecar posts a notice");
         assert_eq!(notice.key, "notice.sidecar.mismatch");
 
@@ -5077,7 +5701,9 @@ mod tests {
             "the document still opens fully"
         );
         let notice = service
-            .take_sidecar_notice()
+            .take_sidecar_notices()
+            .into_iter()
+            .next()
             .expect("a corrupt sidecar posts a notice");
         assert_eq!(notice.key, "notice.sidecar.corrupt");
     }
@@ -5165,7 +5791,7 @@ mod tests {
         write_fixture_wav(&path, &samples, vox_testkit::wav::BitDepth::Float32, 48_000);
 
         service.open(&path, false).unwrap();
-        service.save(false, false).unwrap(); // writes a real sidecar while still writable
+        service.save(false, false, false).unwrap(); // writes a real sidecar while still writable
         engine
             .handle()
             .rack_load_model(gain_rack_model(-3.0))
@@ -5183,7 +5809,7 @@ mod tests {
 
         std::fs::set_permissions(&audio_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
         // Sidecar-only save (only the rack/persisted content changed, no audio edit).
-        let err = service.save(false, false).unwrap_err();
+        let err = service.save(false, false, false).unwrap_err();
         std::fs::set_permissions(&audio_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(err.key, "error.save.permission");
         assert_eq!(
@@ -5207,7 +5833,7 @@ mod tests {
         // written: an audio edit bumps `audio_rev`, so `needs_full` would otherwise be true.
         service.edit_cut(0, 1_000).unwrap();
         std::fs::set_permissions(&audio_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
-        let err = service.save(false, false).unwrap_err();
+        let err = service.save(false, false, false).unwrap_err();
         std::fs::set_permissions(&audio_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(err.key, "error.save.permission");
         assert_eq!(
@@ -5221,7 +5847,14 @@ mod tests {
         std::fs::create_dir_all(&new_dir).unwrap();
         let new_path = new_dir.join("b.wav");
         let info = service
-            .save_as(&new_path, SaveContainer::Wav, BitDepth::Bit24, false)
+            .save_as(
+                &new_path,
+                SaveContainer::Wav,
+                BitDepth::Bit24,
+                SaveDitherPref::Tpdf,
+                false,
+                false,
+            )
             .unwrap();
         assert_eq!(info.path.as_deref(), Some(new_path.to_str().unwrap()));
         assert!(new_path.exists());
@@ -5282,7 +5915,7 @@ mod tests {
             "a session in use is never deleted"
         );
 
-        let saved = service.save(true, false).unwrap();
+        let saved = service.save(true, false, false).unwrap();
         assert!(!saved.recovered && !saved.dirty);
         let session_dir = listed[0].dir.clone();
         service.close().unwrap();

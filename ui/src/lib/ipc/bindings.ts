@@ -227,7 +227,7 @@ selection: [number, number] | null, playhead_samples: number, };
  */
 export type EditTargetDto = { "kind": "cursor", at_samples: number, } | { "kind": "range", start_samples: number, end_samples: number, };
 
-export type EventName = "notice" | "transport_state" | "devices_changed" | "rack_changed" | "param_changed" | "rack_latency" | "record_state" | "document_changed" | "history_state" | "clipboard_changed" | "job_progress" | "loudness_report" | "normalize_result" | "recent_files_changed" | "record_phase" | "record_finished" | "calibration_result";
+export type EventName = "notice" | "transport_state" | "devices_changed" | "rack_changed" | "param_changed" | "rack_latency" | "record_state" | "document_changed" | "history_state" | "clipboard_changed" | "job_progress" | "loudness_report" | "normalize_result" | "recent_files_changed" | "record_phase" | "record_finished" | "calibration_result" | "import_started";
 
 /**
  * Export output format and its per-format settings. FLAC's `bits` rejects `"32f"` (FLAC has no
@@ -267,6 +267,19 @@ export type HistoryStateDto = { can_undo: boolean, can_redo: boolean, undo_label
  * "Normalize to {target} dB"); empty when it has none.
  */
 undo_label_params: { [key in string]: string }, redo_label_params: { [key in string]: string }, };
+
+/**
+ * H-20 (SPEC-005 §2.3): the import job's document shell — file name, rate and (when the container
+ * states one) length — emitted once, right after the probe and before the decode loop starts.
+ * The frontend uses it to show "the document shell" ("‹name›" in the title, an estimated ruler
+ * length) immediately, well before `document_changed` arrives at commit.
+ */
+export type ImportStartedDto = { job_id: number, name: string, sample_rate_hz: number, 
+/**
+ * `None` when the container doesn't state a sample count (SPEC-005 §2.3: "estimated for
+ * formats without a sample count" — the UI shows an indeterminate shell then).
+ */
+len_samples: number | null, };
 
 /**
  * Error shape returned by every command (ADR-003). `key` is an i18n key, `params` fills its
@@ -823,6 +836,14 @@ export type ResponseCurveDto = { freqs_hz: Array<number>, sample_rate_hz: number
 export type SaveContainerDto = "wav" | "flac";
 
 /**
+ * Save As's Dither row (shown only for 16/24-bit targets — a 32-bit float target never dithers):
+ * `Tpdf` is the SPEC-005 default; `None` rounds half away from zero with no added noise. Chosen
+ * per save (`document_save_as`'s `dither` argument) and remembered here for the dialog's next
+ * default (SPEC-005 §3: "remembered as a preference").
+ */
+export type SaveDitherPref = "tpdf" | "none";
+
+/**
  * The whole settings file. `#[serde(default)]` at the container level means any field missing
  * from the on-disk JSON (an older/partial file) is filled from [`Settings::default`], and the
  * flattened `extra` map preserves any *unknown* field a future version wrote, so round-tripping
@@ -887,7 +908,12 @@ record: RecordPrefsDto,
  * T-304 (SPEC-022 §2.13): recording offsets per (host, input, output, device rate).
  * Additive field — the settings version stays 1.
  */
-record_offsets: Array<RecordOffsetEntry>, };
+record_offsets: Array<RecordOffsetEntry>, 
+/**
+ * H-20 (SPEC-005 §2.7/§3 `save_dither`): the Save As dialog's remembered Dither choice.
+ * Additive field — the settings version stays 1.
+ */
+save_dither: SaveDitherPref, };
 
 /**
  * Slot status (SPEC-012 §2.2, §2.9). `message` is pre-rendered English text shown verbatim (see

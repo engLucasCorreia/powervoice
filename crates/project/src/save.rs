@@ -50,20 +50,22 @@ pub fn save_snapshot_wav(
     reader: &mut SnapshotReader,
     path: impl AsRef<std::path::Path>,
     bits: vox_io::BitDepth,
+    dither: vox_io::DitherMode,
     markers: &[Marker],
 ) -> Result<vox_io::WriteReport> {
-    save_snapshot_wav_streaming(reader, path, bits, markers)
+    save_snapshot_wav_streaming(reader, path, bits, dither, markers)
 }
 
 fn save_snapshot_wav_streaming<R: SampleSource>(
     source: &mut R,
     path: impl AsRef<std::path::Path>,
     bits: vox_io::BitDepth,
+    dither: vox_io::DitherMode,
     markers: &[Marker],
 ) -> Result<vox_io::WriteReport> {
     let len = source.len_samples();
     let rate = source.sample_rate_hz();
-    let mut writer = vox_io::WavStreamWriter::create(path, rate, bits)?;
+    let mut writer = vox_io::WavStreamWriter::create(path, rate, bits, dither)?;
 
     let mut buf = vec![0.0f32; CHUNK_SAMPLES];
     let mut pos = 0u64;
@@ -168,6 +170,7 @@ pub fn save_snapshot_flac(
     reader: &mut SnapshotReader,
     path: impl AsRef<std::path::Path>,
     bits: vox_io::FlacBitDepth,
+    dither: vox_io::DitherMode,
 ) -> Result<vox_io::WriteReport> {
     let len = reader.len_samples();
     let rate = reader.snapshot().sample_rate_hz;
@@ -180,7 +183,7 @@ pub fn save_snapshot_flac(
         }
         pos += n as u64;
     }
-    Ok(vox_io::write_flac(path, rate, bits, &samples)?)
+    Ok(vox_io::write_flac(path, rate, bits, dither, &samples)?)
 }
 
 #[cfg(test)]
@@ -199,6 +202,65 @@ mod tests {
         dir
     }
 
+    /// H-20 (item 1): `save_snapshot_wav`'s `dither` parameter reaches the writer — a
+    /// `DitherMode::None` save of off-grid content differs from a `DitherMode::Tpdf` save of the
+    /// same document (the TPDF one carries dither noise the `None` one doesn't).
+    #[test]
+    fn save_snapshot_wav_dither_none_differs_from_tpdf_on_off_grid_content() {
+        let dir = tmp_dir("dither-none");
+        let store = ChunkStore::create(&dir, 0, StoreOptions::with_memory_budget(64 * 1024 * 1024))
+            .unwrap();
+        // A low-level sine deliberately off the 16-bit grid almost everywhere.
+        let samples = vox_testkit::signal::sine(997.0, -40.0, 0.05, 48_000).unwrap();
+        let mut writer = store.writer();
+        writer.append(&samples).unwrap();
+        let audio = writer.finish().unwrap();
+        let snapshot = Arc::new(DocSnapshot::new(48_000, audio.pieces, Vec::new()));
+
+        let none_path = dir.join("none.wav");
+        let mut reader = SnapshotReader::new(Arc::clone(&store), Arc::clone(&snapshot));
+        save_snapshot_wav(
+            &mut reader,
+            &none_path,
+            vox_io::BitDepth::Int16,
+            vox_io::DitherMode::None,
+            &[],
+        )
+        .unwrap();
+
+        let tpdf_path = dir.join("tpdf.wav");
+        let mut reader = SnapshotReader::new(Arc::clone(&store), Arc::clone(&snapshot));
+        save_snapshot_wav(
+            &mut reader,
+            &tpdf_path,
+            vox_io::BitDepth::Int16,
+            vox_io::DitherMode::Tpdf,
+            &[],
+        )
+        .unwrap();
+
+        assert_ne!(
+            std::fs::read(&none_path).unwrap(),
+            std::fs::read(&tpdf_path).unwrap(),
+            "TPDF must add dither noise that None doesn't"
+        );
+
+        // The `None` output matches testkit's own plain-rounding encoder bit-exactly (AC-4).
+        let (none_decoded, _) = vox_testkit::wav::read_wav_file(&none_path).unwrap();
+        let expected_path = dir.join("expected.wav");
+        vox_testkit::wav::write_wav_file(
+            &expected_path,
+            &samples,
+            1,
+            48_000,
+            vox_testkit::wav::BitDepth::Int16,
+        )
+        .unwrap();
+        let (expected_decoded, _) = vox_testkit::wav::read_wav_file(&expected_path).unwrap();
+        assert_eq!(none_decoded, expected_decoded);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn save_snapshot_wav_round_trips_float32() {
         let dir = tmp_dir("float32");
@@ -212,8 +274,14 @@ mod tests {
 
         let mut reader = SnapshotReader::new(Arc::clone(&store), Arc::clone(&snapshot));
         let out_path = dir.join("out.wav");
-        let report =
-            save_snapshot_wav(&mut reader, &out_path, vox_io::BitDepth::Float32, &[]).unwrap();
+        let report = save_snapshot_wav(
+            &mut reader,
+            &out_path,
+            vox_io::BitDepth::Float32,
+            vox_io::DitherMode::Tpdf,
+            &[],
+        )
+        .unwrap();
         assert_eq!(report.clipped_samples, 0);
 
         let (decoded, info) = vox_testkit::wav::read_wav_file(&out_path).unwrap();
@@ -245,6 +313,7 @@ mod tests {
             &mut reader,
             &out_path,
             vox_io::BitDepth::Int16,
+            vox_io::DitherMode::Tpdf,
             &snapshot.markers,
         )
         .unwrap();
@@ -315,7 +384,14 @@ mod tests {
         };
         let dir = tmp_dir("streamed-bounded");
         let out_path = dir.join("out.wav");
-        save_snapshot_wav_streaming(&mut source, &out_path, vox_io::BitDepth::Int16, &[]).unwrap();
+        save_snapshot_wav_streaming(
+            &mut source,
+            &out_path,
+            vox_io::BitDepth::Int16,
+            vox_io::DitherMode::Tpdf,
+            &[],
+        )
+        .unwrap();
 
         assert!(
             !source.calls.is_empty(),
@@ -355,7 +431,14 @@ mod tests {
         let mut reader = SnapshotReader::new(Arc::clone(&store), Arc::clone(&snapshot));
 
         let out_path = dir.join("out.wav");
-        save_snapshot_wav(&mut reader, &out_path, vox_io::BitDepth::Float32, &[]).unwrap();
+        save_snapshot_wav(
+            &mut reader,
+            &out_path,
+            vox_io::BitDepth::Float32,
+            vox_io::DitherMode::Tpdf,
+            &[],
+        )
+        .unwrap();
 
         let (decoded, info) = vox_testkit::wav::read_wav_file(&out_path).unwrap();
         assert_eq!(info.sample_rate, 48_000);
@@ -395,6 +478,7 @@ mod tests {
             &mut reader,
             &out_path,
             vox_io::BitDepth::Int16,
+            vox_io::DitherMode::Tpdf,
             &snapshot.markers,
         )
         .unwrap();
@@ -485,8 +569,13 @@ mod tests {
         let mut reader = SnapshotReader::new(Arc::clone(&store), Arc::clone(&snapshot));
 
         let out_path = dir.join("out.flac");
-        let report =
-            save_snapshot_flac(&mut reader, &out_path, vox_io::FlacBitDepth::Int16).unwrap();
+        let report = save_snapshot_flac(
+            &mut reader,
+            &out_path,
+            vox_io::FlacBitDepth::Int16,
+            vox_io::DitherMode::Tpdf,
+        )
+        .unwrap();
         assert_eq!(report.clipped_samples, 0);
         assert!(out_path.exists());
         let _ = std::fs::remove_dir_all(&dir);

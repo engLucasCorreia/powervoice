@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use vox_io::{BitDepth, read_wav, write_wav};
+use vox_io::{BitDepth, DitherMode, read_wav, write_wav};
 use vox_testkit::{signal, wav as tkwav};
 
 fn tmp_path(tag: &str) -> PathBuf {
@@ -43,7 +43,7 @@ fn round_trip_16_24_32f_bit_exact_when_already_grid_exact() {
         assert_eq!(n, mono.len(), "{tag}-bit: every sample read back");
 
         let out_path = tmp_path(&format!("roundtrip-out-{tag}"));
-        let report = write_wav(&out_path, rate, io_bits, &mono).unwrap();
+        let report = write_wav(&out_path, rate, io_bits, DitherMode::Tpdf, &mono).unwrap();
         assert_eq!(report.clipped_samples, 0);
 
         let (after, _) = tkwav::read_wav_file(&out_path).unwrap();
@@ -58,7 +58,7 @@ fn round_trip_16_24_32f_bit_exact_when_already_grid_exact() {
 fn silence_stays_silence_through_a_16_bit_round_trip() {
     let silence = signal::silence(0.05, 48_000).unwrap();
     let path = tmp_path("silence-roundtrip");
-    let report = write_wav(&path, 48_000, BitDepth::Int16, &silence).unwrap();
+    let report = write_wav(&path, 48_000, BitDepth::Int16, DitherMode::Tpdf, &silence).unwrap();
     assert_eq!(report.clipped_samples, 0);
     let (decoded, _) = tkwav::read_wav_file(&path).unwrap();
     assert!(
@@ -126,7 +126,7 @@ fn tpdf_dither_residual_matches_spec_16_bit() {
     // independent of the signal's own level.
     let sine = signal::sine(997.0, -20.0, 1.0, 48_000).unwrap();
     let path = tmp_path("tpdf-residual");
-    write_wav(&path, 48_000, BitDepth::Int16, &sine).unwrap();
+    write_wav(&path, 48_000, BitDepth::Int16, DitherMode::Tpdf, &sine).unwrap();
     let (decoded, info) = tkwav::read_wav_file(&path).unwrap();
     assert_eq!(info.bits_per_sample, 16);
 
@@ -146,12 +146,12 @@ fn tpdf_dither_residual_matches_spec_16_bit() {
 fn out_of_range_samples_are_clipped_and_reported() {
     let samples = [1.5f32, -2.0, 0.0, 0.5];
     let path = tmp_path("clip");
-    let report = write_wav(&path, 48_000, BitDepth::Int16, &samples).unwrap();
+    let report = write_wav(&path, 48_000, BitDepth::Int16, DitherMode::Tpdf, &samples).unwrap();
     assert_eq!(report.clipped_samples, 2);
     let (decoded, _) = tkwav::read_wav_file(&path).unwrap();
     assert!((decoded[0] - 1.0).abs() < 1e-3);
     assert!((decoded[1] - (-1.0)).abs() < 1e-3);
 
-    let report = write_wav(&path, 48_000, BitDepth::Float32, &samples).unwrap();
+    let report = write_wav(&path, 48_000, BitDepth::Float32, DitherMode::Tpdf, &samples).unwrap();
     assert_eq!(report.clipped_samples, 0, "float32 never clips");
 }

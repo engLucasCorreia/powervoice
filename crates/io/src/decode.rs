@@ -74,6 +74,11 @@ pub struct TrackFacts {
     /// decoder has already trimmed by these values (`AudioDecoderOptions::gapless`, always on).
     pub delay_samples: Option<u32>,
     pub padding_samples: Option<u32>,
+    /// H-20 (SPEC-005 §2.6): the codec's reported bit depth (`AudioCodecParameters
+    /// ::bits_per_sample`) — populated for WAV PCM (every tolerated variant, §2.2) and FLAC (from
+    /// STREAMINFO); `None` for lossy codecs, which don't need it (SPEC-005 §2.6's save-format
+    /// table only distinguishes WAV/FLAC bit depths).
+    pub bits_per_sample: Option<u32>,
 }
 
 /// What [`probe`]/[`DecodeSource::open`] found (SPEC-005 §2.3 step 1, `document_probe`).
@@ -82,6 +87,9 @@ pub struct ProbeInfo {
     pub container: &'static str,
     pub codec: &'static str,
     pub track: TrackFacts,
+    /// H-20 (SPEC-005 §2.10): the source carries metadata PowerVoice drops on save (`LIST INFO`,
+    /// `bext`, `iXML`, `smpl`, ID3/Vorbis comments) — drives `notice.save.metadata_dropped`.
+    pub has_foreign_metadata: bool,
 }
 
 /// Probes `path` without decoding any audio (SPEC-005 §2.3: "≤ 200 ms for a local file").
@@ -152,7 +160,7 @@ impl DecodeSource {
     /// Opens `path`, probing it and preparing (but not yet running) the decode of its first audio
     /// track (SPEC-005 §4.2 steps 1-2).
     pub fn open(path: &Path) -> Result<(ProbeInfo, DecodeSource)> {
-        let format = open_format(path)?;
+        let mut format = open_format(path)?;
         let audio_tracks: Vec<&Track> = format
             .tracks()
             .iter()
@@ -204,6 +212,17 @@ impl DecodeSource {
             .map_err(map_fatal_error)?;
         let codec = decoder.codec_info().short_name;
         let container = format.format_info().short_name;
+        let bits_per_sample = params.bits_per_sample;
+        // H-20 (SPEC-005 §2.10): does the container carry metadata PowerVoice doesn't preserve?
+        // `format.metadata()` catches Vorbis comments (FLAC/Ogg) and ID3 (MP3/M4A) uniformly;
+        // WAV's `LIST INFO`, `bext`, `iXML` and `smpl` chunks need the raw scan below, because
+        // symphonia's WAV reader only surfaces `LIST INFO` here and silently skips the rest (this
+        // module's own docs, "hound has no cue/adtl support" applies equally to those chunks).
+        let has_foreign_metadata = format
+            .metadata()
+            .current()
+            .is_some_and(|rev| !rev.media.tags.is_empty() || !rev.media.visuals.is_empty())
+            || (container == "wave" && crate::wav::wav_has_foreign_metadata(path).unwrap_or(false));
 
         let source = DecodeSource {
             format,
@@ -220,12 +239,14 @@ impl DecodeSource {
         let info = ProbeInfo {
             container,
             codec,
+            has_foreign_metadata,
             track: TrackFacts {
                 sample_rate_hz,
                 channels,
                 len_samples,
                 delay_samples,
                 padding_samples,
+                bits_per_sample,
             },
         };
         Ok((info, source))
@@ -410,6 +431,9 @@ mod tests {
         bits_per_sample: u16,
         fmt_extra: Vec<u8>,
         data: Vec<u8>,
+        /// H-20: raw chunks appended after `data` (e.g. `bext`, `LIST INFO`), each already
+        /// including its own 8-byte tag+size header and pad byte.
+        trailing_chunks: Vec<u8>,
     }
 
     impl RawWavBuilder {
@@ -421,7 +445,21 @@ mod tests {
                 bits_per_sample,
                 fmt_extra: Vec::new(),
                 data: Vec::new(),
+                trailing_chunks: Vec::new(),
             }
+        }
+
+        /// H-20: appends a raw chunk after `data` (SPEC-005 §2.10's `bext`/`LIST INFO`/etc test
+        /// fixtures — `id` must be exactly 4 bytes, e.g. `b"bext"`).
+        fn chunk(mut self, id: &[u8; 4], body: &[u8]) -> Self {
+            self.trailing_chunks.extend_from_slice(id);
+            self.trailing_chunks
+                .extend_from_slice(&(body.len() as u32).to_le_bytes());
+            self.trailing_chunks.extend_from_slice(body);
+            if body.len() % 2 == 1 {
+                self.trailing_chunks.push(0);
+            }
+            self
         }
 
         /// WAV requires an (extended) `fmt ` chunk with an explicit `cbSize` field for any
@@ -465,7 +503,8 @@ mod tests {
             if data_padded.len() % 2 == 1 {
                 data_padded.push(0);
             }
-            let riff_size = 4 + (8 + fmt_chunk.len()) + (8 + data_padded.len());
+            let riff_size =
+                4 + (8 + fmt_chunk.len()) + (8 + data_padded.len()) + self.trailing_chunks.len();
             let mut out = Vec::new();
             out.extend_from_slice(b"RIFF");
             out.extend_from_slice(&(riff_size as u32).to_le_bytes());
@@ -476,6 +515,7 @@ mod tests {
             out.extend_from_slice(b"data");
             out.extend_from_slice(&(self.data.len() as u32).to_le_bytes());
             out.extend_from_slice(&data_padded);
+            out.extend_from_slice(&self.trailing_chunks);
             out
         }
     }
@@ -691,6 +731,64 @@ mod tests {
         let path = write_file(&bytes, "ext_float.wav");
         let (_, decoded) = decode_all(&path);
         assert_eq!(decoded, samples);
+    }
+
+    /// H-20 (SPEC-005 §2.6): `TrackFacts::bits_per_sample` reports the source's real bit depth for
+    /// PCM WAV variants (`symphonia-format-riff`'s `append_format_params` calls
+    /// `with_bits_per_sample` for `FormatData::Pcm`/`Extensible`, but *not* for plain
+    /// `FormatData::IeeeFloat` — a symphonia quirk this test documents rather than works around,
+    /// since `save_format_for_import`'s WAV branch keys on `codec` (`pcm_f32le`/`pcm_f64le`), not
+    /// `bits_per_sample`, precisely because of this gap; only the FLAC branch relies on the field).
+    #[test]
+    fn bits_per_sample_reports_the_source_depth_for_pcm_wav_variants() {
+        let cases: &[(u16, u16, u32)] = &[
+            (1, 8, 8),   // PCM 8-bit unsigned
+            (1, 16, 16), // PCM 16-bit
+            (1, 24, 24), // PCM 24-bit
+        ];
+        for &(format_tag, bits, expected) in cases {
+            let bytes = RawWavBuilder::new(format_tag, 1, 48_000, bits)
+                .write_bytes(&vec![0u8; (bits / 8) as usize])
+                .build();
+            let path = write_file(&bytes, &format!("bits-{format_tag}-{bits}.wav"));
+            let info = probe(&path).unwrap();
+            assert_eq!(
+                info.track.bits_per_sample,
+                Some(expected),
+                "format_tag {format_tag} bits {bits}"
+            );
+        }
+    }
+
+    /// H-20 (SPEC-005 §2.10): a plain WAV with no extra metadata reports `has_foreign_metadata:
+    /// false`; one with a `bext` or `LIST INFO` chunk (chunk types symphonia's WAV reader either
+    /// skips entirely or only partially surfaces) reports `true`.
+    #[test]
+    fn has_foreign_metadata_detects_bext_and_list_info_but_not_a_plain_wav() {
+        let plain = RawWavBuilder::new(1, 1, 48_000, 16)
+            .write_bytes(&[0, 0])
+            .build();
+        let plain_path = write_file(&plain, "plain.wav");
+        assert!(!probe(&plain_path).unwrap().has_foreign_metadata);
+
+        let with_bext = RawWavBuilder::new(1, 1, 48_000, 16)
+            .write_bytes(&[0, 0])
+            .chunk(b"bext", &[0u8; 8])
+            .build();
+        let bext_path = write_file(&with_bext, "bext.wav");
+        assert!(probe(&bext_path).unwrap().has_foreign_metadata);
+
+        let mut info_body = Vec::new();
+        info_body.extend_from_slice(b"INFO");
+        info_body.extend_from_slice(b"INAM");
+        info_body.extend_from_slice(&4u32.to_le_bytes());
+        info_body.extend_from_slice(b"Test");
+        let with_info = RawWavBuilder::new(1, 1, 48_000, 16)
+            .write_bytes(&[0, 0])
+            .chunk(b"LIST", &info_body)
+            .build();
+        let info_path = write_file(&with_info, "list_info.wav");
+        assert!(probe(&info_path).unwrap().has_foreign_metadata);
     }
 
     #[test]

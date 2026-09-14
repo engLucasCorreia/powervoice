@@ -338,9 +338,15 @@ fn cmd_convert(args: ConvertArgs) -> Result<()> {
 
     let clipped = match ext.as_str() {
         "wav" => {
-            vox_io::write_wav(&args.output, rate_out, bits, &samples)
-                .with_context(|| format!("writing {:?}", args.output))?
-                .clipped_samples
+            vox_io::write_wav(
+                &args.output,
+                rate_out,
+                bits,
+                vox_io::DitherMode::Tpdf,
+                &samples,
+            )
+            .with_context(|| format!("writing {:?}", args.output))?
+            .clipped_samples
         }
         "flac" => {
             let flac_bits = match bits {
@@ -350,9 +356,15 @@ fn cmd_convert(args: ConvertArgs) -> Result<()> {
                     bail!("FLAC export needs --bits 16 or 24 (32f has no FLAC equivalent)")
                 }
             };
-            vox_io::write_flac(&args.output, rate_out, flac_bits, &samples)
-                .with_context(|| format!("writing {:?}", args.output))?
-                .clipped_samples
+            vox_io::write_flac(
+                &args.output,
+                rate_out,
+                flac_bits,
+                vox_io::DitherMode::Tpdf,
+                &samples,
+            )
+            .with_context(|| format!("writing {:?}", args.output))?
+            .clipped_samples
         }
         "mp3" => {
             if !vox_io::mp3_available() {

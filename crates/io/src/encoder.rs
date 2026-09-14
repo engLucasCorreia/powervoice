@@ -3,6 +3,8 @@
 
 use std::path::Path;
 
+use vox_dsp::dither::DitherMode;
+
 use crate::error::Result;
 use crate::flac::{self, FlacBitDepth};
 use crate::mp3::{self, Mp3Settings};
@@ -13,23 +15,24 @@ pub trait Encoder {
     fn write(&self, path: &Path, sample_rate_hz: u32, samples: &[f32]) -> Result<WriteReport>;
 }
 
-/// WAV output ([`crate::write_wav`]).
+/// WAV output ([`crate::write_wav`]). Always TPDF-dithered (H-20's `DitherMode::None` is a Save
+/// As option, not exposed to export/CLI callers of this trait).
 #[derive(Debug, Clone, Copy)]
 pub struct WavEncoder(pub BitDepth);
 
 impl Encoder for WavEncoder {
     fn write(&self, path: &Path, sample_rate_hz: u32, samples: &[f32]) -> Result<WriteReport> {
-        wav::write_wav(path, sample_rate_hz, self.0, samples)
+        wav::write_wav(path, sample_rate_hz, self.0, DitherMode::Tpdf, samples)
     }
 }
 
-/// FLAC output ([`crate::flac::write_flac`]).
+/// FLAC output ([`crate::flac::write_flac`]). Always TPDF-dithered, same note as [`WavEncoder`].
 #[derive(Debug, Clone, Copy)]
 pub struct FlacEncoder(pub FlacBitDepth);
 
 impl Encoder for FlacEncoder {
     fn write(&self, path: &Path, sample_rate_hz: u32, samples: &[f32]) -> Result<WriteReport> {
-        flac::write_flac(path, sample_rate_hz, self.0, samples)
+        flac::write_flac(path, sample_rate_hz, self.0, DitherMode::Tpdf, samples)
     }
 }
 

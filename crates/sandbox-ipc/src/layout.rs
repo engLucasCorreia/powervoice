@@ -200,6 +200,10 @@ impl EventKind {
     pub const GESTURE_BEGIN: Self = Self(2);
     /// The user released a parameter (plugin → host).
     pub const GESTURE_END: Self = Self(3);
+    /// Host → plugin (T-802): the module API's `reset()` (seek / loop wrap / transport start) —
+    /// clear delay lines and envelopes before processing the chunk that contains `pos`. `id`
+    /// and `value` are unused.
+    pub const RESET: Self = Self(4);
 }
 
 /// An event as carried by the rings.

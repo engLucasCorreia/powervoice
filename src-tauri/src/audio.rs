@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use vox_engine::backend::cpal::CpalBackend;
 use vox_engine::{Engine, EngineConfig, EngineEvent, EngineHandle};
-use vox_rack::{RackNotice, Registry};
+use vox_rack::RackNotice;
 
 use crate::ipc::{
     DevicesDto, EventName, ParamChangedDto, RackLatencyDto, RackStateDto, RecordStateDto,
@@ -37,7 +37,7 @@ pub fn start<R: Runtime>(
     prefs: &DevicePrefsDto,
     record_volume: &Path,
 ) -> anyhow::Result<AudioEngine> {
-    let registry = Arc::new(Registry::with_factories(vox_modules::builtin_factories())?);
+    let registry = Arc::new(crate::plugins::registry()?);
     let mut config = EngineConfig::new(Arc::new(CpalBackend::new()), registry);
     config.prefs = prefs.into();
     config.record_volume = record_volume.to_path_buf();

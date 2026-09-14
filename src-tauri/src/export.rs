@@ -81,7 +81,7 @@ pub fn start<R: Runtime>(
     documents: DocumentService,
     engine: EngineHandle,
 ) -> anyhow::Result<ExportService> {
-    let registry = Arc::new(Registry::with_factories(vox_modules::builtin_factories())?);
+    let registry = Arc::new(crate::plugins::registry()?);
     let emit: ExportEmitter = Arc::new(move |event| forward(&app, event));
     Ok(ExportService(Arc::new(Inner {
         documents,

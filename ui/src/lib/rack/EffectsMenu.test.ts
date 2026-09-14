@@ -256,6 +256,7 @@ describe("EffectsMenu (H-19)", () => {
             noise_profile: null,
             curve_handles: null,
             telemetry: [],
+            sandboxed: false,
           },
         ],
         ab: false,

@@ -95,6 +95,9 @@ dev:
     if [ "$(uname -s)" = "Linux" ] && [ -z "${WEBKIT_DISABLE_DMABUF_RENDERER:-}" ] && [ "${POWERVOICE_WEBKIT_DMABUF:-0}" != "1" ]; then
         export WEBKIT_DISABLE_DMABUF_RENDERER=1
     fi
+    # T-802: the plugin sandbox binary lives next to powervoice-app (POWERVOICE_DEV_PLUGINS=1
+    # shows the sandboxed test plugins in the Add-module menu).
+    cargo build -p powervoice-sandbox
     npm --prefix ui run tauri dev
 
 # T-007 platform spike (ADR-009): builds powervoice-app with the `spike` cargo feature and launches
@@ -125,6 +128,8 @@ check-cross:
     cargo check -p vox-testkit --target x86_64-pc-windows-gnu
     cargo check -p powervoice-cli --target x86_64-pc-windows-gnu
     cargo check -p vox-sandbox-ipc --target x86_64-pc-windows-gnu
+    cargo check -p vox-plugin-host --target x86_64-pc-windows-gnu
+    cargo check -p powervoice-sandbox --target x86_64-pc-windows-gnu
 
 # Build the roadmap dashboard (target/roadmap/index.html) from the board, git log and agent transcripts
 roadmap:

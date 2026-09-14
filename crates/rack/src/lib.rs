@@ -41,7 +41,10 @@ mod shim;
 mod slot;
 
 pub use chain::Chain;
-pub use host::{NoiseProfileStatus, RackHost, RackNotice, SlotInfo, SlotStatus, SlotTelemetry};
+pub use host::{
+    AUTO_RESTART_DELAY, AUTO_RESTARTS, NoiseProfileStatus, RackHost, RackNotice, SlotInfo,
+    SlotStatus, SlotTelemetry,
+};
 pub use live::{LiveRack, RackCommand};
 pub use mix::xfade_gain;
 pub use model::{RackModel, SlotModel};

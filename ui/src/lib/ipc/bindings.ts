@@ -590,7 +590,12 @@ curve_handles: Array<CurveHandleDto> | null,
  * placeholders). The slot header shows the `gain_reduction` channels whose `group` is `null`
  * as meters, fed by `VXMT` frames.
  */
-telemetry: Array<TelemetryChannelDto>, };
+telemetry: Array<TelemetryChannelDto>, 
+/**
+ * The module runs out of process (a sandboxed plugin, T-802): the slot header shows its
+ * status (Running / Restarting / Failed).
+ */
+sandboxed: boolean, };
 
 /**
  * The rack panel's whole state (`rack_get`, every mutating command's result, and the
@@ -948,10 +953,11 @@ save_dither: SaveDitherPref,
 layout: LayoutPrefsDto, };
 
 /**
- * Slot status (SPEC-012 §2.2, §2.9). `message` is pre-rendered English text shown verbatim (see
- * the module docs) — a plugin or module name isn't something the UI can key into i18n.
+ * Slot status (SPEC-012 §2.2, §2.9; T-802: `restarting` for a sandboxed plugin whose automatic
+ * restart is pending). `message` is pre-rendered English text shown verbatim (see the module
+ * docs) — a plugin or module name isn't something the UI can key into i18n.
  */
-export type SlotStatusDto = { "kind": "active" } | { "kind": "missing", message: string, too_new: boolean, } | { "kind": "failed", message: string, };
+export type SlotStatusDto = { "kind": "active" } | { "kind": "missing", message: string, too_new: boolean, } | { "kind": "failed", message: string, } | { "kind": "restarting", message: string, };
 
 /**
  * App-wide default spectral **display** settings (colormap, frequency scale, floor/ceiling, FFT

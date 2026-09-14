@@ -137,6 +137,7 @@ function slotFixture(): RackSlotDto {
     noise_profile: null,
     curve_handles: null,
     telemetry: [],
+    sandboxed: false,
   };
 }
 
@@ -322,5 +323,86 @@ describe("gain-reduction meter (H-03)", () => {
       "Gain reduction",
     );
     teardown();
+  });
+});
+
+// T-802: a sandboxed plugin's status badge (Running / Restarting / Plugin failed), "Not
+// installed" for an unregistered module, the failure reason, and a Retry action (= Restart).
+describe("slot status and Retry (T-802)", () => {
+  function badge(target: HTMLElement): string | null {
+    return target.querySelector('[data-testid="rack-slot-badge"]')?.textContent?.trim() ?? null;
+  }
+
+  it("shows Running for an active sandboxed slot and nothing for an in-process one", () => {
+    let r = render({ ...slotFixture(), sandboxed: true });
+    expect(badge(r.target)).toBe("Running");
+    expect(r.target.querySelector('[data-testid="rack-slot-retry"]')).toBeNull();
+    r.teardown();
+    r = render(slotFixture());
+    expect(badge(r.target)).toBeNull();
+    r.teardown();
+  });
+
+  it("shows Restarting with the failure reason and no Retry while a restart is pending", () => {
+    const { target, teardown } = render({
+      ...slotFixture(),
+      sandboxed: true,
+      status: { kind: "restarting", message: "Gain crashed and was bypassed" },
+    });
+    try {
+      expect(badge(target)).toBe("Restarting…");
+      expect(target.querySelector('[data-testid="rack-slot-status"]')?.textContent).toBe(
+        "Gain crashed and was bypassed",
+      );
+      expect(target.querySelector('[data-testid="rack-slot-retry"]')).toBeNull();
+      expect(target.querySelector(".body")).toBeNull();
+    } finally {
+      teardown();
+    }
+  });
+
+  it("shows Plugin failed with the reason and a Retry that restarts the slot", async () => {
+    const { target, teardown } = render({
+      ...slotFixture(),
+      sandboxed: true,
+      status: { kind: "failed", message: "Gain stopped responding and was bypassed" },
+    });
+    const calls: string[] = [];
+    mockIPC((cmd) => {
+      calls.push(cmd);
+      return { slots: [], ab: false, latency_samples: 0 };
+    });
+    try {
+      expect(badge(target)).toBe("Plugin failed");
+      expect(target.querySelector('[data-testid="rack-slot-status"]')?.textContent).toBe(
+        "Gain stopped responding and was bypassed",
+      );
+      const retry = target.querySelector<HTMLButtonElement>('[data-testid="rack-slot-retry"]');
+      expect(retry?.textContent?.trim()).toBe("Retry");
+      retry!.click();
+      await Promise.resolve();
+      expect(calls).toContain("rack_restart");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("shows Not installed (no Retry) for a missing module, and no badge for a too-new state", () => {
+    let r = render({
+      ...slotFixture(),
+      module_id: null,
+      status: { kind: "missing", message: "Missing module test:gain@1.0.0", too_new: false },
+    });
+    expect(badge(r.target)).toBe("Not installed");
+    expect(r.target.querySelector('[data-testid="rack-slot-retry"]')).toBeNull();
+    r.teardown();
+    r = render({
+      ...slotFixture(),
+      module_id: null,
+      status: { kind: "missing", message: "x requires a newer version", too_new: true },
+    });
+    expect(badge(r.target)).toBeNull();
+    expect(r.target.querySelector('[data-testid="rack-slot-retry"]')).toBeNull();
+    r.teardown();
   });
 });

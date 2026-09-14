@@ -20,22 +20,28 @@ pub enum ExtensionId {
     ResponseCurve,
     /// [`NoiseProfile`].
     NoiseProfile,
+    /// [`AdapterHealth`] (T-802, ADR-005 Amendment 3): host-internal, answered only by
+    /// out-of-process adapters (the plugin sandbox proxy); never a CLAP extension.
+    AdapterHealth,
 }
 
 impl ExtensionId {
     /// Every known id, in declaration order (what the host queries after `activate`).
-    pub const ALL: [ExtensionId; 3] = [
+    pub const ALL: [ExtensionId; 4] = [
         ExtensionId::Telemetry,
         ExtensionId::ResponseCurve,
         ExtensionId::NoiseProfile,
+        ExtensionId::AdapterHealth,
     ];
 
-    /// Wire id; also the CLAP custom-extension id (ADR-006).
+    /// Wire id; also the CLAP custom-extension id (ADR-006) — except
+    /// [`AdapterHealth`](Self::AdapterHealth), which never leaves the host.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Telemetry => "org.powervoice.telemetry/1",
             Self::ResponseCurve => "org.powervoice.response-curve/1",
             Self::NoiseProfile => "org.powervoice.noise-profile/1",
+            Self::AdapterHealth => "org.powervoice.adapter-health/1",
         }
     }
 }
@@ -51,6 +57,8 @@ pub enum Extension {
     ResponseCurve(Arc<dyn ResponseCurve>),
     /// Noise-print capture.
     NoiseProfile(Arc<dyn NoiseProfile>),
+    /// Out-of-process adapter health.
+    AdapterHealth(Arc<dyn AdapterHealth>),
 }
 
 impl Extension {
@@ -60,6 +68,7 @@ impl Extension {
             Extension::Telemetry(_) => ExtensionId::Telemetry,
             Extension::ResponseCurve(_) => ExtensionId::ResponseCurve,
             Extension::NoiseProfile(_) => ExtensionId::NoiseProfile,
+            Extension::AdapterHealth(_) => ExtensionId::AdapterHealth,
         }
     }
 }
@@ -92,6 +101,29 @@ pub fn noise_profile(m: &dyn Module) -> Option<Arc<dyn NoiseProfile>> {
         Some(Extension::NoiseProfile(n)) => Some(n),
         _ => None,
     }
+}
+
+/// The module's [`AdapterHealth`] handle; `None` if absent or answered with the wrong variant.
+pub fn adapter_health(m: &dyn Module) -> Option<Arc<dyn AdapterHealth>> {
+    match m.extension(ExtensionId::AdapterHealth) {
+        Some(Extension::AdapterHealth(h)) => Some(h),
+        _ => None,
+    }
+}
+
+/// The live fault state of an **out-of-process adapter** (T-802: the plugin sandbox proxy,
+/// ADR-008), readable by the host's control thread at any time — also while the instance is live
+/// on the audio thread (`Send + Sync`, lock-free or briefly locked on the adapter's side, never
+/// touched by `process`' caller).
+///
+/// Its presence tells the host the module runs out of process: the rack then applies the
+/// sandbox restart policy to its `ProcessStatus::Error` failures and shows its slot status
+/// (ADR-005 Amendment 3).
+pub trait AdapterHealth: Send + Sync {
+    /// Why the adapter stopped producing its own output (`None` while healthy): a short English
+    /// verb phrase that completes "‹module› … and was bypassed", e.g. `"crashed"` or
+    /// `"stopped responding"`. Set before `process` returns `ProcessStatus::Error` for it.
+    fn fault(&self) -> Option<String>;
 }
 
 /// Description of one telemetry channel.

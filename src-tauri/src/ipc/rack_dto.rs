@@ -264,8 +264,9 @@ pub struct RackLatencyDto {
     pub latency_samples: u32,
 }
 
-/// Slot status (SPEC-012 §2.2, §2.9). `message` is pre-rendered English text shown verbatim (see
-/// the module docs) — a plugin or module name isn't something the UI can key into i18n.
+/// Slot status (SPEC-012 §2.2, §2.9; T-802: `restarting` for a sandboxed plugin whose automatic
+/// restart is pending). `message` is pre-rendered English text shown verbatim (see the module
+/// docs) — a plugin or module name isn't something the UI can key into i18n.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
@@ -273,6 +274,7 @@ pub enum SlotStatusDto {
     Active,
     Missing { message: String, too_new: bool },
     Failed { message: String },
+    Restarting { message: String },
 }
 
 /// A slot's noise-print status (S3-06, SPEC-014 §2.5, §2.8). `None` (the outer `Option` this
@@ -414,6 +416,9 @@ impl From<&SlotStatus> for SlotStatusDto {
             SlotStatus::Failed { message } => Self::Failed {
                 message: message.clone(),
             },
+            SlotStatus::Restarting { message } => Self::Restarting {
+                message: message.clone(),
+            },
         }
     }
 }
@@ -448,6 +453,9 @@ pub struct RackSlotDto {
     /// placeholders). The slot header shows the `gain_reduction` channels whose `group` is `null`
     /// as meters, fed by `VXMT` frames.
     pub telemetry: Vec<TelemetryChannelDto>,
+    /// The module runs out of process (a sandboxed plugin, T-802): the slot header shows its
+    /// status (Running / Restarting / Failed).
+    pub sandboxed: bool,
 }
 
 impl From<&EngineRackSlot> for RackSlotDto {
@@ -476,6 +484,7 @@ impl From<&EngineRackSlot> for RackSlotDto {
                 .as_ref()
                 .map(|hs| hs.iter().map(Into::into).collect()),
             telemetry: info.telemetry.iter().map(Into::into).collect(),
+            sandboxed: info.sandboxed,
         }
     }
 }

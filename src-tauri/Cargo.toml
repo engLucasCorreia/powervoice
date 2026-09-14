@@ -35,6 +35,9 @@ vox-engine = { path = "../crates/engine" }
 vox-modules = { path = "../crates/modules" }
 vox-presets = { path = "../crates/presets" }
 vox-rack = { path = "../crates/rack" }
+# T-802: sandboxed plugins (the editor-side proxy; the format hosts live in `powervoice-sandbox`,
+# ADR-008 §8), registered behind the developer flag until T-803+.
+vox-plugin-host = { path = "../crates/plugin-host" }
 # S1-03: the document service (open/save WAV, peaks) wraps these directly (thin command layer).
 vox-project = { path = "../crates/project" }
 vox-io = { path = "../crates/io" }

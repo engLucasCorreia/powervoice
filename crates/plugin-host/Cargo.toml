@@ -1,0 +1,23 @@
+[package]
+name = "vox-plugin-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# T-802 (ADR-008 + Amendment 2): the editor side of the plugin sandbox — the `ProxyModule`
+# (ADR-005 Module over T-801's `HostEnd`), its factory, the control-channel client, and the
+# watchdog/spawner thread. Links no plugin format code (that lives in `powervoice-sandbox`).
+
+[dependencies]
+vox-module-api = { path = "../module-api" }
+vox-sandbox-ipc = { path = "../sandbox-ipc" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+vox-module-api = { path = "../module-api", features = ["test-util"] }
+
+[lints]
+workspace = true

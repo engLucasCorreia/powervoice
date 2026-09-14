@@ -48,6 +48,25 @@
   let collapsed = $state(false);
   let menuOpen = $state(false);
 
+  // T-802: a sandboxed plugin's status (Running / Restarting / Plugin failed), or "Not installed"
+  // for a slot whose module isn't registered. In-process modules show no badge while active.
+  const statusBadge = $derived.by((): { kind: string; label: string } | null => {
+    switch (slot.status.kind) {
+      case "active":
+        return slot.sandboxed ? { kind: "running", label: t("rack.slot.status.running") } : null;
+      case "restarting":
+        return { kind: "restarting", label: t("rack.slot.status.restarting") };
+      case "failed":
+        return { kind: "failed", label: t("rack.slot.status.failed") };
+      case "missing":
+        return slot.status.too_new ? null : { kind: "not_installed", label: t("rack.slot.status.not_installed") };
+    }
+    return null;
+  });
+  /** Retry = the rack's Restart of a failed slot (a sandboxed plugin is respawned with its
+   * last committed state). A missing module can't be restarted (SPEC-012 §2.9). */
+  const canRetry = $derived(slot.status.kind === "failed");
+
   // --- Presets (T-406, SPEC-012 §2.7) -----------------------------------------------------
   let presetsOpen = $state(false);
   let presetEntries = $state<PresetEntryDto[] | null>(null);
@@ -198,6 +217,11 @@
       {collapsed ? "▸" : "▾"}
     </button>
     <span class="name" data-testid="rack-slot-name">{slot.name}</span>
+    {#if statusBadge}
+      <span class="status-badge {statusBadge.kind}" data-testid="rack-slot-badge" data-badge={statusBadge.kind}
+        >{statusBadge.label}</span
+      >
+    {/if}
     {#if latencyLabel}
       <span class="latency">{latencyLabel}</span>
     {/if}
@@ -353,7 +377,14 @@
     </div>
   </header>
   {#if slot.status.kind !== "active"}
-    <p class="status-message" data-testid="rack-slot-status">{slot.status.message}</p>
+    <div class="status-row">
+      <p class="status-message" data-testid="rack-slot-status">{slot.status.message}</p>
+      {#if canRetry}
+        <button type="button" class="retry" data-testid="rack-slot-retry" onclick={() => void restartSlot(index)}>
+          {t("rack.slot.retry")}
+        </button>
+      {/if}
+    </div>
   {/if}
   {#if !collapsed && slot.status.kind === "active"}
     <div class="body">
@@ -549,6 +580,36 @@
     display: flex;
     justify-content: flex-end;
     gap: 0.4rem;
+  }
+
+  .status-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .retry {
+    background: var(--surface-panel-raised);
+    color: var(--text-primary);
+    border: 1px solid var(--surface-border);
+    border-radius: 4px;
+    padding: 0.1rem 0.6rem;
+    flex: none;
+  }
+
+  .status-badge {
+    font-size: 0.7rem;
+    border: 1px solid var(--surface-border);
+    border-radius: 999px;
+    padding: 0 0.45rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+  }
+
+  .status-badge.failed,
+  .status-badge.not_installed {
+    color: var(--text-primary);
+    border-color: currentColor;
   }
 
   .status-message {

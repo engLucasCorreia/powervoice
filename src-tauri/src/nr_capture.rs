@@ -76,7 +76,7 @@ pub fn start<R: Runtime>(
     engine: EngineHandle,
     documents: DocumentService,
 ) -> anyhow::Result<NrCaptureService> {
-    let registry = Arc::new(Registry::with_factories(vox_modules::builtin_factories())?);
+    let registry = Arc::new(crate::plugins::registry()?);
     let emit: NrCaptureEmitter = Arc::new(move |event| forward(&app, event));
     Ok(NrCaptureService(Arc::new(Inner {
         documents,

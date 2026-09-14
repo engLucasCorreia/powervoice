@@ -8,10 +8,17 @@ publish.workspace = true
 # T-801 (ADR-008 + Amendment 1): the plugin-sandbox transport — one shared-memory segment per
 # plugin instance (sample rings, event rings, heartbeat/state words), the platform wakeup shim,
 # the host-side failure model, and the four test plugins (`src/bin/vox-sbx-test-*.rs`).
+# T-802 (Amendment 2): the control channel (framing + messages) shared by `vox-plugin-host` and
+# `powervoice-sandbox`.
 # No new third-party crates: std + libc (unix) + windows-sys (Windows, already in the workspace).
 
 [dependencies]
 thiserror.workspace = true
+# T-802: the control channel's messages carry the module API's parameter schema (`ParamInfo`,
+# `ParamGroup`, `ProcessMode`) as JSON (ADR-008 §4).
+vox-module-api = { path = "../module-api" }
+serde.workspace = true
+serde_json.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

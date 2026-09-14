@@ -86,6 +86,7 @@ function slotFixture(): RackSlotDto {
     noise_profile: null,
     curve_handles: handles,
     telemetry: [],
+    sandboxed: false,
   };
 }
 

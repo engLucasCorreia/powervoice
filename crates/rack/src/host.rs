@@ -5,13 +5,15 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 use rtrb::PushError;
 use serde_json::Map;
 use vox_module_api::{
-    ActivateConfig, CurveHandle, Module, ModuleDescriptor, ModuleError, ModuleRef, ModuleState,
-    NoiseProfile, ParamEvent, ParamFlags, ParamGroup, ParamId, ParamInfo, ResponseCurve, Telemetry,
-    TelemetryInfo, noise_profile, response_curve, telemetry,
+    ActivateConfig, AdapterHealth, CurveHandle, Module, ModuleDescriptor, ModuleError, ModuleRef,
+    ModuleState, NoiseProfile, ParamEvent, ParamFlags, ParamGroup, ParamId, ParamInfo,
+    ResponseCurve, Telemetry, TelemetryInfo, adapter_health, noise_profile, response_curve,
+    telemetry,
 };
 
 use crate::chain::PlanEntry;
@@ -22,6 +24,15 @@ use crate::{
     Chain, FailReason, LiveRack, MAX_SLOTS, MAX_SWAPS_IN_FLIGHT, RackCommand, RackError, RackEvent,
     RackModel, RackOptions, Registry, Resolved, SlotModel, SlotUid,
 };
+
+/// Automatic restarts an out-of-process slot gets after an adapter failure before it stays
+/// "Failed" (T-802 restart policy: restart once with the last good state; a manual Restart
+/// resets the budget).
+pub const AUTO_RESTARTS: u32 = 1;
+
+/// Delay before an automatic restart (the UI shows "Restarting"; a crash right at load doesn't
+/// respawn in a tight loop).
+pub const AUTO_RESTART_DELAY: Duration = Duration::from_millis(200);
 
 /// What the host tells the UI (T-108 maps these to IPC events).
 #[derive(Clone, Debug, PartialEq)]
@@ -84,6 +95,12 @@ pub enum SlotStatus {
         /// User-facing message.
         message: String,
     },
+    /// An out-of-process module failed and is bypassed; an automatic restart with its last
+    /// committed state is pending (T-802, [`AUTO_RESTARTS`]).
+    Restarting {
+        /// The failure ("‹plugin› crashed and was bypassed").
+        message: String,
+    },
 }
 
 /// Whether/how a slot's [`NoiseProfile`] blob loads (SPEC-014 §2.5, §2.8). `None` at the call
@@ -135,6 +152,9 @@ pub struct SlotInfo {
     /// travel once, with the rack state): empty when the module has none, and for placeholders.
     /// The values come from [`RackHost::read_telemetry`], in this order.
     pub telemetry: Arc<[TelemetryInfo]>,
+    /// The module runs out of process (it answers the `AdapterHealth` extension: a sandboxed
+    /// plugin, T-802). `false` for placeholders.
+    pub sandboxed: bool,
 }
 
 /// One slot's current [`Telemetry`] values ([`RackHost::read_telemetry`]), in the order of its
@@ -176,6 +196,9 @@ struct Loaded {
     telemetry: Option<Arc<dyn Telemetry>>,
     /// `telemetry`'s channel descriptions (empty without the extension).
     telemetry_channels: Arc<[TelemetryInfo]>,
+    /// The newest instance's [`AdapterHealth`] handle (out-of-process modules only; T-802):
+    /// the failure reason, and whether the restart policy applies. Refreshed on replacement.
+    health: Option<Arc<dyn AdapterHealth>>,
 }
 
 /// A module's [`Telemetry`] handle and its channel descriptions.
@@ -204,6 +227,23 @@ struct HostSlot {
     bypass: bool,
     extra: Map<String, serde_json::Value>,
     kind: Kind,
+    /// Automatic restarts since the last manual one (T-802 restart policy).
+    auto_restarts: u32,
+    /// An automatic restart is due at this time (the slot shows "Restarting").
+    restart_due: Option<Instant>,
+}
+
+impl HostSlot {
+    fn new(uid: SlotUid, bypass: bool, extra: Map<String, serde_json::Value>, kind: Kind) -> Self {
+        Self {
+            uid,
+            bypass,
+            extra,
+            kind,
+            auto_restarts: 0,
+            restart_due: None,
+        }
+    }
 }
 
 /// A slot of the chain the audio thread has (or will have after the next flush).
@@ -288,6 +328,7 @@ fn loaded_from(module: Box<dyn Module>) -> Box<Loaded> {
     let profile = noise_profile(module.as_ref());
     let curve = response_curve(module.as_ref());
     let (telemetry, telemetry_channels) = telemetry_of(module.as_ref());
+    let health = adapter_health(module.as_ref());
     Box::new(Loaded {
         descriptor: module.descriptor().clone(),
         params,
@@ -301,6 +342,7 @@ fn loaded_from(module: Box<dyn Module>) -> Box<Loaded> {
         response_curve: curve,
         telemetry,
         telemetry_channels,
+        health,
     })
 }
 
@@ -505,12 +547,12 @@ impl RackHost {
         for (i, s) in model.slots.iter().enumerate() {
             let uid = SlotUid(next_uid);
             next_uid += 1;
-            slots.push(HostSlot {
+            slots.push(HostSlot::new(
                 uid,
-                bypass: s.bypass,
-                extra: s.extra.clone(),
-                kind: resolve_lenient(&registry, &config, s, i),
-            });
+                s.bypass,
+                s.extra.clone(),
+                resolve_lenient(&registry, &config, s, i),
+            ));
             layout.push(LayoutEntry::new(uid));
         }
         let (chain, _) = build_chain(&mut slots, &mut layout, &config, options, fade_len, false);
@@ -596,17 +638,21 @@ impl RackHost {
                 name: l.descriptor.name.text.clone(),
                 bypass: hs.bypass,
                 latency_samples: l.latency,
-                status: match &l.failed {
-                    Some(message) => SlotStatus::Failed {
+                status: match (&l.failed, hs.restart_due) {
+                    (Some(message), Some(_)) => SlotStatus::Restarting {
                         message: message.clone(),
                     },
-                    None => SlotStatus::Active,
+                    (Some(message), None) => SlotStatus::Failed {
+                        message: message.clone(),
+                    },
+                    (None, _) => SlotStatus::Active,
                 },
                 params: l.params.clone(),
                 groups: l.groups.clone(),
                 noise_profile: noise_profile_status(l.noise_profile.as_deref(), l.blob.as_deref()),
                 curve_handles: l.response_curve.as_deref().map(|c| c.handles().to_vec()),
                 telemetry: l.telemetry_channels.clone(),
+                sandboxed: l.health.is_some(),
             },
             Kind::Placeholder {
                 model,
@@ -635,6 +681,7 @@ impl RackHost {
                 noise_profile: None,
                 curve_handles: None,
                 telemetry: Arc::from(Vec::new()),
+                sandboxed: false,
             },
         })
     }
@@ -809,15 +856,8 @@ impl RackHost {
         let uid = self.alloc_uid();
         let pos = self.layout_pos_for(index);
         self.layout.insert(pos, LayoutEntry::new(uid));
-        self.slots.insert(
-            index,
-            HostSlot {
-                uid,
-                bypass: slot.bypass,
-                extra: slot.extra,
-                kind,
-            },
-        );
+        self.slots
+            .insert(index, HostSlot::new(uid, slot.bypass, slot.extra, kind));
         self.dirty = true;
         self.flush();
         self.check_latency();
@@ -925,15 +965,8 @@ impl RackHost {
         let uid = self.alloc_uid();
         let pos = self.layout_pos_for(to);
         self.layout.insert(pos, LayoutEntry::new(uid));
-        self.slots.insert(
-            to,
-            HostSlot {
-                uid,
-                bypass,
-                extra,
-                kind,
-            },
-        );
+        self.slots
+            .insert(to, HostSlot::new(uid, bypass, extra, kind));
         self.dirty = true;
         self.flush();
         self.check_latency();
@@ -1048,7 +1081,18 @@ impl RackHost {
     /// resolves the stored slot again (SPEC-012 §2.9): on success the instance fades in from
     /// the dry path once its output is valid; on failure the error is returned and the slot
     /// stays as it was. Missing-module placeholders return [`RackError::NotLoaded`].
+    ///
+    /// A manual restart also resets the slot's automatic-restart budget ([`AUTO_RESTARTS`]).
     pub fn restart(&mut self, index: usize) -> Result<(), RackError> {
+        if let Some(hs) = self.slots.get_mut(index) {
+            hs.auto_restarts = 0;
+            hs.restart_due = None;
+        }
+        self.restart_now(index)
+    }
+
+    /// [`restart`](Self::restart) without touching the automatic-restart budget.
+    fn restart_now(&mut self, index: usize) -> Result<(), RackError> {
         if let Some(HostSlot {
             kind: Kind::Placeholder { failed: true, .. },
             ..
@@ -1138,6 +1182,7 @@ impl RackHost {
         }
         l.blob = m.save_state().ok().and_then(|s| s.blob).or(state.blob);
         (l.telemetry, l.telemetry_channels) = telemetry_of(m.as_ref());
+        l.health = adapter_health(m.as_ref());
         if let Some(mut old) = l.fresh.replace(m) {
             old.deactivate();
         }
@@ -1371,12 +1416,8 @@ impl RackHost {
         for (i, s) in model.slots.iter().enumerate() {
             let uid = self.alloc_uid();
             let kind = resolve_lenient(&self.registry, &self.config, s, i);
-            self.slots.push(HostSlot {
-                uid,
-                bypass: s.bypass,
-                extra: s.extra.clone(),
-                kind,
-            });
+            self.slots
+                .push(HostSlot::new(uid, s.bypass, s.extra.clone(), kind));
             self.layout.push(LayoutEntry::new(uid));
         }
         self.set_ab(false);
@@ -1410,7 +1451,7 @@ impl RackHost {
                 {
                     return;
                 }
-                if let Err(err) = self.restart(k) {
+                if let Err(err) = self.restart_now(k) {
                     self.notices.push(RackNotice::SlotFailed {
                         slot,
                         index: k,
@@ -1422,7 +1463,13 @@ impl RackHost {
                 let Some(k) = self.index_of(slot) else {
                     return;
                 };
-                let Kind::Loaded(l) = &mut self.slots[k].kind else {
+                let HostSlot {
+                    kind,
+                    auto_restarts,
+                    restart_due,
+                    ..
+                } = &mut self.slots[k];
+                let Kind::Loaded(l) = kind else {
                     return;
                 };
                 let name = &l.descriptor.name.text;
@@ -1430,9 +1477,20 @@ impl RackHost {
                     FailReason::NonFinite => {
                         format!("{name} produced invalid audio and was bypassed")
                     }
-                    FailReason::ModuleError => format!("{name} stopped working and was bypassed"),
+                    FailReason::ModuleError => match l.health.as_ref().and_then(|h| h.fault()) {
+                        Some(why) => format!("{name} {why} and was bypassed"),
+                        None => format!("{name} stopped working and was bypassed"),
+                    },
                 };
                 l.failed = Some(message.clone());
+                // T-802 restart policy: an out-of-process module that failed on its own
+                // (crash, hang — not invalid audio) restarts once with its last committed state.
+                if reason == FailReason::ModuleError
+                    && l.health.is_some()
+                    && *auto_restarts < AUTO_RESTARTS
+                {
+                    *restart_due = Some(Instant::now() + AUTO_RESTART_DELAY);
+                }
                 self.notices.push(RackNotice::SlotFailed {
                     slot,
                     index: k,
@@ -1468,10 +1526,36 @@ impl RackHost {
         while let Ok(e) = self.link.events.pop() {
             self.on_event(e);
         }
+        self.run_due_restarts(Instant::now());
         self.flush();
         self.pump_backlog();
         self.check_latency();
         std::mem::take(&mut self.notices)
+    }
+
+    /// Performs the automatic restarts that are due (T-802 restart policy). A restart that fails
+    /// leaves the slot "Failed" with the reason.
+    fn run_due_restarts(&mut self, now: Instant) {
+        for k in 0..self.slots.len() {
+            let hs = &mut self.slots[k];
+            if !hs.restart_due.is_some_and(|t| t <= now) {
+                continue;
+            }
+            hs.restart_due = None;
+            hs.auto_restarts += 1;
+            let uid = hs.uid;
+            if let Err(err) = self.replace_with(k, None)
+                && let Kind::Loaded(l) = &mut self.slots[k].kind
+            {
+                let message = format!("Couldn't restart {}: {err}", l.descriptor.name.text);
+                l.failed = Some(message.clone());
+                self.notices.push(RackNotice::SlotFailed {
+                    slot: uid,
+                    index: k,
+                    message,
+                });
+            }
+        }
     }
 
     /// Notices produced since the last [`tick`](Self::tick) (without ticking).

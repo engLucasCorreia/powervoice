@@ -70,6 +70,7 @@ function nrSlotFixture(overrides: Partial<RackSlotDto> = {}): RackSlotDto {
     noise_profile: "loaded",
     curve_handles: null,
     telemetry: [],
+    sandboxed: false,
     ...overrides,
   };
 }

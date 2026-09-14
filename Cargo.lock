@@ -3037,6 +3037,7 @@ dependencies = [
  "vox-io",
  "vox-module-api",
  "vox-modules",
+ "vox-plugin-host",
  "vox-presets",
  "vox-project",
  "vox-rack",
@@ -3056,6 +3057,20 @@ dependencies = [
  "vox-modules",
  "vox-rack",
  "vox-testkit",
+]
+
+[[package]]
+name = "powervoice-sandbox"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde_json",
+ "vox-module-api",
+ "vox-modules",
+ "vox-plugin-host",
+ "vox-presets",
+ "vox-rack",
+ "vox-sandbox-ipc",
 ]
 
 [[package]]
@@ -5053,6 +5068,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "vox-plugin-host"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "vox-module-api",
+ "vox-sandbox-ipc",
+]
+
+[[package]]
 name = "vox-presets"
 version = "0.1.0"
 dependencies = [
@@ -5099,6 +5125,8 @@ name = "vox-sandbox-ipc"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "serde",
+ "serde_json",
  "thiserror 2.0.20",
  "vox-module-api",
  "windows-sys 0.61.2",

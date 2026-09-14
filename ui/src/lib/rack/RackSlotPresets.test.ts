@@ -46,6 +46,7 @@ function slotFixture(overrides: Partial<RackSlotDto> = {}): RackSlotDto {
     noise_profile: null,
     curve_handles: null,
     telemetry: [],
+    sandboxed: false,
     ...overrides,
   };
 }

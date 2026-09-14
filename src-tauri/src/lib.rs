@@ -13,6 +13,7 @@ pub mod logging;
 pub mod loudness;
 pub mod normalize;
 pub mod nr_capture;
+pub mod plugins;
 pub mod presets;
 pub mod recording;
 pub mod settings;

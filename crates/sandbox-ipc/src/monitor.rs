@@ -118,7 +118,7 @@ impl Monitor {
             self.last_change = now;
         }
         if peer == PeerStatus::Exited {
-            self.stats.bypass.store(true, Ordering::Release);
+            self.bypass_now();
         }
         let mut new_fault = None;
         if self.fault.is_none() {
@@ -139,7 +139,7 @@ impl Monitor {
                 None
             };
             if let Some(fault) = detected {
-                self.stats.bypass.store(true, Ordering::Release);
+                self.bypass_now();
                 self.fault = Some(fault);
                 new_fault = Some(fault);
             }
@@ -191,7 +191,14 @@ impl Monitor {
 
     /// Bypasses the channel permanently without a fault (e.g. the slot is being removed).
     pub fn force_bypass(&self) {
-        self.stats.bypass.store(true, Ordering::Release);
+        self.bypass_now();
+    }
+
+    /// Sets the bypass flag and rings `to_host`, so a host end waiting for output stops waiting.
+    fn bypass_now(&self) {
+        if !self.stats.bypass.swap(true, Ordering::AcqRel) {
+            self.map.control().to_host.ring::<PlatformWakeup>();
+        }
     }
 
     /// The segment's control block (diagnostics and tests).

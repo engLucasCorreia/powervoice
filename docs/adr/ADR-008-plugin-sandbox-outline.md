@@ -295,3 +295,138 @@ L = B stays the default: it adds about 8–18 µs per callback and had no misses
 synchronous cost is waking the idle sandbox thread; RT priority (T-802) should shrink the tails.
 iceoryx2 was not benchmarked, since that would add a dependency and the hand-rolled layer already
 meets the budget.
+
+## Amendment 2 — T-802 process, control channel, watchdog and proxy, as implemented (2026-09-14)
+Crates: `vox-plugin-host` (editor side: `ProxyModule`, `SandboxFactory`, control client,
+watchdog) and `powervoice-sandbox` (the process: backend seam, test backend, audio thread). The
+editor links no plugin format code (§8). No new third-party crate.
+
+### 1. Process
+- **`powervoice-sandbox --shm <handle> --host-pid <pid>`**, one per plugin instance (§1). The
+  binary is looked up next to the editor executable (`POWERVOICE_SANDBOX_BIN` overrides; `just dev`
+  builds it; bundling it as a Tauri sidecar is a packaging follow-up).
+- A **`PluginBackend`** (`load(plugin) → PluginInstance`) is the seam for T-803+ formats.
+  `PluginInstance` is shared by the sandbox's main thread (control requests) and its audio
+  thread (`process`), and synchronises internally, like a CLAP plugin.
+- **Test backend** (`"test"`): `gain` hosts the built-in Gain module, so the proxy path can be
+  compared bit for bit with the in-process module. `crash`, `hang` and `slow` add T-801's fault
+  behaviours on top. Options go in the plugin reference, e.g. `crash?after=200`.
+- **Sandbox audio thread:** it runs `PluginEnd::service` with a 20 ms idle timeout, and requests
+  `SCHED_FIFO` at priority 60 (or the `RLIMIT_RTPRIO` ceiling) when allowed. rtkit, MMCSS and
+  macOS are follow-ups.
+- **Exit conditions:** the sandbox exits on `Shutdown`, on stdin EOF, when the host pid is gone,
+  and, on Linux, on `PR_SET_PDEATHSIG`.
+
+### 2. Control channel: pipes, not a socket
+§4's local socket is replaced by the child's **stdin (host → sandbox)** and a **private duplicate
+of its stdout** (sandbox → host). The sandbox points its own fd 1 at stderr, so a plugin that
+prints can't corrupt the stream. Why pipes:
+- they work the same on every OS through `std::process`, with no fd passing;
+- EOF on stdin tells the sandbox the host is gone, on every platform.
+
+**Frame:**
+- a `u32` total length and a `u32` JSON length, both little-endian;
+- the JSON message (`vox_sandbox_ipc::protocol`, `PROTOCOL_VERSION = 1`);
+- a **binary payload** for plugin state, so state is never base64 inside JSON;
+- at most 64 MiB.
+
+**Requests and replies:**
+
+| Request | Reply |
+|---|---|
+| `Hello {protocol}` | `Hello {protocol, pid}` |
+| `Load {backend, plugin}` | `Loaded {name, vendor, version, params, groups, values}` (the module API's own serde types) |
+| `Activate {sample_rate, max_block, mode}` | `Activated {latency_samples, tail_samples}` |
+| `Deactivate` | `Ok` |
+| `SetParams {values}` (inactive only) | `Ok` |
+| `SaveState` | `State` + payload |
+| `LoadState` + payload (inactive only) | `Params {values}` |
+| `Shutdown` | `Ok` |
+
+Failures answer `Error {message}`. The host side uses one writer thread and one reader thread per
+sandbox, so a request never blocks the caller beyond its timeout.
+
+**Timeouts:** 5 s for load, activate and state; 1 s for deactivate. A timeout counts as a hang
+(the process is killed), and a closed channel as a crash.
+
+### 3. Segment lifetime
+- The host creates **one segment at spawn**, sized for the largest `B` (`MAX_TRANSPORT_BLOCK` =
+  4096 = the offline block, about 300 KB). On Linux it is the memfd, inherited by this child only.
+- Before every `Activate` the host re-initialises it (`Channel::create_in` on a duplicate
+  mapping) for the actual `ChannelConfig::pipelined(rate, B)`, and the sandbox re-attaches.
+- Named segments (macOS) are unlinked right after `Hello`, since both sides have them open by
+  then. On Linux no named object ever exists.
+
+### 4. Choosing `B`; latency
+- **Offline:** `B` = the render block, with `HostOptions::offline(5 s)`.
+- **Realtime:** `B` = next_pow2(max(largest callback seen by this factory's instances,
+  `min_block` = 256)), capped by `max_block`.
+- If a callback exceeds `B`, the proxy raises `HostRequest::Restart` once and records the size.
+  The rack's normal replacement then activates a new instance with the larger `B`. This
+  implements §2's "period change → Restart" without the engine telling plugins the device period.
+- `latency_samples()` = `B` + the plugin's own latency.
+
+### 5. Watchdog
+**One `sandbox-watchdog` thread per editor process.** It spawns every sandbox, so
+`PR_SET_PDEATHSIG`, which follows the *spawning thread*, is tied to a thread that lives as long
+as the editor.
+
+**Supervision**, every 10 ms, for each live sandbox: `Monitor::poll(PeerStatus::of_child)`.
+- A hang (250 ms stale while fed) → SIGKILL.
+- Every fault flips the channel to bypass. The `Monitor` now also **rings `to_host`** when it
+  bypasses, and `HostEnd`'s bounded wait ends early on bypass, so an offline render aborts at once
+  instead of after its 5 s timeout.
+
+**Retiring**, when a proxy is dropped (the drop never blocks):
+1. the channel is shut down (`host_command`) and `Shutdown` is sent;
+2. stdin is closed;
+3. the process gets 500 ms, then SIGKILL, and is **always reaped**.
+
+The tests verify that removal, teardown, an editor `exit()` and an editor SIGKILL leave no
+process, no fd and no `/dev/shm/pvs.*` object.
+
+### 6. Failure policy (supersedes §5's "no automatic restart")
+T-802 asks for "restart once with the last good state". A sandboxed slot whose proxy returns
+`ProcessStatus::Error` gets this sequence:
+1. The rack bypasses it with its 15 ms latency-matched crossfade (ADR-005 §9).
+2. It marks the slot **Restarting** ("‹plugin› crashed / stopped responding and was bypassed";
+   the reason comes from ADR-005 Amendment 3's `AdapterHealth`).
+3. After 200 ms it replaces the instance with one built from the slot's committed state (a new
+   process).
+4. A second failure leaves the slot **Failed**, still bypassed, with a **Retry** action (= Restart).
+   Retry resets the budget.
+
+"Once" bounds the loop a deterministic crash would cause. Other rules:
+- Invalid audio (non-finite output) and in-process modules never restart automatically.
+- Offline, a failure (or a block that misses its deadline) aborts the render (`SlotFailed`).
+- Recording is unaffected (the take is written from the dry input).
+
+### 7. State
+The proxy's `ModuleState`:
+- `params` = the mirrored values (keyed by the plugin's parameter keys);
+- `blob` = the plugin's state wrapped with its identity: magic `PVPLUGST`, wrapper version 1, a
+  JSON header `{format, plugin, id, version}`, then the plugin bytes verbatim.
+
+Loading applies the blob first, then the values (the values win: the rack's committed state
+carries mirror values next to the blob captured at instantiation). A blob whose `id` or
+`format` differs is refused. This state round-trips through the sidecar (`RackModel` JSON) and
+module presets.
+
+### 8. UI and developer flag
+- `RackSlotDto.sandboxed` and `SlotStatusDto::Restarting` drive the slot badges: Running,
+  Restarting…, Plugin failed, and Not installed for a missing module. The failure reason, and
+  for a failed slot a **Retry** button, appear in the slot.
+- `POWERVOICE_DEV_PLUGINS=1` registers `test:gain`, `test:crash` and `test:hang` (they fail after
+  about 8 s) in every composition root. Without the flag, a sidecar's test slots load as "Not
+  installed" placeholders (H-15) and are written back verbatim.
+
+### 9. Known limits, for T-803+
+- Instantiation (spawn, `Hello`, `Load`, `LoadState`, `Activate`) runs synchronously on the rack's
+  control thread. That is a few ms with the test backend; real plugins need asynchronous
+  instantiation.
+- The rack's committed blob is captured at instantiation. Plugin state that isn't a parameter and
+  changes later (GUIs, M9) needs a refresh from the live plugin at save time.
+- `HostEnd`'s short miss substitute is delayed by `B`, not by `B` + the plugin's own latency. The
+  rack's slot bypass is correctly latency-matched.
+- Windows: no job object (`KILL_ON_JOB_CLOSE`) yet, no stdout redirect, and the wakeup is still
+  spin-then-yield (Amendment 1 §2).

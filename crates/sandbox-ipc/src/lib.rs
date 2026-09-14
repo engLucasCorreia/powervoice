@@ -15,6 +15,8 @@
 //!   host's two ends: [`HostEnd`] (audio thread) and [`Monitor`] (control thread).
 //! - [`PluginEnd`]: the sandbox side (attach, serve chunks, heartbeat).
 //! - [`test_plugins`]: the four test plugins behind `src/bin/vox-sbx-test-*.rs`.
+//! - [`control`] + [`protocol`] (T-802, ADR-008 Amendment 2): the control channel — framed
+//!   JSON requests/responses with a binary payload, over the sandbox's stdin/stdout pipes.
 //!
 //! # Protocol (per host callback of `n ≤ max_block` frames at input position `p`)
 //! 1. The host writes the input to `in[p, p+n)`, publishes `in_write_pos = p+n` and rings
@@ -32,10 +34,12 @@
 //! blocking; it flips the host end to permanent bypass (no more wakes or waits).
 
 mod channel;
+pub mod control;
 mod host;
 pub mod layout;
 mod monitor;
 mod plugin;
+pub mod protocol;
 pub mod shm;
 pub mod test_plugins;
 pub mod wakeup;

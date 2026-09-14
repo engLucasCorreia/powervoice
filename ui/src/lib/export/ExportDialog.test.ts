@@ -56,6 +56,7 @@ function noiseOnlySlot(): RackSlotDto {
     noise_profile: "loaded",
     curve_handles: null,
     telemetry: [],
+    sandboxed: false,
   };
 }
 

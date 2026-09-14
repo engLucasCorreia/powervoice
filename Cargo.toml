@@ -12,6 +12,8 @@ members = [
     "crates/testkit",
     "crates/cli",
     "crates/sandbox-ipc",
+    "crates/plugin-host",
+    "crates/sandbox",
     "src-tauri",
 ]
 

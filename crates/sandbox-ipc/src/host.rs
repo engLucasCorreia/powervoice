@@ -369,9 +369,13 @@ impl<W: Wakeup> HostEnd<W> {
             let ns = self.budget_ns(n);
             if ns > 0 {
                 waited = true;
+                // A fault reported meanwhile (the monitor rings `to_host` when it bypasses)
+                // ends the wait early: an offline render aborts at once instead of after its
+                // whole timeout (T-802).
+                let bypass = &self.stats.bypass;
                 ready = cb.to_host.wait_until::<W>(Deadline::after_ns(ns), || {
-                    wet_ready(cb, from, to, published)
-                });
+                    wet_ready(cb, from, to, published) || bypass.load(Ordering::Acquire)
+                }) && wet_ready(cb, from, to, published);
             }
         }
 

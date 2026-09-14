@@ -828,3 +828,24 @@ For any `Module`:
   name PowerVoice (T-009): module ids use `org.powervoice.*` and the app identifier is
   `app.powervoice.editor` (ADR-004), both now shipped in sidecars (T-306), presets (T-406) and bundles
   (T-705). They are permanent.
+
+## Amendment 3 — `AdapterHealth` extension; restart policy for out-of-process modules (T-802, 2026-09-14)
+- **New extension:** `ExtensionId::AdapterHealth` / `Extension::AdapterHealth(Arc<dyn
+  AdapterHealth>)`.
+  - It is **host-internal**: it is never a CLAP extension, and its `as_str` id
+    `org.powervoice.adapter-health/1` never leaves the process.
+  - It is answered only by out-of-process adapters (the plugin sandbox's `ProxyModule`,
+    ADR-008 Amendment 2).
+  - `fn fault(&self) -> Option<String>` returns a short English verb phrase ("crashed", "stopped
+    responding"). It completes "‹module› … and was bypassed".
+  - It is `Send + Sync` and readable from the control thread while the instance is live.
+  - Its presence marks the module as out of process.
+- **Rack (§9, §12):**
+  - `SlotInfo.sandboxed` is set when the extension is present.
+  - New status `SlotStatus::Restarting { message }`.
+  - **Restart policy:** a slot with `AdapterHealth` that fails with `FailReason::ModuleError`
+    restarts once automatically from its committed state, after `AUTO_RESTART_DELAY` = 200 ms,
+    through the §12 replacement. A second failure stays `Failed`.
+  - A manual `restart` (Retry) resets the budget. Missing-module placeholders still can't be
+    restarted (`NotLoaded`).
+  - Invalid audio (`NonFinite`) and in-process modules never restart automatically.

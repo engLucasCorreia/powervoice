@@ -166,7 +166,8 @@ fn serve<W: Wakeup>(kind: TestPluginKind, args: &TestPluginArgs, region: SharedR
     }
 }
 
-fn crash_now() -> ! {
+/// Aborts the process without leaving a core dump (the crash plugins; T-802's test backend).
+pub fn crash_now() -> ! {
     #[cfg(target_os = "linux")]
     // SAFETY: PR_SET_DUMPABLE 0 only marks this process non-dumpable, so the deliberate abort
     // below leaves no core dump (and no crash-reporter notification).
@@ -176,13 +177,16 @@ fn crash_now() -> ! {
     std::process::abort()
 }
 
-fn hang_forever() -> ! {
+/// Sleeps forever (the hang plugins; T-802's test backend).
+pub fn hang_forever() -> ! {
     loop {
         std::thread::sleep(Duration::from_secs(3600));
     }
 }
 
-fn die_with_parent() {
+/// Linux: asks the kernel to SIGKILL this process when the thread that spawned it exits
+/// (`PR_SET_PDEATHSIG`). No-op elsewhere.
+pub fn die_with_parent() {
     #[cfg(target_os = "linux")]
     // SAFETY: PR_SET_PDEATHSIG only asks the kernel to SIGKILL this process when its parent
     // (thread) exits.
@@ -191,8 +195,9 @@ fn die_with_parent() {
     }
 }
 
+/// Whether process `pid` still exists (`kill(pid, 0)`; unknown → true).
 #[cfg(unix)]
-fn process_alive(pid: u32) -> bool {
+pub fn process_alive(pid: u32) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
         return true;
     };
@@ -204,7 +209,8 @@ fn process_alive(pid: u32) -> bool {
     r == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
+/// Whether process `pid` still exists (unknown → true).
 #[cfg(not(unix))]
-fn process_alive(_pid: u32) -> bool {
+pub fn process_alive(_pid: u32) -> bool {
     true
 }

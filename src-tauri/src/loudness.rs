@@ -91,7 +91,7 @@ pub fn start<R: Runtime>(
     documents: DocumentService,
     engine: EngineHandle,
 ) -> anyhow::Result<LoudnessService> {
-    let registry = Arc::new(Registry::with_factories(vox_modules::builtin_factories())?);
+    let registry = Arc::new(crate::plugins::registry()?);
     let emit: LoudnessEmitter = Arc::new(move |event| forward(&app, event));
     Ok(LoudnessService(Arc::new(Inner {
         documents,

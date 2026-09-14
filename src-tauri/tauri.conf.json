@@ -79,7 +79,7 @@
     ],
     "linux": {
       "deb": {
-        "depends": ["libasound2"],
+        "depends": ["libasound2 | libasound2t64"],
         "recommends": ["libmp3lame0"],
         "section": "sound",
         "priority": "optional"

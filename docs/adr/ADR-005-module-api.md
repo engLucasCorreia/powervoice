@@ -822,3 +822,9 @@ For any `Module`:
 - **Meters:** the rack UI renders every `GainReduction`-kind telemetry channel in the slot header
   (generic, not module-specific); other kinds are T-410. Values reach the UI through ADR-003's `VXMT`
   frame (ADR-003 Amendment 3).
+
+## Amendment 2 — open question 1 closed (2026-09-14)
+- Open question 1 (id namespace vs. Tauri identifier) was settled at the M0 checkpoint with the product
+  name PowerVoice (T-009): module ids use `org.powervoice.*` and the app identifier is
+  `app.powervoice.editor` (ADR-004), both now shipped in sidecars (T-306), presets (T-406) and bundles
+  (T-705). They are permanent.

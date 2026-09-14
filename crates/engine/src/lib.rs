@@ -15,6 +15,11 @@
 //! - Internals: `control` (16.7 ms tick, device handling), `output` (the RT output callback),
 //!   `reader` (prefetch + resampling), `rt` (ring element types).
 //!
+//! Live output analyzer (T-208, SPEC-007 §2.9/§4.8, ADR-003 §2 amendments 1/4):
+//! - [`analyzer`]: the RT tap (post-rack + dry monitor) and the control-thread publisher that
+//!   turns it into `VXSA` frames (BH4 FFT, 1/24-octave bands, Fast/Medium/Slow averaging), only
+//!   while at least one subscriber exists.
+//!
 //! Recording (S1-04, SPEC-002 §2.1–§2.3, §2.7 Off/Dry):
 //! - [`record`]: arm, record start/stop, the take hand-off ([`record::RecordDone`]), monitoring.
 //! - Internals: `input` (the RT input callback: meter, clip, capture + monitor rings),
@@ -28,6 +33,7 @@
 //! - [`spectro`]: the spectrogram tile service (worker threads, content-keyed tile cache,
 //!   `VXST` frames).
 
+pub mod analyzer;
 pub mod backend;
 mod capture;
 mod control;
@@ -47,6 +53,7 @@ pub mod spectro;
 pub mod telemetry;
 pub mod transport;
 
+pub use analyzer::{AnalyzerFrame, AnalyzerResponse, AnalyzerSink};
 pub use backend::{
     Backend, BackendError, BufferRequest, DeviceInfo, DeviceKey, DeviceSnapshot, Direction,
     DirectionCaps, Enumerate, HostId, InputCallback, InputTimestamp, OutputCallback,

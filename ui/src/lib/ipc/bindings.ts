@@ -23,6 +23,12 @@ export type AcxRuleDto = { measured_db: number | null, status: AcxRuleStatusDto,
 export type AcxRuleStatusDto = "pass" | "too_low" | "too_high" | "invalid" | "too_short";
 
 /**
+ * Analyzer averaging response (Fast/Medium/Slow, SPEC-007 §2.9), exponential averaging in the
+ * power domain with τ = 50 / 150 / 500 ms.
+ */
+export type AnalyzerResponseDto = "fast" | "medium" | "slow";
+
+/**
  * Basic app identity shown by the UI at startup. Returned by the `app_info` command.
  */
 export type AppInfo = { name: string, version: string, };
@@ -35,7 +41,7 @@ export type BitDepth = "16" | "24" | "32f";
  */
 export type ClipboardChangedDto = { len_samples: number | null, sample_rate_hz: number | null, };
 
-export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "module_telemetry_subscribe" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_probe" | "document_save" | "document_save_as" | "sidecar_view_set_spectral" | "recent_files_get" | "recent_files_remove" | "recent_files_clear" | "peaks_get" | "spectro_attach" | "spectro_detach" | "spectro_request" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check";
+export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "module_telemetry_subscribe" | "analyzer_subscribe" | "analyzer_set_response" | "analyzer_unsubscribe" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_probe" | "document_save" | "document_save_as" | "sidecar_view_set_spectral" | "recent_files_get" | "recent_files_remove" | "recent_files_clear" | "peaks_get" | "spectro_attach" | "spectro_detach" | "spectro_request" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check";
 
 /**
  * One draggable EQ-graph node (S3-07, SPEC-015 §3 "ResponseCurve components"): the band's

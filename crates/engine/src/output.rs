@@ -21,6 +21,7 @@ use rtrb::{Consumer, Producer};
 use vox_dsp::fp::DenormalGuard;
 use vox_rack::{LiveRack, MAX_BLOCK, Transport};
 
+use crate::analyzer::AnalyzerTap;
 use crate::backend::{OutputCallback, OutputTimestamp};
 use crate::monitor::MonitorOut;
 use crate::rt::{
@@ -37,6 +38,8 @@ pub(crate) struct OutputParts {
     pub(crate) counters: Arc<RtCounters>,
     /// The output side of this stream's monitor ring (the input callback produces).
     pub(crate) monitor: MonitorOut,
+    /// T-208: the live analyzer's RT tap (post-rack + dry monitor, SPEC-007 §4.8 step 1).
+    pub(crate) analyzer_tap: AnalyzerTap,
 }
 
 /// Where a dropped callback leaves its [`OutputParts`].
@@ -457,9 +460,15 @@ impl OutputCallback for OutputCb {
                 sum_sq += f64::from(s) * f64::from(s);
                 // Dry monitoring: after the rack, unity gain (never recorded, never metered).
                 let y = s + parts.monitor.dry()[i];
+                // T-208: stage the analyzer tap's signal in `rack_out` (no longer needed as `s`
+                // past this point) rather than a second scratch buffer.
+                st.rack_out[i] = y;
                 let base = (done + i) * channels;
                 data[base..base + channels].fill(y);
             }
+            // SPEC-007 §4.8 step 1: the same `out` signal as the output meter (rack + dry
+            // monitor), one bounded push per sub-block. A no-op unless a subscriber exists.
+            parts.analyzer_tap.push(&st.rack_out[..n]);
             done += n;
         }
         if st.underrun {

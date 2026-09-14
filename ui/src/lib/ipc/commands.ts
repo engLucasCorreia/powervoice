@@ -2,6 +2,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   AcxCheckReportDto,
   AcxCheckRequestDto,
+  AnalyzerResponseDto,
   AppInfo,
   BitDepth,
   CommandName,
@@ -98,6 +99,30 @@ export async function telemetrySubscribe(channel: Channel<ArrayBuffer>): Promise
 /** H-03: binary `VXMT` module-telemetry frames (the rack slots' meters, SPEC-016 §4.12) on `channel`. */
 export async function moduleTelemetrySubscribe(channel: Channel<ArrayBuffer>): Promise<void> {
   return invoke<void>("module_telemetry_subscribe" satisfies CommandName, { channel });
+}
+
+/**
+ * T-208: binary `VXSA` live-analyzer frames (SPEC-007 §2.9/§4.9) on `channel`, at `response`.
+ * Returns the subscriber id used by {@link analyzerSetResponse}/{@link analyzerUnsubscribe}.
+ */
+export async function analyzerSubscribe(
+  channel: Channel<ArrayBuffer>,
+  response: AnalyzerResponseDto,
+): Promise<number> {
+  return invoke<number>("analyzer_subscribe" satisfies CommandName, { channel, response });
+}
+
+/** T-208: changes one subscriber's averaging response. */
+export async function analyzerSetResponse(
+  id: number,
+  response: AnalyzerResponseDto,
+): Promise<void> {
+  return invoke<void>("analyzer_set_response" satisfies CommandName, { id, response });
+}
+
+/** T-208: removes a subscriber; the tap turns off once none remain. */
+export async function analyzerUnsubscribe(id: number): Promise<void> {
+  return invoke<void>("analyzer_unsubscribe" satisfies CommandName, { id });
 }
 
 /** S1-01: the engine's app clock in ns (clock sync, ADR-003 §3). */

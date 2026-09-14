@@ -22,6 +22,9 @@ use vox_rack::{
     RackNotice, RackOptions, Registry,
 };
 
+use crate::analyzer::{
+    ANALYZER_RING_FRAMES, AnalyzerPublisher, AnalyzerResponse, AnalyzerSink, AnalyzerTap,
+};
 use crate::backend::{
     Backend, BackendError, BufferRequest, Direction, Enumerate, HostId, StallDetector,
     StreamHandle, StreamRequest, choose_default_host, flags,
@@ -220,6 +223,9 @@ pub(crate) struct Control {
     seq: u32,
     /// Module telemetry (`VXMT`, H-03): the rack slots' meters.
     module_telemetry: ModuleTelemetryPublisher,
+    /// Live output analyzer (`VXSA`, T-208): the RT tap's consumer + BH4 FFT / band / EMA
+    /// pipeline, published only while at least one subscriber exists.
+    analyzer: AnalyzerPublisher,
     last_state: Option<TransportState>,
     // --- Input / recording (S1-04) ---
     /// Capture-writer on its own thread (`Engine`) or inline in the tick (`ManualEngine`).
@@ -341,6 +347,7 @@ impl Control {
             telemetry: None,
             seq: 0,
             module_telemetry: ModuleTelemetryPublisher::default(),
+            analyzer: AnalyzerPublisher::default(),
             last_state: None,
             threaded,
             in_device_id: None,
@@ -1132,6 +1139,7 @@ impl Control {
         let (cmd_tx, cmd_rx) = RingBuffer::new(AUDIO_CMD_CAPACITY);
         let (ev_tx, ev_rx) = RingBuffer::new(RT_EVENT_CAPACITY);
         let (mon_tx, mon_rx) = RingBuffer::new(MONITOR_RING_FRAMES);
+        let (an_tx, an_rx) = RingBuffer::new(ANALYZER_RING_FRAMES);
         let counters = Arc::new(RtCounters::default());
         let link = Arc::new(MonitorLink::default());
         let slot: PartsSlot = Arc::new(Mutex::new(None));
@@ -1142,6 +1150,11 @@ impl Control {
             events: ev_tx,
             counters: counters.clone(),
             monitor: MonitorOut::new(mon_rx, link.clone(), counters.clone(), rate),
+            analyzer_tap: AnalyzerTap::new(
+                an_tx,
+                self.analyzer.gate(),
+                self.analyzer.dropped_counter(),
+            ),
         };
         let cb = OutputCb::new(parts, slot.clone(), rate, doc_rate);
         match self.backend.open_output(req, Box::new(cb)) {
@@ -1162,6 +1175,9 @@ impl Control {
                     dev_rate_hz: rate,
                 });
                 self.last_underruns = 0;
+                // T-208: every successful (re)open is a fresh ring — exactly the reopen/rate-
+                // change moments SPEC-007 §4.8.6 wants treated as an analyzer reset.
+                self.analyzer.attach_ring(an_rx, rate);
                 self.monitor_gen = self.monitor_gen.wrapping_add(1);
                 self.monitor_tx = Some(MonitorTx {
                     generation: self.monitor_gen,
@@ -1219,6 +1235,7 @@ impl Control {
         self.reader_send(ReaderCmd::Detach);
         self.transport.stream_closed();
         self.monitor_reset();
+        self.analyzer.detach_ring();
     }
 
     // --- Input (S1-04) ---------------------------------------------------------------------
@@ -1957,6 +1974,7 @@ impl Control {
         self.emit_telemetry(now);
         self.module_telemetry
             .publish(self.output.as_ref().map(|out| &out.rack), now);
+        self.analyzer.publish(now);
         self.emit_state_if_changed();
         self.emit_record_if_changed();
     }
@@ -2135,6 +2153,25 @@ impl Control {
 
     pub(crate) fn set_module_telemetry_sink(&mut self, sink: Option<ModuleTelemetrySink>) {
         self.module_telemetry.set_sink(sink);
+    }
+
+    /// Registers a new live-analyzer subscriber (`VXSA`, T-208); returns its id.
+    pub(crate) fn analyzer_subscribe(
+        &mut self,
+        sink: AnalyzerSink,
+        response: AnalyzerResponse,
+    ) -> u32 {
+        self.analyzer.subscribe(sink, response)
+    }
+
+    /// Changes one subscriber's averaging response.
+    pub(crate) fn analyzer_set_response(&mut self, id: u32, response: AnalyzerResponse) {
+        self.analyzer.set_response(id, response);
+    }
+
+    /// Removes a subscriber; the tap turns off once none remain (`ANALYZER_ON` clear).
+    pub(crate) fn analyzer_unsubscribe(&mut self, id: u32) {
+        self.analyzer.unsubscribe(id);
     }
 }
 

@@ -8,6 +8,8 @@
 
 mod acx_commands;
 mod acx_dto;
+mod analyzer_commands;
+mod analyzer_dto;
 mod audio_commands;
 mod audio_dto;
 mod commands;
@@ -39,6 +41,8 @@ mod spectro_dto;
 // that hidden macro in scope, not just the function.
 pub use acx_commands::*;
 pub use acx_dto::{AcxCheckReportDto, AcxCheckRequestDto, AcxRuleDto, AcxRuleStatusDto};
+pub use analyzer_commands::*;
+pub use analyzer_dto::AnalyzerResponseDto;
 pub use audio_commands::*;
 pub use audio_dto::{
     DeviceDto, DeviceStatusDto, DevicesDto, TransportStateDto, notice_from_device,
@@ -115,6 +119,9 @@ crate::ipc_commands!(
     param_set_plain,
     rack_response_curve,
     module_telemetry_subscribe,
+    analyzer_subscribe,
+    analyzer_set_response,
+    analyzer_unsubscribe,
     record_get,
     record_arm,
     record_start,
@@ -189,6 +196,9 @@ crate::ipc_commands!(
     param_set_plain,
     rack_response_curve,
     module_telemetry_subscribe,
+    analyzer_subscribe,
+    analyzer_set_response,
+    analyzer_unsubscribe,
     record_get,
     record_arm,
     record_start,

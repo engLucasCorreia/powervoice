@@ -64,6 +64,11 @@
   --spec-ruler-text: #9a9da4;
   --spec-ruler-grid: #34373d;
 
+  /* Live output analyzer (SPEC-007 §2.9, §4.7, T-208). */
+  --analyzer-fill: rgba(127, 200, 255, 0.28);
+  --analyzer-peak: #ffb454;
+  --analyzer-grid: #34373d;
+
   /* EQ graph (SPEC-015 §2.6.3, S3-07): band colors follow the HP…LP processing order. */
   --eq-curve: #e6e7ea;
   --eq-fill: rgba(230, 231, 234, 0.15);

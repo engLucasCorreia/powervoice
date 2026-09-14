@@ -18,6 +18,7 @@ use std::thread::JoinHandle;
 use vox_project::{ChunkStore, DocSnapshot, FreeSpaceProvider, SystemFreeSpace, TakeCapture};
 use vox_rack::{ModuleDescriptor, RackModel, RackNotice, Registry};
 
+use crate::analyzer::{AnalyzerResponse, AnalyzerSink};
 use crate::backend::{Backend, BufferRequest, DeviceSnapshot, HostId, app_now_ns};
 use crate::control::{self, Control, ControlMsg};
 use crate::device_state::DeviceStatus;
@@ -261,6 +262,24 @@ impl EngineHandle {
         let _ = self.call(move |c| c.set_module_telemetry_sink(sink));
     }
 
+    /// Subscribes to the live output analyzer (`VXSA`, T-208): a BH4 FFT + 1/24-octave band +
+    /// `response`-averaged spectrum of the post-rack (+ dry monitor) signal, at the telemetry
+    /// rate, only while at least one subscriber exists. Returns the subscriber id.
+    pub fn analyzer_subscribe(&self, sink: AnalyzerSink, response: AnalyzerResponse) -> u32 {
+        self.call(move |c| c.analyzer_subscribe(sink, response))
+            .unwrap_or(0)
+    }
+
+    /// Changes a subscriber's averaging response (Fast/Medium/Slow).
+    pub fn analyzer_set_response(&self, id: u32, response: AnalyzerResponse) {
+        let _ = self.call(move |c| c.analyzer_set_response(id, response));
+    }
+
+    /// Removes a subscriber; the tap turns off once none remain.
+    pub fn analyzer_unsubscribe(&self, id: u32) {
+        let _ = self.call(move |c| c.analyzer_unsubscribe(id));
+    }
+
     /// The registered modules (the Add-module menu; S3-01).
     pub fn rack_registry(&self) -> Vec<ModuleDescriptor> {
         self.call(|c| c.rack_registry()).unwrap_or_default()
@@ -430,6 +449,21 @@ impl ManualEngine {
     /// See [`EngineHandle::set_module_telemetry_sink`].
     pub fn set_module_telemetry_sink(&mut self, sink: Option<ModuleTelemetrySink>) {
         self.control.set_module_telemetry_sink(sink);
+    }
+
+    /// See [`EngineHandle::analyzer_subscribe`].
+    pub fn analyzer_subscribe(&mut self, sink: AnalyzerSink, response: AnalyzerResponse) -> u32 {
+        self.control.analyzer_subscribe(sink, response)
+    }
+
+    /// See [`EngineHandle::analyzer_set_response`].
+    pub fn analyzer_set_response(&mut self, id: u32, response: AnalyzerResponse) {
+        self.control.analyzer_set_response(id, response);
+    }
+
+    /// See [`EngineHandle::analyzer_unsubscribe`].
+    pub fn analyzer_unsubscribe(&mut self, id: u32) {
+        self.control.analyzer_unsubscribe(id);
     }
 
     /// See [`EngineHandle::rack_registry`].

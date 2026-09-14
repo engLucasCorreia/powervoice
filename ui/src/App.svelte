@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import AnalyzerPanel from "./lib/analyzer/AnalyzerPanel.svelte";
   import ConfirmDialog from "./lib/document/ConfirmDialog.svelte";
   import DocumentMenu from "./lib/document/DocumentMenu.svelte";
   import SaveAsDialog from "./lib/document/SaveAsDialog.svelte";
@@ -181,7 +182,10 @@
     <RackPanel />
   </div>
   <LoudnessPanel />
-  <MeterBridge />
+  <div class="bottom-dock">
+    <MeterBridge />
+    <AnalyzerPanel />
+  </div>
 </div>
 <NoticeHost />
 <UnsavedChangesDialog />
@@ -201,6 +205,12 @@
   .workspace {
     display: grid;
     grid-template-columns: minmax(200px, 240px) 1fr minmax(240px, 300px);
+    min-height: 0;
+  }
+
+  /* T-208: the analyzer panel sits to the right of the meter bridge (SPEC-007 §2.9). */
+  .bottom-dock {
+    display: flex;
     min-height: 0;
   }
 </style>

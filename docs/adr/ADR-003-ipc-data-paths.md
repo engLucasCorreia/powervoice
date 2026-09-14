@@ -301,3 +301,50 @@ Records what the vertical slices built, as implemented.
   (S4-01), `normalize_result` (H-09).
 - **Write-back jobs** (H-09 normalize) refuse concurrent audio edits with `IpcErrorCode::Busy`
   (`error.document_busy`) and commit only if the document snapshot and session are unchanged.
+
+## Amendment 4 — T-208 (live analyzer, as implemented), 2026-09-14
+Amendment 1's `VXSA` table (header_len 32, `HAS_PEAK_HOLD` flag, peak-hold payload) predates
+SPEC-007 §4.9's fuller, later version and lacks the fields AC-18/AC-19 need (`RESET`/`DROPPED`/
+`SILENT`, `frame_time_ns`). **SPEC-007 §4.9 is the layout actually implemented; this amendment
+supersedes Amendment 1's `VXSA` table.**
+
+| Off | Type | Field |
+|---|---|---|
+| 0 | `[u8;4]` | `"VXSA"` |
+| 4 | u16 | version = 1 |
+| 6 | u16 | header_len = 48 |
+| 8 | u32 | seq |
+| 12 | u32 | flags: bit0 `RESET` (history/averaging restarted), bit1 `DROPPED` (tap samples dropped since the previous frame), bit2 `SILENT` (the window is digital silence) |
+| 16 | u64 | frame_time_ns (app clock at computation) |
+| 24 | u32 | sample_rate_hz (device rate) |
+| 28 | u32 | fft_size |
+| 32 | f32 | f0_hz = 20.0 |
+| 36 | u32 | bands_per_octave = 24 |
+| 40 | u32 | band_count K |
+| 44 | u32 | response (0 fast, 1 medium, 2 slow) |
+| 48 | f32[K] | averaged band level, dB (`-inf` allowed, never NaN) |
+
+- **Peak hold is not transmitted.** SPEC-007 §4.8 step 7 says peak hold is UI ballistics, computed
+  per animation frame from the received levels (`ui/src/lib/analyzer/peakHold.ts`), the same as the
+  meters. `HAS_PEAK_HOLD`-shaped payload extensions are therefore unnecessary; if a future ticket
+  needs server-computed peak hold, add a new flag bit and trailing `f32[K]` rather than reusing
+  Amendment 1's bit0 (repurposed here as `RESET`).
+- **Multi-subscriber, one computation.** `analyzer_subscribe(channel, response) -> id`,
+  `analyzer_set_response(id, response)`, `analyzer_unsubscribe(id)`. One BH4 FFT + band reduction
+  runs per telemetry tick, feeding all three Fast/Medium/Slow EMA states at once; each subscriber
+  reads the state matching its own `response` from that one shared computation (unlike `VXMT`,
+  which has exactly one sink). `ANALYZER_ON` (an `Arc<AtomicBool>` gate the RT tap checks first)
+  follows subscriber count: clear whenever none remain.
+- **Tap point.** The RT tap pushes the exact `out` signal the output meter's peak/RMS are built
+  from (`crates/engine/src/output.rs`, ADR-002 §4 step 3.4/4: rack output + Dry monitor, before
+  format conversion and channel duplication), one bounded `rtrb` push per sub-block; a full ring
+  writes what fits and bumps an atomic drop counter (surfaces as `DROPPED` on the next frame).
+- **Reset.** Every successful output (re)open attaches a fresh ring to the analyzer publisher and
+  sets `pending_reset`, so a device reopen or sample-rate change automatically clears the FFT
+  history and EMA state and marks the next frame `RESET` — no separate detection was needed beyond
+  "a new ring was attached."
+- **`TELEMETRY_RATE` gap (pre-existing, not introduced here).** The 60 Hz cadence is the fixed
+  control-tick period (`crates/engine/src/control.rs::TICK`); `Settings.telemetry_rate_hz`'s 30 Hz
+  option is stored but not wired to the tick loop for any channel (`VXTM`/`VXMT`/`VXSA` alike).
+  Wiring it is a separate ticket.
+- **Golden fixture:** `ui/src/lib/ipc/vxsa_fixture.ts` (Rust-generated, `vox_engine::AnalyzerFrame`).

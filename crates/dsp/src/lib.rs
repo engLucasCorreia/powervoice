@@ -1,5 +1,8 @@
 //! Pure DSP: no I/O, no threads, no allocation inside process().
 //!
+//! - [`analyzer`]: live output spectrum analyzer math (T-208, SPEC-007 §4.8): BH4-windowed real
+//!   FFT, 1/24-octave band reduction, power-domain Fast/Medium/Slow averaging — off the audio
+//!   thread only (the engine's analyzer consumer, never `process()`).
 //! - [`fp`]: the flush-to-zero / denormals-are-zero guard for audio threads and offline renders.
 //! - [`resample`]: fixed-ratio streaming sample-rate conversion (document → device rate).
 //! - [`async_resample`]: adjustable-ratio (drift-corrected) resampling of the monitor ring in the
@@ -17,6 +20,7 @@
 //!   rule (T-204, SPEC-007 §4.2–§4.4) — off the audio thread only (engine tile workers).
 
 pub mod acx;
+pub mod analyzer;
 pub mod async_resample;
 pub mod capture_resample;
 pub mod dither;

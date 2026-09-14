@@ -5,6 +5,14 @@
   "panel.markers.title": "Markers",
   "panel.properties.title": "Properties",
   "panel.meters.title": "Meters",
+  "panel.analyzer.title": "Analyzer",
+
+  "analyzer.no_device": "No output device",
+  "analyzer.response.fast": "Fast",
+  "analyzer.response.medium": "Medium",
+  "analyzer.response.slow": "Slow",
+  "analyzer.peak_hold": "Peak hold",
+  "analyzer.hover": "{freq} · {db} dB",
 
   "rack.ab": "A/B",
   "rack.ab_badge": "Listening only — exports always render the rack",

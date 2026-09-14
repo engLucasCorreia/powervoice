@@ -56,7 +56,8 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-11 | Disk-space floor + remaining recording time (A-010: libc statvfs / windows-sys); dropouts > 2 s → device-loss stop (A-011); dropout marks on the resampled path | S | done |
 | H-12 | Editor view follow-ups (T-207, T-306): app-wide default display prefs in Settings (per-document ones already in the sidecar), one shared time ruler + scrollbar in EditorView (SPEC-007 §2.1), waveform zoom/scroll/selection persisted in the sidecar view, HiDPI columns | S | done |
 | H-16 | Analyzer follow-ups (T-208): floor/ceiling, frequency zoom, hover, device state, View menu toggle, settings persistence; wire `telemetry_rate_hz` (30 Hz) into VXTM/VXMT/VXSA | S | done |
-| H-19 | Real menu bar (File/Edit/View/Effects/Help dropdowns, keyboard access, shortcuts shown) replacing the flat always-visible "menu" toolbars | S | todo |
+| H-19 | Real menu bar (File/Edit/View/Effects/Help dropdowns, keyboard access, shortcuts shown) replacing the flat always-visible "menu" toolbars | S | in progress |
+| H-20 | Save/open gaps (SPEC-005): dither None, keep FLAC when opened FLAC + full WAV promotion table, format-mapped/metadata-dropped notices, stereo→mono save warning, progressive import display | S | todo |
 | H-18 | Shared test factories for DTOs (`ui/src/lib/test/fixtures.ts` + Rust builders) so a new DTO field touches one helper, not 20 test literals (merge-friction fix) | H | todo |
 | H-17 | Recovery follow-ups (T-301): dialog stays open for remaining sessions (A-015), AC-3/AC-11 timing on a real disk (test-big), compaction off the document lock, markers during an interrupted take, Memory-for-audio UI, `/tmp/vox-project-*` sweep | S | todo |
 | H-15 | Sidecar follow-ups (T-306): recent-file-missing dialog, read-only folder matrix (AC-13), SIGKILL-during-sidecar-save test (AC-6), per-slot leniency for a malformed rack slot, perf budget (AC-18) | S | todo |
@@ -103,7 +104,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-206 | Selection model, time formats, zero-crossing snap | W3 | S | T-205 | todo |
 | T-207 | Spectrogram renderer, log/linear, split view | W3 | S | T-204, T-205 | done |
 | T-208 | Live output analyzer: post-rack tap, FFT worker, 1/24-oct bands, VXSA, bottom-dock UI | W3 | S+OR | T-205 | done (follow-ups → H-16) |
-| T-209 | File menu & dialogs: Open, Save, Save As, downmix dialog, save format, clip prompt, unsaved-changes prompt, import progress | W3 | S | T-201, T-202, T-205 | in progress (S1-03 did the subset) |
+| T-209 | File menu & dialogs: Open, Save, Save As, downmix dialog, save format, clip prompt, unsaved-changes prompt, import progress | W3 | S | T-201, T-202, T-205 | done (gaps → H-20) |
 
 ## M3 — Editing & history
 | ID | Title | Wave | Tier | Deps | Status |

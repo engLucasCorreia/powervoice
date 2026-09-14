@@ -104,6 +104,9 @@ pub enum TakeMode {
 
 /// Undo label key of a punch-in (SPEC-022 §2.11).
 pub const PUNCH_LABEL_KEY: &str = "history.punch";
+/// Undo label key of Add Marker (SPEC-009 §2.2) — also what each marker added during a cancelled
+/// record operation becomes (SPEC-022 §2.9, H-21).
+pub const MARKER_ADD_LABEL_KEY: &str = "history.marker_add";
 
 /// T-304 (SPEC-022 §4.6): how an operation's record window is aligned and joined.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -429,6 +432,12 @@ impl Session {
         self.open_take.map(|t| (t.id, t.plan.at))
     }
 
+    /// H-21: the markers added during the open take so far ([`Self::note_take_marker`], document
+    /// time), which its commit will contain.
+    pub fn open_take_markers(&self) -> &[Marker] {
+        &self.open_take_markers
+    }
+
     /// The current store generation (T-301 compaction bumps it).
     pub fn generation(&self) -> u32 {
         self.generation
@@ -499,9 +508,9 @@ impl Session {
     /// recording ([`ProjectError::NotWhileRecording`], `error.not_while_recording`); marker-only
     /// edits are allowed.
     ///
-    /// Markers the user adds **during a take** must not go through here: the engine collects them
-    /// and passes them to [`Self::commit_take`], so they belong to the take's single undo entry
-    /// (SPEC-002 §2.2, AC-5/AC-15). `commit_edit` would record each as a separate entry.
+    /// Markers the user adds **during a take** must not go through here: they are noted with
+    /// [`Self::note_take_marker`] and committed with the take, so they belong to its single undo
+    /// entry (SPEC-002 §2.2, SPEC-022 §2.9). `commit_edit` would record each as a separate entry.
     pub fn commit_edit(&mut self, edit: Edit) -> Result<HistoryStep> {
         if self.open_take.is_some() && edit.changes_audio() {
             return Err(ProjectError::NotWhileRecording);
@@ -659,12 +668,13 @@ impl Session {
         Ok(())
     }
 
-    /// H-17 (SPEC-004 §2.7, overlaps H-21 "markers during an operation" — this only journals for
-    /// crash recovery; H-21 wires up the live "press M during a take" UI): journals `marker`
-    /// (`take_marker` + `fdatasync`) for the open take, so [`Self::apply_open_take_from_wav`]
-    /// restores it if the take is interrupted before it commits the normal way (Stop). Markers
-    /// committed normally still go through `commit_take`/`commit_take_window`'s own `markers`
-    /// argument, independent of this. `marker.pos_samples` is document time.
+    /// A marker added during the open take (M during a take or a record operation, SPEC-002
+    /// §2.2, SPEC-022 §2.9): journaled (`take_marker` + `fdatasync`, H-17) so
+    /// [`Self::apply_open_take_from_wav`] restores it after a crash, and kept for the take's
+    /// commit — [`Self::commit_take`] / [`Self::commit_take_window`] add it to the take's one
+    /// edit (placed per mode and phase, H-21), [`Self::cancel_take`] turns it into its own "Add
+    /// Marker" entry. `marker.pos_samples` is document time (the heard position, or `at + k` in
+    /// the record window).
     pub fn note_take_marker(&mut self, take: TakeId, marker: Marker) -> Result<()> {
         match self.open_take {
             Some(open) if open.id == take => {}
@@ -678,15 +688,35 @@ impl Session {
         Ok(())
     }
 
-    /// T-304 (SPEC-022 §2.10): closes a cancelled operation's take with `take_cancel` (no undo
-    /// entry, the document is untouched) and deletes its take files (best effort).
+    /// T-304 (SPEC-022 §2.10): closes a cancelled operation's take with `take_cancel` (the audio
+    /// is untouched) and deletes its take files (best effort). H-21 (§2.9, AC-10): markers added
+    /// during it are never lost — each is then committed as its own ordinary "Add Marker" entry
+    /// ([`MARKER_ADD_LABEL_KEY`]), as if added during playback, clamped into the document.
     pub fn cancel_take(&mut self, take: TakeId) -> Result<()> {
+        let markers = self.close_cancelled_take(take)?;
+        let len = self.history.current().len_samples;
+        for marker in markers {
+            let pos = marker.pos_samples.min(len);
+            let end = marker.end_samples().clamp(pos, len);
+            let edit = Edit::new(MARKER_ADD_LABEL_KEY).marker(MarkerOp::Add(Marker {
+                pos_samples: pos,
+                len_samples: end - pos,
+                ..marker
+            }));
+            self.commit_internal(&edit, None)?;
+        }
+        Ok(())
+    }
+
+    /// Journals `take_cancel` for the open take `take`, closes it and deletes its files; returns
+    /// the markers added during it.
+    fn close_cancelled_take(&mut self, take: TakeId) -> Result<Vec<Marker>> {
         match self.open_take {
             Some(open) if open.id == take => {
                 self.journal
                     .append(&[Record::TakeCancel { take: take.0 }])?;
                 self.open_take = None;
-                self.open_take_markers.clear();
+                let markers = std::mem::take(&mut self.open_take_markers);
                 let takes_dir = self.takes_dir();
                 for part in 0.. {
                     let path = take_part_path(&takes_dir, take.0, part);
@@ -694,10 +724,53 @@ impl Session {
                         break;
                     }
                 }
-                Ok(())
+                Ok(markers)
             }
             _ => Err(ProjectError::NoSuchTake(take.0)),
         }
+    }
+
+    /// H-21 (SPEC-022 §2.9): where a marker added during a take lands in the take's edit, `n`
+    /// being the samples the window commits and `doc_len` the length before it:
+    /// - before `at` (pre-roll: the heard position on the existing audio) it stays;
+    /// - in the record range it is `at + k`, clamped into the committed audio `[at, at + n]` (a
+    ///   partial window ends early; a key press extrapolated a touch past Stop);
+    /// - a punch's post-roll markers (at or after `E`) stay on the existing audio.
+    ///
+    /// Everything is clamped into the resulting document.
+    fn place_take_marker(plan: &TakePlan, doc_len: u64, n: u64, marker: &Marker) -> Marker {
+        let at = plan.at;
+        let new_len = match plan.mode {
+            TakeModeRecord::New | TakeModeRecord::Insert => doc_len + n,
+            TakeModeRecord::Overwrite => doc_len.max(at + n),
+            TakeModeRecord::Punch => doc_len,
+        };
+        let q = marker.pos_samples;
+        let post_roll = plan.mode == TakeModeRecord::Punch && q >= at + plan.len;
+        let (pos, hi) = if q < at || post_roll {
+            (q, new_len)
+        } else {
+            (q.min(at + n), at + n)
+        };
+        let hi = hi.min(new_len);
+        let pos = pos.min(hi);
+        let end = marker.end_samples().clamp(pos, hi);
+        Marker {
+            pos_samples: pos,
+            len_samples: end - pos,
+            ..marker.clone()
+        }
+    }
+
+    /// The marker ops of a take's edit: `extra` (e.g. dropout markers) plus the markers added
+    /// during the take, placed by [`Self::place_take_marker`].
+    fn take_marker_ops(&self, plan: &TakePlan, n: u64, extra: &[Marker]) -> Vec<MarkerOp> {
+        let doc_len = self.history.current().len_samples;
+        extra
+            .iter()
+            .chain(&self.open_take_markers)
+            .map(|m| MarkerOp::Add(Self::place_take_marker(plan, doc_len, n, m)))
+            .collect()
     }
 
     /// [`Self::begin_take`] for the record operations of SPEC-022 (T-304): the mode (Insert,
@@ -798,7 +871,11 @@ impl Session {
             _ => return Err(ProjectError::NoSuchTake(finished.take.0)),
         };
         let len = finished.audio.len_samples;
-        if finished.wav_samples == 0 && len == 0 && markers.is_empty() {
+        if finished.wav_samples == 0
+            && len == 0
+            && markers.is_empty()
+            && self.open_take_markers.is_empty()
+        {
             self.journal
                 .append(&[Record::TakeDiscard { take: open.id.0 }])?;
             self.open_take = None;
@@ -817,15 +894,8 @@ impl Session {
         if len > 0 {
             edit = edit.replace(open.plan.at, 0, finished.audio.pieces.clone());
         }
-        let (lo, hi) = (open.plan.at, open.plan.at.saturating_add(len));
-        for marker in markers {
-            let pos = marker.pos_samples.clamp(lo, hi);
-            let end = marker.end_samples().clamp(pos, hi);
-            edit = edit.marker(MarkerOp::Add(Marker {
-                pos_samples: pos,
-                len_samples: end - pos,
-                ..marker.clone()
-            }));
+        for op in self.take_marker_ops(&open.plan, len, markers) {
+            edit = edit.marker(op);
         }
         // A WAV longer than the committed audio (store failure mid-take) is recorded, so GC keeps
         // the session and the WAV tail instead of deleting them after a save.
@@ -916,7 +986,9 @@ impl Session {
         // T-304 (SPEC-022 §2.12): "Apply as recorded" applies exactly what Stop at the recovered
         // end would have: the record window from the journaled `k_start` to the last sample.
         let Some(k_start) = open.plan.k_start else {
-            self.cancel_take(open.id)?;
+            // A crash during pre-roll: nothing applies, and the document stays exactly as it was
+            // before the operation (SPEC-022 AC-15) — its markers included.
+            self.close_cancelled_take(open.id)?;
             return Ok(None);
         };
         let window = (k_start, u64::MAX);
@@ -927,19 +999,10 @@ impl Session {
             self.open_take_markers.clear();
             return Ok(None);
         };
-        if !self.open_take_markers.is_empty() {
-            let take_len: u64 = audio.pieces.iter().map(Piece::len_samples).sum();
-            let n = Self::window_len(&open.plan, take_len, window);
-            let (lo, hi) = (open.plan.at, open.plan.at.saturating_add(n));
-            for marker in &self.open_take_markers {
-                let pos = marker.pos_samples.clamp(lo, hi);
-                let end = marker.end_samples().clamp(pos, hi);
-                edit = edit.marker(MarkerOp::Add(Marker {
-                    pos_samples: pos,
-                    len_samples: end - pos,
-                    ..marker.clone()
-                }));
-            }
+        let take_len: u64 = audio.pieces.iter().map(Piece::len_samples).sum();
+        let n = Self::window_len(&open.plan, take_len, window);
+        for op in self.take_marker_ops(&open.plan, n, &[]) {
+            edit = edit.marker(op);
         }
         let step = self.commit_internal(&edit, Some((open.id, None)))?;
         self.open_take = None;
@@ -978,15 +1041,8 @@ impl Session {
             return Ok(None);
         };
         let n = Self::window_len(&open.plan, len, window);
-        let (lo, hi) = (open.plan.at, open.plan.at.saturating_add(n));
-        for marker in markers {
-            let pos = marker.pos_samples.clamp(lo, hi);
-            let end = marker.end_samples().clamp(pos, hi);
-            edit = edit.marker(MarkerOp::Add(Marker {
-                pos_samples: pos,
-                len_samples: end - pos,
-                ..marker.clone()
-            }));
+        for op in self.take_marker_ops(&open.plan, n, markers) {
+            edit = edit.marker(op);
         }
         let truncated = (finished.wav_samples > len).then_some(finished.wav_samples);
         let step = self.commit_internal(&edit, Some((open.id, truncated)))?;

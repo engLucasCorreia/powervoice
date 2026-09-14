@@ -94,6 +94,16 @@ struct Rig {
 /// The §5 fake backend: one clock, reported input latency 5 ms and output latency 7 ms, random
 /// input callback sizes; a 10 s noise document; empty rack; monitoring Off.
 fn rig(mic_source: Option<fn(u64) -> f32>, loopback: Option<Loopback>) -> Rig {
+    rig_with(noise(1, L), mic_source, loopback, 0.0)
+}
+
+/// [`rig`] with the document `a` and the microphone's clock skew (ppm, H-21).
+fn rig_with(
+    a: Vec<f32>,
+    mic_source: Option<fn(u64) -> f32>,
+    loopback: Option<Loopback>,
+    mic_skew_ppm: f64,
+) -> Rig {
     assert!(alloc_checks_active());
     let fake = FakeBackend::new(7);
     fake.plug(
@@ -107,7 +117,8 @@ fn rig(mic_source: Option<fn(u64) -> f32>, loopback: Option<Loopback>) -> Rig {
     );
     let mut mic = FakeDirection::new(1, &[48_000], 48_000)
         .callback_sizes(CallbackSizes::Random { min: 32, max: 512 })
-        .latency_ns(5 * MS);
+        .latency_ns(5 * MS)
+        .skew_ppm(mic_skew_ppm);
     if let Some(s) = mic_source {
         mic = mic.source(move |f, _, _| s(f));
     }
@@ -148,7 +159,6 @@ fn rig(mic_source: Option<fn(u64) -> f32>, loopback: Option<Loopback>) -> Rig {
         },
     )
     .unwrap();
-    let a = noise(1, L);
     let mut writer = session.chunk_writer();
     writer.append(&a).unwrap();
     let audio = writer.finish().unwrap();
@@ -628,6 +638,600 @@ fn calibration_measures_the_unreported_residual_and_verify_confirms_it() {
         verify.offset_samples.abs() <= 1.0,
         "residual {}",
         verify.offset_samples
+    );
+    assert_eq!(r.fake.rt_violations(), 0);
+}
+
+// --- H-21: device loss per phase, Record while playing, heard positions for markers -------------
+
+impl Rig {
+    fn input_stream(&self) -> vox_engine::backend::StreamId {
+        self.fake
+            .streams()
+            .iter()
+            .rev()
+            .find(|s| s.info.direction == Direction::Input)
+            .map(|s| s.info.id)
+            .unwrap()
+    }
+
+    /// The document position truly heard at app time `t_ns` (an audible, unfaded stretch near
+    /// `near`): the output frame playing at `t_ns`, matched against the document.
+    fn true_heard(&self, t_ns: u64, near: u64) -> u64 {
+        let id = self.output_stream();
+        let out = self.output();
+        let mut g = out.len() - 64;
+        while self.fake.frame_time_ns(id, g as u64).unwrap() > t_ns {
+            g -= 1;
+        }
+        let pat = &out[g..g + 32];
+        let lo = near.saturating_sub(4_000) as usize;
+        let hi = (near as usize + 4_000).min(self.a.len() - 32);
+        (lo..hi)
+            .find(|&q| {
+                self.a[q..q + 32]
+                    .iter()
+                    .zip(pat)
+                    .all(|(x, y)| x.to_bits() == y.to_bits())
+            })
+            .map(|q| q as u64)
+            .expect("the heard audio matches the document near the expected position")
+    }
+}
+
+fn xfade(f: f32, g: f32, i: usize, len: usize) -> f32 {
+    let theta = std::f64::consts::FRAC_PI_2 * (i as f64 + 0.5) / len as f64;
+    (theta.cos() * f64::from(f) + theta.sin() * f64::from(g)) as f32
+}
+
+/// SPEC-022 §4.2: `a` with `[s, s + t.len())` replaced by `t`, equal-power fades inside.
+fn expected_punch(a: &[f32], t: &[f32], s: usize, x: usize) -> Vec<f32> {
+    let n = t.len();
+    let x = x.min(n / 2);
+    let mut out = a.to_vec();
+    for i in 0..n {
+        out[s + i] = if i < x {
+            xfade(a[s + i], t[i], i, x)
+        } else if i >= n - x {
+            xfade(t[i], a[s + i], i - (n - x), x)
+        } else {
+            t[i]
+        };
+    }
+    out
+}
+
+fn assert_close(got: &[f32], want: &[f32], what: &str) {
+    assert_eq!(got.len(), want.len(), "{what}: length");
+    if let Some(i) = got.iter().zip(want).position(|(a, b)| (a - b).abs() > 1e-6) {
+        panic!("{what}: sample {i} differs: {} vs {}", got[i], want[i]);
+    }
+}
+
+fn hear_original() -> RecordPrefs {
+    RecordPrefs {
+        hear_original: true,
+        ..prefs()
+    }
+}
+
+/// SPEC-022 AC-14 (input `DEVICE_LOST`): in pre-roll the punch is cancelled (document
+/// unchanged); at window position `p` it is a partial punch to the last good sample — the same
+/// document as Stop at that `p` with the same data (loopback + Hear original: the window is `A`);
+/// in post-roll it is the full punch. No panic, no callback allocates.
+#[test]
+fn ac14_input_device_lost_in_each_phase() {
+    // Pre-roll: cancelled.
+    let mut r = rig(Some(src), None);
+    r.run_ms(50);
+    r.arm();
+    r.run_ms(100);
+    let rev = r.session.current().rev;
+    r.start(Some((S, E)), prefs());
+    r.run_ms(300);
+    r.fake.lose_stream(r.input_stream());
+    let res = r.result();
+    let op = res.op.unwrap();
+    assert_eq!(
+        (op.window, op.cancelled),
+        (None, Some(CancelReason::InputLost))
+    );
+    assert!(r.commit(&res).is_none());
+    assert_eq!(r.session.current().rev, rev, "the document is unchanged");
+    assert_eq!(r.session.history().undo_depth(), 0);
+
+    // Window: a partial punch to the last good sample.
+    let mut r = rig(None, Some(Loopback::new(dac_key(), mic_key())));
+    r.run_ms(50);
+    r.arm();
+    r.run_ms(100);
+    r.start(Some((S, E)), hear_original());
+    r.run_ms(2_050); // ≈ 1 s into the 3 s window
+    r.fake.lose_stream(r.input_stream());
+    let res = r.result();
+    assert_eq!(res.reason, vox_engine::record::StopReason::InputLost);
+    let op = res.op.unwrap();
+    assert_eq!(op.cancelled, None, "the recorded part is kept");
+    let (k0, _) = op.window.unwrap();
+    let n = (res.finished.audio.len_samples - k0) as usize;
+    assert!(
+        n > 30_000 && n < 70_000,
+        "about 1 s of the window was captured: {n}"
+    );
+    r.commit(&res).expect("one Punch-in edit");
+    let (s, p) = (S as usize, S as usize + n);
+    let out = r.doc();
+    assert_eq!(out.len(), L);
+    assert_bits(&out[..s], &r.a[..s], "A′[0, S)");
+    assert_bits(&out[p..], &r.a[p..], "A′[p, L)");
+    assert_close(
+        &out,
+        &expected_punch(&r.a, &r.a[s..p], s, 480),
+        "= Stop at p",
+    );
+
+    // Post-roll: the full punch.
+    let mut r = rig(None, Some(Loopback::new(dac_key(), mic_key())));
+    r.run_ms(50);
+    r.arm();
+    r.run_ms(100);
+    r.start(Some((S, E)), hear_original());
+    r.run_ms(4_200); // pre 1 s + window 3 s, into the 0.5 s post-roll
+    r.fake.lose_stream(r.input_stream());
+    let res = r.result();
+    let op = res.op.unwrap();
+    assert_eq!(op.window.map(|(a, b)| b - a), Some(E - S));
+    r.commit(&res).unwrap();
+    let (s, e) = (S as usize, E as usize);
+    assert_close(
+        &r.doc(),
+        &expected_punch(&r.a, &r.a[s..e], s, 480),
+        "full punch",
+    );
+    assert_eq!(r.fake.rt_violations(), 0);
+}
+
+/// SPEC-022 AC-14 (output `DEVICE_LOST`): in pre-roll the punch is cancelled (the talent can no
+/// longer hear the lead-in); during recording the take continues bit-exactly and the window ends
+/// at `E` with no post-roll — hash-equal to the run without the loss; in post-roll the punch is
+/// complete and the post-roll ends. Replugging the device resumes nothing (SPEC-001).
+#[test]
+fn ac14_output_device_lost_in_each_phase() {
+    // Pre-roll: cancelled.
+    let mut r = rig(Some(src), None);
+    r.run_ms(50);
+    r.arm();
+    r.run_ms(100);
+    r.start(Some((S, E)), prefs());
+    r.run_ms(300);
+    r.fake.lose_stream(r.output_stream());
+    let res = r.result();
+    let op = res.op.unwrap();
+    assert_eq!(
+        (op.window, op.cancelled),
+        (None, Some(CancelReason::OutputLost))
+    );
+    assert!(r.commit(&res).is_none());
+    assert_eq!(r.session.history().undo_depth(), 0);
+
+    // Recording: identical to the run without the loss, and shorter (no post-roll).
+    let mut runs = Vec::new();
+    for lose_output in [false, true] {
+        let mut r = rig(Some(src), None);
+        r.run_ms(50);
+        r.arm();
+        r.run_ms(100);
+        r.start(Some((S, E)), prefs());
+        if lose_output {
+            r.run_ms(2_050); // ≈ 1 s into the window
+            r.fake.lose_stream(r.output_stream());
+        }
+        let res = r.result();
+        let op = res.op.unwrap();
+        assert_eq!(op.cancelled, None);
+        let window = op.window.unwrap();
+        assert_eq!(window.1 - window.0, E - S, "the window ends at E");
+        let wav = res.finished.wav_samples;
+        r.commit(&res).unwrap();
+        runs.push((vox_testkit::golden::fnv1a_hash(&r.doc()), window, wav));
+        if lose_output {
+            // SPEC-001: replugging resumes nothing.
+            let device = r.fake.unplug(&dac_key()).unwrap();
+            r.eng.poll_devices();
+            r.run_ms(50);
+            r.fake.plug(HostId::Alsa, device);
+            r.eng.poll_devices();
+            r.run_ms(200);
+            assert!(!r.eng.transport_state().playing, "nothing resumes");
+            assert!(!r.eng.record_state().recording);
+        }
+    }
+    assert_eq!(
+        runs[0].0, runs[1].0,
+        "hash-equal to the run without the loss"
+    );
+    assert_eq!(runs[0].1, runs[1].1, "the same window");
+    assert!(
+        runs[1].2 + u64::from(RATE) / 4 < runs[0].2,
+        "no post-roll after the output loss: {} vs {}",
+        runs[1].2,
+        runs[0].2
+    );
+
+    // Post-roll: complete, and the operation ends at once.
+    let mut r = rig(Some(src), None);
+    r.run_ms(50);
+    r.arm();
+    r.run_ms(100);
+    r.start(Some((S, E)), prefs());
+    r.run_ms(4_100);
+    let t_loss = r.fake.now_ns();
+    r.fake.lose_stream(r.output_stream());
+    let res = r.result();
+    assert!(
+        r.fake.now_ns() - t_loss < 300 * MS,
+        "the post-roll ends with its output"
+    );
+    let op = res.op.unwrap();
+    assert_eq!(op.window.map(|(a, b)| b - a), Some(E - S));
+    r.commit(&res).unwrap();
+    assert_eq!(r.fake.rt_violations(), 0);
+}
+
+/// SPEC-022 AC-1 (Record while playing): the transport stops first (engine-initiated, Pause
+/// semantics) and the operation's `at` is the heard position at the stop, ±1 sample.
+#[test]
+fn ac1_record_while_playing_stops_first_at_the_heard_position() {
+    let mut r = rig(Some(src), None);
+    r.run_ms(50);
+    r.arm();
+    r.run_ms(100);
+    r.eng.transport(TransportCommand::Seek(48_000));
+    r.eng.transport(TransportCommand::Play);
+    r.run_ms(500);
+    assert!(r.eng.transport_state().playing);
+    let t = r.fake.now_ns();
+    let heard = r.true_heard(t, 48_000 + 24_000);
+    let plan = r.start(
+        None,
+        RecordPrefs {
+            mode: CursorRecordMode::Insert,
+            ..prefs()
+        },
+    );
+    assert_eq!(plan.kind, RecordOpKind::Insert);
+    assert!(
+        plan.at_samples.abs_diff(heard) <= 1,
+        "at {} vs heard {heard}",
+        plan.at_samples
+    );
+    assert!(!r.eng.transport_state().playing, "stopped first");
+    r.run_ms(300);
+    r.eng.transport(TransportCommand::Stop);
+    let res = r.result();
+    r.commit(&res).unwrap();
+    assert_eq!(r.fake.rt_violations(), 0);
+}
+
+/// SPEC-022 AC-10 (engine part): what the UI places a marker at during a punch — the telemetry
+/// playhead extrapolated to the key press — is within ±10 ms (SPEC-003 AC-6) of the document
+/// position truly heard then, in pre-roll, in the window (`S + k`) and in post-roll.
+#[test]
+fn ac10_the_heard_position_is_within_10_ms_in_each_phase() {
+    let latest = Arc::new(Mutex::new(None));
+    let mut r = rig(Some(src), None);
+    let sink = latest.clone();
+    r.eng.set_telemetry_sink(Some(Box::new(move |f| {
+        *sink.lock().unwrap() = Some(*f);
+    })));
+    r.run_ms(50);
+    r.arm();
+    r.run_ms(100);
+    // Hear original: the window plays `A` too, so every phase can be matched against it.
+    r.start(Some((S, E)), hear_original());
+    let mut checked = 0;
+    for (after_ms, phase) in [
+        (500u64, "pre-roll"),
+        (1_500, "window"),
+        (1_200, "post-roll"),
+    ] {
+        r.run_ms(after_ms);
+        let t = r.fake.now_ns();
+        let frame: vox_engine::TelemetryFrame = latest.lock().unwrap().unwrap();
+        let ui = frame.playhead_sample as f64
+            + (t as f64 - frame.playhead_time_ns as f64) * frame.rate / 1e9;
+        let heard = r.true_heard(t, ui as u64);
+        assert!(
+            (ui - heard as f64).abs() <= 480.0,
+            "{phase}: telemetry {ui} vs heard {heard}"
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 3);
+    let res = r.result();
+    r.commit(&res).unwrap();
+}
+
+// --- H-21: talent-source exactness (SPEC-022 §4.8 `AlignedTalent`) ------------------------------
+
+/// A rig whose microphone carries the perfectly timed talent `x` (and nothing else).
+fn talent_rig(a: Vec<f32>, x: &[f32], mic_skew_ppm: f64) -> Rig {
+    let r = rig_with(a, None, None, mic_skew_ppm);
+    r.fake
+        .set_talent(Some(vox_engine::backend::fake::AlignedTalent {
+            output: dac_key(),
+            input: mic_key(),
+            reference: Arc::from(r.a.clone()),
+            script: Arc::from(x.to_vec()),
+        }));
+    r
+}
+
+/// The shift `d` (`A′[q'] = X[q' − d]`) near `q`: the first 16-sample stretch at or after `q`
+/// that matches `x` shifted by `|d| ≤ 40` (a clock slip inside a stretch just moves on).
+fn shift_near(out: &[f32], x: &[f32], q: usize) -> i64 {
+    for q0 in q..q + 400 {
+        for d in -40i64..=40 {
+            let ok = (0..16).all(|j| {
+                let src = (q0 + j) as i64 - d;
+                out[q0 + j].to_bits() == x[src as usize].to_bits()
+            });
+            if ok {
+                return d;
+            }
+        }
+    }
+    panic!("no stretch of X near {q}");
+}
+
+/// SPEC-022 AC-5 (engine level): a punch over `[S, E)` with `AlignedTalent(X)`: outside
+/// bit-identical to `A`, the interior bit-identical to `X` over the same range (shift 0), both
+/// boundaries on the fade formula, `L′ = L`, one "Punch-in" entry, and the take holds the whole
+/// pass. AC-3 variant: Overwrite with pre-roll at the cursor gives `A′[c+480, c+n−480) = X` there.
+#[test]
+fn ac5_aligned_talent_punch_is_exact() {
+    let x = noise(2, L);
+    let mut r = talent_rig(noise(1, L), &x, 0.0);
+    r.run_ms(50);
+    r.arm();
+    r.run_ms(100);
+    let plan = r.start(Some((S, E)), prefs());
+    assert!(plan.aligned);
+    let res = r.result();
+    let op = res.op.unwrap();
+    assert_eq!(op.window.map(|(a, b)| b - a), Some(E - S));
+    let pass = res.finished.wav_samples;
+    let min_pass = u64::from(RATE) * 3 / 2 + (E - S);
+    assert!(
+        pass >= min_pass && pass <= min_pass + u64::from(RATE) / 10,
+        "pass {pass}"
+    );
+    let step = r.commit(&res).expect("one edit");
+    assert_eq!(&*step.label_key, PUNCH_LABEL_KEY);
+    let out = r.doc();
+    let (s, e) = (S as usize, E as usize);
+    assert_eq!(out.len(), L);
+    assert_bits(&out[..s], &r.a[..s], "A′[0, S)");
+    assert_bits(&out[e..], &r.a[e..], "A′[E, L)");
+    assert_bits(&out[s + 480..e - 480], &x[s + 480..e - 480], "interior = X");
+    assert_close(&out, &expected_punch(&r.a, &x[s..e], s, 480), "fades");
+    assert_eq!(r.session.history().undo_depth(), 1);
+    assert_eq!(r.fake.rt_violations(), 0);
+
+    // AC-3 variant: Overwrite at c = 5 s with pre-roll at the cursor.
+    let mut r = talent_rig(noise(1, L), &x, 0.0);
+    r.run_ms(50);
+    r.arm();
+    r.run_ms(100);
+    let c = 240_000u64;
+    r.eng.transport(TransportCommand::Seek(c));
+    let plan = r.start(
+        None,
+        RecordPrefs {
+            mode: CursorRecordMode::Overwrite,
+            preroll_at_cursor: true,
+            ..prefs()
+        },
+    );
+    assert_eq!((plan.kind, plan.aligned), (RecordOpKind::Overwrite, true));
+    r.run_ms(3_000); // pre-roll 1 s, then ≈ 2 s of window
+    r.eng.transport(TransportCommand::Stop);
+    let res = r.result();
+    let (k0, k1) = res.op.unwrap().window.unwrap();
+    let n = (k1 - k0) as usize;
+    assert!(n > 80_000 && n < 110_000, "n {n}");
+    r.commit(&res).unwrap();
+    let out = r.doc();
+    let c = c as usize;
+    assert_bits(
+        &out[c + 480..c + n - 480],
+        &x[c + 480..c + n - 480],
+        "overwrite = X",
+    );
+    assert_bits(&out[..c], &r.a[..c], "A′[0, c)");
+}
+
+/// SPEC-022 AC-6 (clock drift): with `AlignedTalent(X)` on devices whose clocks differ by +200
+/// and then −200 ppm, the shift at `S + 480` is 0 ± 1 sample and at `E − 480` at most
+/// `200·10⁻⁶·(E − S) + 1` samples.
+#[test]
+fn ac6_aligned_talent_with_200_ppm_drift() {
+    let x = noise(2, L);
+    let limit = (200e-6 * (E - S) as f64 + 1.0).floor() as i64;
+    for ppm in [200.0, -200.0] {
+        let mut r = talent_rig(noise(1, L), &x, ppm);
+        r.run_ms(50);
+        r.arm();
+        r.run_ms(100);
+        r.start(Some((S, E)), prefs());
+        let res = r.result();
+        r.commit(&res).unwrap();
+        let out = r.doc();
+        let at_s = shift_near(&out, &x, S as usize + 480);
+        let at_e = shift_near(&out, &x, E as usize - 480 - 400);
+        assert!(at_s.abs() <= 1, "{ppm} ppm: shift at S+480 {at_s}");
+        assert!(
+            at_e.abs() <= limit,
+            "{ppm} ppm: shift at E−480 {at_e} > {limit}"
+        );
+        assert_ne!(at_e, 0, "{ppm} ppm: the drift is visible by the end");
+        assert_eq!(r.fake.rt_violations(), 0);
+    }
+}
+
+/// SPEC-022 AC-7 (level): with independent seeded white noise at −20 dBFS RMS as old and new,
+/// the power pooled over the fade regions of 20 seeded punches at 10 ms is −20.00 ± 0.25 dB, and
+/// at 50 ms each single fade is −20.0 ± 0.5 dB.
+#[test]
+fn ac7_crossfade_level_pooled_over_20_noise_punches() {
+    let secs = L as f64 / f64::from(RATE);
+    let noise_20 = |seed: u64| vox_testkit::signal::white_noise(seed, -20.0, secs, RATE).unwrap();
+    let power_db = |v: &[f32]| {
+        let p = v.iter().map(|&s| f64::from(s) * f64::from(s)).sum::<f64>() / v.len() as f64;
+        10.0 * p.log10()
+    };
+    let (s, e) = (S as usize, E as usize);
+    let mut pooled = Vec::new();
+    for seed in 0..20u64 {
+        let x = noise_20(1_000 + seed);
+        let mut r = talent_rig(noise_20(seed), &x, 0.0);
+        r.run_ms(50);
+        r.arm();
+        r.run_ms(100);
+        r.start(Some((S, E)), prefs());
+        let res = r.result();
+        r.commit(&res).unwrap();
+        let out = r.doc();
+        pooled.extend_from_slice(&out[s..s + 480]);
+        pooled.extend_from_slice(&out[e - 480..e]);
+    }
+    let db = power_db(&pooled);
+    assert!((db + 20.0).abs() <= 0.25, "pooled fade power {db:.3} dB");
+
+    let x = noise_20(77);
+    let mut r = talent_rig(noise_20(7), &x, 0.0);
+    r.run_ms(50);
+    r.arm();
+    r.run_ms(100);
+    r.start(
+        Some((S, E)),
+        RecordPrefs {
+            xfade_ms: 50.0,
+            ..prefs()
+        },
+    );
+    let res = r.result();
+    r.commit(&res).unwrap();
+    let out = r.doc();
+    for (what, fade) in [("in", &out[s..s + 2_400]), ("out", &out[e - 2_400..e])] {
+        let db = power_db(fade);
+        assert!((db + 20.0).abs() <= 0.5, "50 ms fade-{what}: {db:.3} dB");
+    }
+}
+
+/// SPEC-022 AC-13: a dropped span of 480 frames at the capture time of `S + 48 000` keeps the
+/// window aligned (`A′[q] = X[q]` after the gap), leaves 480 samples of 0.0 there and one
+/// dropout (10 ms) at `S + 48 000` ± 1 inside the window. A dropout during pre-roll adds none, and
+/// the window is still exactly aligned.
+#[test]
+fn ac13_dropouts_during_a_punch_keep_the_window_aligned() {
+    let x = noise(2, L);
+    let (s, e) = (S as usize, E as usize);
+    // In the window (Hear original: the window plays `A`, so the heard position can be checked).
+    let mut r = talent_rig(noise(1, L), &x, 0.0);
+    r.run_ms(50);
+    r.arm();
+    r.run_ms(100);
+    r.start(Some((S, E)), hear_original());
+    let t_at = loop {
+        r.run_ms(1);
+        let rec = r
+            .phases
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(i, _)| i.phase == RecordPhase::Recording)
+            .map(|(i, _)| i.app_ns);
+        if let Some(t) = rec {
+            break t;
+        }
+    };
+    while r.fake.now_ns() < t_at + 1_000_000_000 {
+        r.run_ms(1);
+    }
+    let input = r.input_stream();
+    let f0 = r
+        .fake
+        .streams()
+        .iter()
+        .find(|st| st.info.id == input)
+        .unwrap()
+        .frame_pos;
+    let t_gap = r.fake.frame_time_ns(input, f0).unwrap();
+    r.fake.input_dropout(input, 480);
+    r.run_ms(20);
+    let q_gap = r.true_heard(t_gap, S + 48_000) as usize;
+    assert!(
+        q_gap.abs_diff(s + 48_000) <= 480,
+        "the gap is about 1 s in: {q_gap}"
+    );
+    let res = r.result();
+    let (k0, _) = res.op.unwrap().window.unwrap();
+    let marks: Vec<_> = res
+        .dropouts
+        .iter()
+        .filter(|d| d.pos_samples >= k0 && d.pos_samples < k0 + (E - S))
+        .collect();
+    assert_eq!(
+        marks.len(),
+        1,
+        "one dropout inside the window: {:?}",
+        res.dropouts
+    );
+    let pos = S + (marks[0].pos_samples - k0);
+    assert!(
+        pos.abs_diff(q_gap as u64) <= 1,
+        "marker at {pos}, gap at {q_gap}"
+    );
+    assert_eq!(marks[0].len_samples, 480, "10 ms");
+    r.commit(&res).unwrap();
+    let out = r.doc();
+    assert!(
+        out[q_gap + 1..q_gap + 479].iter().all(|&v| v == 0.0),
+        "the gap is filled with silence"
+    );
+    assert_eq!(
+        shift_near(&out, &x, q_gap + 600),
+        0,
+        "aligned after the gap"
+    );
+    assert_eq!(shift_near(&out, &x, e - 1_000), 0, "aligned to the end");
+
+    // In pre-roll: no marker, the window exactly aligned.
+    let mut r = talent_rig(noise(1, L), &x, 0.0);
+    r.run_ms(50);
+    r.arm();
+    r.run_ms(100);
+    r.start(Some((S, E)), prefs());
+    r.run_ms(500);
+    r.fake.input_dropout(r.input_stream(), 480);
+    let res = r.result();
+    let (k0, _) = res.op.unwrap().window.unwrap();
+    assert!(
+        res.dropouts.iter().all(|d| d.pos_samples < k0),
+        "the pre-roll dropout is outside the window: {:?}",
+        res.dropouts
+    );
+    assert!(
+        !res.dropouts.is_empty(),
+        "the dropout was filled in the take"
+    );
+    r.commit(&res).unwrap();
+    let out = r.doc();
+    assert_bits(
+        &out[s + 480..e - 480],
+        &x[s + 480..e - 480],
+        "exactly aligned",
     );
     assert_eq!(r.fake.rt_violations(), 0);
 }

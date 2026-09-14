@@ -10,8 +10,14 @@ import {
 import { registerAction } from "../keymap";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { pushNotice } from "../state/notices.svelte";
+import { recordState } from "../state/record.svelte";
 import { hasSelection, selectionState } from "../state/selection.svelte";
-import { extrapolatedPositionAt, seek, transportState } from "../state/transport.svelte";
+import {
+  extrapolatedHeardPositionAt,
+  extrapolatedPositionAt,
+  seek,
+  transportState,
+} from "../state/transport.svelte";
 
 /**
  * Markers store (S2-03, SPEC-009 essential subset): the marker list (`markers_get`, refetched on
@@ -28,6 +34,8 @@ const NAV_PREV_GRACE_S = 0.5;
 
 let markers = $state<MarkerDto[]>([]);
 let selectedId = $state<number | null>(null);
+/** H-21: see {@link isTakeMarker}. */
+const takeMarkerIds = new Set<number>();
 
 /** Read-only accessor for components (the Markers panel). */
 export function markersState(): {
@@ -87,9 +95,15 @@ export async function addMarker(event?: KeyboardEvent): Promise<void> {
     return;
   }
   const playing = transportState().state.playing;
+  // H-21 (SPEC-022 §2.9, SPEC-002 §2.2): during a take or record operation M always adds a point
+  // at the heard position under the key press (pre-/post-roll), or `at + k` in the record window —
+  // the telemetry position then, extrapolated without the clamp to the (old) document length.
+  const takeRunning = recordState().state.recording;
   let pos: number;
   let len = 0;
-  if (!playing && hasSelection()) {
+  if (takeRunning) {
+    pos = extrapolatedHeardPositionAt(event?.timeStamp ?? performance.now());
+  } else if (!playing && hasSelection()) {
     const sel = selectionState().current!;
     pos = sel.startSample;
     len = sel.endSample - sel.startSample;
@@ -97,7 +111,10 @@ export async function addMarker(event?: KeyboardEvent): Promise<void> {
     pos = referencePosition(event?.timeStamp);
   }
   try {
-    const marker = await markerAdd(Math.round(pos), Math.round(len));
+    const marker = await markerAdd(Math.max(0, Math.round(pos)), Math.round(len));
+    if (takeRunning) {
+      takeMarkerIds.add(marker.id);
+    }
     markers = [...markers, marker].sort(
       (a, b) => a.pos_samples - b.pos_samples || a.id - b.id,
     );
@@ -105,6 +122,15 @@ export async function addMarker(event?: KeyboardEvent): Promise<void> {
   } catch (err) {
     report(err);
   }
+}
+
+/**
+ * H-21: ids of markers added during a take/operation — already in the committed document's
+ * coordinates, so an Insert operation's waveform (which shifts the existing audio after `at`
+ * right by the take length while it grows) must not shift them. Ids are never reused.
+ */
+export function isTakeMarker(id: number): boolean {
+  return takeMarkerIds.has(id);
 }
 
 /** `/`, F2, double-click (panel component calls this on commit). Empty/unchanged names are the
@@ -225,4 +251,5 @@ export async function initMarkers(): Promise<() => void> {
 export function resetMarkersForTest(): void {
   markers = [];
   selectedId = null;
+  takeMarkerIds.clear();
 }

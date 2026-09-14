@@ -1,8 +1,9 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
-import type { Settings } from "../ipc/bindings";
+import type { RecordOffsetEntry, Settings } from "../ipc/bindings";
 import { clearNotices } from "../state/notices.svelte";
+import { applyRecordStateForTest, resetRecordForTest } from "../state/record.svelte";
 import { resetSettingsStateForTest } from "../state/settings.svelte";
 import PreferencesDialog from "./PreferencesDialog.svelte";
 import { closePreferences, openPreferences, preferencesState, resetPreferencesForTest } from "./preferences.svelte";
@@ -135,6 +136,123 @@ describe("Preferences dialog (H-17 item 5)", () => {
     );
     flushSync();
     expect(preferencesState().open).toBe(false);
+
+    closePreferences();
+    unmount(app);
+    target.remove();
+  });
+});
+
+function offsetEntry(
+  input: string,
+  offsetMs: number,
+  source: RecordOffsetEntry["source"],
+): RecordOffsetEntry {
+  return {
+    host: "pipewire",
+    input_device: input,
+    output_device: "Speakers",
+    device_rate_hz: 48_000,
+    offset_ms: offsetMs,
+    source,
+    updated_unix_ms: 1_789_000_000_000,
+    confidence: source === "calibrated" ? 1 : null,
+    buffer_frames: 256,
+  };
+}
+
+/** Serves `initial` from `settings_get` and records the last `settings_set`. */
+function mockSettings(initial: Settings): { saved: () => Settings | undefined } {
+  let lastSaved: Settings | undefined;
+  mockIPC((cmd, args) => {
+    if (cmd === "settings_get") return initial;
+    if (cmd === "settings_set") {
+      lastSaved = (args as { settings: Settings }).settings;
+      return lastSaved;
+    }
+    return null;
+  });
+  return { saved: () => lastSaved };
+}
+
+describe("Preferences → Recording (H-21 item 6, SPEC-022 §2.3/§2.13)", () => {
+  afterEach(() => {
+    resetRecordForTest();
+  });
+
+  it("shows the Punch & pre-roll values and saves (clamped) changes", async () => {
+    const ipc = mockSettings(makeSettings());
+    openPreferences();
+    await settle();
+    const { target, app } = mountDialog();
+    await settle();
+
+    const preroll = q<HTMLInputElement>(target, "preferences-preroll")!;
+    expect(Number(preroll.value)).toBe(5);
+    preroll.value = "2.5";
+    preroll.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    expect(ipc.saved()?.record.preroll_s).toBe(2.5);
+
+    q<HTMLInputElement>(target, "preferences-record-mode-overwrite")!.click();
+    await settle();
+    expect(ipc.saved()?.record.mode).toBe("overwrite");
+
+    const postroll = q<HTMLInputElement>(target, "preferences-postroll")!;
+    postroll.value = "99";
+    postroll.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    expect(ipc.saved()?.record.postroll_s).toBe(20);
+    expect(ipc.saved()?.record.preroll_s).toBe(2.5);
+
+    closePreferences();
+    unmount(app);
+    target.remove();
+  });
+
+  it("lists the recording offsets per device setup and forgets one", async () => {
+    const usb = offsetEntry("USB Mic", 3, "calibrated");
+    const headset = offsetEntry("Headset", -1.25, "manual");
+    const ipc = mockSettings(makeSettings({ record_offsets: [usb, headset] }));
+    openPreferences();
+    await settle();
+    const { target, app } = mountDialog();
+    await settle();
+
+    const rows = target.querySelectorAll('[data-testid="preferences-offset-entry"]');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.textContent).toContain("USB Mic → Speakers (pipewire, 48 kHz)");
+    expect(rows[0]!.textContent).toContain("+3.00 ms · calibrated");
+    expect(rows[1]!.textContent).toContain("-1.25 ms · manual");
+    rows[0]!.querySelector<HTMLButtonElement>('[data-testid="preferences-offset-remove"]')!.click();
+    await settle();
+    expect(ipc.saved()?.record_offsets).toEqual([headset]);
+
+    closePreferences();
+    unmount(app);
+    target.remove();
+  });
+
+  it("shows an empty offsets list and locks the controls while recording", async () => {
+    mockSettings(makeSettings());
+    openPreferences();
+    await settle();
+    applyRecordStateForTest({ recording: true });
+    const { target, app } = mountDialog();
+    await settle();
+
+    expect(q(target, "preferences-offsets-empty")).not.toBeNull();
+    expect(q(target, "preferences-recording-locked")).not.toBeNull();
+    for (const id of [
+      "preferences-preroll",
+      "preferences-postroll",
+      "preferences-xfade",
+      "preferences-record-mode-insert",
+      "preferences-punch-on-selection",
+      "preferences-hear-original",
+    ]) {
+      expect(q<HTMLInputElement>(target, id)!.disabled).toBe(true);
+    }
 
     closePreferences();
     unmount(app);

@@ -771,5 +771,17 @@
   "preferences.section.storage": "Storage",
   "preferences.memory_budget": "Memory for audio",
   "preferences.memory_budget.hint": "How much audio PowerVoice keeps in memory at once. The rest stays on disk and loads on demand — nothing is lost, and playback never glitches because of it.",
+  "preferences.section.recording": "Recording",
+  "preferences.recording.locked": "Recording settings are locked while recording.",
+  "preferences.recording.preroll_s": "Pre-roll (s)",
+  "preferences.recording.postroll_s": "Post-roll (s)",
+  "preferences.recording.xfade_ms": "Punch crossfade (ms)",
+  "preferences.recording.offsets": "Recording offsets by device setup",
+  "preferences.recording.offsets_empty": "No device setup has a recording offset yet. Calibrate from the record panel.",
+  "preferences.recording.offset_entry": "{input} → {output} ({host}, {rate} kHz)",
+  "preferences.recording.offset_calibrated": "{ms} ms · calibrated {date}",
+  "preferences.recording.offset_manual": "{ms} ms · manual",
+  "preferences.recording.offset_remove": "Remove",
+  "preferences.recording.offset_remove_title": "Forget this device setup's recording offset",
   "preferences.close": "Close"
 }

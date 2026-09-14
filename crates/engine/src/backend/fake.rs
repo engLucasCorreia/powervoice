@@ -166,6 +166,29 @@ impl Loopback {
     }
 }
 
+/// H-21 (SPEC-022 §4.8 `AlignedTalent(X)`): a perfectly timed performer — the input frame truly
+/// captured when document position `q` is truly heard on `output` carries `script[q]` (0 outside
+/// the script), added to the input's own source.
+///
+/// Which position is heard is found from the output itself, independent of the engine: the first
+/// output stretch (nearest frame at an input block's true capture time) that bit-exactly matches
+/// 32 samples of `reference` (the document, heard unfaded through an empty rack at 0 dB — e.g. the
+/// pre-roll) anchors true time ↔ document position; positions then advance at the output device's
+/// **true** rate, so clock skew between the devices shows exactly as it would with a person. Until
+/// then the talent is silent. The output device must record its output
+/// ([`FakeDirection::record_output`]).
+#[derive(Clone, Debug)]
+pub struct AlignedTalent {
+    /// The output device the talent listens to.
+    pub output: DeviceKey,
+    /// The input device capturing the talent (every channel).
+    pub input: DeviceKey,
+    /// What the output plays (the document `A`), to recognise the heard position.
+    pub reference: Arc<[f32]>,
+    /// The performance `X`, indexed by document position.
+    pub script: Arc<[f32]>,
+}
+
 /// One direction of a fake device: capabilities plus timing/fault behavior.
 pub struct FakeDirection {
     /// Reported capabilities.
@@ -526,6 +549,10 @@ struct State {
     caps_read: HashSet<(HostId, String)>,
     /// T-304: the output → input loopback, if any.
     loopback: Option<Loopback>,
+    /// H-21: the aligned talent, if any, and its anchor (true time ns of an output frame, the
+    /// document position it played) once recognised.
+    talent: Option<AlignedTalent>,
+    talent_anchor: Option<(i128, u64)>,
 }
 
 impl State {
@@ -673,6 +700,8 @@ impl FakeBackend {
                 pending_caps: false,
                 caps_read: HashSet::new(),
                 loopback: None,
+                talent: None,
+                talent_anchor: None,
             })),
         }
     }
@@ -681,6 +710,14 @@ impl FakeBackend {
     /// (`None` removes it). See [`Loopback`].
     pub fn set_loopback(&self, loopback: Option<Loopback>) {
         self.lock().loopback = loopback;
+    }
+
+    /// H-21 (SPEC-022 §4.8): a perfectly timed talent on an input device (`None` removes it; a
+    /// new one recognises the heard position afresh). See [`AlignedTalent`].
+    pub fn set_talent(&self, talent: Option<AlignedTalent>) {
+        let mut st = self.lock();
+        st.talent = talent;
+        st.talent_anchor = None;
     }
 
     /// Two-phase enumeration like the cpal backend on ALSA: [`Enumerate::Quick`] reports every
@@ -900,6 +937,14 @@ impl FakeBackend {
                 }
                 if let Some(lb) = st.loopback.as_ref().filter(|lb| lb.input == key) {
                     mix_loopback(&st, lb, i, first, channels, &mut buf);
+                }
+                let anchor = st
+                    .talent
+                    .as_ref()
+                    .filter(|t| t.input == key)
+                    .and_then(|t| mix_talent(&st, t, i, first, channels, &mut buf));
+                if anchor.is_some() {
+                    st.talent_anchor = anchor;
                 }
             }
             Direction::Output => buf.fill(0.0),
@@ -1270,6 +1315,57 @@ fn mix_loopback(
             *x += v as f32;
         }
     }
+}
+
+/// H-21: adds the [`AlignedTalent`] into input slot `slot`'s block of frames `first..`
+/// (interleaved `buf`, every channel), recognising the heard position first if needed. Returns
+/// the anchor in use (`None`: not recognised yet, nothing added). Runs outside the RT guard.
+fn mix_talent(
+    st: &State,
+    tal: &AlignedTalent,
+    slot: usize,
+    first: u64,
+    channels: usize,
+    buf: &mut [f32],
+) -> Option<(i128, u64)> {
+    const PATTERN: usize = 32;
+    let input = &st.slots[slot];
+    let out = st.slots.iter().rev().find(|s| {
+        s.info.device == tal.output && s.info.direction == Direction::Output && s.record.is_some()
+    })?;
+    let rec = out.record.as_ref()?;
+    let origin = i128::from(out.origin_ns);
+    let anchor = st.talent_anchor.or_else(|| {
+        // The output frame truly heard at the block's first capture time (nearest frame).
+        let t = i128::from(input.frame_time(first));
+        if t < origin {
+            return None;
+        }
+        let g = ((t - origin) as f64 * out.true_rate / 1e9).round() as usize;
+        let pat = rec.samples.get(g..g + PATTERN)?;
+        if pat.iter().all(|&x| x == 0.0) {
+            return None;
+        }
+        let q = tal
+            .reference
+            .windows(PATTERN)
+            .position(|w| w.iter().zip(pat).all(|(a, b)| a.to_bits() == b.to_bits()))?;
+        Some((i128::from(out.frame_time(g as u64)), q as u64))
+    })?;
+    let (t_a, q_a) = anchor;
+    for (f, frame) in buf.chunks_exact_mut(channels.max(1)).enumerate() {
+        let t = i128::from(input.frame_time(first + f as u64));
+        let q = i128::from(q_a) + ((t - t_a) as f64 * out.true_rate / 1e9).round() as i128;
+        let v = usize::try_from(q)
+            .ok()
+            .and_then(|q| tal.script.get(q))
+            .copied()
+            .unwrap_or(0.0);
+        for x in frame.iter_mut() {
+            *x += v;
+        }
+    }
+    Some(anchor)
 }
 
 /// SplitMix64 finalizer (stateless hash).

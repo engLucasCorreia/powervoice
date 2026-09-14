@@ -28,8 +28,9 @@ use vox_engine::{BufferRequest, EngineHandle, TransportCommand};
 
 use crate::document::{DocumentInfo, DocumentService};
 use crate::ipc::{
-    DocumentDto, EventName, IpcError, IpcErrorCode, Notice, NoticeLevel, RecordCancelDto,
-    RecordFinishedDto, RecordStartedDto, RecordStateDto, emit_notice, engine_monitor_mode,
+    DocumentDto, EventName, HistoryStateDto, IpcError, IpcErrorCode, Notice, NoticeLevel,
+    RecordCancelDto, RecordFinishedDto, RecordStartedDto, RecordStateDto, emit_notice,
+    engine_monitor_mode,
 };
 use crate::settings::{
     DefaultFormatDto, MonitorMode, RecordModePref, RecordOffsetEntry, RecordPrefsDto, Settings,
@@ -89,10 +90,20 @@ pub fn start<R: Runtime>(
     let app = app.clone();
     let emit: RecordingEmitter = Arc::new(move |event| {
         let result = match event {
-            RecordingEvent::DocumentChanged(info) => app.emit(
-                EventName::document_changed.as_str(),
-                DocumentDto::from(info),
-            ),
+            RecordingEvent::DocumentChanged(info) => {
+                // H-21: a committed take, or a cancelled operation's markers turned into "Add
+                // Marker" entries, also changes the Edit menu's Undo/Redo.
+                if let Some(documents) = app.try_state::<DocumentService>() {
+                    let history: HistoryStateDto = documents.history_state().into();
+                    if let Err(e) = app.emit(EventName::history_state.as_str(), history) {
+                        tracing::warn!(error = %e, "emitting history_state failed");
+                    }
+                }
+                app.emit(
+                    EventName::document_changed.as_str(),
+                    DocumentDto::from(info),
+                )
+            }
             RecordingEvent::Notice(notice) => emit_notice(&app, notice),
             RecordingEvent::Finished(dto) => app.emit(EventName::record_finished.as_str(), dto),
         };
@@ -341,6 +352,9 @@ fn on_op_finished(inner: &Inner, result: &RecordingResult, op: OpResult) {
             let _ = inner
                 .engine
                 .transport(TransportCommand::Seek(op.plan.at_samples));
+            // H-21 (SPEC-022 §2.9): markers added during the cancelled operation were committed
+            // as "Add Marker" entries — refresh the marker list and the Edit menu.
+            (inner.emit)(RecordingEvent::DocumentChanged(inner.documents.info()));
             if reason != CancelReason::User {
                 // §2.10: "Punch-in cancelled — nothing changed" when not user-initiated.
                 notice(Notice::toast(

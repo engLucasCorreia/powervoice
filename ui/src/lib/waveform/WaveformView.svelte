@@ -5,7 +5,8 @@
   import { peaksGet } from "../ipc/commands";
   import { recordPeaksGet } from "../ipc/record_commands";
   import { registerAction } from "../keymap";
-  import { markersState } from "../markers/markers.svelte";
+  import type { MarkerDto } from "../ipc/bindings";
+  import { isTakeMarker, markersState } from "../markers/markers.svelte";
   import { recordState } from "../state/record.svelte";
   import {
     beginDrag,
@@ -40,6 +41,14 @@
   import { pushNotice } from "../state/notices.svelte";
   import { rendererPref } from "../state/rendererPref.svelte";
   import { decodeVxpk } from "./vxpk";
+  import {
+    type Column,
+    type OpLayout,
+    opColumns,
+    opLayout,
+    opMarkers,
+    opPeaksRequestStart,
+  } from "./opLayout";
   import { PeaksRequester } from "./peaksRequester";
   import { buildColumnQuads, buildRawPolyline } from "./webglGeometry";
   import { type WaveformGlContent, WaveformGlRenderer } from "./webglRenderer";
@@ -66,6 +75,12 @@
    * open take's document is empty until Stop), so instead of the normal `peaks_get` path this
    * view polls `record_peaks_get` at [`LIVE_POLL_MS`] and draws the growing take, zoomed to fit
    * (at least [`LIVE_MIN_WINDOW_SECONDS`]), plus a record-head line at the take's current length.
+   *
+   * H-21 (SPEC-022 §2.11): during a record operation on a document with audio the normal view
+   * stays (no zoom-to-fit) and the live take is drawn at the record point `at` in the record
+   * colour (`opLayout.ts`): Insert shifts the existing waveform and markers after `at` right by the
+   * current take length; Overwrite and Punch draw the take over the old audio, a punch also
+   * shading its region `[S, E)`; a record-head line marks the take's end.
    */
 
   /** Must match `vox_engine::record::LIVE_PEAKS_SPB` (H-07). */
@@ -117,6 +132,15 @@
   const rateHz = $derived(doc.current.sample_rate_hz);
   const isOpen = $derived(hasDocument(doc.current));
   const isRecording = $derived(rec.state.recording);
+  /** H-07: a new recording into an empty document (its take isn't committed until Stop). */
+  const liveNewTake = $derived(isRecording && lenSamples === 0);
+  /** H-21: a running record operation on a document with audio (`null`: none). */
+  const layout = $derived(lenSamples > 0 ? opLayout(rec.op, rec.phase, rec.elapsedSamples) : null);
+  /** H-21: the first document sample `peaks_get` must cover (an Insert's shifted part). A number,
+   * so the request effect below re-runs only when it actually changes, not every frame. */
+  const peaksFrom = $derived(
+    opPeaksRequestStart(layout, Math.max(0, Math.floor(startSample)), viewportPx * samplesPerPixel),
+  );
 
   // Zoom-full the first time a newly opened document's audio (rate + length — not just its path,
   // so Save As to a new path/format doesn't re-fit the still-unchanged audio) gets a known
@@ -157,14 +181,17 @@
       return;
     }
     const spp = samplesPerPixel;
-    const start = Math.max(0, Math.floor(startSample));
+    const viewStart = Math.max(0, Math.floor(startSample));
+    const start = Math.min(peaksFrom, viewStart);
+    // H-21: an Insert operation also shows document audio from before the viewport start.
+    const extra = viewStart - start;
     const level = pickLevel(spp);
     if (level === RAW_SPP) {
-      const count = Math.min(Math.ceil(viewportPx * spp) + 2, 1 << 20);
+      const count = Math.min(Math.ceil(viewportPx * spp) + 2 + extra, 1 << 20);
       void requester.request(start, count, spp);
     } else {
       const fetchStart = Math.floor(start / level) * level;
-      const count = Math.min(Math.ceil((viewportPx * spp) / level) + 1, 65_536);
+      const count = Math.min(Math.ceil((viewportPx * spp + extra) / level) + 1, 65_536);
       void requester.request(fetchStart, count, spp);
     }
   });
@@ -172,7 +199,7 @@
   // H-07: while recording, keep the whole growing take zoomed to fit (floored at
   // LIVE_MIN_WINDOW_SECONDS so a very short take doesn't start over-zoomed).
   $effect(() => {
-    if (!isRecording || viewportPx <= 0 || rateHz <= 0) {
+    if (!liveNewTake || viewportPx <= 0 || rateHz <= 0) {
       return;
     }
     const windowSamples = Math.max(rec.elapsedSamples, LIVE_MIN_WINDOW_SECONDS * rateHz);
@@ -298,7 +325,7 @@
     const overlay = new QuadBatch();
     let content: WaveformGlContent | null = null;
 
-    if (isRecording) {
+    if (liveNewTake) {
       if (liveBuckets.length > 0) {
         const columns = reduceColumns(liveBuckets, liveStartSample, liveSpb, startSample, samplesPerPixel, Math.ceil(viewportPx));
         content = { mode: "columns", vertices: buildColumnQuads(columns, centerY, fillColor).toFloat32Array() };
@@ -306,6 +333,21 @@
       const recordHeadColor = hexToRgba(colorToken("--wave-record-head", "#ff5c5c"));
       const px = pixelAtSample(rec.elapsedSamples, startSample, samplesPerPixel);
       overlay.vLine(px, 0, heightPx, recordHeadColor);
+    } else if (layout) {
+      // H-21: the operation view — the existing audio (Insert: shifted past `at`) plus the live
+      // take at `at` in the record colour, the punch region, the record head.
+      const cols = opViewColumns(layout);
+      const quads = buildColumnQuads(cols.base, centerY, fillColor);
+      quads.append(buildColumnQuads(cols.take, centerY, hexToRgba(colorToken("--wave-record", "#ff5c5c"))));
+      content = { mode: "columns", vertices: quads.toFloat32Array() };
+      if (layout.punchEnd !== null) {
+        const x0 = Math.max(0, pixelAtSample(layout.at, startSample, samplesPerPixel));
+        const x1 = Math.min(viewportPx, pixelAtSample(layout.punchEnd, startSample, samplesPerPixel));
+        overlay.rect(x0, 0, x1, heightPx, cssColorToRgba(colorToken("--wave-punch-region", "rgba(255, 92, 92, 0.12)")));
+      }
+      overlay.append(overlayBatch(opMarkers(layout, markers.list, isTakeMarker)));
+      const headPx = pixelAtSample(layout.at + layout.takeLen, startSample, samplesPerPixel);
+      overlay.vLine(headPx, 0, heightPx, hexToRgba(colorToken("--wave-record-head", "#ff5c5c")));
     } else {
       const state = requester.state;
       const level = pickLevel(samplesPerPixel);
@@ -328,23 +370,7 @@
       } else if (state?.partial) {
         overlay.rect(0, 0, viewportPx, heightPx, hexToRgba(colorToken("--wave-pending", "#3a3d44")));
       }
-      overlay.append(
-        buildOverlayBatch({
-          startSample,
-          samplesPerPixel,
-          viewportPx,
-          heightPx,
-          selection: selection.current,
-          markers: markers.list,
-          playheadSample: isOpen ? transport.playheadSamples : null,
-          colors: {
-            selectionFill: cssColorToRgba(colorToken("--wave-selection-fill", "rgba(77, 163, 255, 0.22)")),
-            marker: hexToRgba(colorToken("--wave-marker", "#35c46a")),
-            markerRegionFill: cssColorToRgba(colorToken("--wave-marker-region", "rgba(53, 196, 106, 0.18)")),
-            playhead: hexToRgba(colorToken("--wave-playhead", "#ffb454")),
-          },
-        }),
-      );
+      overlay.append(overlayBatch(markers.list));
     }
 
     renderer.draw({
@@ -359,6 +385,42 @@
     });
   }
 
+  /** Selection, markers (`markerList`) and playhead as one WebGL2 overlay batch. */
+  function overlayBatch(markerList: MarkerDto[]): QuadBatch {
+    return buildOverlayBatch({
+      startSample,
+      samplesPerPixel,
+      viewportPx,
+      heightPx,
+      selection: selection.current,
+      markers: markerList,
+      playheadSample: isOpen ? transport.playheadSamples : null,
+      colors: {
+        selectionFill: cssColorToRgba(colorToken("--wave-selection-fill", "rgba(77, 163, 255, 0.22)")),
+        marker: hexToRgba(colorToken("--wave-marker", "#35c46a")),
+        markerRegionFill: cssColorToRgba(colorToken("--wave-marker-region", "rgba(53, 196, 106, 0.18)")),
+        playhead: hexToRgba(colorToken("--wave-playhead", "#ffb454")),
+      },
+    });
+  }
+
+  /** H-21: the operation view's per-pixel columns (see `opLayout.ts`). */
+  function opViewColumns(l: OpLayout): { base: Column[]; take: Column[] } {
+    const width = Math.ceil(viewportPx);
+    const state = requester.state;
+    const level = pickLevel(samplesPerPixel);
+    const empty = (): Column[] => new Array<Column>(width).fill(null);
+    const docAt = (s: number): Column[] =>
+      state && state.level === level && state.buckets.length > 0
+        ? reduceColumns(state.buckets, state.startSample, level, s, samplesPerPixel, width)
+        : empty();
+    const takeCols =
+      liveBuckets.length > 0
+        ? reduceColumns(liveBuckets, liveStartSample, liveSpb, startSample - l.at, samplesPerPixel, width)
+        : empty();
+    return opColumns(l, docAt, takeCols, startSample, samplesPerPixel, width);
+  }
+
   function drawCanvas2d(dpr: number): void {
     const ctx = canvasEl?.getContext("2d");
     if (!ctx) {
@@ -371,13 +433,39 @@
     ctx.fillRect(0, 0, viewportPx, heightPx);
 
     const centerY = heightPx / 2;
-    if (isRecording) {
+    if (liveNewTake) {
       // H-07: the growing take (from record_peaks_get), plus a record-head line — never the
       // normal peaks_get state, which has nothing to show until the take is committed at Stop.
       if (liveBuckets.length > 0) {
         drawColumns(ctx, liveBuckets, liveStartSample, liveSpb, centerY);
       }
       drawRecordHead(ctx, centerY);
+      ctx.restore();
+      return;
+    }
+    if (layout) {
+      // H-21: the operation view (see `drawWebgl2`).
+      const cols = opViewColumns(layout);
+      if (layout.punchEnd !== null) {
+        const x0 = Math.max(0, pixelAtSample(layout.at, startSample, samplesPerPixel));
+        const x1 = Math.min(viewportPx, pixelAtSample(layout.punchEnd, startSample, samplesPerPixel));
+        if (x1 > x0) {
+          ctx.fillStyle = colorToken("--wave-punch-region", "rgba(255, 92, 92, 0.12)");
+          ctx.fillRect(x0, 0, x1 - x0, heightPx);
+        }
+      }
+      fillColumns(ctx, cols.base, colorToken("--wave-fill", "#7fc8ff"), centerY);
+      fillColumns(ctx, cols.take, colorToken("--wave-record", "#ff5c5c"), centerY);
+      drawSelection(ctx);
+      drawMarkers(ctx, opMarkers(layout, markers.list, isTakeMarker));
+      drawPlayhead(ctx, centerY);
+      const headPx = pixelAtSample(layout.at + layout.takeLen, startSample, samplesPerPixel);
+      ctx.strokeStyle = colorToken("--wave-record-head", "#ff5c5c");
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(headPx + 0.5, 0);
+      ctx.lineTo(headPx + 0.5, heightPx);
+      ctx.stroke();
       ctx.restore();
       return;
     }
@@ -402,13 +490,13 @@
   /** Marker flags (S2-03, SPEC-009 §2.5's essential subset: drawing only — no drag, no flag
    * hit-testing on the canvas; the panel is the click-to-jump/rename/delete surface). A region
    * also gets a filled band and an end flag. Clipped to the visible viewport. */
-  function drawMarkers(ctx: CanvasRenderingContext2D): void {
-    if (!isOpen || markers.list.length === 0) {
+  function drawMarkers(ctx: CanvasRenderingContext2D, list: MarkerDto[] = markers.list): void {
+    if (!isOpen || list.length === 0) {
       return;
     }
     const flagColor = colorToken("--wave-marker", "#35c46a");
     const regionFill = colorToken("--wave-marker-region", "rgba(53, 196, 106, 0.18)");
-    for (const marker of markers.list) {
+    for (const marker of list) {
       const startPx = pixelAtSample(marker.pos_samples, startSample, samplesPerPixel);
       if (marker.len_samples > 0) {
         const endPx = pixelAtSample(
@@ -477,7 +565,17 @@
       samplesPerPixel,
       Math.ceil(viewportPx),
     );
-    ctx.fillStyle = colorToken("--wave-fill", "#7fc8ff");
+    fillColumns(ctx, columns, colorToken("--wave-fill", "#7fc8ff"), centerY);
+  }
+
+  /** One `color` min/max column per pixel (`null`: nothing drawn there). */
+  function fillColumns(
+    ctx: CanvasRenderingContext2D,
+    columns: ReadonlyArray<Column>,
+    color: string,
+    centerY: number,
+  ): void {
+    ctx.fillStyle = color;
     for (let px = 0; px < columns.length; px++) {
       const column = columns[px];
       if (!column) {

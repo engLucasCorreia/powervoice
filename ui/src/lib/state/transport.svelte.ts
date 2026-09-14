@@ -134,6 +134,19 @@ export function extrapolatedPositionAt(eventTimeStampMs: number): number {
   return extrapolator.position(nowNs, state.doc_len_samples);
 }
 
+/**
+ * H-21 (SPEC-022 §2.9): {@link extrapolatedPositionAt} without the clamp to the document length —
+ * during a take or record operation the telemetry position is the heard position (or `at + k` in
+ * the record window), which runs past the current end while an Insert/Overwrite take grows.
+ */
+export function extrapolatedHeardPositionAt(eventTimeStampMs: number): number {
+  if (!extrapolator.hasAnchor) {
+    return playheadSamples;
+  }
+  const nowNs = eventTimeStampMs * 1e6 + clock.offsetNs;
+  return extrapolator.position(nowNs, Number.POSITIVE_INFINITY);
+}
+
 /** Handles one telemetry channel message. */
 export function onTelemetry(message: unknown): void {
   const buf = toArrayBuffer(message);

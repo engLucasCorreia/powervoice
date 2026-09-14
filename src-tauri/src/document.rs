@@ -2393,18 +2393,22 @@ impl DocumentService {
 
     /// The current marker list, in canonical order (SPEC-009 §2.1). Empty (not an error) when no
     /// document is open.
+    ///
+    /// H-21: while a take or record operation runs, the markers added during it (not committed
+    /// yet, [`Self::marker_add`]) are listed too, so the panel and waveform show them live.
     pub fn markers_get(&self) -> Vec<MarkerInfo> {
         let guard = self.0.open.lock().unwrap();
-        match guard.as_ref() {
-            Some(doc) => doc
-                .session
-                .current()
-                .markers
-                .iter()
-                .map(Into::into)
-                .collect(),
-            None => Vec::new(),
+        let Some(doc) = guard.as_ref() else {
+            return Vec::new();
+        };
+        let current = doc.session.current();
+        let pending = doc.session.open_take_markers();
+        if pending.is_empty() {
+            return current.markers.iter().map(Into::into).collect();
         }
+        let mut all: Vec<&Marker> = current.markers.iter().chain(pending).collect();
+        all.sort_by_key(|m| (m.pos_samples, m.id.0));
+        all.into_iter().map(Into::into).collect()
     }
 
     /// Adds a point (`len_samples == 0`) or region marker at `[pos_samples, pos_samples +
@@ -2413,11 +2417,34 @@ impl DocumentService {
     /// One undo entry `history.marker_add`, allowed during playback (marker edits never stop it,
     /// SPEC-009 §2.9). Named "Marker NN" (§2.3). `error.invalid_range` when the range doesn't fit
     /// the document.
+    ///
+    /// H-21 (SPEC-022 §2.9, SPEC-002 §2.2): allowed during a take or record operation — the
+    /// marker (at the heard position, or `at + k` in the record window) joins the take's single
+    /// edit instead (`Session::note_take_marker`, journaled for crash recovery; placed and clamped
+    /// at commit, so the range isn't checked against the still-growing document here); a cancelled
+    /// operation keeps it as its own "Add Marker" entry.
     pub fn marker_add(&self, pos_samples: u64, len_samples: u64) -> Result<MarkerInfo, IpcError> {
         let mut guard = self.0.open.lock().unwrap();
         let doc = guard.as_mut().ok_or_else(no_document)?;
-        if doc.session.is_recording() {
-            return Err(IpcError::not_while_recording());
+        if let Some(take) = doc.session.open_take() {
+            if pos_samples.checked_add(len_samples).is_none() {
+                return Err(invalid_range());
+            }
+            let known: Vec<Marker> = doc
+                .session
+                .current()
+                .markers
+                .iter()
+                .chain(doc.session.open_take_markers())
+                .cloned()
+                .collect();
+            let name = next_marker_name(&known);
+            let id = doc.session.new_marker_id();
+            let marker = Marker::new(id, pos_samples, len_samples, name);
+            doc.session
+                .note_take_marker(take, marker.clone())
+                .map_err(document_error)?;
+            return Ok(MarkerInfo::from(&marker));
         }
         let len = doc.session.current().len_samples;
         if pos_samples
@@ -4569,8 +4596,10 @@ mod tests {
             .unwrap();
         capture.append(&[0.0; 100]).unwrap();
 
+        // H-21: Add Marker is allowed during a take (it joins the take's edit, see
+        // `ac10_marker_add_during_an_operation_joins_its_edit`); editing markers is not.
+        assert!(service.marker_add(0, 0).is_ok());
         for result in [
-            service.marker_add(0, 0).map(|_| ()),
             service.marker_rename(marker.id, "x").map(|_| ()),
             service
                 .marker_set_range(marker.id, 0, 0, MarkerRangeEditKind::Move)
@@ -4581,6 +4610,108 @@ mod tests {
         }
 
         service.discard_take(capture.id());
+    }
+
+    /// H-21 / SPEC-022 AC-10 (app side): during a punch, Add Marker succeeds (renaming stays
+    /// refused), the marker is listed live and named after the pending ones too, and lands in the
+    /// operation's one "Punch-in" edit at its position (pre-roll: the heard position before `S`;
+    /// window: `S + k`); undo restores the original marker list exactly. A cancelled operation
+    /// keeps its marker as its own "Add Marker" entry and leaves the audio untouched.
+    #[test]
+    fn ac10_marker_add_during_an_operation_joins_its_edit() {
+        use vox_engine::record::{CancelReason, OpResult};
+        use vox_engine::record_op::{RecordOpKind, RecordPlan};
+        let (service, _engine, dir) = service("marker-op");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 1.0, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let existing = service.marker_add(1_000, 0).unwrap();
+        let plan = RecordPlan {
+            kind: RecordOpKind::Punch,
+            at_samples: 12_000,
+            end_samples: Some(24_000),
+            preroll_samples: 6_000,
+            postroll_samples: 4_800,
+            aligned: true,
+            offset_ns: 0,
+            hear_original: false,
+            xfade_samples: 480,
+            doc_len_samples: 48_000,
+            doc_rate_hz: 48_000,
+        };
+        let ids = |service: &DocumentService| -> Vec<(u64, u64)> {
+            service
+                .markers_get()
+                .iter()
+                .map(|m| (m.id, m.pos_samples))
+                .collect()
+        };
+
+        let mut capture = service.begin_record_op(&plan).unwrap();
+        capture.append(&[0.25f32; 22_800]).unwrap();
+        let pre = service.marker_add(9_000, 0).unwrap();
+        let win = service.marker_add(15_000, 0).unwrap();
+        assert_ne!(
+            pre.name, win.name,
+            "pending markers count for the next name"
+        );
+        assert_eq!(
+            service.marker_rename(existing.id, "x").unwrap_err().code,
+            IpcErrorCode::NotWhileRecording
+        );
+        assert_eq!(
+            ids(&service),
+            vec![(existing.id, 1_000), (pre.id, 9_000), (win.id, 15_000)]
+        );
+        let finished = capture.finish();
+        let op = OpResult {
+            plan,
+            window: Some((6_000, 18_000)),
+            cancelled: None,
+        };
+        assert!(
+            service
+                .commit_take_op(&finished, &op, &[])
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            service.history_state().undo_label.as_deref(),
+            Some("history.punch")
+        );
+        assert_eq!(
+            ids(&service),
+            vec![(existing.id, 1_000), (pre.id, 9_000), (win.id, 15_000)]
+        );
+        service.history_undo().unwrap();
+        assert_eq!(ids(&service), vec![(existing.id, 1_000)]);
+
+        // Cancelled (Stop in pre-roll): the marker persists as its own "Add Marker" entry.
+        let audio_rev = service.info().audio_rev;
+        let mut capture = service.begin_record_op(&plan).unwrap();
+        capture.append(&[0.25f32; 3_000]).unwrap();
+        let kept = service.marker_add(10_000, 0).unwrap();
+        let finished = capture.finish();
+        let op = OpResult {
+            plan,
+            window: None,
+            cancelled: Some(CancelReason::User),
+        };
+        assert!(
+            service
+                .commit_take_op(&finished, &op, &[])
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            service.history_state().undo_label.as_deref(),
+            Some("history.marker_add")
+        );
+        assert_eq!(ids(&service), vec![(existing.id, 1_000), (kept.id, 10_000)]);
+        assert_eq!(
+            service.info().audio_rev,
+            audio_rev,
+            "the audio is untouched"
+        );
     }
 
     /// SPEC-005 §2.9 / SPEC-009 §2.13 case 5: end-to-end through `DocumentService` — Save writes

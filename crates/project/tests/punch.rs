@@ -13,8 +13,8 @@ use vox_project::journal::{Record, TakeModeRecord, read_journal};
 use vox_project::session::TAKES_DIR_NAME;
 use vox_project::take::take_part_path;
 use vox_project::{
-    FinishedTake, Marker, MarkerId, PUNCH_LABEL_KEY, Session, SessionConfig, StoreOptions,
-    TAKE_LABEL_KEY, TakeMode, TakeParams, TakeWriterOptions,
+    FinishedTake, MARKER_ADD_LABEL_KEY, Marker, MarkerId, PUNCH_LABEL_KEY, Session, SessionConfig,
+    StoreOptions, TAKE_LABEL_KEY, TakeMode, TakeParams, TakeWriterOptions,
 };
 use vox_testkit::golden::fnv1a_hash;
 
@@ -636,4 +636,321 @@ fn recovery_applies_the_window_from_take_window_or_discards_a_pre_roll_crash() {
         fnv1a_hash(&read_all(session.store(), &session.current())),
         fnv1a_hash(&a)
     );
+}
+
+/// `positions` sorted by (position, id), so marker lists compare as sets.
+fn sorted_positions(mut v: Vec<(u64, u64, u64)>) -> Vec<(u64, u64, u64)> {
+    v.sort_by_key(|m| (m.1, m.0));
+    v
+}
+
+/// Opens an aligned punch take over `[S, E)` and appends `pass`.
+fn open_punch(session: &mut Session, pass: &[f32]) -> vox_project::TakeCapture {
+    let mut capture = session
+        .begin_take_with(
+            TakeMode::Punch {
+                start_samples: S as u64,
+                end_samples: E as u64,
+            },
+            TakeParams {
+                xfade_samples: X,
+                offset_ns: 0,
+                aligned: true,
+            },
+            TakeWriterOptions::default(),
+        )
+        .unwrap();
+    for block in pass.chunks(2400) {
+        capture.append(block).unwrap();
+    }
+    capture
+}
+
+/// H-21 / AC-10 (project part): markers added during a punch — in pre-roll (heard position before
+/// `S`), in the window (`S + k`) and in post-roll (heard position after `E`) — land exactly where
+/// they were added, inside the operation's single "Punch-in" edit, with the fixture markers kept
+/// (identity). Undo restores the original marker list exactly (ids, names, positions), redo the
+/// result.
+#[test]
+fn ac10_markers_added_during_a_punch_land_in_its_edit() {
+    let tmp = TempDir::new("punch-markers");
+    let mut session = new_session(tmp.path());
+    let a = noise(1, L);
+    floor(&mut session, &a);
+    let (pre, post) = (240_000usize, 48_000usize);
+    let mut capture = open_punch(&mut session, &noise(3, pre + (E - S) + post));
+    let id = capture.id();
+    session.note_take_window(id, pre as u64).unwrap();
+    let added = [
+        (100, S as u64 - 96_000, "pre"),
+        (101, S as u64 + 48_000, "window"),
+        (102, E as u64 + 24_000, "post"),
+    ];
+    for (mid, pos, name) in added {
+        session
+            .note_take_marker(id, Marker::new(MarkerId(mid), pos, 0, name))
+            .unwrap();
+    }
+    assert_eq!(session.open_take_markers().len(), 3);
+    capture.sync().unwrap();
+    let finished = capture.finish();
+    let step = session
+        .commit_take_window(&finished, (pre as u64, (pre + E - S) as u64), &[])
+        .unwrap()
+        .unwrap();
+    assert_eq!(&*step.label_key, PUNCH_LABEL_KEY);
+    assert_eq!(session.history().undo_depth(), 1, "all in the one edit");
+    assert!(session.open_take_markers().is_empty());
+    let mut want = fixture_positions();
+    want.extend(added.iter().map(|&(mid, pos, _)| (mid, pos, 0)));
+    let want = sorted_positions(want);
+    assert_eq!(sorted_positions(positions(&session)), want);
+    let window = session
+        .current()
+        .markers
+        .iter()
+        .find(|m| m.id == MarkerId(101))
+        .map(|m| m.name.to_string());
+    assert_eq!(window.as_deref(), Some("window"));
+
+    session.undo().unwrap().unwrap();
+    assert_eq!(
+        sorted_positions(positions(&session)),
+        sorted_positions(fixture_positions())
+    );
+    session.redo().unwrap().unwrap();
+    assert_eq!(sorted_positions(positions(&session)), want);
+}
+
+/// H-21 / AC-10 (project part): in Insert mode a marker added at take offset `k` lands at `c + k`
+/// (inside the new audio) while the existing markers at or after `c` shift by `n`; a marker added
+/// just past the take's end (extrapolated) is clamped to `c + n`; one before `c` stays put.
+#[test]
+fn ac10_insert_markers_land_at_the_take_offset() {
+    let tmp = TempDir::new("insert-markers");
+    let mut session = new_session(tmp.path());
+    let a = noise(1, L);
+    floor(&mut session, &a);
+    let c = 480_000u64;
+    let w = noise(7, 96_000);
+    let n = w.len() as u64;
+    let mut capture = session
+        .begin_take_with(
+            TakeMode::Insert { at_samples: c },
+            TakeParams::default(),
+            TakeWriterOptions::default(),
+        )
+        .unwrap();
+    let id = capture.id();
+    for block in w.chunks(2400) {
+        capture.append(block).unwrap();
+    }
+    for (mid, pos) in [(100, c - 1_000), (101, c + 30_000), (102, c + n + 300)] {
+        session
+            .note_take_marker(id, Marker::new(MarkerId(mid), pos, 0, "m"))
+            .unwrap();
+    }
+    let finished = capture.finish();
+    session
+        .commit_take_window(&finished, (0, n), &[])
+        .unwrap()
+        .unwrap();
+    let want = sorted_positions(vec![
+        (1, 2 * RATE_U64, 0),
+        (2, 6 * RATE_U64, 0),
+        (5, 6 * RATE_U64 + RATE_U64 / 2, RATE_U64),
+        (3, 480_000 + n, 0),
+        (4, 960_000 + n, 0),
+        (100, c - 1_000, 0),
+        (101, c + 30_000, 0),
+        (102, c + n, 0),
+    ]);
+    assert_eq!(sorted_positions(positions(&session)), want);
+    session.undo().unwrap().unwrap();
+    assert_eq!(
+        sorted_positions(positions(&session)),
+        sorted_positions(fixture_positions())
+    );
+}
+
+/// H-21 / AC-10 (project part): an operation cancelled after markers were added during it (Stop
+/// in pre-roll) keeps each marker as its own ordinary "Add Marker" undo entry; the audio is
+/// untouched and the take is journaled as cancelled.
+#[test]
+fn ac10_a_cancelled_operation_keeps_its_markers_as_add_marker_entries() {
+    let tmp = TempDir::new("cancel-markers");
+    let mut session = new_session(tmp.path());
+    let a = noise(1, L);
+    floor(&mut session, &a);
+    let capture = open_punch(&mut session, &noise(2, 30_000));
+    let id = capture.id();
+    for (mid, pos) in [(100, S as u64 - 48_000), (101, S as u64 - 24_000)] {
+        session
+            .note_take_marker(id, Marker::new(MarkerId(mid), pos, 0, "pre"))
+            .unwrap();
+    }
+    let finished = capture.finish();
+    session.cancel_take(finished.take).unwrap();
+    assert!(!session.is_recording());
+    assert_eq!(session.history().undo_depth(), 2, "one entry per marker");
+    assert_eq!(session.history().undo_label(), Some(MARKER_ADD_LABEL_KEY));
+    let mut want = fixture_positions();
+    want.extend([(100, S as u64 - 48_000, 0), (101, S as u64 - 24_000, 0)]);
+    assert_eq!(
+        sorted_positions(positions(&session)),
+        sorted_positions(want)
+    );
+    assert_eq!(
+        fnv1a_hash(&read_all(session.store(), &session.current())),
+        fnv1a_hash(&a)
+    );
+    let journal = read_journal(session.journal_path()).unwrap();
+    assert!(
+        journal
+            .records
+            .iter()
+            .any(|r| matches!(r, Record::TakeCancel { .. }))
+    );
+    session.undo().unwrap().unwrap();
+    session.undo().unwrap().unwrap();
+    assert_eq!(
+        sorted_positions(positions(&session)),
+        sorted_positions(fixture_positions())
+    );
+}
+
+/// H-21 / AC-10 + AC-15 (project part): markers journaled during an interrupted punch are
+/// restored by "Apply as recorded" where a live commit would put them — a pre-roll marker stays at
+/// its heard position before `S`, a window marker past the recovered end is clamped to it.
+#[test]
+fn ac10_recovered_punch_places_its_markers_like_a_live_commit() {
+    let tmp = TempDir::new("punch-recover-markers");
+    let a = noise(1, L);
+    let (k, recovered) = (240_000usize, 70_000usize);
+    let dir = {
+        let mut session = new_session(tmp.path());
+        floor(&mut session, &a);
+        let mut capture = open_punch(&mut session, &noise(9, k + recovered));
+        let id = capture.id();
+        capture.sync().unwrap();
+        session.note_take_window(id, k as u64).unwrap();
+        for (mid, pos) in [
+            (100, S as u64 - 12_000),
+            (101, S as u64 + 10_000),
+            (102, S as u64 + 100_000),
+        ] {
+            session
+                .note_take_marker(id, Marker::new(MarkerId(mid), pos, 0, "m"))
+                .unwrap();
+        }
+        let dir = session.dir().to_path_buf();
+        drop(capture); // crash
+        drop(session);
+        dir
+    };
+    let (mut session, _) =
+        Session::recover(&dir, StoreOptions::with_memory_budget(256 * MIB)).unwrap();
+    session.apply_open_take_from_wav().unwrap().unwrap();
+    let mut want = fixture_positions();
+    want.extend([
+        (100, S as u64 - 12_000, 0),
+        (101, S as u64 + 10_000, 0),
+        (102, (S + recovered) as u64, 0),
+    ]);
+    assert_eq!(
+        sorted_positions(positions(&session)),
+        sorted_positions(want)
+    );
+}
+
+/// H-21 / SPEC-022 AC-11: a seeded sequence of 20 mixed record operations — Insert, Overwrite
+/// inside, Overwrite past the end, full punch, partial punch, every other one with a marker added
+/// during it — undone completely and then redone completely, matches the hash, length and marker
+/// list of every step (the start and end states in particular).
+#[test]
+fn ac11_seeded_sequence_of_20_operations_undoes_and_redoes_exactly() {
+    let tmp = TempDir::new("ac11-sequence");
+    let mut session = new_session(tmp.path());
+    floor(&mut session, &noise(1, 240_000));
+    let fingerprint = |s: &Session| {
+        let doc = read_all(s.store(), &s.current());
+        (fnv1a_hash(&doc), doc.len(), sorted_positions(positions(s)))
+    };
+    let mut rng = 0x2545_F491_4F6C_DD1Du64;
+    let mut next = |n: u64| {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        rng % n.max(1)
+    };
+    let mut states = vec![fingerprint(&session)];
+    let mut kinds = [0usize; 5];
+    for i in 0..20u64 {
+        let len = session.current().len_samples;
+        let n = 4_000 + next(20_000);
+        let w = noise(100 + i, n as usize);
+        let kind = next(5) as usize;
+        kinds[kind] += 1;
+        let (mode, aligned, window, at) = match kind {
+            0 => {
+                let c = next(len + 1);
+                (TakeMode::Insert { at_samples: c }, false, (0, n), c)
+            }
+            1 => {
+                let c = next(len - n);
+                (TakeMode::Overwrite { at_samples: c }, false, (0, n), c)
+            }
+            2 => {
+                let c = len - next(n / 2);
+                (TakeMode::Overwrite { at_samples: c }, false, (0, n), c)
+            }
+            _ => {
+                let span = n.min(len / 2);
+                let s = next(len - span);
+                let p = if kind == 3 {
+                    span
+                } else {
+                    span / 2 + next(span / 2)
+                };
+                // The take holds a 1 000-sample pre-roll before the window.
+                let mode = TakeMode::Punch {
+                    start_samples: s,
+                    end_samples: s + span,
+                };
+                (mode, true, (1_000, 1_000 + p), s)
+            }
+        };
+        let samples = if aligned {
+            let mut v = noise(500 + i, 1_000);
+            v.extend_from_slice(&w);
+            v
+        } else {
+            w
+        };
+        let finished = take(&mut session, mode, X, aligned, &samples);
+        if i % 2 == 0 {
+            let marker = Marker::new(MarkerId(1_000 + i), at + next(n / 2), 0, "during");
+            session.note_take_marker(finished.take, marker).unwrap();
+        }
+        session
+            .commit_take_window(&finished, window, &[])
+            .unwrap()
+            .expect("one edit");
+        states.push(fingerprint(&session));
+    }
+    assert!(kinds.iter().all(|&k| k > 0), "every kind occurs: {kinds:?}");
+    assert_eq!(session.history().undo_depth(), 20);
+    for i in (0..20).rev() {
+        session.undo().unwrap().unwrap();
+        assert_eq!(
+            fingerprint(&session),
+            states[i],
+            "after undoing op {}",
+            i + 1
+        );
+    }
+    for (i, state) in states.iter().enumerate().skip(1) {
+        session.redo().unwrap().unwrap();
+        assert_eq!(&fingerprint(&session), state, "after redoing op {i}");
+    }
 }

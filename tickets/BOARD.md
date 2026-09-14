@@ -56,6 +56,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-11 | Disk-space floor + remaining recording time (A-010: libc statvfs / windows-sys); dropouts > 2 s → device-loss stop (A-011); dropout marks on the resampled path | S | done |
 | H-12 | Spectral view follow-ups (T-207): persist display prefs in Settings (A-014), one shared time ruler + scrollbar in EditorView (SPEC-007 §2.1 stacking), HiDPI columns, import-freeze message once import has progress state | S | todo |
 | H-13 | WebGL2 renderers (ADR-009 primary): spectrogram R8 textures + colormap shader, waveform; Canvas2D stays the fallback; FFT-size texture gating live | S+OR | todo |
+| H-14 | FLAC export is malformed: flacenc frame numbering makes `flac -t` warn (not seekable) and symphonia reject our own exports — fix or replace the encoder; then FLAC verify-before-rename (SPEC-005 §2.11) | S | in progress |
 | H-09 | Normalize follow-ups from S2-02: progress via the S4-04 `job_progress` event + cancel for long files; % targets; Effects menu entry; pyramid-accelerated peak scan (SPEC-010 AC-9/AC-15); remembered dialog value | S | done |
 
 ## M0 — Foundations
@@ -80,7 +81,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-104 | App infra: tracing log, typed errors→toasts/banners, panic hook, settings, stores, keymap registry, WebKit DMA-BUF default | W1 | S | M0 | done |
 | T-105 | Engine core: control thread, RT callbacks, transport (Stop→play start), reader/prefetch, resampling, heard clock, 60 Hz telemetry | W2 | O | T-101, T-102, T-103 | → S1-01 (subset), rest hardening |
 | T-106 | Recording: crash-safe WAV, peaks stream, take → undoable edit | W3 | O | T-105 | → S1-04 (subset), rest hardening |
-| T-107 | Monitoring off/dry/through-rack, drift-corrected in→out ring | W3 | O | T-105 | in progress |
+| T-107 | Monitoring off/dry/through-rack, drift-corrected in→out ring | W3 | O | T-105 | done |
 | T-108 | IPC layer: M1 commands/events, VXTM/VXRP channels, binary decoders + golden fixtures, clock sync | W3 | S | T-104, T-105 | → S1-01/S1-03 (subset), rest hardening |
 | T-110 | Bench harness (divan, callback-time histogram) | W3 | S | T-105 | todo |
 | T-109 | UI: device settings, transport bar, meter bridge, live recording waveform | W4 | S | T-106, T-107, T-108 | → S1-01/S1-04 (subset), rest hardening |
@@ -90,7 +91,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 |---|---|---|---|---|---|
 | T-200 | M2 spec wave: SPEC-005 formats, SPEC-006 waveform view, SPEC-007 spectral & analyzer | W0 | O/S | M0 | done |
 | T-201 | Save pipeline: WAV writer 16/24/32f, TPDF dither, clip policy, cue/adtl markers, atomic save job, FLAC encode | W1 | S+OR | M1 | → S1-02/S1-03 (WAV subset), rest hardening |
-| T-202 | Import pipeline: symphonia decode (WAV variants, FLAC, MP3, M4A, Ogg), downmix, session import job, CLI convert/markers | W1 | S+OR | M1 | in progress |
+| T-202 | Import pipeline: symphonia decode (WAV variants, FLAC, MP3, M4A, Ogg), downmix, session import job, CLI convert/markers | W1 | S+OR | M1 | done (import job UI + channel-choice dialog → T-209) |
 | T-203 | Per-chunk peak pyramid + binary IPC | W1 | S+OR | M1 | → S1-02/S1-03 (subset), rest hardening |
 | T-204 | STFT spectrogram tile service | W1 | O | M1 | done |
 | T-205 | Waveform renderer: zoom/scroll, amplitude zoom, rulers, extrapolated playhead | W2 | S | T-203 | → S1-03 (Canvas2D subset), rest hardening |
@@ -108,7 +109,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-303 | Markers: kinds, add/region, rename, drag, delete, navigation, Markers panel | W2 | S | T-301 | todo |
 | T-304 | Record at cursor (Insert/Overwrite) + punch-in + latency offset & calibration | W2 | O | T-301 | todo |
 | T-305 | Peak normalize favorites | W2 | S+OR | T-301 | todo |
-| T-306 | Sidecar `.vo.json`, identity check, sidecar-only saves, recent files, second-instance warning | W3 | S+OR | T-302, T-303 | todo |
+| T-306 | Sidecar `.vo.json`, identity check, sidecar-only saves, recent files, second-instance warning | W3 | S+OR | T-302, T-303 | in progress |
 
 ## M4 — Effects modules & rack UI
 | ID | Title | Wave | Tier | Deps | Status |

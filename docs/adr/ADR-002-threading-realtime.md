@@ -276,3 +276,24 @@ is sufficient.
   timestamps. If not, fall back to buffer-period estimates and flag it in MEMORY.
 - For T-105: confirm that opening at the document rate works on PipeWire without an audible
   graph-rate change for other apps.
+
+## Amendment 1 — T-107 monitoring, as implemented (2026-09-14)
+- **Monitor ring capacity: 65 536 frames** (§6 said 8 192). 8 192 cannot hold 4·F\* (the overrun
+  threshold) once periods reach 1024 frames on both streams.
+- **Variable resampler chunks:** the output callback feeds the `rubato::Async` resampler variable
+  chunks of ≤ 64 frames instead of fixed 64-frame chunks with a carry buffer, which would add up to 64
+  frames of unaccounted latency. One resampler instance per output stream covers input/output rate
+  ratios 1/8…8, so relinking a new input rate never allocates.
+- **Phase-compensated fill:** after each push the input callback publishes (pushed count, callback
+  time) packed into one atomic; the output side measures `F + r_in·(now − stamp)` plus the
+  interpolator's 4-frame lookahead. Without it the heard latency wanders by up to one input period as
+  the two callbacks' phases drift, breaking SPEC-002's ±1 ms readout accuracy.
+- **F\*** = max observed input period + max output period + 1 ms, raised by the control thread when a
+  longer period appears. Underrun fade-out is ⅓ ms so it fits F\*'s 1 ms margin.
+- **Input latency** in the readout is callback − capture *end* of the block (the literal
+  "callback − capture" would count the input period twice, since F\* already includes it); this is
+  how SPEC-002 §4.4's example (23.7 ms) is reproduced.
+- **Rack sharing:** through-rack monitoring uses the one shared playback rack (SPEC-002 OD-1 A); a
+  transport restart skips the rack reset while the monitor feeds it.
+- rubato's `log` feature stays off: its `trace!` in `process_into_buffer` allocates on the audio
+  thread.

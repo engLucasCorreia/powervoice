@@ -71,6 +71,7 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
       fft_size: null,
     },
     multichannel_policy: "ask",
+    renderer_preference: "auto",
     ...overrides,
   };
 }

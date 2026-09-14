@@ -269,6 +269,24 @@ pub enum MultichannelPolicy {
     AlwaysFirstChannel,
 }
 
+// --- Renderer preference (H-19, ADR-009 §4's "or a setting" clause) ----------------------------
+
+/// Settings → View's renderer override: `Auto` (default) picks WebGL2 when available and falls
+/// back to Canvas2D, matching ADR-009 §4's normal decision (`chooseRenderer` in
+/// `ui/src/lib/render/rendererMode.ts`); `Webgl2`/`Canvas2d` force a choice (forcing `Webgl2`
+/// still falls back if the context can't actually be created — there is no third state). H-13
+/// added the in-memory `ui/src/lib/state/rendererPref.svelte.ts` store with no persistence and no
+/// UI; this ticket backs it with a real setting (View → Renderer) so the choice survives restarts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum RendererPreference {
+    #[default]
+    Auto,
+    Webgl2,
+    Canvas2d,
+}
+
 // --- Recent files (T-306, SPEC-018 §2.12) --------------------------------------------------------
 
 /// At most this many entries, most-recent-first (SPEC-018 §2.12 `recent_max`).
@@ -349,6 +367,9 @@ pub struct Settings {
     /// T-209 (SPEC-005 §2.4, §3 `multichannel_policy`): Settings → Files. Additive field — the
     /// settings version stays 1.
     pub multichannel_policy: MultichannelPolicy,
+    /// H-19 (ADR-009 §4): Settings → View's renderer override (View → Renderer in the menu bar).
+    /// Additive field — the settings version stays 1.
+    pub renderer_preference: RendererPreference,
     #[serde(flatten)]
     #[ts(skip)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -371,6 +392,7 @@ impl Default for Settings {
             analyzer_response: AnalyzerResponsePref::default(),
             analyzer_peak_hold: true,
             multichannel_policy: MultichannelPolicy::default(),
+            renderer_preference: RendererPreference::default(),
             extra: serde_json::Map::new(),
         }
     }
@@ -572,6 +594,7 @@ mod tests {
         assert!(settings.analyzer_visible);
         assert_eq!(settings.analyzer_response, AnalyzerResponsePref::Medium);
         assert!(settings.analyzer_peak_hold);
+        assert_eq!(settings.renderer_preference, RendererPreference::Auto);
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -667,6 +690,29 @@ mod tests {
         let json = br#"{"version":1,"monitor_mode":"dry"}"#;
         let migrated = parse_and_migrate(json).unwrap();
         assert_eq!(migrated.multichannel_policy, MultichannelPolicy::Ask);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// H-19 (ADR-009 §4): round-trips through save/load, and an older settings file with no
+    /// `renderer_preference` key falls back to `Auto` (container-level `#[serde(default)]`, same
+    /// convention as `multichannel_policy`/`spectral_defaults`).
+    #[test]
+    fn renderer_preference_round_trips_and_falls_back_to_auto() {
+        let dir = temp_dir("renderer-preference");
+        let path = dir.join("settings.json");
+
+        let settings = Settings {
+            renderer_preference: RendererPreference::Canvas2d,
+            ..Settings::default()
+        };
+        save(&path, &settings).unwrap();
+        let loaded = load_or_default(&path);
+        assert_eq!(loaded.renderer_preference, RendererPreference::Canvas2d);
+
+        let json = br#"{"version":1,"monitor_mode":"dry"}"#;
+        let migrated = parse_and_migrate(json).unwrap();
+        assert_eq!(migrated.renderer_preference, RendererPreference::Auto);
 
         std::fs::remove_dir_all(&dir).ok();
     }

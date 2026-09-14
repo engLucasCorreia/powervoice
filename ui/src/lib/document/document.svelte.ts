@@ -625,6 +625,22 @@ export function requestSaveAs(): void {
 }
 
 /**
+ * File → Close (H-19): closes the current document (after the unsaved-changes guard) without
+ * quitting the app — the same `documentClose` call the quit-time flow already uses (SPEC-004
+ * §2.8), just reachable from the menu too. `document_changed` (already wired below) resets the
+ * UI to the "no document" state once the backend confirms the close.
+ */
+export async function requestClose(): Promise<void> {
+  await withUnsavedChangesGuard(async () => {
+    try {
+      await documentClose();
+    } catch (err) {
+      report(err);
+    }
+  });
+}
+
+/**
  * Wires the store: keymap actions, `document_changed` events, and (best-effort — not exercised
  * by Vitest, no real Tauri window there) the unsaved-changes prompt on window close. Returns the
  * teardown.

@@ -21,3 +21,9 @@ export function rendererPref(): { readonly value: RendererPreference } {
 export function setRendererPreference(next: RendererPreference): void {
   preference = next;
 }
+
+/** Test/teardown helper (H-19: View → Renderer tests need to reset this module-scoped singleton
+ * between tests, same convention as every other feature store's `reset*ForTest`). */
+export function resetRendererPrefForTest(): void {
+  preference = "auto";
+}

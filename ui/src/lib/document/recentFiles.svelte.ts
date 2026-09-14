@@ -42,7 +42,8 @@ export async function refreshRecentFiles(): Promise<void> {
 }
 
 /** Picking an entry: the normal Open flow (unsaved-changes prompt included). A missing entry is
- * the caller's job to catch before calling this (`RecentFilesMenu` checks `exists` first). */
+ * the caller's job to catch before calling this (H-19: `DocumentMenu`'s Recent Files ▸ submenu
+ * checks `exists` first). */
 export async function openRecentFile(path: string): Promise<void> {
   await withUnsavedChangesGuard(async () => {
     await openDocument(path);

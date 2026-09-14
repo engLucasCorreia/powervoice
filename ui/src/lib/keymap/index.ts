@@ -9,3 +9,4 @@ export {
   registerAction,
 } from "./listener";
 export type { AttachKeymapOptions } from "./listener";
+export { formatBinding, shortcutLabelForAction } from "./shortcutLabel";

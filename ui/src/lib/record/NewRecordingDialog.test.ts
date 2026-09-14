@@ -38,6 +38,7 @@ function settingsFixture(): Settings {
     analyzer_response: "medium",
     analyzer_peak_hold: true,
     multichannel_policy: "ask",
+    renderer_preference: "auto",
   };
 }
 

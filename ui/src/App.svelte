@@ -17,6 +17,9 @@
   import { initRecentFiles } from "./lib/document/recentFiles.svelte";
   import EditMenu from "./lib/edit/EditMenu.svelte";
   import ExportDialog from "./lib/export/ExportDialog.svelte";
+  import AboutDialog from "./lib/help/AboutDialog.svelte";
+  import HelpMenu from "./lib/help/HelpMenu.svelte";
+  import { t } from "./lib/i18n";
   import { getAppInfo } from "./lib/ipc/commands";
   import { attachKeymap } from "./lib/keymap";
   import EditorView from "./lib/layout/EditorView.svelte";
@@ -26,7 +29,10 @@
   import ViewMenu from "./lib/layout/ViewMenu.svelte";
   import LoudnessPanel from "./lib/loudness/LoudnessPanel.svelte";
   import { initLoudness } from "./lib/loudness/loudness.svelte";
-  import FavoritesMenu from "./lib/normalize/FavoritesMenu.svelte";
+  import { attachMenuBarMnemonics } from "./lib/menu/menubar.svelte";
+  import MenuBar from "./lib/menu/MenuBar.svelte";
+  import NormalizeDialog from "./lib/normalize/NormalizeDialog.svelte";
+  import NormalizeLufsDialog from "./lib/normalize/NormalizeLufsDialog.svelte";
   import NormalizeProgressDialog from "./lib/normalize/NormalizeProgressDialog.svelte";
   import EffectsMenu from "./lib/rack/EffectsMenu.svelte";
   import RackPanel from "./lib/rack/RackPanel.svelte";
@@ -37,6 +43,7 @@
   import { initRecovery } from "./lib/recovery/recovery.svelte";
   import LowDiskDialog from "./lib/record/LowDiskDialog.svelte";
   import NewRecordingDialog from "./lib/record/NewRecordingDialog.svelte";
+  import { setRendererPreference } from "./lib/state/rendererPref.svelte";
   import { initEdit } from "./lib/state/edit.svelte";
   import { initNormalize } from "./lib/state/normalize.svelte";
   import { initNormalizeLufs } from "./lib/state/normalizeLufs.svelte";
@@ -58,6 +65,10 @@
     return attachKeymap();
   });
 
+  // H-19: Alt+letter mnemonics for the menu bar (File/Edit/View/Effects/Help), independent of the
+  // per-action keymap above.
+  onMount(() => attachMenuBarMnemonics());
+
   // H-12 (A-014): once settings load, seed the spectral pane's display settings from the app's
   // last-used defaults (a document's own sidecar `spectral_view`, applied later by
   // `document.svelte.ts` on open, overrides this).
@@ -74,6 +85,9 @@
         response: current.analyzer_response,
         peakHold: current.analyzer_peak_hold,
       });
+      // H-19 (ADR-009 §4): View → Renderer's persisted choice, seeded before any waveform/
+      // spectral view mounts. `?? "auto"` tolerates a mocked/pre-H-19 settings object in tests.
+      setRendererPreference(current.renderer_preference ?? "auto");
     });
   });
 
@@ -170,10 +184,11 @@
     };
   });
 
-  // S2-02: peak normalize favorites (toolbar buttons, Favorites menu, Normalize… dialog).
+  // S2-02: peak normalize favorites (toolbar buttons, Effects → Favorites ▸, Normalize… dialog).
   onMount(() => initNormalize());
 
-  // S4-01: LUFS normalize favorites (toolbar buttons, Favorites menu, Normalize (LUFS)… dialog).
+  // S4-01: LUFS normalize favorites (toolbar buttons, Effects → Favorites ▸, Normalize (LUFS)…
+  // dialog).
   onMount(() => initNormalizeLufs());
 
   // S4-01: the Loudness panel's analysis job (job_progress/loudness_report events).
@@ -203,11 +218,13 @@
 </script>
 
 <div class="shell">
-  <DocumentMenu />
-  <EditMenu />
-  <FavoritesMenu />
-  <EffectsMenu />
-  <ViewMenu />
+  <MenuBar label={t("menu.bar")}>
+    <DocumentMenu />
+    <EditMenu />
+    <ViewMenu />
+    <EffectsMenu />
+    <HelpMenu />
+  </MenuBar>
   <Toolbar {version} />
   <div class="workspace">
     <MarkersProperties />
@@ -238,11 +255,17 @@
 <ExportDialog />
 <NewRecordingDialog />
 <LowDiskDialog />
+<NormalizeDialog />
+<NormalizeLufsDialog />
+<AboutDialog {version} />
 
 <style>
   .shell {
     display: grid;
-    grid-template-rows: auto auto auto auto 1fr auto auto;
+    /* H-19: menu bar, toolbar, the flexible workspace, then the bottom dock (was 5 separate flat
+       menu rows + toolbar before, with the tracks below no longer lined up with the right
+       children — down to one real menu bar row now). */
+    grid-template-rows: auto auto 1fr auto;
     height: 100vh;
   }
 

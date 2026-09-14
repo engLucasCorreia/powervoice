@@ -617,6 +617,16 @@ damaged: boolean, size_bytes: number, };
 export type RecoveredTakeActionDto = "apply" | "new_document" | "discard";
 
 /**
+ * Settings → View's renderer override: `Auto` (default) picks WebGL2 when available and falls
+ * back to Canvas2D, matching ADR-009 §4's normal decision (`chooseRenderer` in
+ * `ui/src/lib/render/rendererMode.ts`); `Webgl2`/`Canvas2d` force a choice (forcing `Webgl2`
+ * still falls back if the context can't actually be created — there is no third state). H-13
+ * added the in-memory `ui/src/lib/state/rendererPref.svelte.ts` store with no persistence and no
+ * UI; this ticket backs it with a real setting (View → Renderer) so the choice survives restarts.
+ */
+export type RendererPreference = "auto" | "webgl2" | "canvas2d";
+
+/**
  * `rack_response_curve`'s response (S3-07, SPEC-015 §2.6.6, lean slice: JSON — the binary
  * `VXRC` frame is hardening). `components_db` is one row per band, in `curve_handles` order.
  */
@@ -679,7 +689,12 @@ analyzer_peak_hold: boolean,
  * T-209 (SPEC-005 §2.4, §3 `multichannel_policy`): Settings → Files. Additive field — the
  * settings version stays 1.
  */
-multichannel_policy: MultichannelPolicy, };
+multichannel_policy: MultichannelPolicy, 
+/**
+ * H-19 (ADR-009 §4): Settings → View's renderer override (View → Renderer in the menu bar).
+ * Additive field — the settings version stays 1.
+ */
+renderer_preference: RendererPreference, };
 
 /**
  * Slot status (SPEC-012 §2.2, §2.9). `message` is pre-rendered English text shown verbatim (see

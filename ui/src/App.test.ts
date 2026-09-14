@@ -47,6 +47,8 @@ describe("App shell", () => {
           analyzer_visible: true,
           analyzer_response: "medium",
           analyzer_peak_hold: true,
+          multichannel_policy: "ask",
+          renderer_preference: "auto",
         };
       }
       if (cmd === "transport_get") {

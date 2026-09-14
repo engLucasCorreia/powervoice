@@ -100,6 +100,12 @@ pub fn emit_notice<R: tauri::Runtime>(
 #[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
 pub enum JobKind {
     Export,
+    /// T-209: opening (importing) a file (SPEC-005 §2.3) — `document_open`'s job, cancelled by
+    /// `document_open_cancel`. Its finished document arrives separately as `document_changed`
+    /// (the `document_open` command's own return value already gives it to the caller that
+    /// started the job; other listeners, e.g. an import progress dialog, don't need it repeated
+    /// here).
+    Import,
     /// S3-06: Capture Noise Print (SPEC-014 §2.3).
     NrCapture,
     /// S4-01: the loudness analysis job (`loudness_analyze_start`) — its finished report arrives

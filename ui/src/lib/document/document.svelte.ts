@@ -1,12 +1,28 @@
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openFileDialog, save as saveFileDialog } from "@tauri-apps/plugin-dialog";
-import type { BitDepth, DocumentDto, EventName, IpcError } from "../ipc/bindings";
-import { documentClose, documentOpen, documentSave, documentSaveAs } from "../ipc/commands";
+import type {
+  BitDepth,
+  DocumentDto,
+  DocumentProbeDto,
+  DownmixChoiceDto,
+  EventName,
+  IpcError,
+  JobProgressDto,
+  SaveContainerDto,
+} from "../ipc/bindings";
+import {
+  documentClose,
+  documentOpen,
+  documentOpenCancel,
+  documentSave,
+  documentSaveAs,
+} from "../ipc/commands";
 import { registerAction } from "../keymap";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { t } from "../i18n";
 import { pushNotice } from "../state/notices.svelte";
+import { saveSettings, settingsState } from "../state/settings.svelte";
 import { setSelectionFromResult } from "../state/selection.svelte";
 import { applyRestoredSpectralView } from "../state/spectral.svelte";
 import { seek } from "../state/transport.svelte";
@@ -17,6 +33,11 @@ import { audioKeyFor, clearPendingRestore, setPendingRestore } from "../state/wa
  * results), the native Open/Save As dialogs (`tauri-plugin-dialog`, ADR-007 Amendment 2), the
  * simple unsaved-changes prompt (SPEC-004 §2.8) before Open/quit replaces the document, and the
  * window title. Registers the File keymap actions (Ctrl+O, Ctrl+S, Ctrl+Shift+S).
+ *
+ * T-209 additions: the import job's progress/cancel (SPEC-005 §2.3), the multichannel
+ * channel-choice dialog (§2.4), the Save As format row (WAV/FLAC, §2.6/§2.7) and the clip prompt
+ * (§2.8) — every flow the backend now runs through `document_open`/`document_save`/
+ * `document_save_as`'s job/confirmation contracts.
  */
 
 const EMPTY: DocumentDto = {
@@ -33,9 +54,9 @@ const EMPTY: DocumentDto = {
 };
 
 const WAV_FILTERS = [{ name: "WAV", extensions: ["wav"] }];
+const FLAC_FILTERS = [{ name: "FLAC", extensions: ["flac"] }];
 /**
- * File → Open's dialog filter (T-202, SPEC-005 §2.2): every format `vox_io::decode` accepts. Save
- * and Save As stay WAV-only ([`WAV_FILTERS`]; save format choice is T-201's scope).
+ * File → Open's dialog filter (T-202, SPEC-005 §2.2): every format `vox_io::decode` accepts.
  */
 const OPEN_FILTERS = [
   {
@@ -43,6 +64,24 @@ const OPEN_FILTERS = [
     extensions: ["wav", "flac", "mp3", "m4a", "ogg"],
   },
 ];
+
+/** SPEC-005 §2.6: sources Save can never write back to — Save acts as Save As instead, WAV
+ * 24-bit and `‹name›.wav` preselected. */
+const LOSSY_EXTENSIONS = new Set(["mp3", "m4a", "ogg"]);
+
+function extensionOf(path: string): string {
+  return path.slice(path.lastIndexOf(".") + 1).toLowerCase();
+}
+
+function isLossySourcePath(path: string): boolean {
+  return LOSSY_EXTENSIONS.has(extensionOf(path));
+}
+
+function withExtension(path: string, ext: string): string {
+  const dot = path.lastIndexOf(".");
+  const base = dot > path.lastIndexOf("/") && dot > 0 ? path.slice(0, dot) : path;
+  return `${base}.${ext}`;
+}
 
 export type UnsavedDecision = "save" | "discard" | "cancel";
 
@@ -56,6 +95,7 @@ interface UnsavedPrompt {
 
 export interface SaveAsPrompt {
   suggestedName: string;
+  defaultContainer: SaveContainerDto;
   defaultBits: BitDepth;
 }
 
@@ -69,10 +109,45 @@ interface PendingConfirmPrompt extends ConfirmPrompt {
   resolve: (confirmed: boolean) => void;
 }
 
+/** T-209 (SPEC-005 §2.4): "Open stereo file" — the dialog's data (from `dialog.channel_choice`'s
+ * `probe` param) plus the resolve callback `ChannelChoiceDialog` calls with the user's answer. */
+export interface ChannelChoicePrompt {
+  probe: DocumentProbeDto;
+}
+
+interface PendingChannelChoicePrompt extends ChannelChoicePrompt {
+  resolve: (answer: { choice: DownmixChoiceDto; remember: boolean } | null) => void;
+}
+
+/** T-209 (SPEC-005 §2.8): the clip prompt's data (from `dialog.overs`'s `count`/`peak_dbfs`
+ * params). */
+export interface ClipPrompt {
+  count: number;
+  peakDbfs: number;
+}
+
+export type ClipDecision = "clip" | "float" | "cancel";
+
+interface PendingClipPrompt extends ClipPrompt {
+  resolve: (decision: ClipDecision) => void;
+}
+
+/** T-209 (SPEC-005 §2.3): the import job's progress, for `NormalizeProgressDialog` (shared
+ * progress-dialog shape across every job in the app). */
+export interface ImportJobState {
+  jobId: number;
+  fraction: number;
+  state: "running" | "done" | "cancelled" | "failed";
+}
+
 let doc = $state<DocumentDto>({ ...EMPTY });
 let unsavedPrompt = $state<UnsavedPrompt | null>(null);
 let saveAsPrompt = $state<SaveAsPrompt | null>(null);
 let confirmPrompt = $state<PendingConfirmPrompt | null>(null);
+let channelChoicePrompt = $state<PendingChannelChoicePrompt | null>(null);
+let clipPrompt = $state<PendingClipPrompt | null>(null);
+let importJob = $state<ImportJobState | null>(null);
+let unlistenImportProgress: (() => void) | null = null;
 
 /** T-306: `dirty || sidecar_dirty` — the title's `*` and every unsaved-changes prompt fire on
  * either (SPEC-018 §2.4). */
@@ -86,6 +161,9 @@ export function documentState(): {
   readonly unsavedPrompt: { readonly name: string; readonly effectSettingsOnly: boolean } | null;
   readonly saveAsPrompt: SaveAsPrompt | null;
   readonly confirmPrompt: ConfirmPrompt | null;
+  readonly channelChoicePrompt: ChannelChoicePrompt | null;
+  readonly clipPrompt: ClipPrompt | null;
+  readonly importJob: ImportJobState | null;
 } {
   return {
     get current() {
@@ -99,6 +177,15 @@ export function documentState(): {
     },
     get confirmPrompt() {
       return confirmPrompt ? { kind: confirmPrompt.kind, name: confirmPrompt.name } : null;
+    },
+    get channelChoicePrompt() {
+      return channelChoicePrompt ? { probe: channelChoicePrompt.probe } : null;
+    },
+    get clipPrompt() {
+      return clipPrompt ? { count: clipPrompt.count, peakDbfs: clipPrompt.peakDbfs } : null;
+    },
+    get importJob() {
+      return importJob;
     },
   };
 }
@@ -211,6 +298,92 @@ export function resolveConfirmPrompt(confirmed: boolean): void {
   prompt?.resolve(confirmed);
 }
 
+/** T-209 (SPEC-005 §2.4): shows the channel-choice dialog; resolves `null` on Cancel. */
+function askChannelChoice(
+  probe: DocumentProbeDto,
+): Promise<{ choice: DownmixChoiceDto; remember: boolean } | null> {
+  return new Promise((resolve) => {
+    channelChoicePrompt = { probe, resolve };
+  });
+}
+
+/** The `ChannelChoiceDialog` component calls this with the user's choice (or `null` on Cancel).
+ * `remember` persists the policy in Settings → Files (`multichannel_policy`) before resolving. */
+export function resolveChannelChoicePrompt(
+  answer: { choice: DownmixChoiceDto; remember: boolean } | null,
+): void {
+  const prompt = channelChoicePrompt;
+  channelChoicePrompt = null;
+  if (answer?.remember) {
+    const policy = answer.choice.kind === "average" ? "always_mix" : "always_first_channel";
+    void saveSettings({ multichannel_policy: policy });
+  }
+  prompt?.resolve(answer);
+}
+
+/** T-209 (SPEC-005 §2.8): shows the clip prompt. */
+function askClipPrompt(count: number, peakDbfs: number): Promise<ClipDecision> {
+  return new Promise((resolve) => {
+    clipPrompt = { count, peakDbfs, resolve };
+  });
+}
+
+/** The `ClipPromptDialog` component calls this with the user's choice. */
+export function resolveClipPrompt(decision: ClipDecision): void {
+  const prompt = clipPrompt;
+  clipPrompt = null;
+  prompt?.resolve(decision);
+}
+
+function isChannelChoiceError(err: unknown): err is IpcError & { params: { probe: string } } {
+  return (
+    isIpcError(err) && err.code === "needs_confirmation" && err.key === "dialog.channel_choice"
+  );
+}
+
+function isOversError(err: unknown): err is IpcError & { params: Record<string, string> } {
+  return isIpcError(err) && err.code === "needs_confirmation" && err.key === "dialog.overs";
+}
+
+/** T-209: ensures the `job_progress` listener (kind `import`) is attached, so `importJob` tracks
+ * an import started by this or another call (mirrors `state/normalize.svelte.ts`'s
+ * `ensureListening`). */
+async function ensureImportProgressListening(): Promise<void> {
+  if (unlistenImportProgress) {
+    return;
+  }
+  try {
+    unlistenImportProgress = await listen<JobProgressDto>(
+      "job_progress" satisfies EventName,
+      (event) => applyImportJobProgress(event.payload),
+    );
+  } catch {
+    // Not running inside a real Tauri window (e.g. Vitest) — tests drive the store functions
+    // directly instead.
+  }
+}
+
+/** Applies one `job_progress` event to the store (kind `import` only) — a pure function so it's
+ * directly testable (mirrors `state/normalize.svelte.ts`'s `applyNormalizeJobProgress`). */
+export function applyImportJobProgress(payload: JobProgressDto): void {
+  if (payload.kind !== "import") {
+    return;
+  }
+  importJob = { jobId: payload.job_id, fraction: payload.fraction, state: payload.state };
+}
+
+/** Cancels the running import job (`document_open_cancel`, best-effort). */
+export function cancelImportJob(): void {
+  if (importJob && importJob.state === "running") {
+    void documentOpenCancel(importJob.jobId).catch(report);
+  }
+}
+
+/** Dismisses a finished import job's progress panel (Done/Cancelled/Failed). */
+export function dismissImportJob(): void {
+  importJob = null;
+}
+
 /**
  * T-306 (SPEC-018 §2.11): opens `path`, showing "‹name› is already open in another window" and
  * retrying with the confirm flag if the user picks "Open Anyway". Any other failure (including a
@@ -228,6 +401,14 @@ export async function openDocument(path: string): Promise<boolean> {
       }
       return run(() => documentOpen(path, true), true);
     }
+    if (isChannelChoiceError(err)) {
+      const probe = JSON.parse(err.params.probe) as DocumentProbeDto;
+      const answer = await askChannelChoice(probe);
+      if (!answer) {
+        return false;
+      }
+      return run(() => documentOpen(path, false, answer.choice), true);
+    }
     report(err);
     return false;
   }
@@ -235,50 +416,116 @@ export async function openDocument(path: string): Promise<boolean> {
 
 /**
  * T-306 (SPEC-018 §2.9): saves in place, showing "‹name› was changed on disk" and retrying with
- * `overwrite: true` if the user picks "Overwrite".
+ * `overwrite: true` if the user picks "Overwrite". T-209 (SPEC-005 §2.8): also shows the clip
+ * prompt on `dialog.overs` — "Clip and save" retries with `confirmClip: true`; "Save as 32-bit
+ * float instead" saves the bound path as WAV 32-bit float instead (never clips); "Cancel" leaves
+ * the document untouched.
  */
 export async function saveDocument(): Promise<boolean> {
-  try {
-    applyDoc(await documentSave(false));
-    return true;
-  } catch (err) {
-    if (
-      isIpcError(err) &&
-      err.code === "needs_confirmation" &&
-      err.key === "dialog.changed_on_disk"
-    ) {
-      const name = err.params.name ?? "";
-      if (!(await askConfirm("changed_on_disk", name))) {
-        return false;
+  let overwrite = false;
+  let confirmClip = false;
+  for (;;) {
+    try {
+      applyDoc(await documentSave(overwrite, confirmClip));
+      return true;
+    } catch (err) {
+      if (
+        isIpcError(err) &&
+        err.code === "needs_confirmation" &&
+        err.key === "dialog.changed_on_disk"
+      ) {
+        const name = err.params.name ?? "";
+        if (!(await askConfirm("changed_on_disk", name))) {
+          return false;
+        }
+        overwrite = true;
+        continue;
       }
-      return run(() => documentSave(true));
+      if (isOversError(err)) {
+        const decision = await askClipPrompt(
+          Number(err.params.count ?? "0"),
+          Number(err.params.peak_dbfs ?? "0"),
+        );
+        if (decision === "cancel") {
+          return false;
+        }
+        if (decision === "float") {
+          return saveDocumentAs(withExtension(doc.path ?? "untitled.wav", "wav"), "wav", "32f");
+        }
+        confirmClip = true;
+        continue;
+      }
+      report(err);
+      return false;
     }
-    report(err);
-    return false;
   }
 }
 
-export const saveDocumentAs = (path: string, bits: BitDepth): Promise<boolean> =>
-  run(() => documentSaveAs(path, bits));
+export const saveDocumentAs = (
+  path: string,
+  container: SaveContainerDto,
+  bits: BitDepth,
+  confirmClip = false,
+): Promise<boolean> => run(() => documentSaveAs(path, container, bits, confirmClip));
 
 /**
- * Save from the unsaved-changes prompt: in place, or — for a never-saved recording, which has no
- * path yet — through the native Save As dialog at the default bit depth. Resolves `true` only
- * once the document is saved (a cancelled dialog or a failed save keeps the prompt's action from
- * running).
+ * T-209 (SPEC-005 §2.8): drives a `document_save_as` call through the clip prompt, like
+ * {@link saveDocument} does for plain Save — used by the Save As dialog's native picker
+ * ({@link confirmSaveAsPrompt}), which can't just call {@link saveDocumentAs} directly since it
+ * also needs to react to `dialog.overs`.
+ */
+async function saveAsWithClipHandling(
+  path: string,
+  container: SaveContainerDto,
+  bits: BitDepth,
+): Promise<boolean> {
+  let confirmClip = false;
+  for (;;) {
+    try {
+      applyDoc(await documentSaveAs(path, container, bits, confirmClip));
+      return true;
+    } catch (err) {
+      if (isOversError(err)) {
+        const decision = await askClipPrompt(
+          Number(err.params.count ?? "0"),
+          Number(err.params.peak_dbfs ?? "0"),
+        );
+        if (decision === "cancel") {
+          return false;
+        }
+        if (decision === "float") {
+          return saveDocumentAs(withExtension(path, "wav"), "wav", "32f");
+        }
+        confirmClip = true;
+        continue;
+      }
+      report(err);
+      return false;
+    }
+  }
+}
+
+/**
+ * Save from the unsaved-changes prompt: in place, or — for a never-saved recording (no path yet)
+ * or a compressed source (SPEC-005 §2.6: Save acts as Save As) — through the native Save As
+ * dialog at WAV 24-bit. Resolves `true` only once the document is saved (a cancelled dialog or a
+ * failed save keeps the prompt's action from running).
  */
 async function saveForPrompt(): Promise<boolean> {
-  if (doc.path) {
+  if (doc.path && !isLossySourcePath(doc.path)) {
     return (await saveDocument()) && !isModified(doc);
   }
+  const suggested = doc.path
+    ? withExtension(doc.name ?? "untitled.wav", "wav")
+    : (doc.name ?? "untitled.wav");
   const path = await saveFileDialog({
-    defaultPath: doc.name ?? "untitled.wav",
+    defaultPath: suggested,
     filters: WAV_FILTERS,
   });
   if (typeof path !== "string") {
     return false;
   }
-  return (await saveDocumentAs(path, "24")) && !isModified(doc);
+  return (await saveDocumentAs(path, "wav", "24")) && !isModified(doc);
 }
 
 function askUnsavedChanges(name: string, effectSettingsOnly: boolean): Promise<UnsavedDecision> {
@@ -323,10 +570,21 @@ export async function requestOpen(): Promise<void> {
   });
 }
 
-/** Opens the Save As bit-depth prompt (`SaveAsDialog`); the dialog then runs the native picker. */
+/**
+ * Opens the Save As format/bit-depth prompt (`SaveAsDialog`); the dialog then runs the native
+ * picker. T-209: preselects the document's current container (WAV stays WAV, FLAC stays FLAC) —
+ * a compressed source (SPEC-005 §2.6) has no container of its own to preselect, so it defaults to
+ * WAV with `‹name›.wav` (`requestSave`/`saveForPrompt` already route it here for that reason).
+ */
 export function openSaveAsPrompt(): void {
+  const path = doc.path;
+  const lossy = path !== null && isLossySourcePath(path);
+  const isFlac = path !== null && !lossy && extensionOf(path) === "flac";
   saveAsPrompt = {
-    suggestedName: doc.name ?? "untitled.wav",
+    suggestedName: lossy
+      ? withExtension(doc.name ?? "untitled.wav", "wav")
+      : (doc.name ?? "untitled.wav"),
+    defaultContainer: isFlac ? "flac" : "wav",
     defaultBits: "24",
   };
 }
@@ -335,20 +593,26 @@ export function cancelSaveAsPrompt(): void {
   saveAsPrompt = null;
 }
 
-/** Confirms the Save As prompt: shows the native save dialog, then saves at `bits` if a path was
- * chosen. Called by `SaveAsDialog` once the user picked a bit depth. */
-export async function confirmSaveAsPrompt(bits: BitDepth): Promise<void> {
+/** Confirms the Save As prompt: shows the native save dialog, then saves in `container` at `bits`
+ * if a path was chosen (running the clip prompt like plain Save, SPEC-005 §2.8). Called by
+ * `SaveAsDialog` once the user picked a format/bit depth. */
+export async function confirmSaveAsPrompt(container: SaveContainerDto, bits: BitDepth): Promise<void> {
   const suggested = saveAsPrompt?.suggestedName ?? "untitled.wav";
   saveAsPrompt = null;
-  const path = await saveFileDialog({ defaultPath: suggested, filters: WAV_FILTERS });
+  const ext = container === "flac" ? "flac" : "wav";
+  const path = await saveFileDialog({
+    defaultPath: withExtension(suggested, ext),
+    filters: container === "flac" ? FLAC_FILTERS : WAV_FILTERS,
+  });
   if (typeof path === "string") {
-    await saveDocumentAs(path, bits);
+    await saveAsWithClipHandling(path, container, bits);
   }
 }
 
-/** File → Save (Ctrl+S): saves in place, or opens Save As when there's no bound path yet. */
+/** File → Save (Ctrl+S): saves in place, or opens Save As when there's no bound path yet or the
+ * document was opened from a compressed source (SPEC-005 §2.6: Save acts as Save As). */
 export async function requestSave(): Promise<void> {
-  if (!doc.path) {
+  if (!doc.path || isLossySourcePath(doc.path)) {
     openSaveAsPrompt();
     return;
   }
@@ -379,6 +643,15 @@ export async function initDocument(): Promise<() => void> {
   } catch {
     // Without the event the document state still follows command results.
   }
+  await ensureImportProgressListening();
+  cleanups.push(() => {
+    try {
+      unlistenImportProgress?.();
+    } catch {
+      // A failed unlisten during teardown is harmless (mirrors this function's other cleanups).
+    }
+    unlistenImportProgress = null;
+  });
   try {
     const unlisten = await getCurrentWindow().onCloseRequested(async (event) => {
       if (!isModified(doc)) {
@@ -428,4 +701,13 @@ export function resetDocumentStateForTest(): void {
   unsavedPrompt = null;
   saveAsPrompt = null;
   confirmPrompt = null;
+  channelChoicePrompt = null;
+  clipPrompt = null;
+  importJob = null;
+  try {
+    unlistenImportProgress?.();
+  } catch {
+    // A failed unlisten after the mock IPC layer was already torn down is harmless.
+  }
+  unlistenImportProgress = null;
 }

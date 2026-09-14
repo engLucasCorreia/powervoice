@@ -75,7 +75,7 @@ pub use normalize::{
 pub use peaks_query::{PEAKS_RAW_SPP, peaks};
 pub use reader::SnapshotReader;
 pub use recovery::{RecoveredTakeInfo, RecoveryReport, SavedFacts};
-pub use save::save_snapshot_wav;
+pub use save::{OversInfo, overs_check, save_snapshot_flac, save_snapshot_wav};
 pub use session::{
     CloseError, FinishedTake, Session, SessionConfig, SourceInfo, TAKE_LABEL_KEY, TakeCapture,
     TakeId, TakeMode,

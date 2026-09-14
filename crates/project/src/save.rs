@@ -1,8 +1,11 @@
-//! Save a snapshot to WAV (SPEC-005 §2.7, §2.8, §2.9; ADR-004 §8: atomic, no rack).
+//! Save a snapshot to WAV or FLAC (SPEC-005 §2.7, §2.8, §2.9, §2.11; ADR-004 §8: atomic, no rack).
 
-use crate::reader::SnapshotReader;
-use crate::snapshot::Marker;
-use crate::{CHUNK_SAMPLES, Result};
+use crate::edit::Range;
+use crate::normalize::scan_peak_accelerated;
+use crate::reader::{SnapshotReader, read_range};
+use crate::snapshot::{DocSnapshot, Marker};
+use crate::store::{CancelToken, ChunkStore};
+use crate::{CHUNK_SAMPLES, ProjectError, Result};
 
 /// A source of a document's samples for [`save_snapshot_wav`]: generalized (over
 /// [`SnapshotReader`] in production) so the save streams through any backing reader without ever
@@ -92,6 +95,92 @@ fn save_snapshot_wav_streaming<R: SampleSource>(
         })
         .collect();
     Ok(writer.finish(&wav_markers)?)
+}
+
+/// T-209 (SPEC-005 §2.8): overs found by [`overs_check`] — an integer target format's pre-flight
+/// clip check, computed *before* any byte is written. `peak_dbfs` is `20*log10(peak)` of the exact
+/// sample peak.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OversInfo {
+    pub count: u64,
+    pub peak_dbfs: f64,
+}
+
+/// Pre-flight overs check for an integer save format (SPEC-005 §2.8, §2.7 pre-flight step 3):
+/// `None` when every sample is `<= 1.0` (no confirmation needed) — 32-bit float targets never call
+/// this (float is written bit-exact, overs preserved). The document peak pyramid never
+/// under-reports (ADR-004 §5), so a pyramid peak `<= 1.0` proves there are no overs with no exact
+/// pass; only a pyramid peak `> 1.0` triggers one exact counting pass over the whole document
+/// (SPEC-005 §2.8 "detection cost").
+pub fn overs_check(
+    store: &ChunkStore,
+    snapshot: &DocSnapshot,
+    cancel: &CancelToken,
+) -> Result<Option<OversInfo>> {
+    let range = Range {
+        start: 0,
+        end: snapshot.len_samples,
+    };
+    let pyramid_peak = scan_peak_accelerated(store, snapshot, range, cancel, |_| {})?;
+    if pyramid_peak <= 1.0 {
+        return Ok(None);
+    }
+
+    let mut buf = vec![0.0f32; CHUNK_SAMPLES];
+    let mut pos = 0u64;
+    let mut count = 0u64;
+    let mut peak = 0.0f64;
+    while pos < snapshot.len_samples {
+        if cancel.is_cancelled() {
+            return Err(ProjectError::Cancelled);
+        }
+        let want = ((snapshot.len_samples - pos) as usize).min(buf.len());
+        let n = read_range(store, snapshot, pos, &mut buf[..want], &mut None)?;
+        if n == 0 {
+            break;
+        }
+        for &s in &buf[..n] {
+            let a = f64::from(s.abs());
+            if a > 1.0 {
+                count += 1;
+            }
+            peak = peak.max(a);
+        }
+        pos += n as u64;
+    }
+    Ok(Some(OversInfo {
+        count,
+        peak_dbfs: 20.0 * peak.log10(),
+    }))
+}
+
+/// Writes `reader`'s whole snapshot to `path` as FLAC at `bits` (SPEC-005 §2.11): mono only
+/// (PowerVoice edits mono), 16- or 24-bit, TPDF-dithered with the same grid-exact-passthrough
+/// rules [`save_snapshot_wav`] uses, atomic (temp file, verify-before-rename, `vox_io::write_flac`,
+/// H-14). Markers are never written to FLAC (SPEC-005 §2.9's "other containers" — the caller
+/// shows `notice.save.markers_not_in_flac` when the document has any).
+///
+/// Unlike [`save_snapshot_wav`], this buffers the whole document in memory before encoding
+/// (`vox_io::write_flac` takes a whole buffer, matching the export path's existing constraint,
+/// MEMORY.md H-02) — acceptable for mono voice-over documents; streaming FLAC encoding is a
+/// follow-up if a very long document makes this a problem in practice.
+pub fn save_snapshot_flac(
+    reader: &mut SnapshotReader,
+    path: impl AsRef<std::path::Path>,
+    bits: vox_io::FlacBitDepth,
+) -> Result<vox_io::WriteReport> {
+    let len = reader.len_samples();
+    let rate = reader.snapshot().sample_rate_hz;
+    let mut samples = vec![0.0f32; len as usize];
+    let mut pos = 0u64;
+    while pos < len {
+        let n = reader.read(pos, &mut samples[pos as usize..])?;
+        if n == 0 {
+            break;
+        }
+        pos += n as u64;
+    }
+    Ok(vox_io::write_flac(path, rate, bits, &samples)?)
 }
 
 #[cfg(test)]
@@ -318,6 +407,88 @@ mod tests {
         assert_eq!(read_back[2].pos_samples, (CHUNK_SAMPLES * 3 + 500) as u64);
         assert_eq!(read_back[2].len_samples, 1_000);
         assert_eq!(read_back[2].name, "Tail");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- T-209: overs pre-check + FLAC save ------------------------------------------------
+
+    fn snapshot_of(store: &Arc<ChunkStore>, samples: &[f32]) -> Arc<DocSnapshot> {
+        let mut writer = store.writer();
+        writer.append(samples).unwrap();
+        let audio = writer.finish().unwrap();
+        Arc::new(DocSnapshot::new(48_000, audio.pieces, Vec::new()))
+    }
+
+    #[test]
+    fn overs_check_reports_none_at_exactly_full_scale() {
+        let dir = tmp_dir("overs-none");
+        let store = ChunkStore::create(&dir, 0, StoreOptions::with_memory_budget(64 * 1024 * 1024))
+            .unwrap();
+        let mut samples = vox_testkit::signal::sine(997.0, -6.0, 0.05, 48_000).unwrap();
+        samples[10] = 1.0; // exactly full scale: not an over (SPEC-005 §2.8 AC-6's boundary case)
+        let snapshot = snapshot_of(&store, &samples);
+
+        let cancel = CancelToken::new();
+        let overs = overs_check(&store, &snapshot, &cancel).unwrap();
+        assert!(overs.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn overs_check_counts_exact_overs_and_peak_dbfs() {
+        let dir = tmp_dir("overs-some");
+        let store = ChunkStore::create(&dir, 0, StoreOptions::with_memory_budget(64 * 1024 * 1024))
+            .unwrap();
+        let mut samples = vox_testkit::signal::sine(997.0, -6.0, 0.05, 48_000).unwrap();
+        // 3 samples strictly above 0 dBFS, peak = 1.5 (+3.52 dBFS, SPEC-005 AC-6's own example).
+        samples[100] = 1.5;
+        samples[200] = -1.2;
+        samples[300] = 1.1;
+        let snapshot = snapshot_of(&store, &samples);
+
+        let cancel = CancelToken::new();
+        let overs = overs_check(&store, &snapshot, &cancel)
+            .unwrap()
+            .expect("a peak above 1.0 must report Some");
+        assert_eq!(overs.count, 3);
+        assert!(
+            (overs.peak_dbfs - (20.0 * 1.5f64.log10())).abs() < 1e-9,
+            "peak_dbfs = {}",
+            overs.peak_dbfs
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn overs_check_is_cancellable() {
+        let dir = tmp_dir("overs-cancel");
+        let store = ChunkStore::create(&dir, 0, StoreOptions::with_memory_budget(64 * 1024 * 1024))
+            .unwrap();
+        let mut samples = vec![0.0f32; CHUNK_SAMPLES * 2];
+        samples[0] = 1.5; // forces the exact pass to run past the pyramid check
+        let snapshot = snapshot_of(&store, &samples);
+
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let err = overs_check(&store, &snapshot, &cancel).unwrap_err();
+        assert!(matches!(err, ProjectError::Cancelled));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_snapshot_flac_round_trips_and_reports_no_clipped_samples() {
+        let dir = tmp_dir("flac-roundtrip");
+        let store = ChunkStore::create(&dir, 0, StoreOptions::with_memory_budget(64 * 1024 * 1024))
+            .unwrap();
+        let samples = vox_testkit::signal::sine(997.0, -6.0, 0.2, 48_000).unwrap();
+        let snapshot = snapshot_of(&store, &samples);
+        let mut reader = SnapshotReader::new(Arc::clone(&store), Arc::clone(&snapshot));
+
+        let out_path = dir.join("out.flac");
+        let report =
+            save_snapshot_flac(&mut reader, &out_path, vox_io::FlacBitDepth::Int16).unwrap();
+        assert_eq!(report.clipped_samples, 0);
+        assert!(out_path.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

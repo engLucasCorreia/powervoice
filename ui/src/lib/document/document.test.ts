@@ -1,22 +1,79 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it } from "vitest";
-import type { DocumentDto } from "../ipc/bindings";
+import type { DocumentDto, DocumentProbeDto, JobProgressDto, Settings } from "../ipc/bindings";
 import { clearNotices } from "../state/notices.svelte";
+import { loadSettings, resetSettingsStateForTest } from "../state/settings.svelte";
 import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 import {
+  applyImportJobProgress,
+  cancelImportJob,
   cancelSaveAsPrompt,
   confirmSaveAsPrompt,
+  dismissImportJob,
   documentState,
   openDocument,
+  openSaveAsPrompt,
   requestOpen,
   requestSave,
   resetDocumentStateForTest,
+  resolveChannelChoicePrompt,
+  resolveClipPrompt,
   resolveConfirmPrompt,
   resolveUnsavedPrompt,
   saveDocument,
   saveDocumentAs,
   titleFor,
 } from "./document.svelte";
+
+function probe(overrides: Partial<DocumentProbeDto> = {}): DocumentProbeDto {
+  return {
+    container: "wav",
+    codec: "pcm",
+    sample_rate_hz: 48_000,
+    channels: [
+      { label: "Left", is_lfe: false },
+      { label: "Right", is_lfe: false },
+    ],
+    len_samples: 48_000,
+    channel_peaks_dbfs: [-6, -6],
+    identical_channels: false,
+    suggested_channel: null,
+    ...overrides,
+  };
+}
+
+function settingsFixture(overrides: Partial<Settings> = {}): Settings {
+  return {
+    version: 1,
+    device: {
+      host: "pipewire",
+      input_device: null,
+      input_channel: 1,
+      output_device: null,
+      sample_rate_hz: null,
+      buffer_size_frames: null,
+    },
+    default_format: { sample_rate_hz: 48_000, bit_depth: "24" },
+    monitor_mode: "off",
+    monitor_hint_shown: false,
+    telemetry_rate_hz: 60,
+    memory_budget_mib: 2048,
+    normalize_dialog: { value: -1, unit: "db" },
+    analyzer_visible: true,
+    analyzer_response: "medium",
+    analyzer_peak_hold: true,
+    recent_files: [],
+    spectral_defaults: {
+      freq_scale: "log",
+      colormap: "inferno",
+      display_floor_db: -120,
+      display_ceil_db: 0,
+      fft_size: null,
+    },
+    multichannel_policy: "ask",
+    ...overrides,
+  };
+}
 
 function doc(overrides: Partial<DocumentDto> = {}): DocumentDto {
   return {
@@ -36,6 +93,7 @@ afterEach(() => {
   clearMocks();
   clearNotices();
   resetDocumentStateForTest();
+  resetSettingsStateForTest();
   resetWaveformViewForTest();
 });
 
@@ -96,8 +154,13 @@ describe("openDocument / saveDocument / saveDocumentAs", () => {
       }
       throw new Error(`unmocked command: ${cmd}`);
     });
-    expect(await saveDocumentAs("/home/user/out.wav", "32f")).toBe(true);
-    expect(received).toEqual({ path: "/home/user/out.wav", bits: "32f" });
+    expect(await saveDocumentAs("/home/user/out.wav", "wav", "32f")).toBe(true);
+    expect(received).toEqual({
+      path: "/home/user/out.wav",
+      container: "wav",
+      bits: "32f",
+      confirmClip: false,
+    });
     expect(documentState().current.name).toBe("out.wav");
   });
 
@@ -258,8 +321,13 @@ describe("requestSave / Save As prompt", () => {
       }
       throw new Error(`unmocked command: ${cmd}`);
     });
-    await confirmSaveAsPrompt("16");
-    expect(savedArgs).toEqual({ path: "/home/user/out.wav", bits: "16" });
+    await confirmSaveAsPrompt("wav", "16");
+    expect(savedArgs).toEqual({
+      path: "/home/user/out.wav",
+      container: "wav",
+      bits: "16",
+      confirmClip: false,
+    });
     expect(documentState().saveAsPrompt).toBeNull();
   });
 
@@ -272,7 +340,7 @@ describe("requestSave / Save As prompt", () => {
       saveAsCalled = true;
       throw new Error(`unexpected command: ${cmd}`);
     });
-    await confirmSaveAsPrompt("24");
+    await confirmSaveAsPrompt("wav", "24");
     expect(saveAsCalled).toBe(false);
   });
 
@@ -310,8 +378,8 @@ describe("T-306: already-open / changed-on-disk confirmations", () => {
     resolveConfirmPrompt(true);
     expect(await pending).toBe(true);
     expect(calls).toEqual([
-      { path: "/home/user/a.wav", confirmAlreadyOpen: false },
-      { path: "/home/user/a.wav", confirmAlreadyOpen: true },
+      { path: "/home/user/a.wav", confirmAlreadyOpen: false, channelChoice: null },
+      { path: "/home/user/a.wav", confirmAlreadyOpen: true, channelChoice: null },
     ]);
     expect(documentState().current.name).toBe("a.wav");
   });
@@ -363,6 +431,312 @@ describe("T-306: already-open / changed-on-disk confirmations", () => {
     });
     resolveConfirmPrompt(true);
     expect(await pending).toBe(true);
-    expect(calls).toEqual([{ overwrite: false }, { overwrite: true }]);
+    expect(calls).toEqual([
+      { overwrite: false, confirmClip: false },
+      { overwrite: true, confirmClip: false },
+    ]);
+  });
+});
+
+describe("T-209: multichannel channel-choice dialog (SPEC-005 §2.4)", () => {
+  it("openDocument shows the channel-choice dialog and re-issues with the chosen downmix", async () => {
+    const calls: unknown[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "document_open") {
+        calls.push(args);
+        const channelChoice = (args as { channelChoice: unknown }).channelChoice;
+        if (!channelChoice) {
+          throw {
+            code: "needs_confirmation",
+            key: "dialog.channel_choice",
+            params: { probe: JSON.stringify(probe()) },
+          };
+        }
+        return doc({ path: "/home/user/stereo.wav", name: "stereo.wav" });
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+
+    const pending = openDocument("/home/user/stereo.wav");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(documentState().channelChoicePrompt?.probe.channels.length).toBe(2);
+
+    resolveChannelChoicePrompt({ choice: { kind: "channel", index: 1 }, remember: false });
+    expect(await pending).toBe(true);
+    expect(calls).toEqual([
+      { path: "/home/user/stereo.wav", confirmAlreadyOpen: false, channelChoice: null },
+      {
+        path: "/home/user/stereo.wav",
+        confirmAlreadyOpen: false,
+        channelChoice: { kind: "channel", index: 1 },
+      },
+    ]);
+    expect(documentState().current.name).toBe("stereo.wav");
+  });
+
+  it("Cancel on the channel-choice dialog leaves the document untouched", async () => {
+    let secondCallMade = false;
+    mockIPC((cmd, args) => {
+      if (cmd === "document_open") {
+        const channelChoice = (args as { channelChoice: unknown }).channelChoice;
+        if (!channelChoice) {
+          throw {
+            code: "needs_confirmation",
+            key: "dialog.channel_choice",
+            params: { probe: JSON.stringify(probe()) },
+          };
+        }
+        secondCallMade = true;
+        return doc();
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+
+    const pending = openDocument("/home/user/stereo.wav");
+    await new Promise((r) => setTimeout(r, 0));
+    resolveChannelChoicePrompt(null);
+    expect(await pending).toBe(false);
+    expect(secondCallMade).toBe(false);
+    expect(documentState().channelChoicePrompt).toBeNull();
+  });
+
+  it("checking 'remember' persists multichannel_policy via settings.svelte.ts's saveSettings", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "settings_get") {
+        return settingsFixture();
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    await loadSettings();
+
+    mockIPC((cmd, args) => {
+      if (cmd === "document_open") {
+        const channelChoice = (args as { channelChoice: unknown }).channelChoice;
+        if (!channelChoice) {
+          throw {
+            code: "needs_confirmation",
+            key: "dialog.channel_choice",
+            params: { probe: JSON.stringify(probe()) },
+          };
+        }
+        return doc();
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    const pending = openDocument("/home/user/stereo.wav");
+    await new Promise((r) => setTimeout(r, 0));
+
+    let savedSettings: Settings | undefined;
+    mockIPC((cmd, args) => {
+      if (cmd === "settings_set") {
+        savedSettings = (args as { settings: Settings }).settings;
+        return savedSettings;
+      }
+      if (cmd === "document_open") {
+        return doc();
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    resolveChannelChoicePrompt({ choice: { kind: "average" }, remember: true });
+    await pending;
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(savedSettings?.multichannel_policy).toBe("always_mix");
+  });
+});
+
+describe("T-209: clip prompt (SPEC-005 §2.8)", () => {
+  it("saveDocument shows the clip prompt on dialog.overs; 'Clip and save' re-issues with confirmClip", async () => {
+    const calls: unknown[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "document_save") {
+        calls.push(args);
+        const confirmClip = (args as { confirmClip: boolean }).confirmClip;
+        if (!confirmClip) {
+          throw {
+            code: "needs_confirmation",
+            key: "dialog.overs",
+            params: { count: "3", peak_dbfs: "3.52" },
+          };
+        }
+        return doc({ dirty: false });
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+
+    const pending = saveDocument();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(documentState().clipPrompt).toEqual({ count: 3, peakDbfs: 3.52 });
+    resolveClipPrompt("clip");
+    expect(await pending).toBe(true);
+    expect(calls).toEqual([
+      { overwrite: false, confirmClip: false },
+      { overwrite: false, confirmClip: true },
+    ]);
+  });
+
+  it("'Save as 32-bit float instead' calls document_save_as at 32f on the bound (.wav) path", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "document_open") {
+        return doc({ path: "/home/user/take.wav", name: "take.wav" });
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    await openDocument("/home/user/take.wav");
+
+    mockIPC((cmd) => {
+      if (cmd === "document_save") {
+        throw {
+          code: "needs_confirmation",
+          key: "dialog.overs",
+          params: { count: "1", peak_dbfs: "1.5" },
+        };
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    const pending = saveDocument();
+    await new Promise((r) => setTimeout(r, 0));
+
+    let savedArgs: unknown;
+    mockIPC((cmd, args) => {
+      if (cmd === "document_save_as") {
+        savedArgs = args;
+        return doc({ path: "/home/user/take.wav", name: "take.wav" });
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    resolveClipPrompt("float");
+    expect(await pending).toBe(true);
+    expect(savedArgs).toEqual({
+      path: "/home/user/take.wav",
+      container: "wav",
+      bits: "32f",
+      confirmClip: false,
+    });
+  });
+
+  it("Cancel on the clip prompt leaves the document untouched", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "document_save") {
+        throw {
+          code: "needs_confirmation",
+          key: "dialog.overs",
+          params: { count: "1", peak_dbfs: "0.5" },
+        };
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    const pending = saveDocument();
+    await new Promise((r) => setTimeout(r, 0));
+    resolveClipPrompt("cancel");
+    expect(await pending).toBe(false);
+    expect(documentState().clipPrompt).toBeNull();
+  });
+
+  it("appears only when document_save reports dialog.overs — a clean save needs no prompt", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "document_save") {
+        return doc({ dirty: false });
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    expect(await saveDocument()).toBe(true);
+    expect(documentState().clipPrompt).toBeNull();
+  });
+});
+
+describe("T-209: compressed-source Save routes to Save As (SPEC-005 §2.6)", () => {
+  it("requestSave on an opened MP3 opens the Save As prompt with WAV 24 and '<name>.wav' preselected", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "document_open") {
+        return doc({ path: "/home/user/take.mp3", name: "take.mp3" });
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    await openDocument("/home/user/take.mp3");
+
+    let saveCalled = false;
+    mockIPC((cmd) => {
+      saveCalled = true;
+      throw new Error(`unexpected command: ${cmd}`);
+    });
+    await requestSave();
+    expect(saveCalled).toBe(false);
+    expect(documentState().saveAsPrompt).toEqual({
+      suggestedName: "take.wav",
+      defaultContainer: "wav",
+      defaultBits: "24",
+    });
+  });
+
+  it("openSaveAsPrompt preselects FLAC for a document bound to a .flac path", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "document_open") {
+        return doc({ path: "/home/user/take.flac", name: "take.flac" });
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    await openDocument("/home/user/take.flac");
+    openSaveAsPrompt();
+    expect(documentState().saveAsPrompt).toEqual({
+      suggestedName: "take.flac",
+      defaultContainer: "flac",
+      defaultBits: "24",
+    });
+  });
+});
+
+describe("T-209: import job progress (SPEC-005 §2.3)", () => {
+  it("applyImportJobProgress tracks kind 'import' only", () => {
+    const other: JobProgressDto = { job_id: 1, kind: "export", state: "running", fraction: 0.4 };
+    applyImportJobProgress(other);
+    expect(documentState().importJob).toBeNull();
+
+    const started: JobProgressDto = { job_id: 7, kind: "import", state: "running", fraction: 0 };
+    applyImportJobProgress(started);
+    expect(documentState().importJob).toEqual({ jobId: 7, fraction: 0, state: "running" });
+
+    const progressed: JobProgressDto = {
+      job_id: 7,
+      kind: "import",
+      state: "running",
+      fraction: 0.5,
+    };
+    applyImportJobProgress(progressed);
+    expect(documentState().importJob?.fraction).toBe(0.5);
+
+    const done: JobProgressDto = { job_id: 7, kind: "import", state: "done", fraction: 1 };
+    applyImportJobProgress(done);
+    expect(documentState().importJob?.state).toBe("done");
+
+    dismissImportJob();
+    expect(documentState().importJob).toBeNull();
+  });
+
+  it("cancelImportJob calls document_open_cancel with the running job's id", async () => {
+    const calls: unknown[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "document_open_cancel") {
+        calls.push(args);
+        return undefined;
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    applyImportJobProgress({ job_id: 3, kind: "import", state: "running", fraction: 0.2 });
+    cancelImportJob();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).toEqual([{ jobId: 3 }]);
+  });
+
+  it("cancelImportJob is a no-op once the job has already finished", async () => {
+    let called = false;
+    mockIPC((cmd) => {
+      called = true;
+      throw new Error(`unexpected command: ${cmd}`);
+    });
+    applyImportJobProgress({ job_id: 3, kind: "import", state: "done", fraction: 1 });
+    cancelImportJob();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(called).toBe(false);
   });
 });

@@ -10,6 +10,7 @@ import type {
   DevicesDto,
   DocumentDto,
   DocumentProbeDto,
+  DownmixChoiceDto,
   EditResultDto,
   EditTargetDto,
   ExportFormatsDto,
@@ -29,6 +30,7 @@ import type {
   RecoverResultDto,
   RecoveredTakeActionDto,
   ResponseCurveDto,
+  SaveContainerDto,
   Settings,
   SpectralViewDto,
   SpectroRequestDto,
@@ -214,8 +216,12 @@ export async function rackResponseCurve(
 
 /**
  * Opens `path` as the document (SPEC-005 §2.2-2.4: any format `vox_io::decode` supports, not
- * just WAV — T-202), replacing whatever was open. Multichannel input always downmixes by
- * average; the channel-choice dialog (T-209) will call `documentProbe` first once it exists.
+ * just WAV — T-202), replacing whatever was open. Runs as a job (T-209): `job_progress` events
+ * (`kind: "import"`) report progress until this resolves; `documentOpenCancel` cancels it.
+ *
+ * T-209 (SPEC-005 §2.4): multichannel input needs `channelChoice` unless the remembered
+ * `multichannel_policy` resolves it — otherwise this rejects with `dialog.channel_choice`
+ * (its `probe` param is `DocumentProbeDto` JSON) and the caller re-issues with the user's choice.
  *
  * T-306 (SPEC-018 §2.11): `confirmAlreadyOpen` bypasses the "already open in another instance"
  * warning — pass `true` only when re-issuing after the user picked "Open Anyway".
@@ -223,17 +229,24 @@ export async function rackResponseCurve(
 export async function documentOpen(
   path: string,
   confirmAlreadyOpen = false,
+  channelChoice: DownmixChoiceDto | null = null,
 ): Promise<DocumentDto> {
   return invoke<DocumentDto>("document_open" satisfies CommandName, {
     path,
     confirmAlreadyOpen,
+    channelChoice,
   });
+}
+
+/** T-209: cancels a running import job (SPEC-005 §2.3 "Cancel"). Best-effort. */
+export async function documentOpenCancel(jobId: number): Promise<void> {
+  return invoke<void>("document_open_cancel" satisfies CommandName, { jobId });
 }
 
 /**
  * T-202: probes `path` without importing it (SPEC-005 §2.3 step 1, §2.4) — container/codec/rate/
  * channels, and for multichannel input each channel's peak plus the identical-channels/silent-
- * channel-hint data a future channel-choice dialog (T-209) needs.
+ * channel-hint data the channel-choice dialog (T-209) needs.
  */
 export async function documentProbe(path: string): Promise<DocumentProbeDto> {
   return invoke<DocumentProbeDto>("document_probe" satisfies CommandName, { path });
@@ -244,14 +257,29 @@ export async function documentProbe(path: string): Promise<DocumentProbeDto> {
  *
  * T-306 (SPEC-018 §2.9): `overwrite` bypasses the changed-on-disk confirmation — pass `true` only
  * when re-issuing after the user picked "Overwrite".
+ * T-209 (SPEC-005 §2.8): `confirmClip` bypasses the clip prompt — pass `true` only when
+ * re-issuing after the user picked "Clip and save".
  */
-export async function documentSave(overwrite = false): Promise<DocumentDto> {
-  return invoke<DocumentDto>("document_save" satisfies CommandName, { overwrite });
+export async function documentSave(overwrite = false, confirmClip = false): Promise<DocumentDto> {
+  return invoke<DocumentDto>("document_save" satisfies CommandName, { overwrite, confirmClip });
 }
 
-/** S1-03: saves the current revision to `path` at `bits`, then binds the document to it. */
-export async function documentSaveAs(path: string, bits: BitDepth): Promise<DocumentDto> {
-  return invoke<DocumentDto>("document_save_as" satisfies CommandName, { path, bits });
+/**
+ * S1-03/T-209: saves the current revision to `path` in `container` at `bits`, then binds the
+ * document to it. `confirmClip` — see {@link documentSave}'s doc comment.
+ */
+export async function documentSaveAs(
+  path: string,
+  container: SaveContainerDto,
+  bits: BitDepth,
+  confirmClip = false,
+): Promise<DocumentDto> {
+  return invoke<DocumentDto>("document_save_as" satisfies CommandName, {
+    path,
+    container,
+    bits,
+    confirmClip,
+  });
 }
 
 /**

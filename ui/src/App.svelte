@@ -2,11 +2,18 @@
   import { onMount } from "svelte";
   import AnalyzerPanel from "./lib/analyzer/AnalyzerPanel.svelte";
   import { analyzerState, applyAnalyzerPrefs } from "./lib/analyzer/analyzer.svelte";
+  import ChannelChoiceDialog from "./lib/document/ChannelChoiceDialog.svelte";
+  import ClipPromptDialog from "./lib/document/ClipPromptDialog.svelte";
   import ConfirmDialog from "./lib/document/ConfirmDialog.svelte";
   import DocumentMenu from "./lib/document/DocumentMenu.svelte";
   import SaveAsDialog from "./lib/document/SaveAsDialog.svelte";
   import UnsavedChangesDialog from "./lib/document/UnsavedChangesDialog.svelte";
-  import { initDocument } from "./lib/document/document.svelte";
+  import {
+    cancelImportJob,
+    dismissImportJob,
+    documentState,
+    initDocument,
+  } from "./lib/document/document.svelte";
   import { initRecentFiles } from "./lib/document/recentFiles.svelte";
   import EditMenu from "./lib/edit/EditMenu.svelte";
   import ExportDialog from "./lib/export/ExportDialog.svelte";
@@ -20,6 +27,7 @@
   import LoudnessPanel from "./lib/loudness/LoudnessPanel.svelte";
   import { initLoudness } from "./lib/loudness/loudness.svelte";
   import FavoritesMenu from "./lib/normalize/FavoritesMenu.svelte";
+  import NormalizeProgressDialog from "./lib/normalize/NormalizeProgressDialog.svelte";
   import EffectsMenu from "./lib/rack/EffectsMenu.svelte";
   import RackPanel from "./lib/rack/RackPanel.svelte";
   import { initNrCapture } from "./lib/rack/nrCapture.svelte";
@@ -219,6 +227,14 @@
 <UnsavedChangesDialog />
 <ConfirmDialog />
 <SaveAsDialog />
+<ChannelChoiceDialog />
+<ClipPromptDialog />
+<NormalizeProgressDialog
+  job={documentState().importJob}
+  titleKey="job.import"
+  onCancel={cancelImportJob}
+  onDismiss={dismissImportJob}
+/>
 <ExportDialog />
 <NewRecordingDialog />
 <LowDiskDialog />

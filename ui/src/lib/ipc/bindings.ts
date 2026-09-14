@@ -49,7 +49,7 @@ export type BitDepth = "16" | "24" | "32f";
  */
 export type ClipboardChangedDto = { len_samples: number | null, sample_rate_hz: number | null, };
 
-export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "module_telemetry_subscribe" | "analyzer_subscribe" | "analyzer_set_response" | "analyzer_unsubscribe" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_probe" | "document_save" | "document_save_as" | "document_close" | "sidecar_view_set_spectral" | "sidecar_view_set_waveform" | "recent_files_get" | "recent_files_remove" | "recent_files_clear" | "recovery_list" | "recovery_recover" | "recovery_discard" | "storage_info" | "peaks_get" | "spectro_attach" | "spectro_detach" | "spectro_request" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check";
+export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "module_telemetry_subscribe" | "analyzer_subscribe" | "analyzer_set_response" | "analyzer_unsubscribe" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_open_cancel" | "document_probe" | "document_save" | "document_save_as" | "document_close" | "sidecar_view_set_spectral" | "sidecar_view_set_waveform" | "recent_files_get" | "recent_files_remove" | "recent_files_clear" | "recovery_list" | "recovery_recover" | "recovery_discard" | "storage_info" | "peaks_get" | "spectro_attach" | "spectro_detach" | "spectro_request" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check";
 
 /**
  * One draggable EQ-graph node (S3-07, SPEC-015 §3 "ResponseCurve components"): the band's
@@ -186,6 +186,13 @@ recovered: boolean, };
 export type DocumentProbeDto = { container: string, codec: string, sample_rate_hz: number, channels: Array<ProbeChannelDto>, len_samples: number | null, channel_peaks_dbfs: Array<number>, identical_channels: boolean, suggested_channel: number | null, };
 
 /**
+ * T-209 (SPEC-005 §2.4): the channel-choice dialog's answer, sent back with a second
+ * `document_open` call. `Channel.index` is 0-based, into the source's own channel list (matching
+ * [`ProbeChannelDto`]'s order and [`vox_io::DownmixChoice::Channel`]).
+ */
+export type DownmixChoiceDto = { "kind": "average" } | { "kind": "channel", index: number, };
+
+/**
  * S2-01: the result of a cut/copy/paste/delete/trim/silence command or an undo/redo (SPEC-008
  * §4.3's `EditResult`, minus `rev`/`base_rev` — revision-guarded commands are deferred).
  * `changed: false` only for Copy, a whole-document Trim, and undo/redo at the history's edge.
@@ -263,7 +270,7 @@ export type IpcErrorCode = "internal" | "invalid_argument" | "not_found" | "not_
  * job kinds add a variant here rather than a new event, so the frontend has one progress/cancel
  * pattern for every job.
  */
-export type JobKind = "export" | "nr_capture" | "loudness_analyze" | "normalize_peak" | "normalize_lufs";
+export type JobKind = "export" | "import" | "nr_capture" | "loudness_analyze" | "normalize_peak" | "normalize_lufs";
 
 /**
  * `job_progress` event payload (ADR-003; ≤ 10 Hz per job). `job_id` distinguishes overlapping or
@@ -333,6 +340,14 @@ export type MonitorMode = "off" | "dry" | "through_rack";
  * V0-V4). The ACX preset (PROMPT §3.5) is `Cbr { kbps: 192 }` at 44.1 kHz.
  */
 export type Mp3SettingsDto = { "kind": "cbr", kbps: number, } | { "kind": "vbr", quality: number, };
+
+/**
+ * Settings → Files' remembered policy for opening a multichannel file: "Ask" (default) shows the
+ * channel-choice dialog; the other two apply without it. `AlwaysFirstChannel` picks the file's
+ * first channel (0-based index 0), not the silent-channel hint's suggestion — that hint only
+ * applies to the dialog itself.
+ */
+export type MultichannelPolicy = "ask" | "always_mix" | "always_first_channel";
 
 /**
  * A slot's noise-print status (S3-06, SPEC-014 §2.5, §2.8). `None` (the outer `Option` this
@@ -608,6 +623,13 @@ export type RecoveredTakeActionDto = "apply" | "new_document" | "discard";
 export type ResponseCurveDto = { freqs_hz: Array<number>, sample_rate_hz: number, total_db: Array<number>, components_db: Array<Array<number>>, };
 
 /**
+ * T-209 (SPEC-005 §2.6/§2.7): the Save As dialog's format row — WAV (16/24-bit int or 32-bit
+ * float, via the existing `BitDepth`) or FLAC (16/24-bit only; `Bit32Float` with `Flac` is
+ * refused, `error.save.flac_needs_int_bits`).
+ */
+export type SaveContainerDto = "wav" | "flac";
+
+/**
  * The whole settings file. `#[serde(default)]` at the container level means any field missing
  * from the on-disk JSON (an older/partial file) is filled from [`Settings::default`], and the
  * flattened `extra` map preserves any *unknown* field a future version wrote, so round-tripping
@@ -652,7 +674,12 @@ analyzer_response: AnalyzerResponsePref,
  * H-16 (SPEC-007 §2.9): the analyzer's peak-hold toggle (on by default). Additive field —
  * the settings version stays 1.
  */
-analyzer_peak_hold: boolean, };
+analyzer_peak_hold: boolean, 
+/**
+ * T-209 (SPEC-005 §2.4, §3 `multichannel_policy`): Settings → Files. Additive field — the
+ * settings version stays 1.
+ */
+multichannel_policy: MultichannelPolicy, };
 
 /**
  * Slot status (SPEC-012 §2.2, §2.9). `message` is pre-rendered English text shown verbatim (see

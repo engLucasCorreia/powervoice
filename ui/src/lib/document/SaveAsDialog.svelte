@@ -1,28 +1,45 @@
 <script lang="ts">
-  import type { BitDepth } from "../ipc/bindings";
+  import type { BitDepth, SaveContainerDto } from "../ipc/bindings";
   import { t } from "../i18n";
   import { cancelSaveAsPrompt, confirmSaveAsPrompt, documentState } from "./document.svelte";
 
   /**
-   * Save As bit-depth prompt (ticket: "Save/Save As with bit-depth choice"). Confirming shows the
-   * native save dialog (`tauri-plugin-dialog`) and, if a path is chosen, saves.
+   * Save As format/bit-depth prompt (SPEC-005 §2.7: WAV 16/24/32-bit float, or FLAC 16/24 —
+   * T-209 adds the format row; S1-03 had bit depth only). Confirming shows the native save
+   * dialog (`tauri-plugin-dialog`) and, if a path is chosen, saves (running the clip prompt,
+   * `ClipPromptDialog`, if the document has samples above 0 dBFS and the format is integer).
    */
   const doc = documentState();
+  let container = $state<SaveContainerDto>("wav");
   let bits = $state<BitDepth>("24");
   let busy = $state(false);
 
   $effect(() => {
     if (doc.saveAsPrompt) {
+      container = doc.saveAsPrompt.defaultContainer;
       bits = doc.saveAsPrompt.defaultBits;
     }
   });
 
-  const BIT_DEPTHS: BitDepth[] = ["16", "24", "32f"];
+  const CONTAINERS: SaveContainerDto[] = ["wav", "flac"];
+  const BIT_DEPTHS: Record<SaveContainerDto, BitDepth[]> = {
+    wav: ["16", "24", "32f"],
+    flac: ["16", "24"],
+  };
+
+  // FLAC has no 32-bit float (SPEC-005 §2.6/§2.11) — switching format away from a bit depth it
+  // doesn't support falls back to 24-bit.
+  function chooseContainer(next: SaveContainerDto): void {
+    container = next;
+    if (!BIT_DEPTHS[next].includes(bits)) {
+      bits = "24";
+    }
+  }
 
   async function confirm(): Promise<void> {
     busy = true;
     try {
-      await confirmSaveAsPrompt(bits);
+      await confirmSaveAsPrompt(container, bits);
     } finally {
       busy = false;
     }
@@ -50,8 +67,23 @@
     >
       <h2 id="save-as-title">{t("dialog.save_as.title")}</h2>
       <fieldset>
+        <legend>{t("dialog.save_as.format")}</legend>
+        {#each CONTAINERS as option (option)}
+          <label>
+            <input
+              type="radio"
+              name="save-as-format"
+              value={option}
+              checked={container === option}
+              onchange={() => chooseContainer(option)}
+            />
+            {t(`dialog.save_as.format.${option}` as const)}
+          </label>
+        {/each}
+      </fieldset>
+      <fieldset>
         <legend>{t("dialog.save_as.bit_depth")}</legend>
-        {#each BIT_DEPTHS as depth (depth)}
+        {#each BIT_DEPTHS[container] as depth (depth)}
           <label>
             <input
               type="radio"

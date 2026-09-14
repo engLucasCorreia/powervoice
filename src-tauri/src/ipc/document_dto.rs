@@ -320,6 +320,46 @@ pub struct DocumentProbeDto {
     pub suggested_channel: Option<u32>,
 }
 
+/// T-209 (SPEC-005 §2.4): the channel-choice dialog's answer, sent back with a second
+/// `document_open` call. `Channel.index` is 0-based, into the source's own channel list (matching
+/// [`ProbeChannelDto`]'s order and [`vox_io::DownmixChoice::Channel`]).
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum DownmixChoiceDto {
+    Average,
+    Channel { index: u32 },
+}
+
+impl From<DownmixChoiceDto> for vox_io::DownmixChoice {
+    fn from(choice: DownmixChoiceDto) -> Self {
+        match choice {
+            DownmixChoiceDto::Average => vox_io::DownmixChoice::Average,
+            DownmixChoiceDto::Channel { index } => vox_io::DownmixChoice::Channel(index as usize),
+        }
+    }
+}
+
+/// T-209 (SPEC-005 §2.6/§2.7): the Save As dialog's format row — WAV (16/24-bit int or 32-bit
+/// float, via the existing `BitDepth`) or FLAC (16/24-bit only; `Bit32Float` with `Flac` is
+/// refused, `error.save.flac_needs_int_bits`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum SaveContainerDto {
+    Wav,
+    Flac,
+}
+
+impl From<SaveContainerDto> for crate::document::SaveContainer {
+    fn from(container: SaveContainerDto) -> Self {
+        match container {
+            SaveContainerDto::Wav => crate::document::SaveContainer::Wav,
+            SaveContainerDto::Flac => crate::document::SaveContainer::Flac,
+        }
+    }
+}
+
 impl From<vox_project::ImportProbe> for DocumentProbeDto {
     fn from(p: vox_project::ImportProbe) -> Self {
         Self {

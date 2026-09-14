@@ -59,8 +59,62 @@ describe("SaveAsDialog (ticket: Save As with bit-depth choice)", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     flushSync();
 
-    expect(savedArgs).toEqual({ path: "/home/user/out.wav", bits: "16" });
+    expect(savedArgs).toEqual({
+      path: "/home/user/out.wav",
+      container: "wav",
+      bits: "16",
+      confirmClip: false,
+    });
     expect(documentState().saveAsPrompt).toBeNull();
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("picking FLAC narrows the bit-depth choices to 16/24 and reaches the saver", async () => {
+    openSaveAsPrompt();
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(SaveAsDialog, { target });
+    flushSync();
+
+    const formats = target.querySelectorAll<HTMLInputElement>('input[name="save-as-format"]');
+    expect(formats.length).toBe(2);
+    const flac = [...formats].find((r) => r.value === "flac")!;
+    flac.click();
+    flushSync();
+
+    const bitRadios = target.querySelectorAll<HTMLInputElement>('input[name="save-as-bits"]');
+    expect([...bitRadios].map((r) => r.value)).toEqual(["16", "24"]);
+
+    let savedArgs: unknown;
+    mockIPC((cmd, args) => {
+      if (cmd === "plugin:dialog|save") {
+        return "/home/user/out.flac";
+      }
+      if (cmd === "document_save_as") {
+        savedArgs = args;
+        return {
+          name: "out.flac",
+          path: "/home/user/out.flac",
+          sample_rate_hz: 48_000,
+          len_samples: 0,
+          dirty: false,
+          audio_rev: 1,
+        };
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    target.querySelector<HTMLButtonElement>('[data-testid="save-as-choose"]')!.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+
+    expect(savedArgs).toEqual({
+      path: "/home/user/out.flac",
+      container: "flac",
+      bits: "24",
+      confirmClip: false,
+    });
 
     unmount(app);
     target.remove();

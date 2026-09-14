@@ -253,6 +253,22 @@ impl Default for SpectralDefaultsDto {
     }
 }
 
+// --- Multichannel open policy (T-209, SPEC-005 §2.4, §3 `multichannel_policy`) -----------------
+
+/// Settings → Files' remembered policy for opening a multichannel file: "Ask" (default) shows the
+/// channel-choice dialog; the other two apply without it. `AlwaysFirstChannel` picks the file's
+/// first channel (0-based index 0), not the silent-channel hint's suggestion — that hint only
+/// applies to the dialog itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum MultichannelPolicy {
+    #[default]
+    Ask,
+    AlwaysMix,
+    AlwaysFirstChannel,
+}
+
 // --- Recent files (T-306, SPEC-018 §2.12) --------------------------------------------------------
 
 /// At most this many entries, most-recent-first (SPEC-018 §2.12 `recent_max`).
@@ -330,6 +346,9 @@ pub struct Settings {
     /// H-16 (SPEC-007 §2.9): the analyzer's peak-hold toggle (on by default). Additive field —
     /// the settings version stays 1.
     pub analyzer_peak_hold: bool,
+    /// T-209 (SPEC-005 §2.4, §3 `multichannel_policy`): Settings → Files. Additive field — the
+    /// settings version stays 1.
+    pub multichannel_policy: MultichannelPolicy,
     #[serde(flatten)]
     #[ts(skip)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -351,6 +370,7 @@ impl Default for Settings {
             analyzer_visible: true,
             analyzer_response: AnalyzerResponsePref::default(),
             analyzer_peak_hold: true,
+            multichannel_policy: MultichannelPolicy::default(),
             extra: serde_json::Map::new(),
         }
     }
@@ -623,6 +643,32 @@ mod tests {
         let json = br#"{"version":1,"monitor_mode":"dry"}"#;
         let settings = parse_and_migrate(json).unwrap();
         assert_eq!(settings.spectral_defaults, SpectralDefaultsDto::default());
+    }
+
+    /// T-209 (SPEC-005 §2.4 "remembered policy"): round-trips through save/load, and an older
+    /// settings file with no `multichannel_policy` key falls back to `Ask` (container-level
+    /// `#[serde(default)]`, same convention as `spectral_defaults`).
+    #[test]
+    fn multichannel_policy_round_trips_and_falls_back_to_ask() {
+        let dir = temp_dir("multichannel-policy");
+        let path = dir.join("settings.json");
+
+        let settings = Settings {
+            multichannel_policy: MultichannelPolicy::AlwaysFirstChannel,
+            ..Settings::default()
+        };
+        save(&path, &settings).unwrap();
+        let loaded = load_or_default(&path);
+        assert_eq!(
+            loaded.multichannel_policy,
+            MultichannelPolicy::AlwaysFirstChannel
+        );
+
+        let json = br#"{"version":1,"monitor_mode":"dry"}"#;
+        let migrated = parse_and_migrate(json).unwrap();
+        assert_eq!(migrated.multichannel_policy, MultichannelPolicy::Ask);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// H-09/SPEC-010 §2.4: "the last applied value and unit are remembered ... across restarts".

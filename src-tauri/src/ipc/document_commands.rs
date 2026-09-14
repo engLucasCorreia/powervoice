@@ -4,16 +4,17 @@
 
 use tauri::ipc::Response;
 use tauri::{AppHandle, Emitter, Runtime, State};
-use vox_project::{PEAKS_RAW_SPP, VxpkHeader, encode_vxpk};
+use vox_project::{ImportProbe, PEAKS_RAW_SPP, VxpkHeader, encode_vxpk};
 
 use crate::document::{DocumentService, PasteTarget};
 use crate::ipc::document_dto::{
-    ClipboardChangedDto, DocumentDto, DocumentProbeDto, EditResultDto, EditTargetDto,
-    HistoryStateDto, MarkerDto, MarkerRangeKindDto, PeaksRequestDto,
+    ClipboardChangedDto, DocumentDto, DocumentProbeDto, DownmixChoiceDto, EditResultDto,
+    EditTargetDto, HistoryStateDto, MarkerDto, MarkerRangeKindDto, PeaksRequestDto,
 };
 use crate::ipc::error::IpcError;
 use crate::ipc::events::EventName;
-use crate::settings::{BitDepth, SettingsStore};
+use crate::ipc::{IpcErrorCode, JobKind, JobProgressDto, JobState, emit_job_progress};
+use crate::settings::{BitDepth, MultichannelPolicy, SettingsStore};
 
 /// ADR-003 §2's request cap: 65 536 buckets, or 1 Mi samples in `RAW` mode (4 MiB either way).
 const MAX_BUCKETS: u32 = 65_536;
@@ -62,17 +63,49 @@ pub(crate) async fn run_blocking<T: Send + 'static>(
         .map_err(|e| IpcError::internal(e.to_string()))?
 }
 
+/// T-209 (SPEC-005 §2.4): `probe`'s multichannel input needs the open dialog unless `policy`
+/// resolves it on its own — mono and bit-identical-channel input are never ambiguous regardless
+/// of `policy` (an identical-channels file opens with the average, itself bit-identical to every
+/// channel, SPEC-005 §2.4 "Identical channels").
+fn resolve_policy_downmix(
+    probe: &ImportProbe,
+    policy: MultichannelPolicy,
+) -> Option<vox_io::DownmixChoice> {
+    if probe.channels.len() <= 1 || probe.identical_channels {
+        return Some(vox_io::DownmixChoice::Average);
+    }
+    match policy {
+        MultichannelPolicy::Ask => None,
+        MultichannelPolicy::AlwaysMix => Some(vox_io::DownmixChoice::Average),
+        MultichannelPolicy::AlwaysFirstChannel => Some(vox_io::DownmixChoice::Channel(0)),
+    }
+}
+
+/// T-209 (SPEC-005 §2.4): "Open stereo file" — the probe data the dialog needs, carried as a JSON
+/// string param (like `error.*`'s existing free-form `message` param) rather than growing
+/// `IpcError.params` into a typed union; the frontend `JSON.parse`s it. The UI re-issues
+/// `document_open` with `channel_choice` set once the user picks.
+fn needs_channel_choice_error(probe: &ImportProbe) -> IpcError {
+    let dto = DocumentProbeDto::from(probe.clone());
+    let json = serde_json::to_string(&dto).unwrap_or_default();
+    IpcError::new(IpcErrorCode::NeedsConfirmation, "dialog.channel_choice")
+        .with_param("probe", json)
+}
+
 /// Opens `path` as the document (SPEC-005 §2.2-2.4: any container/codec `vox_io::decode`
 /// supports — WAV incl. the tolerated variants, FLAC, MP3, M4A AAC-LC, Ogg Vorbis; every other
 /// container/codec is `error.open.unsupported_format`/`error.open.unsupported_codec`). Replaces
 /// whatever was open — the frontend runs the unsaved-changes prompt (simple version, SPEC-004
 /// §2.8) first.
 ///
-/// **T-202 scope note:** multichannel input always downmixes by average (SPEC-005 §2.4's
-/// default); the channel-choice dialog and the `multichannel_policy` setting are T-209's job.
-/// [`document_probe`] already returns everything that future dialog needs (channel labels, peaks,
-/// the silent-channel hint, the identical-channels flag) so T-209 can call it first without
-/// waiting on this command's contract to change.
+/// T-209 (SPEC-005 §2.3/§2.4): probes `path` first. Multichannel input resolves through
+/// `channel_choice` (if the UI already asked) or the remembered `multichannel_policy` setting;
+/// otherwise this returns `dialog.channel_choice` (see [`needs_channel_choice_error`]) instead of
+/// starting the import, and the UI re-issues with the user's choice. Once a downmix is known, the
+/// import runs as a job: `job_progress` events (`kind: "import"`) report its progress at
+/// SPEC-005 §2.3's rate, and `document_open_cancel(job_id)` cancels it — cancelling, like any
+/// other failure, leaves whatever was open before completely untouched (`DocumentService::open`'s
+/// existing contract: the new session is only swapped in on success).
 #[tauri::command]
 pub async fn document_open<R: Runtime>(
     app: AppHandle<R>,
@@ -80,19 +113,124 @@ pub async fn document_open<R: Runtime>(
     settings: State<'_, SettingsStore>,
     path: String,
     confirm_already_open: bool,
+    channel_choice: Option<DownmixChoiceDto>,
 ) -> Result<DocumentDto, IpcError> {
     let doc = (*doc).clone();
     let doc_for_notice = doc.clone();
     let path_buf = std::path::PathBuf::from(&path);
-    let info: DocumentDto =
-        run_blocking(move || doc.open(std::path::Path::new(&path), confirm_already_open))
-            .await?
-            .into();
-    emit_document_changed(&app, &info);
-    emit_sidecar_notice(&app, &doc_for_notice);
-    // SPEC-018 §2.12: only a *successful* open (import completed) reaches here.
-    touch_recent_file(&app, &settings, &path_buf);
-    Ok(info)
+
+    let downmix = match channel_choice {
+        Some(choice) => choice.into(),
+        None => {
+            let probe_path = path_buf.clone();
+            let doc_for_probe = doc.clone();
+            let probe = run_blocking(move || doc_for_probe.probe(&probe_path)).await?;
+            let policy = settings.get().multichannel_policy;
+            match resolve_policy_downmix(&probe, policy) {
+                Some(downmix) => downmix,
+                None => return Err(needs_channel_choice_error(&probe)),
+            }
+        }
+    };
+
+    let (job_id, cancel) = doc.start_import_job();
+    if let Err(error) = emit_job_progress(
+        &app,
+        JobProgressDto {
+            job_id,
+            kind: JobKind::Import,
+            state: JobState::Running,
+            fraction: 0.0,
+        },
+    ) {
+        tracing::warn!(%error, "emitting the import job's first job_progress failed");
+    }
+    let doc_for_job = doc.clone();
+    let app_for_job = app.clone();
+    let path_for_job = path_buf.clone();
+    let result = run_blocking(move || {
+        let mut last_fraction = 0.0f32;
+        doc_for_job.open_with_downmix(
+            &path_for_job,
+            confirm_already_open,
+            downmix,
+            &cancel,
+            &mut |fraction| {
+                // SPEC-005 §2.3: `peaks_progress`/`job_progress` at 4-10 Hz — `import_file`
+                // already throttles its own callback to that rate, so every call here is worth
+                // forwarding; the small dead-band just skips emitting an event for a fraction
+                // that rounds to the one already sent.
+                if fraction - last_fraction >= 0.001 || fraction >= 1.0 {
+                    last_fraction = fraction;
+                    if let Err(error) = emit_job_progress(
+                        &app_for_job,
+                        JobProgressDto {
+                            job_id,
+                            kind: JobKind::Import,
+                            state: JobState::Running,
+                            fraction,
+                        },
+                    ) {
+                        tracing::warn!(%error, "emitting import job_progress failed");
+                    }
+                }
+            },
+        )
+    })
+    .await;
+    doc.finish_import_job(job_id);
+
+    match result {
+        Ok(info) => {
+            let info: DocumentDto = info.into();
+            if let Err(error) = emit_job_progress(
+                &app,
+                JobProgressDto {
+                    job_id,
+                    kind: JobKind::Import,
+                    state: JobState::Done,
+                    fraction: 1.0,
+                },
+            ) {
+                tracing::warn!(%error, "emitting the import job's Done job_progress failed");
+            }
+            emit_document_changed(&app, &info);
+            emit_sidecar_notice(&app, &doc_for_notice);
+            // SPEC-018 §2.12: only a *successful* open (import completed) reaches here.
+            touch_recent_file(&app, &settings, &path_buf);
+            Ok(info)
+        }
+        Err(err) => {
+            let state = if err.code == IpcErrorCode::Cancelled {
+                JobState::Cancelled
+            } else {
+                JobState::Failed
+            };
+            if let Err(error) = emit_job_progress(
+                &app,
+                JobProgressDto {
+                    job_id,
+                    kind: JobKind::Import,
+                    state,
+                    fraction: 0.0,
+                },
+            ) {
+                tracing::warn!(%error, "emitting the import job's terminal job_progress failed");
+            }
+            Err(err)
+        }
+    }
+}
+
+/// T-209: cancels a running import job (SPEC-005 §2.3 "Cancel"). Best-effort, like every other
+/// job's cancel command (H-09/S4-04) — a no-op for an unknown or already-finished job id.
+#[tauri::command]
+pub async fn document_open_cancel(
+    doc: State<'_, DocumentService>,
+    job_id: u32,
+) -> Result<(), IpcError> {
+    doc.cancel_import_job(job_id);
+    Ok(())
 }
 
 /// T-306 (SPEC-018 §2.12): moves `path` to the top of Settings' `recent_files` and emits
@@ -155,35 +293,52 @@ pub async fn document_probe(path: String) -> Result<DocumentProbeDto, IpcError> 
 
 /// Saves the current revision back to its bound path and format (SPEC-005 §2.7). No rack
 /// rendering (D-019): this writes exactly the document's audio.
+///
+/// T-209: `confirm_clip` bypasses SPEC-005 §2.8's clip prompt (the UI re-issues with `true` after
+/// "Clip and save"; `dialog.overs`'s `count`/`peak_dbfs` params come from the first refusal).
 #[tauri::command]
 pub async fn document_save<R: Runtime>(
     app: AppHandle<R>,
     doc: State<'_, DocumentService>,
     overwrite: bool,
+    confirm_clip: bool,
 ) -> Result<DocumentDto, IpcError> {
     let doc = (*doc).clone();
     let doc_for_notice = doc.clone();
-    let info: DocumentDto = run_blocking(move || doc.save(overwrite)).await?.into();
+    let info: DocumentDto = run_blocking(move || doc.save(overwrite, confirm_clip))
+        .await?
+        .into();
     emit_document_changed(&app, &info);
     emit_sidecar_notice(&app, &doc_for_notice);
     Ok(info)
 }
 
-/// Saves the current revision to `path` at `bits`, then binds the document to it.
+/// Saves the current revision to `path` in `container` at `bits` (SPEC-005 §2.7), then binds the
+/// document to it. T-209: `container`/`bits` reach the saver from the Save As dialog's format row
+/// (WAV 16/24/32-bit float or FLAC 16/24); `confirm_clip` — see [`document_save`]'s doc comment.
 #[tauri::command]
 pub async fn document_save_as<R: Runtime>(
     app: AppHandle<R>,
     doc: State<'_, DocumentService>,
     settings: State<'_, SettingsStore>,
     path: String,
+    container: crate::ipc::document_dto::SaveContainerDto,
     bits: BitDepth,
+    confirm_clip: bool,
 ) -> Result<DocumentDto, IpcError> {
     let doc = (*doc).clone();
     let doc_for_notice = doc.clone();
     let path_buf = std::path::PathBuf::from(&path);
-    let info: DocumentDto = run_blocking(move || doc.save_as(std::path::Path::new(&path), bits))
-        .await?
-        .into();
+    let info: DocumentDto = run_blocking(move || {
+        doc.save_as(
+            std::path::Path::new(&path),
+            container.into(),
+            bits,
+            confirm_clip,
+        )
+    })
+    .await?
+    .into();
     emit_document_changed(&app, &info);
     emit_sidecar_notice(&app, &doc_for_notice);
     // SPEC-018 §2.12: Save As always touches the list (a new recording's first save included).
@@ -458,4 +613,121 @@ pub async fn marker_delete<R: Runtime>(
     run_blocking(move || service.marker_delete(&ids)).await?;
     after_edit(&app, &doc);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use vox_project::ImportChannel;
+
+    use super::*;
+
+    fn stereo_probe(identical: bool, suggested: Option<usize>) -> ImportProbe {
+        ImportProbe {
+            container: "wav".to_string(),
+            codec: "pcm".to_string(),
+            sample_rate_hz: 48_000,
+            channels: vec![
+                ImportChannel {
+                    label: "Left".to_string(),
+                    is_lfe: false,
+                },
+                ImportChannel {
+                    label: "Right".to_string(),
+                    is_lfe: false,
+                },
+            ],
+            len_samples: Some(48_000),
+            channel_peaks_dbfs: vec![-6.0, -60.0],
+            identical_channels: identical,
+            suggested_channel: suggested,
+        }
+    }
+
+    fn mono_probe() -> ImportProbe {
+        ImportProbe {
+            container: "wav".to_string(),
+            codec: "pcm".to_string(),
+            sample_rate_hz: 48_000,
+            channels: vec![ImportChannel {
+                label: "Mono".to_string(),
+                is_lfe: false,
+            }],
+            len_samples: Some(48_000),
+            channel_peaks_dbfs: Vec::new(),
+            identical_channels: false,
+            suggested_channel: None,
+        }
+    }
+
+    /// SPEC-005 §2.4: mono input is never ambiguous, whatever the remembered policy.
+    #[test]
+    fn mono_never_needs_a_dialog() {
+        let probe = mono_probe();
+        for policy in [
+            MultichannelPolicy::Ask,
+            MultichannelPolicy::AlwaysMix,
+            MultichannelPolicy::AlwaysFirstChannel,
+        ] {
+            assert_eq!(
+                resolve_policy_downmix(&probe, policy),
+                Some(vox_io::DownmixChoice::Average)
+            );
+        }
+    }
+
+    /// SPEC-005 §2.4 "Identical channels": no dialog even when the policy is `Ask`.
+    #[test]
+    fn identical_channels_never_need_a_dialog_even_when_asking() {
+        let probe = stereo_probe(true, None);
+        assert_eq!(
+            resolve_policy_downmix(&probe, MultichannelPolicy::Ask),
+            Some(vox_io::DownmixChoice::Average)
+        );
+    }
+
+    /// SPEC-005 §2.4/AC-10: `Ask` on genuinely ambiguous stereo input needs the dialog.
+    #[test]
+    fn ambiguous_stereo_with_ask_needs_the_dialog() {
+        let probe = stereo_probe(false, Some(0));
+        assert_eq!(
+            resolve_policy_downmix(&probe, MultichannelPolicy::Ask),
+            None
+        );
+    }
+
+    /// SPEC-005 §2.4/AC-10: "With `multichannel_policy` = always mix, no dialog appears."
+    #[test]
+    fn always_mix_policy_skips_the_dialog() {
+        let probe = stereo_probe(false, None);
+        assert_eq!(
+            resolve_policy_downmix(&probe, MultichannelPolicy::AlwaysMix),
+            Some(vox_io::DownmixChoice::Average)
+        );
+    }
+
+    /// SPEC-005 §2.4: "always use the first channel" picks index 0 regardless of the silent-
+    /// channel hint's own suggestion (that hint only drives the dialog itself).
+    #[test]
+    fn always_first_channel_policy_picks_index_zero() {
+        let probe = stereo_probe(false, Some(1));
+        assert_eq!(
+            resolve_policy_downmix(&probe, MultichannelPolicy::AlwaysFirstChannel),
+            Some(vox_io::DownmixChoice::Channel(0))
+        );
+    }
+
+    /// `needs_channel_choice_error` carries the probe as a JSON string param the frontend can
+    /// parse back into the dialog's data (channels, peaks, the silent-channel hint).
+    #[test]
+    fn needs_channel_choice_error_carries_the_probe_as_json() {
+        let probe = stereo_probe(false, Some(0));
+        let err = needs_channel_choice_error(&probe);
+        assert_eq!(err.code, IpcErrorCode::NeedsConfirmation);
+        assert_eq!(err.key, "dialog.channel_choice");
+        let json = err.params.get("probe").expect("a probe param");
+        let parsed: DocumentProbeDto = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.channels.len(), 2);
+        assert_eq!(parsed.suggested_channel, Some(0));
+        assert!((parsed.channel_peaks_dbfs[0] - (-6.0)).abs() < 1e-9);
+    }
 }

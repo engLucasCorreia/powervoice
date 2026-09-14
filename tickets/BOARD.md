@@ -54,7 +54,9 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-08 | Export follow-ups from S4-04: Whole file / Selection choice (range already plumbed end to end); export reads the current rack model once S3-01 lands (today renders an empty rack); SPEC-014 "Output noise only" confirmation; MP3 VBR in the dialog | S | done |
 | H-10 | Recording follow-ups from the H-05 review: document stuck after a failed take commit; input dropout detection + markers; disk-space floor / remaining time; clip lamp reset at take start; live-peaks memory cap (nr_capture test temp-dir leak: fixed on main); H-06 gaps: 88.2 kHz, Record on a non-empty document opens the dialog, kHz formatting | S | done |
 | H-11 | Disk-space floor + remaining recording time (A-010: libc statvfs / windows-sys); dropouts > 2 s → device-loss stop (A-011); dropout marks on the resampled path | S | done |
-| H-12 | Spectral view follow-ups (T-207): persist display prefs in Settings (A-014), one shared time ruler + scrollbar in EditorView (SPEC-007 §2.1 stacking), HiDPI columns, import-freeze message once import has progress state | S | todo |
+| H-12 | Editor view follow-ups (T-207, T-306): app-wide default display prefs in Settings (per-document ones already in the sidecar), one shared time ruler + scrollbar in EditorView (SPEC-007 §2.1), waveform zoom/scroll/selection persisted in the sidecar view, HiDPI columns | S | in progress |
+| H-16 | Analyzer follow-ups (T-208): floor/ceiling, frequency zoom, hover, device state, View menu toggle, settings persistence; wire `telemetry_rate_hz` (30 Hz) into VXTM/VXMT/VXSA | S | todo |
+| H-15 | Sidecar follow-ups (T-306): recent-file-missing dialog, read-only folder matrix (AC-13), SIGKILL-during-sidecar-save test (AC-6), per-slot leniency for a malformed rack slot, perf budget (AC-18) | S | todo |
 | H-13 | WebGL2 renderers (ADR-009 primary): spectrogram R8 textures + colormap shader, waveform; Canvas2D stays the fallback; FFT-size texture gating live | S+OR | todo |
 | H-14 | FLAC export is malformed: flacenc frame numbering makes `flac -t` warn (not seekable) and symphonia reject our own exports — fix or replace the encoder; then FLAC verify-before-rename (SPEC-005 §2.11) | S | done |
 | H-09 | Normalize follow-ups from S2-02: progress via the S4-04 `job_progress` event + cancel for long files; % targets; Effects menu entry; pyramid-accelerated peak scan (SPEC-010 AC-9/AC-15); remembered dialog value | S | done |
@@ -97,19 +99,19 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-205 | Waveform renderer: zoom/scroll, amplitude zoom, rulers, extrapolated playhead | W2 | S | T-203 | → S1-03 (Canvas2D subset), rest hardening |
 | T-206 | Selection model, time formats, zero-crossing snap | W3 | S | T-205 | todo |
 | T-207 | Spectrogram renderer, log/linear, split view | W3 | S | T-204, T-205 | done |
-| T-208 | Live output analyzer: post-rack tap, FFT worker, 1/24-oct bands, VXSA, bottom-dock UI | W3 | S+OR | T-205 | in progress |
+| T-208 | Live output analyzer: post-rack tap, FFT worker, 1/24-oct bands, VXSA, bottom-dock UI | W3 | S+OR | T-205 | done (follow-ups → H-16) |
 | T-209 | File menu & dialogs: Open, Save, Save As, downmix dialog, save format, clip prompt, unsaved-changes prompt, import progress | W3 | S | T-201, T-202, T-205 | → S1-03 (subset), rest hardening |
 
 ## M3 — Editing & history
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
 | T-300 | M3 spec wave: SPEC-008, SPEC-009, SPEC-010, SPEC-018, SPEC-022 | W0 | O | M0, SPEC-005 | done |
-| T-301 | Undo/redo, resident memory budget, edit journal, crash recovery | W1 | O | M2 | todo |
+| T-301 | Undo/redo, resident memory budget, edit journal, crash recovery | W1 | O | M2 | in progress |
 | T-302 | Cut/copy/paste/delete, trim, silence, insert silence, clipboard | W2 | S+OR | T-301 | todo |
 | T-303 | Markers: kinds, add/region, rename, drag, delete, navigation, Markers panel | W2 | S | T-301 | todo |
 | T-304 | Record at cursor (Insert/Overwrite) + punch-in + latency offset & calibration | W2 | O | T-301 | todo |
 | T-305 | Peak normalize favorites | W2 | S+OR | T-301 | todo |
-| T-306 | Sidecar `.vo.json`, identity check, sidecar-only saves, recent files, second-instance warning | W3 | S+OR | T-302, T-303 | in progress |
+| T-306 | Sidecar `.vo.json`, identity check, sidecar-only saves, recent files, second-instance warning | W3 | S+OR | T-302, T-303 | done (follow-ups → H-12, H-15, T-303) |
 
 ## M4 — Effects modules & rack UI
 | ID | Title | Wave | Tier | Deps | Status |

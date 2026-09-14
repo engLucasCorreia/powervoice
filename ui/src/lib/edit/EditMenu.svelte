@@ -29,14 +29,25 @@
   const selected = $derived(hasSelection() && !recording);
   const pasteEnabled = $derived(hasClipboard() && !recording);
 
+  /** T-301 (ADR-004 Amendment 3): a label's placeholder values ("Normalize to {target} dB"). */
+  function labelParams(params: Partial<Record<string, string>>): Record<string, string> {
+    return Object.fromEntries(
+      Object.entries(params).filter((e): e is [string, string] => e[1] !== undefined),
+    );
+  }
+
   const undoLabel = $derived(
     edit.history.undo_label
-      ? t("menu.edit.undo", { label: tDynamic(edit.history.undo_label) })
+      ? t("menu.edit.undo", {
+          label: tDynamic(edit.history.undo_label, labelParams(edit.history.undo_label_params)),
+        })
       : t("menu.edit.undo_none"),
   );
   const redoLabel = $derived(
     edit.history.redo_label
-      ? t("menu.edit.redo", { label: tDynamic(edit.history.redo_label) })
+      ? t("menu.edit.redo", {
+          label: tDynamic(edit.history.redo_label, labelParams(edit.history.redo_label_params)),
+        })
       : t("menu.edit.redo_none"),
   );
 </script>

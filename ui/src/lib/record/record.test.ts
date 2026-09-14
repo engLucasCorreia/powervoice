@@ -79,7 +79,7 @@ function docDto(len_samples: number, dirty: boolean): DocumentDto {
     dirty,
     audio_rev: 1,
     sidecar_dirty: false,
-    spectral_view: null, waveform_view: null,
+    spectral_view: null, waveform_view: null, recovered: false,
   };
 }
 

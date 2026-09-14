@@ -64,6 +64,26 @@ struct ChunkEntry {
     state: AtomicU8,
 }
 
+impl ChunkEntry {
+    /// An id with no chunk behind it (T-301: a reopened or compacted store keeps ids stable and
+    /// never reuses one, so ids that were never journaled, or were compacted away, are holes).
+    fn hole(id: ChunkId) -> Self {
+        ChunkEntry {
+            loc: ChunkLocation {
+                id,
+                offset: 0,
+                len: 0,
+                crc32: 0,
+            },
+            state: AtomicU8::new(CORRUPT),
+        }
+    }
+
+    fn is_hole(&self) -> bool {
+        self.loc.len == 0
+    }
+}
+
 /// Called with the segment index before each segment is preallocated; an `Err` is treated
 /// exactly like a failed preallocation. Test-only fault injection (disk full at segment creation).
 #[doc(hidden)]
@@ -295,6 +315,95 @@ impl ChunkStore {
         }))
     }
 
+    /// Reopens `chunks.<generation>.f32` in `dir` for crash recovery (ADR-004 §9) with the chunk
+    /// index the journal describes. Ids missing from `locations` become holes (never reused);
+    /// a location that doesn't fit the file is marked corrupt. New chunks are appended after the
+    /// last indexed one. The peaks file is reopened (or recreated: derived data, ADR-004 §5).
+    pub(crate) fn open_existing(
+        dir: &Path,
+        generation: u32,
+        options: StoreOptions,
+        locations: &[ChunkLocation],
+    ) -> Result<Arc<ChunkStore>> {
+        const CONTEXT: &str = "opening the chunk store";
+        let chunks_path = dir.join(format!("chunks.{generation}.f32"));
+        let peaks_path = dir.join(format!("peaks.{generation}.bin"));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&chunks_path)
+            .map_err(ProjectError::io(CONTEXT))?;
+        let peaks_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&peaks_path)
+            .map_err(ProjectError::io(CONTEXT))?;
+        let mut file_len = file.metadata().map_err(ProjectError::io(CONTEXT))?.len();
+        if !file_len.is_multiple_of(SEGMENT_BYTES) {
+            // A partial segment (an extension interrupted mid-way): complete it so a mapping of
+            // the whole segment never reaches past the end of the file.
+            file_len = file_len.next_multiple_of(SEGMENT_BYTES);
+            file.set_len(file_len).map_err(ProjectError::io(CONTEXT))?;
+        }
+        let segments = u32::try_from(file_len / SEGMENT_BYTES)
+            .map_err(|_| ProjectError::InvalidArgument("store segment space exhausted"))?;
+        let len = locations
+            .iter()
+            .map(|l| l.id as usize + 1)
+            .max()
+            .unwrap_or(0);
+        let mut index: Vec<ChunkEntry> = (0..len).map(|id| ChunkEntry::hole(id as u32)).collect();
+        let mut next_offset = 0u64;
+        for loc in locations {
+            let end = loc.offset + u64::from(loc.len) * 4;
+            let fits = loc.len >= 1
+                && loc.len as usize <= CHUNK_SAMPLES
+                && end <= file_len
+                && loc.offset / SEGMENT_BYTES == (end - 1) / SEGMENT_BYTES;
+            if fits {
+                next_offset = next_offset.max(end);
+            }
+            index[loc.id as usize] = ChunkEntry {
+                loc: *loc,
+                state: AtomicU8::new(if fits { UNVERIFIED } else { CORRUPT }),
+            };
+        }
+        let slots = (0..segments)
+            .map(|_| SegmentSlot {
+                map: None,
+                last_use: 0,
+                dirty: false,
+            })
+            .collect();
+        Ok(Arc::new(ChunkStore {
+            chunks_path,
+            peaks_path,
+            file,
+            peaks_file,
+            alloc: Mutex::new(Alloc {
+                next_offset,
+                segments,
+            }),
+            segments: Mutex::new(Segments {
+                slots,
+                tick: 0,
+                tail: None,
+            }),
+            index: RwLock::new(index),
+            memory: Arc::new(Memory {
+                budget: AtomicU64::new(options.memory_budget_bytes),
+                mapped: AtomicU64::new(0),
+                external: AtomicU64::new(0),
+                peak: AtomicU64::new(0),
+            }),
+            unreserved_segments: AtomicU32::new(0),
+            sync_lock: Mutex::new(()),
+            segment_hook: options.segment_hook,
+        }))
+    }
+
     /// Path of the chunk file.
     pub fn chunks_path(&self) -> &Path {
         &self.chunks_path
@@ -310,19 +419,41 @@ impl ChunkStore {
         ChunkWriter::new(Arc::clone(self))
     }
 
-    /// Number of committed chunks (ids are `0 .. chunk_count()`).
+    /// The next chunk id (ids below it are committed chunks or holes).
     pub fn chunk_count(&self) -> u32 {
         u32::try_from(read(&self.index).len()).unwrap_or(u32::MAX)
     }
 
-    /// Location of a committed chunk.
+    /// Location of a committed chunk (`None` for an unknown id or a hole).
     pub fn location(&self, id: ChunkId) -> Option<ChunkLocation> {
-        read(&self.index).get(id as usize).map(|e| e.loc)
+        read(&self.index)
+            .get(id as usize)
+            .filter(|e| !e.is_hole())
+            .map(|e| e.loc)
     }
 
     /// Locations of all committed chunks, in id order.
     pub fn locations(&self) -> Vec<ChunkLocation> {
-        read(&self.index).iter().map(|e| e.loc).collect()
+        read(&self.index)
+            .iter()
+            .filter(|e| !e.is_hole())
+            .map(|e| e.loc)
+            .collect()
+    }
+
+    /// Bytes the chunk file occupies (whole preallocated segments).
+    pub fn chunk_file_bytes(&self) -> u64 {
+        u64::from(self.segment_count()) * SEGMENT_BYTES
+    }
+
+    /// Makes the next committed chunk get id `next_id` or higher, so ids are never reused
+    /// across a compaction (T-301).
+    pub(crate) fn reserve_ids_below(&self, next_id: ChunkId) {
+        let mut index = write(&self.index);
+        while index.len() < next_id as usize {
+            let id = index.len() as ChunkId;
+            index.push(ChunkEntry::hole(id));
+        }
     }
 
     /// Number of preallocated segments (the chunk file is `segment_count × 64 MiB` long).
@@ -341,6 +472,20 @@ impl ChunkStore {
     /// segment's mapping, mark the segment dirty, then publish the index entry. The chunk is
     /// readable immediately; it is durable after the next [`Self::sync`].
     pub(crate) fn commit_chunk(&self, samples: &[f32]) -> Result<ChunkLocation> {
+        self.commit_chunk_as(samples, None)
+    }
+
+    /// [`Self::commit_chunk`] under a given id, which must be a hole or past the end of the
+    /// index (compaction copies live chunks keeping their ids, ADR-004 §4).
+    pub(crate) fn commit_chunk_with_id(
+        &self,
+        id: ChunkId,
+        samples: &[f32],
+    ) -> Result<ChunkLocation> {
+        self.commit_chunk_as(samples, Some(id))
+    }
+
+    fn commit_chunk_as(&self, samples: &[f32], fixed_id: Option<ChunkId>) -> Result<ChunkLocation> {
         if samples.is_empty() || samples.len() > CHUNK_SAMPLES {
             return Err(ProjectError::InvalidArgument(
                 "a chunk holds 1 ..= 65 536 samples",
@@ -375,18 +520,35 @@ impl ChunkStore {
 
         let loc = {
             let mut index = write(&self.index);
-            let id = ChunkId::try_from(index.len())
-                .map_err(|_| ProjectError::InvalidArgument("chunk id space exhausted"))?;
+            let id = match fixed_id {
+                Some(id) => {
+                    while index.len() <= id as usize {
+                        let hole = index.len() as ChunkId;
+                        index.push(ChunkEntry::hole(hole));
+                    }
+                    if !index[id as usize].is_hole() {
+                        return Err(ProjectError::InvalidArgument("chunk id already in use"));
+                    }
+                    id
+                }
+                None => ChunkId::try_from(index.len())
+                    .map_err(|_| ProjectError::InvalidArgument("chunk id space exhausted"))?,
+            };
             let loc = ChunkLocation {
                 id,
                 offset,
                 len,
                 crc32,
             };
-            index.push(ChunkEntry {
+            let entry = ChunkEntry {
                 loc,
                 state: AtomicU8::new(UNVERIFIED),
-            });
+            };
+            if (id as usize) < index.len() {
+                index[id as usize] = entry;
+            } else {
+                index.push(entry);
+            }
             loc
         };
         // Peaks are derived data (never fsynced, recomputed when missing or corrupt, ADR-004 §5),
@@ -577,6 +739,7 @@ impl ChunkStore {
             let index = read(&self.index);
             let entry = index
                 .get(id as usize)
+                .filter(|e| !e.is_hole())
                 .ok_or(ProjectError::UnknownChunk(id))?;
             (entry.loc, entry.state.load(Ordering::Acquire))
         };
@@ -631,8 +794,9 @@ impl ChunkStore {
 
     /// Recomputes chunk `id`'s CRC32 from the store now (even if it was verified before).
     pub fn verify_chunk(&self, id: ChunkId) -> Result<()> {
-        if let Some(entry) = read(&self.index).get(id as usize) {
-            entry.state.store(UNVERIFIED, Ordering::Release);
+        match read(&self.index).get(id as usize) {
+            Some(entry) if !entry.is_hole() => entry.state.store(UNVERIFIED, Ordering::Release),
+            _ => return Err(ProjectError::UnknownChunk(id)),
         }
         self.read_chunk_into(id, 0, &mut [], &mut None)
     }

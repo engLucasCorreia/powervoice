@@ -355,15 +355,32 @@ pub fn normalize_peak(
                 writer,
                 |_| {},
             )?;
-            let edit = Edit::new(LABEL_NORMALIZE).replace_with(
-                range.start,
-                range.len_samples(),
-                new_pieces,
-                MarkerMapping::Identity,
-            );
+            let edit = Edit::new(LABEL_NORMALIZE)
+                .with_label_param(LABEL_PARAM_TARGET, label_number(target_db))
+                .replace_with(
+                    range.start,
+                    range.len_samples(),
+                    new_pieces,
+                    MarkerMapping::Identity,
+                );
             let step = session.commit_edit(edit)?;
             Ok(NormalizeResult::Applied(step))
         }
+    }
+}
+
+/// The undo labels' placeholder (ADR-004 Amendment 3): `history.normalize` = "Normalize to
+/// {target} dB", `history.normalize_lufs` = "Normalize to {target} LUFS".
+pub const LABEL_PARAM_TARGET: &str = "target";
+
+/// A target value as an undo-label parameter: at most two decimals, no trailing zeros, and a
+/// typographic minus ("−1", "−0.1", "−23").
+pub fn label_number(value: f64) -> String {
+    let text = format!("{:.2}", (value * 100.0).round() / 100.0);
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    match text.strip_prefix('-') {
+        Some("0") | None => text.to_owned(),
+        Some(rest) => format!("\u{2212}{rest}"),
     }
 }
 
@@ -499,12 +516,14 @@ pub fn normalize_lufs(
         writer,
         |_| {},
     )?;
-    let edit = Edit::new(LABEL_NORMALIZE_LUFS).replace_with(
-        range.start,
-        range.len_samples(),
-        new_pieces,
-        MarkerMapping::Identity,
-    );
+    let edit = Edit::new(LABEL_NORMALIZE_LUFS)
+        .with_label_param(LABEL_PARAM_TARGET, label_number(target_lufs))
+        .replace_with(
+            range.start,
+            range.len_samples(),
+            new_pieces,
+            MarkerMapping::Identity,
+        );
     let step = session.commit_edit(edit)?;
     let predicted_true_peak_dbtp = report.true_peak_dbtp + gain_db;
     Ok(LufsNormalizeResult::Applied {
@@ -569,12 +588,14 @@ pub fn plan_normalize_peak(
                 writer,
                 |done| on_progress(0.3 + 0.7 * (done as f32 / total)),
             )?;
-            let edit = Edit::new(LABEL_NORMALIZE).replace_with(
-                range.start,
-                range.len_samples(),
-                new_pieces,
-                MarkerMapping::Identity,
-            );
+            let edit = Edit::new(LABEL_NORMALIZE)
+                .with_label_param(LABEL_PARAM_TARGET, label_number(target_db))
+                .replace_with(
+                    range.start,
+                    range.len_samples(),
+                    new_pieces,
+                    MarkerMapping::Identity,
+                );
             on_progress(1.0);
             Ok(NormalizePeakPlan::Gain(edit))
         }
@@ -633,12 +654,14 @@ pub fn plan_normalize_lufs(
         writer,
         |done| on_progress(0.3 + 0.7 * (done as f32 / total)),
     )?;
-    let edit = Edit::new(LABEL_NORMALIZE_LUFS).replace_with(
-        range.start,
-        range.len_samples(),
-        new_pieces,
-        MarkerMapping::Identity,
-    );
+    let edit = Edit::new(LABEL_NORMALIZE_LUFS)
+        .with_label_param(LABEL_PARAM_TARGET, label_number(target_lufs))
+        .replace_with(
+            range.start,
+            range.len_samples(),
+            new_pieces,
+            MarkerMapping::Identity,
+        );
     on_progress(1.0);
     let predicted_true_peak_dbtp = report.true_peak_dbtp + gain_db;
     Ok(NormalizeLufsPlan::Gain {

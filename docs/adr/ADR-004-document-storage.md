@@ -310,6 +310,38 @@ attachments exactly like the rest of the journal.
   Amendment 1 attachment), preserving ADR-001's "`project` never depends on `rack`".
 - T-301's journal label-params change becomes **Amendment 3**.
 
+## Amendment 3 — T-301 (history labels, recovery, disk budget), 2026-09-14
+- **Label params.** `Edit`, undo/redo entries, journal `edit` records and checkpoint entries carry
+  `label_params` (a sorted string map, omitted when empty) next to `label_key`: `history.normalize`
+  + `{"target": "−1"}` renders "Normalize to −1 dB". `project` stores them verbatim; the UI
+  interpolates them into the i18n label. Checkpoint entries also carry `first_at` (SPEC-008 §2.3's
+  undo/redo cursor rule survives recovery).
+- **New record `drop_undo {count}`** (SPEC-004 §2.5 OD-1 = A): the `count` oldest undo entries were
+  removed under disk pressure. It is appended + `fdatasync`ed before the entries are dropped, and
+  replay applies it, so a crash before the following compaction still recovers the shorter history.
+- **`saved` gains `file_size_bytes`/`file_mtime_unix_ms`** (additive): recovery compares them — or
+  the `open` record's, when nothing was saved — with the bound file to raise SPEC-004 §2.7's
+  "changed on disk" warning without flagging PowerVoice's own saves.
+- **Replay** starts at the journal's last checkpoint (records before it contribute only metadata:
+  `open`, the latest `saved`/`state`, open takes) and stops at the first record that doesn't apply
+  exactly (edit seq or pieces mismatch, undo/redo of another entry). Lost changes = change records
+  after the stop + damaged lines, where a damaged or trailing `chunks` line counts once for the
+  edit written with it. The journal is truncated after the last kept record.
+- **Damaged audio.** After replay every chunk the history references is CRC-checked. On a mismatch
+  recovery cuts before the first record (after the checkpoint) that introduces or references a
+  damaged chunk and replays again; if the checkpoint's own state is damaged, nothing is recoverable
+  (only Discard).
+- **Chunk ids stay unique across generations.** A reopened store keeps journaled ids and marks every
+  other id below the highest one as a hole (never reused); compaction's new store starts its ids at
+  the old store's `chunk_count()`, so a chunk written by a job still running against the old store
+  can never alias a chunk of the new one. Compaction copies `open`, the latest `saved` and `state`,
+  then a checkpoint into `journal.<gen+1>`; leftover files of other generations are deleted at
+  recovery and at the next compaction.
+- **Periodic checkpoints (every 256 records) are not written yet**: replay from the last checkpoint
+  is O(records × pieces) and meets AC-11 without them, while a checkpoint serializes every undo
+  snapshot in full (tens of MB for deep histories of fragmented documents). Revisit with a
+  delta-encoded checkpoint if AC-11 fails on real sessions.
+
 ## Amendment 4 — T-300 (SPEC-022 punch-in), 2026-09-13
 (Amendment 3 is reserved for T-301's journal label params.)
 - `take_begin` gains `mode` (`New` | `Insert` | `Overwrite` | `Punch`), `at`, and for Punch the

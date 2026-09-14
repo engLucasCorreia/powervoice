@@ -41,7 +41,7 @@ export type BitDepth = "16" | "24" | "32f";
  */
 export type ClipboardChangedDto = { len_samples: number | null, sample_rate_hz: number | null, };
 
-export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "module_telemetry_subscribe" | "analyzer_subscribe" | "analyzer_set_response" | "analyzer_unsubscribe" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_probe" | "document_save" | "document_save_as" | "sidecar_view_set_spectral" | "sidecar_view_set_waveform" | "recent_files_get" | "recent_files_remove" | "recent_files_clear" | "peaks_get" | "spectro_attach" | "spectro_detach" | "spectro_request" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check";
+export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "module_telemetry_subscribe" | "analyzer_subscribe" | "analyzer_set_response" | "analyzer_unsubscribe" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_probe" | "document_save" | "document_save_as" | "document_close" | "sidecar_view_set_spectral" | "sidecar_view_set_waveform" | "recent_files_get" | "recent_files_remove" | "recent_files_clear" | "recovery_list" | "recovery_recover" | "recovery_discard" | "storage_info" | "peaks_get" | "spectro_attach" | "spectro_detach" | "spectro_request" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check";
 
 /**
  * One draggable EQ-graph node (S3-07, SPEC-015 §3 "ResponseCurve components"): the band's
@@ -163,7 +163,12 @@ spectral_view: SpectralViewDto | null,
  * H-12 (SPEC-018 §2.6.5): the sidecar's waveform viewport/selection/cursor, if any (`null` =
  * keep the UI's current viewport, e.g. a newly opened document zooms to fit instead).
  */
-waveform_view: WaveformViewDto | null, };
+waveform_view: WaveformViewDto | null, 
+/**
+ * T-301 (SPEC-004 §2.7): opened by crash recovery and not saved since — the title shows
+ * "(recovered)".
+ */
+recovered: boolean, };
 
 /**
  * T-202: `document_probe`'s result (SPEC-005 §2.3 step 1, §2.4). `channel_peaks_dbfs` is empty
@@ -223,7 +228,12 @@ export type ExportStartedDto = { job_id: number, };
  * S2-01: the Edit menu's Undo/Redo state (`history_state` event). Labels are i18n keys
  * (`history.cut`, …, CLAUDE.md), `null` when there's nothing to undo/redo.
  */
-export type HistoryStateDto = { can_undo: boolean, can_redo: boolean, undo_label: string | null, redo_label: string | null, };
+export type HistoryStateDto = { can_undo: boolean, can_redo: boolean, undo_label: string | null, redo_label: string | null, 
+/**
+ * T-301 (ADR-004 Amendment 3): placeholder values of `undo_label` (e.g. `target` of
+ * "Normalize to {target} dB"); empty when it has none.
+ */
+undo_label_params: { [key in string]: string }, redo_label_params: { [key in string]: string }, };
 
 /**
  * Error shape returned by every command (ADR-003). `key` is an i18n key, `params` fills its
@@ -543,6 +553,47 @@ dropout_count: number,
 disk_remaining_s: number | null, };
 
 /**
+ * `recovery_recover`'s result: the recovered document (modified, `recovered: true`) and how
+ * many changes were lost (the "could not be recovered" notice also goes out as an event).
+ */
+export type RecoverResultDto = { document: DocumentDto, lost_changes: number, };
+
+/**
+ * One recoverable session, as the start-up dialog and Settings → Recovery & storage list it
+ * (SPEC-004 §2.7): `name`/`path` are `null` for an untitled recording ("Untitled recording").
+ */
+export type RecoverableSessionDto = { id: string, name: string | null, path: string | null, 
+/**
+ * The last edit time (the journal's mtime), ms since the Unix epoch.
+ */
+last_modified_unix_ms: number | null, 
+/**
+ * "3 unsaved changes".
+ */
+unsaved_changes: number, 
+/**
+ * A recording was in progress: its recovered length in samples.
+ */
+recording_samples: number | null, sample_rate_hz: number, 
+/**
+ * "‹name› changed on disk since you opened it…".
+ */
+source_changed: boolean, 
+/**
+ * The bound file no longer exists (recovery still works; Save recreates it).
+ */
+source_missing: boolean, 
+/**
+ * The journal has a damaged tail: some of the latest changes may be lost.
+ */
+damaged: boolean, size_bytes: number, };
+
+/**
+ * What Recover does with an interrupted take (SPEC-004 §2.7; "apply" is the default).
+ */
+export type RecoveredTakeActionDto = "apply" | "new_document" | "discard";
+
+/**
  * `rack_response_curve`'s response (S3-07, SPEC-015 §2.6.6, lean slice: JSON — the binary
  * `VXRC` frame is hardening). `components_db` is one row per band, in `curve_handles` order.
  */
@@ -613,6 +664,20 @@ export type SpectralViewDto = { visible: boolean, split_ratio: number, fft_size:
  * to 64 tile indices, visible tiles first.
  */
 export type SpectroRequestDto = { request_id: number, audio_rev: number, fft_size: number, hop: number, window: number, tiles: Array<number>, };
+
+/**
+ * Settings → Recovery & storage (SPEC-004 §2.5, §2.8): the open document's session storage
+ * ("Session storage: 3.2 GB (history 2.1 GB)") and the recoverable sessions with their sizes.
+ */
+export type StorageInfoDto = { 
+/**
+ * `null` with no document open.
+ */
+session_bytes: number | null, history_bytes: number | null, sessions: Array<RecoverableSessionDto>, 
+/**
+ * Sum of the recoverable sessions' sizes ("Recovery data (X GB)").
+ */
+recovery_bytes: number, };
 
 /**
  * Control mapping ([`Taper`]).

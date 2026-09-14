@@ -729,6 +729,7 @@ fn write_file_atomic_named(
 /// "Windows/macOS unverified" risk) — a stale temp file on those platforms is merely cosmetic
 /// (`write_sidecar` never reads it back) until a later ticket adds one.
 fn cleanup_stale_temp_files(dir: &Path, sidecar_file_name: &std::ffi::OsStr) {
+    use crate::fs_util::pid_is_alive;
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -756,21 +757,6 @@ fn cleanup_stale_temp_files(dir: &Path, sidecar_file_name: &std::ffi::OsStr) {
             let _ = fs::remove_file(entry.path());
         }
     }
-}
-
-#[cfg(unix)]
-fn pid_is_alive(pid: i32) -> bool {
-    // SAFETY: `kill(pid, 0)` sends no signal; it only probes whether `pid` exists and is
-    // reachable. Always safe to call with any `pid` value.
-    let ret = unsafe { libc::kill(pid, 0) };
-    ret == 0 || (ret == -1 && std::io::Error::last_os_error().kind() != io::ErrorKind::NotFound)
-}
-
-#[cfg(not(unix))]
-fn pid_is_alive(_pid: i32) -> bool {
-    // Conservative: treat as alive so a non-unix build never deletes a temp file it can't verify
-    // (see the module doc above).
-    true
 }
 
 /// Writes `input` to `path` (SPEC-018 §2.3 step 4, §2.6.6): backs it up first if `needs_backup`

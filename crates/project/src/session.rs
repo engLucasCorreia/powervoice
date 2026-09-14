@@ -175,25 +175,35 @@ pub struct CloseError {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct OpenTake {
-    id: TakeId,
-    at: u64,
+pub(crate) struct OpenTake {
+    pub(crate) id: TakeId,
+    pub(crate) at: u64,
 }
 
 /// One open document's session: directory + lock + store + journal + history. Owned by the
 /// engine's control thread. Every document-changing command appends and `fdatasync`s its journal
 /// record before returning `Ok` (ADR-004 §6); on error nothing changed.
 pub struct Session {
-    id: String,
-    dir: PathBuf,
-    _lock: File,
-    store: Arc<ChunkStore>,
-    journal: Journal,
-    history: History,
-    sample_rate_hz: u32,
-    journaled_chunks: Vec<bool>,
-    open_take: Option<OpenTake>,
-    next_take: u32,
+    pub(crate) id: String,
+    pub(crate) dir: PathBuf,
+    pub(crate) _lock: File,
+    pub(crate) store: Arc<ChunkStore>,
+    pub(crate) journal: Journal,
+    pub(crate) history: History,
+    pub(crate) sample_rate_hz: u32,
+    pub(crate) journaled_chunks: Vec<bool>,
+    pub(crate) open_take: Option<OpenTake>,
+    pub(crate) next_take: u32,
+    /// Current store generation (`chunks.<gen>.f32`, `journal.<gen>.jsonl`; T-301 compaction).
+    pub(crate) generation: u32,
+    /// Options new stores of this session are created with (compaction).
+    pub(crate) store_options: StoreOptions,
+    pub(crate) meta: Meta,
+    /// The journal's `open` record, the latest `saved` and `state` records: compaction copies
+    /// them into the next generation's journal (T-301).
+    pub(crate) open_record: Record,
+    pub(crate) last_saved: Option<Record>,
+    pub(crate) last_state: Option<Record>,
 }
 
 impl fmt::Debug for Session {
@@ -241,14 +251,7 @@ impl Session {
             }
         }
         let now = unix_ms(SystemTime::now());
-        let info = format!(
-            "pid={}\nhost={}\nstart_unix_ms={now}\n",
-            std::process::id(),
-            hostname()
-        );
-        lock.set_len(0)
-            .and_then(|()| write_all_at(&lock, info.as_bytes(), 0))
-            .map_err(ProjectError::io("writing the session lock"))?;
+        write_lock_info(&lock)?;
 
         let meta = Meta {
             format_version: STORE_FORMAT_VERSION,
@@ -270,20 +273,22 @@ impl Session {
         fs::create_dir(dir.join(TAKES_DIR_NAME))
             .map_err(ProjectError::io("creating the takes directory"))?;
 
+        let store_options = config.store.clone();
         let store = ChunkStore::create(&dir, 0, config.store)?;
         let mut journal = Journal::create(&dir.join(journal_file_name(0)))?;
         let history = History::new(DocSnapshot::empty(config.sample_rate_hz));
+        let open_record = Record::Open {
+            format_version: STORE_FORMAT_VERSION,
+            sample_rate_hz: config.sample_rate_hz,
+            source: config.source.as_ref().map(|s| SourceRecord {
+                path: s.path.to_string_lossy().into_owned(),
+                size_bytes: s.size_bytes,
+                mtime_unix_ms: s.mtime_unix_ms,
+                format: s.format.clone(),
+            }),
+        };
         journal.append(&[
-            Record::Open {
-                format_version: STORE_FORMAT_VERSION,
-                sample_rate_hz: config.sample_rate_hz,
-                source: config.source.as_ref().map(|s| SourceRecord {
-                    path: s.path.to_string_lossy().into_owned(),
-                    size_bytes: s.size_bytes,
-                    mtime_unix_ms: s.mtime_unix_ms,
-                    format: s.format.clone(),
-                }),
-            },
+            open_record.clone(),
             Record::Checkpoint(CheckpointRecord::from_history(&history, Vec::new())),
         ])?;
         sync_dir(&dir).map_err(ProjectError::io("creating the session"))?;
@@ -298,6 +303,12 @@ impl Session {
             journaled_chunks: Vec::new(),
             open_take: None,
             next_take: 1,
+            generation: 0,
+            store_options,
+            meta,
+            open_record,
+            last_saved: None,
+            last_state: None,
         })
     }
 
@@ -354,6 +365,16 @@ impl Session {
     /// The open take, if any.
     pub fn open_take(&self) -> Option<TakeId> {
         self.open_take.map(|t| t.id)
+    }
+
+    /// The open take and where it will be inserted.
+    pub fn open_take_at(&self) -> Option<(TakeId, u64)> {
+        self.open_take.map(|t| (t.id, t.at))
+    }
+
+    /// The current store generation (T-301 compaction bumps it).
+    pub fn generation(&self) -> u32 {
+        self.generation
     }
 
     /// A fresh marker id.
@@ -503,14 +524,14 @@ impl Session {
             .collect()
     }
 
-    fn is_journaled(&self, id: ChunkId) -> bool {
+    pub(crate) fn is_journaled(&self, id: ChunkId) -> bool {
         self.journaled_chunks
             .get(id as usize)
             .copied()
             .unwrap_or(false)
     }
 
-    fn mark_journaled(&mut self, id: ChunkId) {
+    pub(crate) fn mark_journaled(&mut self, id: ChunkId) {
         let i = id as usize;
         if self.journaled_chunks.len() <= i {
             self.journaled_chunks.resize(i + 1, false);
@@ -673,6 +694,31 @@ impl Session {
         self.mark_saved_with_sidecar(path, format, None, None)
     }
 
+    /// [`Self::mark_saved_with_sidecar`], also recording the written file's `(size, mtime)` so
+    /// crash recovery can tell a later change on disk from this save (T-301, SPEC-004 §2.7).
+    pub fn mark_saved_file(
+        &mut self,
+        path: &Path,
+        format: &str,
+        audio_crc32: Option<String>,
+        sidecar: Option<bool>,
+        file_facts: Option<(u64, u64)>,
+    ) -> Result<()> {
+        let record = Record::Saved {
+            path: path.to_string_lossy().into_owned(),
+            seq: self.history.current_seq(),
+            format: format.to_owned(),
+            audio_crc32,
+            sidecar,
+            file_size_bytes: file_facts.map(|f| f.0),
+            file_mtime_unix_ms: file_facts.map(|f| f.1),
+        };
+        self.journal.append(std::slice::from_ref(&record))?;
+        self.history.mark_saved();
+        self.last_saved = Some(record);
+        Ok(())
+    }
+
     /// [`Self::mark_saved`], additionally recording the file fingerprint and whether the sidecar
     /// write succeeded (SPEC-018 §4.5).
     pub fn mark_saved_with_sidecar(
@@ -682,20 +728,82 @@ impl Session {
         audio_crc32: Option<String>,
         sidecar: Option<bool>,
     ) -> Result<()> {
-        self.journal.append(&[Record::Saved {
-            path: path.to_string_lossy().into_owned(),
-            seq: self.history.current_seq(),
-            format: format.to_owned(),
-            audio_crc32,
-            sidecar,
-        }])?;
-        self.history.mark_saved();
-        Ok(())
+        self.mark_saved_file(path, format, audio_crc32, sidecar, None)
     }
 
     /// Journals sidecar-level rack/view state (the caller debounces, ADR-004 §6).
     pub fn append_state(&mut self, state: serde_json::Value) -> Result<()> {
-        self.journal.append(&[Record::State { state }])
+        let record = Record::State { state };
+        self.journal.append(std::slice::from_ref(&record))?;
+        self.last_state = Some(record);
+        Ok(())
+    }
+
+    /// Crash recovery's "Apply as recorded" (SPEC-004 §2.7): commits the open take from its WAV
+    /// (authoritative, ADR-004 §9 step 5) as one undoable "Record" edit at its insertion point,
+    /// exactly as if Stop had been pressed. Markers pressed during the take were never journaled
+    /// and are not recovered. An empty WAV closes the take with `take_discard` (`Ok(None)`).
+    pub fn apply_open_take_from_wav(&mut self) -> Result<Option<HistoryStep>> {
+        let open = self.open_take.ok_or(ProjectError::NoSuchTake(0))?;
+        let parts = crate::take::recover_take(&self.takes_dir(), open.id.0)?;
+        let mut writer = self.store.writer();
+        crate::take::copy_take_into(&parts, &mut writer)?;
+        let audio = writer.finish()?;
+        if audio.len_samples == 0 {
+            self.journal
+                .append(&[Record::TakeDiscard { take: open.id.0 }])?;
+            self.open_take = None;
+            return Ok(None);
+        }
+        let at = open.at.min(self.history.current().len_samples);
+        let edit = Edit::new(TAKE_LABEL_KEY).replace(at, 0, audio.pieces);
+        let step = self.commit_internal(&edit, Some((open.id, None)))?;
+        self.open_take = None;
+        Ok(Some(step))
+    }
+
+    /// Crash recovery's "Open as new document" (SPEC-004 §2.7): copies the open take's WAV into a
+    /// new session under `sessions_dir` (one undoable "Record" edit on an empty document), then
+    /// closes the take here with `take_discard`. `Ok(None)` (and nothing created) when the WAV
+    /// holds no audio.
+    pub fn open_take_as_new_session(
+        &mut self,
+        sessions_dir: &Path,
+        store: StoreOptions,
+    ) -> Result<Option<Session>> {
+        let open = self.open_take.ok_or(ProjectError::NoSuchTake(0))?;
+        let parts = crate::take::recover_take(&self.takes_dir(), open.id.0)?;
+        let mut fresh = Session::create(
+            sessions_dir,
+            SessionConfig {
+                sample_rate_hz: self.sample_rate_hz,
+                source: None,
+                store,
+            },
+        )?;
+        let mut writer = fresh.chunk_writer();
+        let built = crate::take::copy_take_into(&parts, &mut writer)
+            .and_then(|_| writer.finish())
+            .and_then(|audio| {
+                if audio.len_samples == 0 {
+                    return Ok(false);
+                }
+                fresh
+                    .commit_edit(Edit::new(TAKE_LABEL_KEY).replace(0, 0, audio.pieces))
+                    .map(|_| true)
+            })
+            .and_then(|made| self.discard_take(open.id).map(|()| made));
+        match built {
+            Ok(true) => Ok(Some(fresh)),
+            Ok(false) => {
+                let _ = fresh.close();
+                Ok(None)
+            }
+            Err(e) => {
+                let _ = fresh.close();
+                Err(e)
+            }
+        }
     }
 
     /// Closes the document after Save or Don't Save: journals `close`, releases the store and the
@@ -728,6 +836,55 @@ impl Session {
             error,
             session: None,
         })
+    }
+}
+
+/// Writes this process's pid/host/start time into a session lock file (informational).
+pub(crate) fn write_lock_info(lock: &File) -> Result<()> {
+    let info = format!(
+        "pid={}\nhost={}\nstart_unix_ms={}\n",
+        std::process::id(),
+        hostname(),
+        unix_ms(SystemTime::now())
+    );
+    lock.set_len(0)
+        .and_then(|()| write_all_at(lock, info.as_bytes(), 0))
+        .map_err(ProjectError::io("writing the session lock"))
+}
+
+/// The generation-numbered files of a session directory.
+const GENERATION_FILES: [(&str, &str); 3] = [
+    ("chunks.", ".f32"),
+    ("peaks.", ".bin"),
+    ("journal.", ".jsonl"),
+];
+
+/// Removes generation `generation`'s store, peaks and journal files (best-effort).
+pub(crate) fn remove_generation_files(dir: &Path, generation: u32) {
+    for (prefix, suffix) in GENERATION_FILES {
+        let _ = fs::remove_file(dir.join(format!("{prefix}{generation}{suffix}")));
+    }
+}
+
+/// Removes every generation's files except `keep`'s (leftovers of an interrupted compaction).
+pub(crate) fn remove_other_generations(dir: &Path, keep: u32) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let generation = GENERATION_FILES.iter().find_map(|(prefix, suffix)| {
+            name.strip_prefix(prefix)?
+                .strip_suffix(suffix)?
+                .parse::<u32>()
+                .ok()
+        });
+        if generation.is_some_and(|g| g != keep) {
+            let _ = fs::remove_file(entry.path());
+        }
     }
 }
 

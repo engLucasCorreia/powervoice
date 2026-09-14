@@ -12,6 +12,9 @@
 //! - [`journal`]: the append-only, CRC-checked, `fdatasync`ed edit journal.
 //! - [`history`]: [`Edit`]s and the undo/redo stacks of snapshots.
 //! - [`gc`]: start-up classification and deletion of session directories.
+//! - [`recovery`]: journal replay and crash recovery of a session (T-301).
+//! - [`budget`]: the disk budget, compaction by generation and dropping the oldest undo steps
+//!   under disk pressure (T-301).
 //!
 //! # Concurrency contract
 //! - **Control thread** owns the [`Session`] (`&mut self` API). Every command that changes the
@@ -30,6 +33,7 @@
 //! - Snapshots are immutable and shared by `Arc`; dropping the last reference to one is cheap and
 //!   never touches the store.
 
+pub mod budget;
 pub mod disk;
 pub mod edit;
 pub mod error;
@@ -41,6 +45,7 @@ pub mod journal;
 pub mod normalize;
 pub mod peaks_query;
 pub mod reader;
+pub mod recovery;
 pub mod save;
 pub mod session;
 pub mod sidecar;
@@ -49,11 +54,12 @@ pub mod store;
 pub mod take;
 pub mod vxpk;
 
+pub use budget::{DiskAction, DiskLimits, DiskUsage, HousekeepingReport};
 pub use disk::{FixedFreeSpace, FreeSpaceProvider, SystemFreeSpace};
 pub use edit::{PostEdit, Range, RangeError, Target as EditTarget, validate_range};
 pub use error::{ProjectError, Result};
 pub use fs_util::canonical_path_for_compare;
-pub use history::{Edit, EditOp, History, HistoryStep, MarkerMapping, MarkerOp};
+pub use history::{Edit, EditOp, History, HistoryStep, LabelParams, MarkerMapping, MarkerOp};
 pub use import::{
     CHANNEL_PROBE_WINDOW_S, ImportChannel, ImportProbe, ImportResult, MAX_CHANNELS,
     MAX_SAMPLE_RATE_HZ, MIN_SAMPLE_RATE_HZ, import_file, import_wav, probe_for_import,
@@ -68,6 +74,7 @@ pub use normalize::{
 };
 pub use peaks_query::{PEAKS_RAW_SPP, peaks};
 pub use reader::SnapshotReader;
+pub use recovery::{RecoveredTakeInfo, RecoveryReport, SavedFacts};
 pub use save::save_snapshot_wav;
 pub use session::{
     CloseError, FinishedTake, Session, SessionConfig, SourceInfo, TAKE_LABEL_KEY, TakeCapture,

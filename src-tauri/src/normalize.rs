@@ -30,6 +30,10 @@ use crate::ipc::{
     Notice, NoticeLevel, emit_job_progress, emit_normalize_result, emit_notice,
 };
 
+// A handful of events per normalize job, moved once into the emitter — the `DocumentChanged`
+// variant's size (DocumentDto grew with H-12's view state and T-301's `recovered`) doesn't
+// matter here, so no boxing.
+#[allow(clippy::large_enum_variant)]
 enum NormalizeEvent {
     Progress(JobProgressDto),
     Result(NormalizeResultDto),

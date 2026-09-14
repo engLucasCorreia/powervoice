@@ -504,6 +504,29 @@ pub fn read_take_samples(take: &RecoveredTake, start: u64, out: &mut [f32]) -> R
     Ok(n)
 }
 
+/// Streams every recovered sample of `parts` (in order) into `writer`; returns the count
+/// (crash recovery applies a take from its WAV, ADR-004 §9 step 5).
+pub fn copy_take_into(
+    parts: &[RecoveredTake],
+    writer: &mut crate::store::ChunkWriter,
+) -> Result<u64> {
+    let mut buf = vec![0f32; crate::CHUNK_SAMPLES];
+    let mut total = 0u64;
+    for part in parts {
+        let mut pos = 0u64;
+        while pos < part.samples {
+            let n = read_take_samples(part, pos, &mut buf)?;
+            if n == 0 {
+                break;
+            }
+            writer.append(&buf[..n])?;
+            pos += n as u64;
+            total += n as u64;
+        }
+    }
+    Ok(total)
+}
+
 /// Rewrites a recovered file as a valid WAV: drops a torn trailing partial sample and patches the
 /// header to the recovered length.
 pub fn repair_take_header(take: &RecoveredTake) -> Result<()> {

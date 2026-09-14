@@ -27,6 +27,8 @@ describe("edit store (S2-01)", () => {
       can_redo: false,
       undo_label: "history.cut",
       redo_label: null,
+      undo_label_params: {},
+      redo_label_params: {},
     };
     await emit("history_state", history);
     expect(editState().history).toEqual(history);

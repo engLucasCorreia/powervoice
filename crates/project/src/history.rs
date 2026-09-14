@@ -1,5 +1,6 @@
 //! Edits and the undo/redo stacks of snapshots (ADR-004 §3–§4, Amendment 1).
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::snapshot::{DocSnapshot, Marker, MarkerId, Piece, Source, shift_markers, sort_markers};
@@ -61,12 +62,18 @@ pub enum MarkerOp {
     },
 }
 
-/// One undoable change: piece-table ops, marker ops, an i18n label key for "Undo ‹label›" and
-/// the optional opaque attachment (ADR-004 Amendment 1: the engine's serialized pre-bake rack).
-/// `project` stores the attachment verbatim and never interprets it.
+/// Placeholder values of an undo label (ADR-004 Amendment 3): `history.normalize` +
+/// `{target: "−1"}` renders "Normalize to −1 dB". Journaled verbatim with the edit.
+pub type LabelParams = BTreeMap<String, String>;
+
+/// One undoable change: piece-table ops, marker ops, an i18n label key for "Undo ‹label›" (plus
+/// its [`LabelParams`]) and the optional opaque attachment (ADR-004 Amendment 1: the engine's
+/// serialized pre-bake rack). `project` stores the attachment verbatim and never interprets it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Edit {
     pub label_key: String,
+    /// ADR-004 Amendment 3: the label's placeholder values.
+    pub label_params: LabelParams,
     pub ops: Vec<EditOp>,
     pub marker_ops: Vec<MarkerOp>,
     pub attachment: Option<Vec<u8>>,
@@ -109,6 +116,12 @@ impl Edit {
         self
     }
 
+    /// Adds one label placeholder value (ADR-004 Amendment 3).
+    pub fn with_label_param(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.label_params.insert(name.into(), value.into());
+        self
+    }
+
     /// Sets the opaque attachment.
     pub fn with_attachment(mut self, attachment: Vec<u8>) -> Self {
         self.attachment = Some(attachment);
@@ -133,6 +146,7 @@ pub(crate) struct Entry {
     pub(crate) snapshot: Arc<DocSnapshot>,
     pub(crate) seq: u64,
     pub(crate) label_key: Arc<str>,
+    pub(crate) label_params: Arc<LabelParams>,
     pub(crate) attachment: Option<Arc<[u8]>>,
     pub(crate) audio: bool,
     pub(crate) first_at: Option<u64>,
@@ -147,6 +161,8 @@ pub struct HistoryStep {
     pub seq: u64,
     /// Its label key.
     pub label_key: Arc<str>,
+    /// Its label's placeholder values (ADR-004 Amendment 3).
+    pub label_params: Arc<LabelParams>,
     /// Its attachment, verbatim.
     pub attachment: Option<Arc<[u8]>>,
     /// `true` if samples changed: the engine must stop playback first (ADR-004 §3).
@@ -161,6 +177,7 @@ pub(crate) struct PreparedEdit {
     snapshot: DocSnapshot,
     seq: u64,
     label_key: Arc<str>,
+    label_params: Arc<LabelParams>,
     attachment: Option<Arc<[u8]>>,
     audio: bool,
     first_at: Option<u64>,
@@ -257,6 +274,32 @@ impl History {
         self.redo.last().map(|e| &*e.label_key)
     }
 
+    /// Placeholder values of [`Self::undo_label`] (ADR-004 Amendment 3).
+    pub fn undo_label_params(&self) -> Option<&LabelParams> {
+        self.undo.last().map(|e| &*e.label_params)
+    }
+
+    /// Placeholder values of [`Self::redo_label`].
+    pub fn redo_label_params(&self) -> Option<&LabelParams> {
+        self.redo.last().map(|e| &*e.label_params)
+    }
+
+    /// Labels (key + params) of the undo stack, oldest first.
+    pub fn undo_labels(&self) -> Vec<(&str, &LabelParams)> {
+        self.undo
+            .iter()
+            .map(|e| (&*e.label_key, &*e.label_params))
+            .collect()
+    }
+
+    /// Labels (key + params) of the redo stack, oldest (bottom) first.
+    pub fn redo_labels(&self) -> Vec<(&str, &LabelParams)> {
+        self.redo
+            .iter()
+            .map(|e| (&*e.label_key, &*e.label_params))
+            .collect()
+    }
+
     /// Seq of the edit that produced the current state (0 at the floor).
     pub fn current_seq(&self) -> u64 {
         self.undo.last().map_or(0, |e| e.seq)
@@ -349,11 +392,63 @@ impl History {
         self.next_marker_id
     }
 
+    /// A history rebuilt from a checkpoint (recovery, ADR-004 §9): `current` keeps its stamped
+    /// `rev`/`audio_rev`; the counters continue exactly where the checkpointed session was.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_parts(
+        current: DocSnapshot,
+        undo: Vec<Entry>,
+        redo: Vec<Entry>,
+        next_rev: u64,
+        next_audio_rev: u64,
+        next_seq: u64,
+        saved_seq: u64,
+        next_marker_id: u64,
+    ) -> History {
+        let floor_marker_id = std::iter::once(&current)
+            .chain(undo.iter().chain(&redo).map(|e| &*e.snapshot))
+            .flat_map(|s| s.markers.iter())
+            .map(|m| m.id.0 + 1)
+            .max()
+            .unwrap_or(1);
+        let max_rev = std::iter::once(&current)
+            .chain(undo.iter().chain(&redo).map(|e| &*e.snapshot))
+            .map(|s| (s.rev, s.audio_rev))
+            .fold((0, 0), |(r, a), (sr, sa)| (r.max(sr), a.max(sa)));
+        let max_seq = undo.iter().chain(&redo).map(|e| e.seq).max().unwrap_or(0);
+        History {
+            current: Arc::new(current),
+            undo,
+            redo,
+            // Older checkpoints may lack the rev counters (`serde(default)` = 0).
+            next_rev: next_rev.max(max_rev.0 + 1),
+            next_audio_rev: next_audio_rev.max(max_rev.1 + 1),
+            next_seq: next_seq.max(max_seq + 1),
+            saved_seq,
+            next_marker_id: next_marker_id.max(floor_marker_id),
+        }
+    }
+
+    /// Sets the saved seq (journal `saved` replay).
+    pub(crate) fn set_saved_seq(&mut self, seq: u64) {
+        self.saved_seq = seq;
+    }
+
+    /// Removes the `count` oldest undo entries (SPEC-004 §2.5 OD-1 = A): the oldest remaining
+    /// entry's "before" state becomes the new undo floor. The current state and the redo stack
+    /// are never touched. Returns how many were removed.
+    pub(crate) fn drop_oldest_undo(&mut self, count: usize) -> usize {
+        let n = count.min(self.undo.len());
+        self.undo.drain(..n);
+        n
+    }
+
     fn step(current: &Arc<DocSnapshot>, entry: &Entry) -> HistoryStep {
         HistoryStep {
             snapshot: Arc::clone(current),
             seq: entry.seq,
             label_key: Arc::clone(&entry.label_key),
+            label_params: Arc::clone(&entry.label_params),
             attachment: entry.attachment.clone(),
             audio_changed: entry.audio,
             first_at: entry.first_at,
@@ -487,6 +582,7 @@ impl History {
             snapshot,
             seq: self.next_seq,
             label_key: edit.label_key.as_str().into(),
+            label_params: Arc::new(edit.label_params.clone()),
             attachment: edit.attachment.as_deref().map(Arc::from),
             audio,
             first_at: edit.first_at(),
@@ -506,6 +602,7 @@ impl History {
             snapshot: previous,
             seq: prepared.seq,
             label_key: Arc::clone(&prepared.label_key),
+            label_params: Arc::clone(&prepared.label_params),
             attachment: prepared.attachment.clone(),
             audio: prepared.audio,
             first_at: prepared.first_at,
@@ -521,6 +618,7 @@ impl History {
             snapshot: Arc::clone(&self.current),
             seq: prepared.seq,
             label_key: prepared.label_key,
+            label_params: prepared.label_params,
             attachment: prepared.attachment,
             audio_changed: prepared.audio,
             first_at: prepared.first_at,

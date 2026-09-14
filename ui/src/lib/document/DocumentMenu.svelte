@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { DefaultFormatDto } from "../ipc/bindings";
   import { openExportDialog } from "../export/export.svelte";
+  import { openRecoveryStorage } from "../recovery/recovery.svelte";
   import { t } from "../i18n";
   import { openNewRecordingPrompt, recordState } from "../state/record.svelte";
   import { settingsState } from "../state/settings.svelte";
@@ -72,6 +73,9 @@
     onclick={openExport}
   >
     {t("menu.file.export")}
+  </button>
+  <button type="button" data-testid="menu-recovery" onclick={() => void openRecoveryStorage()}>
+    {t("menu.file.recovery")}
   </button>
   <span class="document-name" data-testid="document-name">{label}</span>
 </div>

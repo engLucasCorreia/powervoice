@@ -43,7 +43,7 @@ const DOC_CHANGED: DocumentDto = {
   dirty: false,
   audio_rev: 1,
   sidecar_dirty: false,
-  spectral_view: null, waveform_view: null,
+  spectral_view: null, waveform_view: null, recovered: false,
 };
 
 function marker(id: number, pos: number, len = 0, name = `m${id}`): MarkerDto {

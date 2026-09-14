@@ -117,6 +117,27 @@ pub fn canonical_path_for_compare(path: &Path) -> std::path::PathBuf {
     out
 }
 
+/// Whether process `pid` is still running (`.powervoice-tmp-<pid>` dead-pid rule, SPEC-004 §2.6,
+/// SPEC-018 AC-6). Unix: `kill(pid, 0)`. Elsewhere conservatively `true`, so a temp file whose
+/// owner can't be checked is never deleted.
+#[cfg(unix)]
+pub(crate) fn pid_is_alive(pid: i32) -> bool {
+    if pid <= 0 {
+        return true;
+    }
+    // SAFETY: `kill(pid, 0)` sends no signal; it only probes whether `pid` exists and is
+    // reachable. Always safe to call with any `pid` value.
+    let ret = unsafe { libc::kill(pid, 0) };
+    // Only ESRCH means "no such process" (EPERM: it exists but isn't ours). std maps ESRCH to no
+    // `ErrorKind` in particular, so compare the raw errno.
+    ret == 0 || io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn pid_is_alive(_pid: i32) -> bool {
+    true
+}
+
 /// Milliseconds since the Unix epoch (0 for clocks before it).
 pub(crate) fn unix_ms(t: SystemTime) -> u64 {
     t.duration_since(UNIX_EPOCH)

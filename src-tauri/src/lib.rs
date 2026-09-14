@@ -6,6 +6,7 @@
 pub mod audio;
 pub mod document;
 pub mod export;
+pub mod housekeeping;
 pub mod ipc;
 pub mod logging;
 pub mod loudness;
@@ -41,6 +42,13 @@ pub fn run() {
             // S1-03: the document service shares the engine handle (`set_document` after
             // open/save-as) and owns the one open session under the OS data dir.
             let documents = document::DocumentService::new(sessions_dir, engine.handle().clone());
+            // T-301 (SPEC-004 §2.4): the saved "Memory for audio" budget.
+            documents.set_memory_budget_mib(settings.memory_budget_mib);
+            // T-301 (SPEC-004 §2.8, ADR-004 §10): finish interrupted deletions and remove
+            // cleanly closed sessions before anything opens; recoverable ones wait for the UI's
+            // recovery dialog (`recovery_list`).
+            let recoverable = documents.recovery_list().len();
+            tracing::info!(recoverable, "session start-up cleanup done");
             // S1-04: recording into the document service (default format, saved monitoring).
             let recording = recording::start(
                 app.handle(),
@@ -86,6 +94,13 @@ pub fn run() {
             app.manage(nr_capture);
             app.manage(loudness);
             app.manage(normalize);
+            // T-301: rack/view state journaling (2 s) and the disk budget check (10 s / after
+            // every edit, SPEC-004 §2.5).
+            let housekeeping = housekeeping::start(
+                app.handle().clone(),
+                app.state::<document::DocumentService>().inner().clone(),
+            );
+            app.manage(housekeeping);
             Ok(())
         })
         .invoke_handler(ipc::invoke_handler())

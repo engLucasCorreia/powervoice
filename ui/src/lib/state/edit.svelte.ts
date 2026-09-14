@@ -30,6 +30,8 @@ const IDLE_HISTORY: HistoryStateDto = {
   can_redo: false,
   undo_label: null,
   redo_label: null,
+  undo_label_params: {},
+  redo_label_params: {},
 };
 
 const EMPTY_CLIPBOARD: ClipboardChangedDto = {

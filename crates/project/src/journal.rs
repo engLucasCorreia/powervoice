@@ -3,8 +3,9 @@
 //! One record per line: `<crc32 hex>\t<compact JSON>\n`, CRC32 over the JSON bytes. Every
 //! [`Journal::append`] writes its records with one `write` and `fdatasync`s before returning, so a
 //! command that returned `Ok` survives a crash. A torn or corrupt line ends the valid journal
-//! ([`parse_journal`]); replay and recovery on top of it are T-301.
+//! ([`parse_journal`]); replay and recovery on top of it live in [`crate::recovery`] (T-301).
 
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -12,7 +13,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::fs_util::{from_hex, sync_dir, to_hex, write_all_at};
-use crate::history::{Edit, EditOp, Entry, History, MarkerMapping, MarkerOp};
+use crate::history::{Edit, EditOp, Entry, History, LabelParams, MarkerMapping, MarkerOp};
 use crate::snapshot::{DocSnapshot, Marker, MarkerId, Piece, Source};
 use crate::store::{ChunkId, ChunkLocation};
 use crate::{ProjectError, Result};
@@ -168,11 +169,14 @@ pub enum MarkerOpRecord {
     Move { id: u64, pos: u64, len: u64 },
 }
 
-/// `edit {seq, label_key, ops, marker_ops, take?, attachment?}`.
+/// `edit {seq, label_key, label_params?, ops, marker_ops, take?, attachment?}`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EditRecord {
     pub seq: u64,
     pub label_key: String,
+    /// ADR-004 Amendment 3: the label's placeholder values (`{"target": "−1"}`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub label_params: LabelParams,
     #[serde(default)]
     pub ops: Vec<OpRecord>,
     #[serde(default)]
@@ -194,6 +198,7 @@ impl EditRecord {
         EditRecord {
             seq,
             label_key: edit.label_key.clone(),
+            label_params: edit.label_params.clone(),
             ops: edit
                 .ops
                 .iter()
@@ -243,6 +248,7 @@ impl EditRecord {
     pub fn to_edit(&self) -> Edit {
         Edit {
             label_key: self.label_key.clone(),
+            label_params: self.label_params.clone(),
             ops: self
                 .ops
                 .iter()
@@ -322,7 +328,13 @@ impl SnapshotRecord {
 pub struct EntryRecord {
     pub seq: u64,
     pub label_key: String,
+    /// ADR-004 Amendment 3.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub label_params: LabelParams,
     pub audio: bool,
+    /// The edit's first affected position (SPEC-008 §2.3's undo/redo cursor rule, Amendment 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment: Option<HexBytes>,
     pub snapshot: SnapshotRecord,
@@ -333,9 +345,23 @@ impl EntryRecord {
         EntryRecord {
             seq: e.seq,
             label_key: e.label_key.to_string(),
+            label_params: (*e.label_params).clone(),
             audio: e.audio,
+            first_at: e.first_at,
             attachment: e.attachment.as_deref().map(|a| HexBytes(a.to_vec())),
             snapshot: SnapshotRecord::from_snapshot(&e.snapshot),
+        }
+    }
+
+    fn to_entry(&self) -> Entry {
+        Entry {
+            snapshot: std::sync::Arc::new(self.snapshot.to_snapshot()),
+            seq: self.seq,
+            label_key: self.label_key.as_str().into(),
+            label_params: std::sync::Arc::new(self.label_params.clone()),
+            attachment: self.attachment.as_ref().map(|a| a.0.as_slice().into()),
+            audio: self.audio,
+            first_at: self.first_at,
         }
     }
 }
@@ -383,6 +409,20 @@ impl CheckpointRecord {
                 .collect(),
         }
     }
+
+    /// The history this checkpoint describes (recovery, ADR-004 §9 step 4).
+    pub(crate) fn to_history(&self) -> History {
+        History::from_parts(
+            self.current.to_snapshot(),
+            self.undo.iter().map(EntryRecord::to_entry).collect(),
+            self.redo.iter().map(EntryRecord::to_entry).collect(),
+            self.next_rev,
+            self.next_audio_rev,
+            self.next_seq,
+            self.saved_seq,
+            self.next_marker_id,
+        )
+    }
 }
 
 /// A journal record (ADR-004 §6). `take_discard` is an addition of T-101: it closes a
@@ -405,6 +445,11 @@ pub enum Record {
     },
     Redo {
         seq: u64,
+    },
+    /// ADR-004 Amendment 3 (SPEC-004 §2.5 OD-1 = A): the `count` oldest undo entries were
+    /// removed under disk pressure.
+    DropUndo {
+        count: u64,
     },
     TakeBegin {
         take: u32,
@@ -433,6 +478,12 @@ pub enum Record {
         /// a save with no sidecar concept (never produced by this build, kept for forward compat).
         #[serde(default)]
         sidecar: Option<bool>,
+        /// T-301 (ADR-004 Amendment 3): the written file's size and mtime, so recovery can tell
+        /// "changed on disk since" from our own save (SPEC-004 §2.7).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file_size_bytes: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file_mtime_unix_ms: Option<u64>,
     },
     Checkpoint(CheckpointRecord),
     Close,
@@ -504,6 +555,75 @@ fn parse_line(line: &[u8]) -> Option<Record> {
     serde_json::from_slice(json).ok()
 }
 
+/// [`parse_journal`] plus what recovery needs: the byte offset just after each record, and how
+/// many lines follow the valid prefix.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JournalScan {
+    pub records: Vec<Record>,
+    /// `ends[i]`: byte offset just past record `i`'s newline.
+    pub ends: Vec<u64>,
+    /// Length of the valid prefix in bytes.
+    pub valid_bytes: u64,
+    /// Lines (complete or torn) after the valid prefix.
+    pub damaged_lines: usize,
+    /// Of those, lines that are recognisably a `chunks` record (not a change by themselves).
+    pub damaged_chunk_lines: usize,
+    /// The journal's last line (valid or damaged) is a `chunks` record: the edit written in the
+    /// same append never made it.
+    pub ends_with_chunks: bool,
+}
+
+impl JournalScan {
+    /// Changes lost after the valid prefix. A `chunks` record is always appended together with
+    /// the edit that references it, so a damaged one isn't a change by itself — but a trailing
+    /// one means its edit is gone.
+    pub fn damaged_changes(&self) -> usize {
+        self.damaged_lines - self.damaged_chunk_lines + usize::from(self.ends_with_chunks)
+    }
+}
+
+/// Like [`parse_journal`], with record end offsets and a count of the damaged lines. Never
+/// panics on any input.
+pub fn scan_journal(bytes: &[u8]) -> JournalScan {
+    let mut records = Vec::new();
+    let mut ends = Vec::new();
+    let mut pos = 0usize;
+    while pos < bytes.len() {
+        let Some(nl) = bytes[pos..].iter().position(|&b| b == b'\n') else {
+            break;
+        };
+        let Some(record) = parse_line(&bytes[pos..pos + nl]) else {
+            break;
+        };
+        records.push(record);
+        pos += nl + 1;
+        ends.push(pos as u64);
+    }
+    let tail = &bytes[pos..];
+    let lines = tail.split(|&b| b == b'\n').filter(|l| !l.is_empty());
+    let (mut damaged_lines, mut damaged_chunk_lines) = (0, 0);
+    let mut last_is_chunks = matches!(records.last(), Some(Record::Chunks { .. }));
+    for line in lines {
+        damaged_lines += 1;
+        last_is_chunks = line
+            .windows(CHUNKS_TAG.len())
+            .any(|w| w == CHUNKS_TAG.as_bytes());
+        if last_is_chunks {
+            damaged_chunk_lines += 1;
+        }
+    }
+    JournalScan {
+        records,
+        ends,
+        valid_bytes: pos as u64,
+        damaged_lines,
+        damaged_chunk_lines,
+        ends_with_chunks: last_is_chunks,
+    }
+}
+
+const CHUNKS_TAG: &str = "\"type\":\"chunks\"";
+
 /// Reads and parses the journal at `path`.
 pub fn read_journal(path: &Path) -> Result<JournalContents> {
     let bytes = std::fs::read(path).map_err(ProjectError::io("reading the journal"))?;
@@ -561,6 +681,29 @@ impl Journal {
         })
     }
 
+    /// Opens an existing journal for appending after cutting it to its first `len` bytes (and
+    /// `fdatasync`ing the cut): recovery drops everything after the last record it could use
+    /// (ADR-004 §9 step 4.2).
+    pub fn open_truncated(path: &Path, len: u64) -> Result<Journal> {
+        const CONTEXT: &str = "opening the journal";
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .map_err(ProjectError::io(CONTEXT))?;
+        let current = file.metadata().map_err(ProjectError::io(CONTEXT))?.len();
+        if current != len {
+            file.set_len(len.min(current))
+                .and_then(|()| file.sync_data())
+                .map_err(ProjectError::io(CONTEXT))?;
+        }
+        Ok(Journal {
+            path: path.to_path_buf(),
+            file,
+            len: len.min(current),
+        })
+    }
+
     /// Path of the journal file.
     pub fn path(&self) -> &Path {
         &self.path
@@ -595,6 +738,7 @@ mod tests {
 
     fn sample_records() -> Vec<Record> {
         let edit = Edit::new("history.record")
+            .with_label_param("target", "−1")
             .replace(0, 0, vec![Piece::chunk(0, 0, 65_536), Piece::silence(480)])
             .replace_with(10, 5, vec![Piece::silence(5)], MarkerMapping::Identity)
             .marker(MarkerOp::Add(Marker::new(
@@ -638,7 +782,10 @@ mod tests {
                 format: "wav24".into(),
                 audio_crc32: Some("9f3a51c2".into()),
                 sidecar: Some(true),
+                file_size_bytes: Some(1234),
+                file_mtime_unix_ms: Some(5678),
             },
+            Record::DropUndo { count: 3 },
             Record::Close,
         ]
     }
@@ -659,6 +806,11 @@ mod tests {
         };
         let edit = e.to_edit();
         assert_eq!(edit.attachment, Some(vec![1, 2, 3, 0xff]));
+        // ADR-004 Amendment 3: label params round-trip ("Normalize to −1 dB").
+        assert_eq!(
+            edit.label_params.get("target").map(String::as_str),
+            Some("−1")
+        );
         assert!(matches!(
             edit.ops[1],
             EditOp::Replace {

@@ -2,7 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openFileDialog, save as saveFileDialog } from "@tauri-apps/plugin-dialog";
 import type { BitDepth, DocumentDto, EventName, IpcError } from "../ipc/bindings";
-import { documentOpen, documentSave, documentSaveAs } from "../ipc/commands";
+import { documentClose, documentOpen, documentSave, documentSaveAs } from "../ipc/commands";
 import { registerAction } from "../keymap";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { t } from "../i18n";
@@ -29,6 +29,7 @@ const EMPTY: DocumentDto = {
   sidecar_dirty: false,
   spectral_view: null,
   waveform_view: null,
+  recovered: false,
 };
 
 const WAV_FILTERS = [{ name: "WAV", extensions: ["wav"] }];
@@ -120,7 +121,9 @@ export function titleFor(info: DocumentDto): string {
   if (!name) {
     return "PowerVoice";
   }
-  return `${name}${isModified(info) ? " *" : ""} — PowerVoice`;
+  // T-301 (SPEC-004 §2.7): "(recovered)" until the first save.
+  const shown = info.recovered ? t("document.recovered_title", { name }) : name;
+  return `${shown}${isModified(info) ? " *" : ""} — PowerVoice`;
 }
 
 /** A document is open (S1-04: a never-saved recording has no name or path, but a rate). */
@@ -178,6 +181,11 @@ function applyDoc(next: DocumentDto, isOpen = false): void {
   } else {
     clearPendingRestore();
   }
+}
+
+/** T-301: a document recovery opened (restores its spectral view like an open). */
+export function applyRecoveredDocument(next: DocumentDto): void {
+  applyDoc(next, true);
 }
 
 async function run(command: () => Promise<DocumentDto>, isOpen = false): Promise<boolean> {
@@ -383,6 +391,13 @@ export async function initDocument(): Promise<() => void> {
       }
       if (decision === "save" && !(await saveForPrompt())) {
         return;
+      }
+      // T-301 (SPEC-004 §2.8): Save or Don't Save ends the session — its directory is deleted,
+      // so a discarded document is never offered for recovery at the next start.
+      try {
+        await documentClose();
+      } catch (err) {
+        report(err);
       }
       // Needs `core:window:allow-destroy` (capabilities/default.json) — without it the call is
       // refused and the window can't be closed at all while the document is dirty.

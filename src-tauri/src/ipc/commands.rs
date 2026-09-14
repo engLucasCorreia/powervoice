@@ -29,7 +29,11 @@ pub async fn settings_get(store: State<'_, SettingsStore>) -> Result<Settings, I
 #[tauri::command]
 pub async fn settings_set(
     store: State<'_, SettingsStore>,
+    documents: State<'_, crate::document::DocumentService>,
     settings: Settings,
 ) -> Result<Settings, IpcError> {
-    Ok(store.set(settings)?)
+    let saved = store.set(settings)?;
+    // T-301 (SPEC-004 §2.4): "Memory for audio" applies without a restart.
+    documents.set_memory_budget_mib(saved.memory_budget_mib);
+    Ok(saved)
 }

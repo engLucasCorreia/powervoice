@@ -29,6 +29,9 @@ pub struct DocumentDto {
     /// H-12 (SPEC-018 §2.6.5): the sidecar's waveform viewport/selection/cursor, if any (`null` =
     /// keep the UI's current viewport, e.g. a newly opened document zooms to fit instead).
     pub waveform_view: Option<WaveformViewDto>,
+    /// T-301 (SPEC-004 §2.7): opened by crash recovery and not saved since — the title shows
+    /// "(recovered)".
+    pub recovered: bool,
 }
 
 impl From<DocumentInfo> for DocumentDto {
@@ -43,6 +46,7 @@ impl From<DocumentInfo> for DocumentDto {
             sidecar_dirty: info.sidecar_dirty,
             spectral_view: info.spectral_view.map(SpectralViewDto::from),
             waveform_view: info.waveform_view.map(WaveformViewDto::from),
+            recovered: info.recovered,
         }
     }
 }
@@ -199,6 +203,10 @@ pub struct HistoryStateDto {
     pub can_redo: bool,
     pub undo_label: Option<String>,
     pub redo_label: Option<String>,
+    /// T-301 (ADR-004 Amendment 3): placeholder values of `undo_label` (e.g. `target` of
+    /// "Normalize to {target} dB"); empty when it has none.
+    pub undo_label_params: std::collections::BTreeMap<String, String>,
+    pub redo_label_params: std::collections::BTreeMap<String, String>,
 }
 
 impl From<HistoryState> for HistoryStateDto {
@@ -208,6 +216,8 @@ impl From<HistoryState> for HistoryStateDto {
             can_redo: s.can_redo,
             undo_label: s.undo_label,
             redo_label: s.redo_label,
+            undo_label_params: s.undo_label_params,
+            redo_label_params: s.redo_label_params,
         }
     }
 }

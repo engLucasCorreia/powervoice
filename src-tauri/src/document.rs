@@ -5,6 +5,7 @@
 //! in the command handlers themselves (CLAUDE.md: "`src-tauri` is a thin command/event layer").
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -14,9 +15,9 @@ use vox_project::{
     DocumentIdentity, Edit, EditTarget, FinishedTake, LufsNormalizeOutcome, Marker, MarkerId,
     MarkerItemModel, MarkerMetaTable, MarkerOp, NormalizeLufsPlan, NormalizeOutcome,
     NormalizePeakPlan, Piece, ProjectError, Range, RangeError, SaveFormatModel, Session,
-    SessionConfig, SidecarNotice, SnapshotReader, TakeCapture, TakeId, TakeMode, TakeWriterOptions,
-    WrittenAudio, document_crc32, edit, marker_from_item, normalize_applied_post_edit,
-    read_sidecar, sidecar_path_for, validate_range, write_sidecar,
+    SessionConfig, SidecarNotice, SnapshotReader, StoreOptions, TakeCapture, TakeId, TakeMode,
+    TakeWriterOptions, WrittenAudio, document_crc32, edit, marker_from_item,
+    normalize_applied_post_edit, read_sidecar, sidecar_path_for, validate_range, write_sidecar,
 };
 
 use crate::ipc::{IpcError, IpcErrorCode};
@@ -109,6 +110,29 @@ struct OpenDocument {
     path: Option<PathBuf>,
     save_bits: BitDepth,
     sidecar: SidecarState,
+    /// T-301 (SPEC-004 §2.7): opened by crash recovery — modified and titled "(recovered)"
+    /// until the first save.
+    recovered: bool,
+    /// T-301: digest of the rack/view `state` last journaled (ADR-004 §6), `None` = none yet.
+    state_digest: Option<u32>,
+}
+
+impl OpenDocument {
+    fn new(
+        session: Session,
+        path: Option<PathBuf>,
+        save_bits: BitDepth,
+        sidecar: SidecarState,
+    ) -> Self {
+        OpenDocument {
+            session,
+            path,
+            save_bits,
+            sidecar,
+            recovered: false,
+            state_digest: None,
+        }
+    }
 }
 
 /// [`DocumentService::peaks`]'s result: the buckets (or raw samples, `spp == PEAKS_RAW_SPP`) plus
@@ -143,6 +167,9 @@ pub struct DocumentInfo {
     /// prior `set_waveform_view` this session) has one. `None` means "no opinion" — the UI keeps
     /// whatever viewport it already has (e.g. zoom-to-fit for a newly opened document).
     pub waveform_view: Option<WaveformViewInfo>,
+    /// T-301 (SPEC-004 §2.7): opened by crash recovery and not saved since — the title gets
+    /// "(recovered)".
+    pub recovered: bool,
 }
 
 /// T-306 (SPEC-018 §2.6.5's `view.spectral`): SPEC-007 §3's per-document spectral pane settings.
@@ -198,6 +225,30 @@ pub struct HistoryState {
     pub can_redo: bool,
     pub undo_label: Option<String>,
     pub redo_label: Option<String>,
+    /// T-301 (ADR-004 Amendment 3): the labels' placeholder values ("Normalize to {target} dB").
+    pub undo_label_params: vox_project::LabelParams,
+    pub redo_label_params: vox_project::LabelParams,
+}
+
+/// T-301 (SPEC-004 §2.7): what to do with a recovered session's interrupted take.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RecoveredTakeAction {
+    /// The default: one undoable "Record" edit, as if Stop had been pressed.
+    #[default]
+    Apply,
+    /// The take becomes a new untitled document; the session keeps its edits (and stays
+    /// recoverable if it has unsaved ones).
+    NewDocument,
+    /// Drop the take (its WAV stays until the session is cleaned up).
+    Discard,
+}
+
+/// [`DocumentService::recover`]'s result.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecoverOutcome {
+    pub info: DocumentInfo,
+    /// "The last N changes could not be recovered" (0: nothing lost).
+    pub lost_changes: usize,
 }
 
 /// S2-01: where Paste inserts or replaces (SPEC-008 §2.1). Plain document samples — the caller
@@ -363,6 +414,12 @@ struct Inner {
     /// A side channel rather than a return value so `open`/`save`/`save_as` keep returning
     /// [`DocumentInfo`] like every other command result.
     pending_sidecar_notice: Mutex<Option<SidecarNoticeInfo>>,
+    /// T-301 (SPEC-004 §2.4): the memory budget new sessions get and `set_memory_budget_mib`
+    /// applies live.
+    memory_budget_bytes: AtomicU64,
+    /// T-301: serializes creating a session directory with the start-up/recovery GC scan, so the
+    /// scan never sees a new directory before its creator has locked it.
+    session_dirs: Mutex<()>,
 }
 
 /// A sidecar-related notice for the command handler to turn into a `notice` event (SPEC-018
@@ -715,12 +772,39 @@ fn info_of(engine: &EngineHandle, doc: Option<&OpenDocument>) -> DocumentInfo {
         path: doc.path.as_ref().map(|p| p.to_string_lossy().into_owned()),
         sample_rate_hz: doc.session.sample_rate_hz(),
         len_samples: snapshot.len_samples,
-        dirty: doc.session.is_dirty(),
+        dirty: doc.session.is_dirty() || doc.recovered,
         audio_rev: snapshot.audio_rev,
         sidecar_dirty: sidecar_dirty_of(engine, doc),
         spectral_view: spectral_view_of(&doc.sidecar.view),
         waveform_view: waveform_view_of(&doc.sidecar.view, snapshot.len_samples),
+        recovered: doc.recovered,
     }
+}
+
+/// The save format a recovered document keeps: its last save's (`wav16`/`wav24`/`wav32f`), else
+/// the source file's (SPEC-005 §2.6), else WAV 24-bit.
+fn save_bits_for_recovery(report: &vox_project::RecoveryReport) -> BitDepth {
+    match report.saved.as_ref().map(|s| s.format.as_str()) {
+        Some("wav16") => return BitDepth::Bit16,
+        Some("wav24") => return BitDepth::Bit24,
+        Some("wav32f") => return BitDepth::Bit32Float,
+        _ => {}
+    }
+    match &report.source {
+        Some(source) if source.path.exists() => save_bits_for_import(&source.path, &source.format),
+        _ => BitDepth::Bit24,
+    }
+}
+
+/// `(size, mtime)` of `path` as the sidecar pre-flight check records them (0s when missing).
+fn file_facts(path: &Path) -> (u64, u64) {
+    let meta = std::fs::metadata(path).ok();
+    (
+        meta.as_ref().map(std::fs::Metadata::len).unwrap_or(0),
+        meta.and_then(|m| m.modified().ok())
+            .map(unix_ms_of)
+            .unwrap_or(0),
+    )
 }
 
 /// Closes a superseded session, retrying briefly on [`ProjectError::StoreInUse`]: the reader
@@ -761,7 +845,274 @@ impl DocumentService {
             clipboard: Mutex::new(None),
             normalize_busy: Mutex::new(false),
             pending_sidecar_notice: Mutex::new(None),
+            memory_budget_bytes: AtomicU64::new(StoreOptions::default().memory_budget_bytes),
+            session_dirs: Mutex::new(()),
         }))
+    }
+
+    /// Store options for a new or recovered session (the current memory budget).
+    fn store_options(&self) -> StoreOptions {
+        StoreOptions::with_memory_budget(self.0.memory_budget_bytes.load(Ordering::Relaxed))
+    }
+
+    /// Creates a session directory while holding [`Inner::session_dirs`].
+    fn create_session(&self, mut config: SessionConfig) -> Result<Session, ProjectError> {
+        config.store = self.store_options();
+        let _dirs = self.0.session_dirs.lock().unwrap();
+        Session::create(&self.0.sessions_dir, config)
+    }
+
+    /// T-301 (SPEC-004 §2.4, §3 `memory_budget`): Settings → Performance → "Memory for audio",
+    /// 256 MiB … 16 GiB. Applies at once to the open document's store (evicting down to it) and
+    /// to every session created later.
+    pub fn set_memory_budget_mib(&self, mib: u32) {
+        let bytes = u64::from(mib.clamp(256, 16_384)) * 1024 * 1024;
+        self.0.memory_budget_bytes.store(bytes, Ordering::Relaxed);
+        if let Some(doc) = self.0.open.lock().unwrap().as_ref() {
+            doc.session.store().set_memory_budget(bytes);
+        }
+    }
+
+    /// The directory sessions live in.
+    pub fn sessions_dir(&self) -> &Path {
+        &self.0.sessions_dir
+    }
+
+    // --- T-301: crash recovery, session cleanup, housekeeping -------------------------------
+
+    /// SPEC-004 §2.7/§2.8, ADR-004 §9–§10: finishes interrupted deletions, deletes cleanly
+    /// closed sessions silently, and returns the recoverable ones (newest first). Sessions in
+    /// use by a running instance — this one's included — are neither listed nor touched.
+    pub fn recovery_list(&self) -> Vec<vox_project::gc::RecoverableSession> {
+        let report = {
+            let _dirs = self.0.session_dirs.lock().unwrap();
+            vox_project::gc::collect_garbage(&self.0.sessions_dir)
+        };
+        for (dir, error) in &report.errors {
+            tracing::warn!(dir = %dir.display(), %error, "session cleanup failed");
+        }
+        let mut sessions = report.recoverable;
+        sessions.sort_by_key(|s| std::cmp::Reverse(s.last_modified));
+        sessions
+    }
+
+    /// `<sessions>/<id>` for a recovery command, refusing anything that isn't a plain directory
+    /// name there.
+    fn recovery_dir(&self, id: &str) -> Result<PathBuf, IpcError> {
+        let plain = !id.is_empty()
+            && !id.starts_with('.')
+            && !id.contains(['/', '\\'])
+            && !id.ends_with(vox_project::gc::DELETING_SUFFIX);
+        let dir = self.0.sessions_dir.join(id);
+        if !plain || !dir.is_dir() {
+            return Err(IpcError::new(
+                IpcErrorCode::NotFound,
+                "error.recovery.not_found",
+            ));
+        }
+        Ok(dir)
+    }
+
+    /// Discard (recovery dialog, Settings → Recovery & storage → Clear…): permanently deletes a
+    /// recoverable session. A session in use is refused (`error.session_locked`).
+    pub fn recovery_discard(&self, id: &str) -> Result<(), IpcError> {
+        let dir = self.recovery_dir(id)?;
+        let _dirs = self.0.session_dirs.lock().unwrap();
+        vox_project::gc::discard_session(&dir).map_err(document_error)
+    }
+
+    /// Recover (SPEC-004 §2.7): rebuilds the session's exact document and undo/redo history
+    /// (`Session::recover`), handles its interrupted take per `take_action`, restores the rack
+    /// and view from the last journaled `state`, and makes it the open document — modified,
+    /// titled "(recovered)", bound to its original path. Replaces whatever was open (the UI
+    /// runs the unsaved-changes prompt first).
+    pub fn recover(
+        &self,
+        id: &str,
+        take_action: RecoveredTakeAction,
+    ) -> Result<RecoverOutcome, IpcError> {
+        if self.is_recording() {
+            return Err(IpcError::not_while_recording());
+        }
+        let dir = self.recovery_dir(id)?;
+        let (mut session, report) =
+            Session::recover(&dir, self.store_options()).map_err(document_error)?;
+        let mut path = report.bound_path().map(Path::to_path_buf);
+        let mut save_bits = save_bits_for_recovery(&report);
+        let mut state = report.state.clone();
+        if let Some(take) = report.open_take {
+            match take_action {
+                RecoveredTakeAction::Apply => {
+                    session.apply_open_take_from_wav().map_err(document_error)?;
+                }
+                RecoveredTakeAction::Discard => {
+                    session.discard_take(take.take).map_err(document_error)?;
+                }
+                RecoveredTakeAction::NewDocument => {
+                    let fresh = {
+                        let _dirs = self.0.session_dirs.lock().unwrap();
+                        session
+                            .open_take_as_new_session(&self.0.sessions_dir, self.store_options())
+                            .map_err(document_error)?
+                    };
+                    if let Some(fresh) = fresh {
+                        // The original keeps its edits: deleted if nothing is unsaved, else left
+                        // (unlocked) for the next recovery dialog.
+                        if session.is_dirty() {
+                            drop(session);
+                        } else if let Err(e) = session.close() {
+                            tracing::warn!(error = %e.error, "closing the recovered session failed");
+                        }
+                        session = fresh;
+                        path = None;
+                        save_bits = BitDepth::Bit24;
+                        state = None;
+                    }
+                }
+            }
+        }
+
+        let mut sidecar = SidecarState::none();
+        if let Some(state) = &state {
+            if let Some(model) = state
+                .get("rack")
+                .and_then(|r| serde_json::from_value::<vox_rack::RackModel>(r.clone()).ok())
+            {
+                let _ = self.0.engine.rack_load_model(model);
+            }
+            if let Some(view) = state.get("view") {
+                sidecar.view = view.clone();
+            }
+        }
+        // The dialog already warned about a changed file ("saving will overwrite the file"), so
+        // Save doesn't ask again; `last_saved_audio_rev = 0` forces a full save.
+        if let Some(p) = &path {
+            (sidecar.file_size_bytes, sidecar.file_mtime_unix_ms) = file_facts(p);
+        }
+        let snapshot = session.current();
+        let save_format = save_format_model(save_bits);
+        let markers = sidecar.marker_meta.build_items(&snapshot.markers);
+        let rack = current_rack_value(&self.0.engine);
+        sidecar.persisted_digest =
+            vox_project::sidecar::persisted_digest(&save_format, &markers, &rack);
+        sidecar.last_written_markers = markers;
+
+        self.0.engine.set_document(Some(PlaybackDoc {
+            store: Arc::clone(session.store()),
+            snapshot,
+        }));
+        *self.0.clipboard.lock().unwrap() = None;
+        let mut doc = OpenDocument::new(session, path, save_bits, sidecar);
+        doc.recovered = true;
+        let mut guard = self.0.open.lock().unwrap();
+        let previous = guard.replace(doc);
+        let info = info_of(&self.0.engine, guard.as_ref());
+        drop(guard);
+        if let Some(previous) = previous {
+            close_with_retry(previous.session);
+        }
+        Ok(RecoverOutcome {
+            info,
+            lost_changes: report.lost_changes,
+        })
+    }
+
+    /// Closes the document for good after Save or Don't Save (SPEC-004 §2.8: quit): journals
+    /// `close` and deletes the session directory. Refused while recording.
+    pub fn close(&self) -> Result<(), IpcError> {
+        let previous = {
+            let mut guard = self.0.open.lock().unwrap();
+            if guard.as_ref().is_some_and(|d| d.session.is_recording()) {
+                return Err(IpcError::not_while_recording());
+            }
+            guard.take()
+        };
+        self.0.engine.set_document(None);
+        *self.0.clipboard.lock().unwrap() = None;
+        if let Some(doc) = previous {
+            close_with_retry(doc.session);
+        }
+        Ok(())
+    }
+
+    /// ADR-004 §6 `state` (debounced by the caller, ~2 s): journals the rack and view state when
+    /// it differs from the last journaled one, so crash recovery restores them (SPEC-004 §2.7).
+    pub fn journal_state_if_changed(&self) {
+        let mut guard = self.0.open.lock().unwrap();
+        let Some(doc) = guard.as_mut() else {
+            return;
+        };
+        let state = serde_json::json!({
+            "rack": current_rack_value(&self.0.engine),
+            "view": doc.sidecar.view,
+        });
+        let digest = serde_json::to_vec(&state)
+            .map(|b| crc32fast::hash(&b))
+            .unwrap_or(0);
+        if doc.state_digest == Some(digest) {
+            return;
+        }
+        match doc.session.append_state(state) {
+            Ok(()) => doc.state_digest = Some(digest),
+            Err(error) => tracing::warn!(%error, "journaling the rack/view state failed"),
+        }
+    }
+
+    /// SPEC-004 §2.5's disk check (after every edit and every 10 s idle): compaction, then the
+    /// oldest undo steps (OD-1 = A), via `Session::housekeep`. Skipped while recording, while a
+    /// normalize job runs and during playback (a store switch would stop it) — the next check
+    /// retries. `None` when nothing ran.
+    pub fn housekeeping(
+        &self,
+        free: &dyn vox_project::FreeSpaceProvider,
+    ) -> Option<vox_project::HousekeepingReport> {
+        if self.is_normalize_busy() || self.0.engine.transport_state().playing {
+            return None;
+        }
+        let clip = self
+            .0
+            .clipboard
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|c| c.pieces.clone())
+            .unwrap_or_default();
+        let mut guard = self.0.open.lock().unwrap();
+        let doc = guard.as_mut()?;
+        if doc.session.is_recording() {
+            return None;
+        }
+        let report = match doc
+            .session
+            .housekeep(&clip, free, &vox_project::DiskLimits::default())
+        {
+            Ok(report) => report,
+            Err(error) => {
+                tracing::warn!(%error, "session housekeeping failed");
+                return None;
+            }
+        };
+        if report.compacted {
+            self.0.engine.set_document(Some(PlaybackDoc {
+                store: Arc::clone(doc.session.store()),
+                snapshot: doc.session.current(),
+            }));
+        }
+        Some(report)
+    }
+
+    /// Settings → Recovery & storage's "Session storage: X (history Y)" for the open document.
+    pub fn storage_usage(&self) -> Option<vox_project::DiskUsage> {
+        let clip = self
+            .0
+            .clipboard
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|c| c.pieces.clone())
+            .unwrap_or_default();
+        let guard = self.0.open.lock().unwrap();
+        guard.as_ref().map(|d| d.session.disk_usage(&clip))
     }
 
     /// The currently open document (or [`DocumentInfo::default`] when none is open).
@@ -804,7 +1155,7 @@ impl DocumentService {
                 format: probe.container.clone(),
             });
         }
-        let mut session = Session::create(&self.0.sessions_dir, config).map_err(document_error)?;
+        let mut session = self.create_session(config).map_err(document_error)?;
         let cancel = vox_project::CancelToken::new();
         let import = vox_project::import_file(
             &mut session,
@@ -885,12 +1236,12 @@ impl DocumentService {
         sidecar.last_written_markers = markers;
 
         let mut guard = self.0.open.lock().unwrap();
-        let previous = guard.replace(OpenDocument {
+        let previous = guard.replace(OpenDocument::new(
             session,
-            path: Some(path.to_path_buf()),
+            Some(path.to_path_buf()),
             save_bits,
             sidecar,
-        });
+        ));
         let info = info_of(&self.0.engine, guard.as_ref());
         drop(guard);
         if let Some(previous) = previous {
@@ -985,6 +1336,7 @@ impl DocumentService {
         if let Some(notice) = save_to(doc, &self.0.engine, &path, bits)? {
             self.set_sidecar_notice(notice);
         }
+        doc.recovered = false;
         Ok(info_of(&self.0.engine, guard.as_ref()))
     }
 
@@ -1002,6 +1354,7 @@ impl DocumentService {
         }
         doc.path = Some(path.to_path_buf());
         doc.save_bits = bits;
+        doc.recovered = false;
         Ok(info_of(&self.0.engine, guard.as_ref()))
     }
 
@@ -1098,7 +1451,8 @@ impl DocumentService {
                     "error.record.needs_replace",
                 ));
             }
-            let session = Session::create(&self.0.sessions_dir, SessionConfig::new(rate_hz))
+            let session = self
+                .create_session(SessionConfig::new(rate_hz))
                 .map_err(document_error)?;
             // The empty document also sets the output to the recording's rate (Dry monitoring
             // needs one rate on both streams).
@@ -1108,12 +1462,12 @@ impl DocumentService {
             }));
             // S2-01: same as `open` — a new document invalidates the clipboard.
             *self.0.clipboard.lock().unwrap() = None;
-            previous = guard.replace(OpenDocument {
+            previous = guard.replace(OpenDocument::new(
                 session,
-                path: None,
+                None,
                 save_bits,
-                sidecar: SidecarState::none(),
-            });
+                SidecarState::none(),
+            ));
         }
         let doc = guard.as_mut().ok_or_else(no_document)?;
         let capture = doc
@@ -1188,19 +1542,19 @@ impl DocumentService {
                 let ipc_err = document_error(err);
                 let rate_hz = doc.session.sample_rate_hz();
                 let save_bits = doc.save_bits;
-                match Session::create(&self.0.sessions_dir, SessionConfig::new(rate_hz)) {
+                match self.create_session(SessionConfig::new(rate_hz)) {
                     Ok(fresh) => {
                         self.0.engine.set_document(Some(PlaybackDoc {
                             store: Arc::clone(fresh.store()),
                             snapshot: fresh.current(),
                         }));
                         *self.0.clipboard.lock().unwrap() = None;
-                        if let Some(broken) = guard.replace(OpenDocument {
-                            session: fresh,
-                            path: None,
+                        if let Some(broken) = guard.replace(OpenDocument::new(
+                            fresh,
+                            None,
                             save_bits,
-                            sidecar: SidecarState::none(),
-                        }) {
+                            SidecarState::none(),
+                        )) {
                             tracing::warn!(
                                 session = %broken.session.id(),
                                 "leaving a session with an uncommitted take for a future recovery pass"
@@ -1244,6 +1598,8 @@ impl DocumentService {
             can_redo: history.redo_depth() > 0,
             undo_label: history.undo_label().map(str::to_owned),
             redo_label: history.redo_label().map(str::to_owned),
+            undo_label_params: history.undo_label_params().cloned().unwrap_or_default(),
+            redo_label_params: history.redo_label_params().cloned().unwrap_or_default(),
         }
     }
 
@@ -1832,6 +2188,10 @@ fn save_to(
         || bits != doc.save_bits
         || std::fs::metadata(path).is_err();
 
+    // SPEC-004 §2.6, AC-12: leftovers of an interrupted save by a dead process go first.
+    if let Some(parent) = path.parent() {
+        vox_project::gc::remove_stale_temp_files(parent);
+    }
     if needs_full {
         let wav_markers: Vec<Marker> = markers.iter().map(marker_from_item).collect();
         let mut reader =
@@ -1873,12 +2233,18 @@ fn save_to(
 
     // Journal `saved` regardless of the sidecar outcome (SPEC-018 §2.9): the audio save (or the
     // decision to keep its bytes) stands either way.
+    // T-301: the file's size/mtime too, so crash recovery can tell a later change on disk from
+    // this save (SPEC-004 §2.7).
+    let written_facts = file_meta
+        .as_ref()
+        .map(|m| (m.len(), m.modified().map(unix_ms_of).unwrap_or(0)));
     doc.session
-        .mark_saved_with_sidecar(
+        .mark_saved_file(
             path,
             format_tag(bits),
             Some(vox_project::sidecar::crc32_to_hex(audio_crc32)),
             Some(sidecar_written),
+            written_facts,
         )
         .map_err(document_error)?;
 
@@ -3715,5 +4081,152 @@ mod tests {
         // "Open Anyway": re-issuing with the confirm flag proceeds normally.
         let info = service2.open(&path, true).unwrap();
         assert_eq!(info.name.as_deref(), Some("a.wav"));
+    }
+
+    // --- T-301: crash recovery, session cleanup, memory budget, state journaling -------------
+
+    fn open_sine(service: &DocumentService, dir: &Path) -> PathBuf {
+        let wav_path = dir.join("in.wav");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.5, 48_000).unwrap();
+        write_fixture_wav(
+            &wav_path,
+            &samples,
+            vox_testkit::wav::BitDepth::Float32,
+            48_000,
+        );
+        service.open(&wav_path, false).unwrap();
+        wav_path
+    }
+
+    /// SPEC-004 AC-10 / §2.8 through the service: a crashed session is listed with its unsaved
+    /// changes; Recover opens it modified, "(recovered)", bound to its file, with its undo
+    /// history; while open it isn't listed; Save clears "(recovered)"; close deletes it.
+    #[test]
+    fn t301_recover_a_crashed_session_then_close_deletes_it() {
+        let dir = tmp_dir("t301-recover");
+        let sessions = dir.join("sessions");
+        {
+            let engine = test_engine();
+            let service = DocumentService::new(sessions.clone(), engine.handle());
+            open_sine(&service, &dir);
+            service.edit_silence(0, 1_000).unwrap();
+            service.edit_delete(2_000, 3_000).unwrap();
+            // Crash: the service and its session go away without `close`.
+        }
+        let engine = test_engine();
+        let service = DocumentService::new(sessions.clone(), engine.handle());
+        let listed = service.recovery_list();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].unsaved_count, 2);
+        assert_eq!(
+            listed[0].path.as_deref(),
+            Some(dir.join("in.wav").as_path())
+        );
+        let outcome = service
+            .recover(&listed[0].id, RecoveredTakeAction::Apply)
+            .unwrap();
+        assert!(outcome.info.recovered && outcome.info.dirty);
+        assert_eq!(outcome.info.name.as_deref(), Some("in.wav"));
+        assert_eq!(outcome.lost_changes, 0);
+        let history = service.history_state();
+        assert_eq!(history.undo_label.as_deref(), Some("history.delete"));
+        assert!(history.can_undo);
+        assert!(service.recovery_list().is_empty(), "in use: not listed");
+        assert!(
+            service.recovery_discard(&listed[0].id).is_err(),
+            "a session in use is never deleted"
+        );
+
+        let saved = service.save(true).unwrap();
+        assert!(!saved.recovered && !saved.dirty);
+        let session_dir = listed[0].dir.clone();
+        service.close().unwrap();
+        assert!(!session_dir.exists());
+        assert_eq!(service.info(), DocumentInfo::default());
+        assert!(service.recovery_list().is_empty());
+    }
+
+    /// Recovery refuses ids that aren't a session directory name.
+    #[test]
+    fn t301_recovery_ids_are_plain_directory_names() {
+        let (service, _engine, _dir) = service("t301-ids");
+        for id in ["", "..", "../x", "a/b", ".hidden", "nope"] {
+            let err = service.recover(id, RecoveredTakeAction::Apply).unwrap_err();
+            assert_eq!(err.key, "error.recovery.not_found", "{id:?}");
+        }
+    }
+
+    /// SPEC-004 §2.4: the memory budget applies to the open store at once, clamped to
+    /// 256 MiB … 16 GiB.
+    #[test]
+    fn t301_memory_budget_applies_live_and_clamps() {
+        let (service, _engine, dir) = service("t301-budget");
+        open_sine(&service, &dir);
+        let budget = || {
+            service
+                .0
+                .open
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .session
+                .store()
+                .memory_budget()
+        };
+        service.set_memory_budget_mib(300);
+        assert_eq!(budget(), 300 * 1024 * 1024);
+        service.set_memory_budget_mib(1);
+        assert_eq!(budget(), 256 * 1024 * 1024);
+    }
+
+    /// ADR-004 §6: the rack/view `state` is journaled once per change, and recovery restores the
+    /// view from it.
+    #[test]
+    fn t301_rack_and_view_state_are_journaled_once_per_change() {
+        let dir = tmp_dir("t301-state");
+        let sessions = dir.join("sessions");
+        let spectral = SpectralViewInfo {
+            visible: true,
+            split_ratio: 0.3,
+            fft_size: Some(4096),
+            freq_scale: "linear".into(),
+            display_floor_db: -100.0,
+            display_ceil_db: 0.0,
+            colormap: "viridis".into(),
+        };
+        {
+            let engine = test_engine();
+            let service = DocumentService::new(sessions.clone(), engine.handle());
+            open_sine(&service, &dir);
+            service.edit_silence(0, 100).unwrap();
+            let journal = service
+                .0
+                .open
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .session
+                .journal_path()
+                .to_path_buf();
+            let states = || {
+                std::fs::read_to_string(&journal)
+                    .unwrap()
+                    .matches("\"type\":\"state\"")
+                    .count()
+            };
+            service.journal_state_if_changed();
+            service.journal_state_if_changed();
+            assert_eq!(states(), 1);
+            service.set_spectral_view(spectral.clone());
+            service.journal_state_if_changed();
+            assert_eq!(states(), 2);
+        }
+        let engine = test_engine();
+        let service = DocumentService::new(sessions, engine.handle());
+        let id = service.recovery_list()[0].id.clone();
+        let outcome = service.recover(&id, RecoveredTakeAction::Apply).unwrap();
+        assert_eq!(outcome.info.spectral_view, Some(spectral));
     }
 }

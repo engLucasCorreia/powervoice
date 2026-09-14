@@ -49,6 +49,8 @@ pub(crate) fn after_edit<R: Runtime>(app: &AppHandle<R>, doc: &DocumentService) 
     let info: DocumentDto = doc.info().into();
     emit_document_changed(app, &info);
     emit_history_state(app, doc);
+    // T-301 (SPEC-004 §2.5): the disk check runs after every committed edit.
+    crate::housekeeping::kick(app);
 }
 
 /// `pub(crate)`: see [`after_edit`].

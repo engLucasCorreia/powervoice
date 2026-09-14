@@ -1,6 +1,8 @@
 //! Shared helpers for the `vox-project` integration tests.
 #![allow(dead_code)]
 
+pub mod script;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

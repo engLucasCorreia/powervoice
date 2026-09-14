@@ -12,8 +12,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::fs_util::{dir_size, sync_dir};
-use crate::journal::{Record, journal_file_name, read_journal};
+use crate::fs_util::{dir_size, pid_is_alive, sync_dir, unix_ms};
+use crate::journal::{Record, journal_file_name, scan_journal};
 use crate::session::{LOCK_FILE_NAME, TAKES_DIR_NAME, read_meta};
 use crate::take::{recover_take_file, take_part_path};
 use crate::{ProjectError, Result};
@@ -29,9 +29,20 @@ pub struct RecoverableSession {
     pub sample_rate_hz: Option<u32>,
     /// The imported file, `None` for an untitled recording.
     pub source_path: Option<PathBuf>,
+    /// The path a recovered document is bound to (its last save target, else `source_path`).
+    pub path: Option<PathBuf>,
     pub current_seq: u64,
     pub saved_seq: u64,
     pub unsaved_changes: bool,
+    /// How many undo/redo steps separate the current state from the saved one ("3 unsaved
+    /// changes", SPEC-004 §2.7).
+    pub unsaved_count: u64,
+    /// The bound file's size or mtime differ from what the session last recorded.
+    pub source_changed: bool,
+    /// The bound file no longer exists.
+    pub source_missing: bool,
+    /// Lines after the journal's valid prefix (torn or corrupt).
+    pub damaged_lines: usize,
     /// The newest take that was begun but never committed or discarded.
     pub open_take: Option<u32>,
     /// Samples recoverable from uncommitted takes.
@@ -46,6 +57,9 @@ pub struct RecoverableSession {
 
 /// How start-up treats an unlocked session.
 #[derive(Clone, Debug, PartialEq, Eq)]
+// Built once per session directory at start-up: the size difference doesn't matter, and boxing
+// would change the public shape the engine tests match on.
+#[allow(clippy::large_enum_variant)]
 pub enum SessionClass {
     /// Ends in `close`, or nothing unsaved and no take with audio: delete it.
     Clean,
@@ -155,6 +169,10 @@ struct Summary {
     open_takes: BTreeSet<u32>,
     truncated_takes: BTreeSet<u32>,
     inconsistent: bool,
+    /// `(path, size, mtime)` of the `open` record's source.
+    source: Option<(String, u64, u64)>,
+    /// `(path, size?, mtime?)` of the latest `saved` record.
+    saved: Option<(String, Option<u64>, Option<u64>)>,
 }
 
 fn summarize(records: &[Record]) -> Summary {
@@ -186,17 +204,56 @@ fn summarize(records: &[Record]) -> Summary {
             Record::TakeDiscard { take } => {
                 s.open_takes.remove(take);
             }
-            Record::Saved { seq, .. } => s.saved_seq = *seq,
+            Record::Saved {
+                seq,
+                path,
+                file_size_bytes,
+                file_mtime_unix_ms,
+                ..
+            } => {
+                s.saved_seq = *seq;
+                s.saved = Some((path.clone(), *file_size_bytes, *file_mtime_unix_ms));
+            }
+            Record::DropUndo { count } => {
+                let n = usize::try_from(*count)
+                    .unwrap_or(usize::MAX)
+                    .min(s.undo.len());
+                s.undo.drain(..n);
+            }
             Record::Checkpoint(c) => {
                 s.undo = c.undo.iter().map(|e| e.seq).collect();
                 s.redo = c.redo.iter().map(|e| e.seq).collect();
                 s.saved_seq = c.saved_seq;
             }
             Record::Close => s.closed = true,
-            Record::Open { .. } | Record::Chunks { .. } | Record::State { .. } => {}
+            Record::Open { source, .. } => {
+                s.source = source
+                    .as_ref()
+                    .map(|src| (src.path.clone(), src.size_bytes, src.mtime_unix_ms));
+            }
+            Record::Chunks { .. } | Record::State { .. } => {}
         }
     }
     s
+}
+
+/// Undo/redo steps between the current state and the saved one (0: clean).
+fn unsaved_count(undo: &[u64], redo: &[u64], saved: u64) -> u64 {
+    let current = undo.last().copied().unwrap_or(0);
+    if current == saved {
+        return 0;
+    }
+    let steps = if saved == 0 {
+        undo.len()
+    } else if let Some(p) = undo.iter().position(|&s| s == saved) {
+        undo.len() - 1 - p
+    } else if let Some(p) = redo.iter().rposition(|&s| s == saved) {
+        redo.len() - p
+    } else {
+        // The saved state is gone (redo truncated): every edit since the floor is unsaved.
+        undo.len().max(1)
+    };
+    steps as u64
 }
 
 /// Classifies an unlocked session directory (ADR-004 §9 step 2). The caller should hold the
@@ -207,13 +264,18 @@ pub fn classify_session(dir: &Path) -> Result<SessionClass> {
     let journal_path = dir.join(journal_file_name(generation));
     let takes_dir = dir.join(TAKES_DIR_NAME);
 
-    let (summary, damaged) = if journal_path.exists() {
-        let contents = read_journal(&journal_path)?;
-        (summarize(&contents.records), contents.damaged)
+    let (summary, damaged, damaged_lines) = if journal_path.exists() {
+        let bytes = fs::read(&journal_path).map_err(ProjectError::io("reading the journal"))?;
+        let scan = scan_journal(&bytes);
+        (
+            summarize(&scan.records),
+            scan.valid_bytes < bytes.len() as u64,
+            scan.damaged_lines,
+        )
     } else {
         // Nothing was ever journaled (creation interrupted, or an in-place deletion removed the
         // journal last): only take data could still matter.
-        (Summary::default(), false)
+        (Summary::default(), false, 0)
     };
     if summary.closed && !damaged {
         return Ok(SessionClass::Clean);
@@ -240,6 +302,21 @@ pub fn classify_session(dir: &Path) -> Result<SessionClass> {
     if !journal_damaged && !unsaved && !open_take_present && truncated_takes.is_empty() {
         return Ok(SessionClass::Clean);
     }
+    let unsaved_count = unsaved_count(&summary.undo, &summary.redo, summary.saved_seq);
+    let (path, facts) = match (&summary.saved, &summary.source) {
+        (Some((path, size, mtime)), _) => (Some(PathBuf::from(path)), size.zip(*mtime)),
+        (None, Some((path, size, mtime))) => (Some(PathBuf::from(path)), Some((*size, *mtime))),
+        (None, None) => (None, None),
+    };
+    let file_meta = path.as_ref().and_then(|p| fs::metadata(p).ok());
+    let source_missing = path.is_some() && file_meta.is_none();
+    let source_changed = match (&file_meta, facts) {
+        (Some(meta), Some((size, mtime))) => {
+            let now_mtime = meta.modified().map(unix_ms).unwrap_or(0);
+            meta.len() != size || now_mtime != mtime
+        }
+        _ => false,
+    };
     Ok(SessionClass::Recoverable(RecoverableSession {
         id: dir
             .file_name()
@@ -248,9 +325,14 @@ pub fn classify_session(dir: &Path) -> Result<SessionClass> {
         dir: dir.to_path_buf(),
         sample_rate_hz: meta.as_ref().map(|m| m.sample_rate_hz),
         source_path: meta.and_then(|m| m.source_path).map(PathBuf::from),
+        path,
         current_seq,
         saved_seq: summary.saved_seq,
         unsaved_changes: unsaved,
+        unsaved_count,
+        source_changed,
+        source_missing,
+        damaged_lines,
         open_take: summary.open_takes.iter().next_back().copied(),
         open_take_samples,
         truncated_takes,
@@ -291,6 +373,40 @@ fn stray_takes(takes_dir: &Path) -> (bool, u64) {
                 sum + recover_take_file(&e.path()).map_or(0, |t| t.samples),
             )
         })
+}
+
+/// Deletes `.‹name›.powervoice-tmp-‹pid›` leftovers of an interrupted atomic save in `dir` whose
+/// pid is no longer running (SPEC-004 §2.6, AC-12): call before saving into `dir`. A temp file
+/// of a live process (another instance saving right now) is never touched. Returns how many
+/// were removed.
+pub fn remove_stale_temp_files(dir: &Path) -> usize {
+    const MARKER: &str = ".powervoice-tmp-";
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with('.') {
+            continue;
+        }
+        let Some(pos) = name.rfind(MARKER) else {
+            continue;
+        };
+        let Ok(pid) = name[pos + MARKER.len()..].parse::<i32>() else {
+            continue;
+        };
+        if pid_is_alive(pid) || !entry.file_type().is_ok_and(|t| t.is_file()) {
+            continue;
+        }
+        if fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// Deletes a session directory crash-safely (see the module docs). A missing directory is fine.

@@ -23,6 +23,8 @@
   import { initNrCapture } from "./lib/rack/nrCapture.svelte";
   import NoticeHost from "./lib/notices/NoticeHost.svelte";
   import { initMarkers } from "./lib/markers/markers.svelte";
+  import RecoveryDialog from "./lib/recovery/RecoveryDialog.svelte";
+  import { initRecovery } from "./lib/recovery/recovery.svelte";
   import LowDiskDialog from "./lib/record/LowDiskDialog.svelte";
   import NewRecordingDialog from "./lib/record/NewRecordingDialog.svelte";
   import { initEdit } from "./lib/state/edit.svelte";
@@ -56,6 +58,11 @@
         applySpectralDefaults(defaults);
       }
     });
+  });
+
+  // T-301 (SPEC-004 §2.7): offer recoverable sessions before any document opens.
+  onMount(() => {
+    void initRecovery();
   });
 
   // S2-02: the backend's `notice` event (silent/already-normalized notices, and every other
@@ -196,6 +203,7 @@
   </div>
 </div>
 <NoticeHost />
+<RecoveryDialog />
 <UnsavedChangesDialog />
 <ConfirmDialog />
 <SaveAsDialog />

@@ -71,7 +71,7 @@ describe("RecentFilesMenu (T-306, SPEC-018 §2.12)", () => {
           dirty: false,
           audio_rev: 1,
           sidecar_dirty: false,
-          spectral_view: null, waveform_view: null,
+          spectral_view: null, waveform_view: null, recovered: false,
         };
       }
       throw new Error(`unmocked command: ${cmd}`);

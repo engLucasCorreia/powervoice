@@ -93,6 +93,10 @@ pub enum ProjectError {
     /// touched.
     #[error("backing up the sidecar failed: {0}")]
     SidecarBackupFailed(#[source] io::Error),
+    /// T-301 (SPEC-004 §2.7): nothing in a session can be recovered (no intact checkpoint, or
+    /// the undo floor's audio fails its checksum) — only Discard is possible.
+    #[error("nothing in this session can be recovered")]
+    NothingRecoverable,
 }
 
 impl ProjectError {
@@ -133,6 +137,7 @@ impl ProjectError {
             | ProjectError::Json(_) => "error.internal",
             ProjectError::SidecarLocked => "error.save.sidecar_locked",
             ProjectError::SidecarBackupFailed(_) => "error.save.sidecar_backup",
+            ProjectError::NothingRecoverable => "error.recovery.nothing_intact",
             // T-202: SPEC-005 §2.5's specific open/import error keys, when the wrapped `IoError`
             // says which one applies; every other `IoError` (write/encode failures, plain I/O)
             // keeps the general `error.io` key.

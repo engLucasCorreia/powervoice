@@ -33,6 +33,8 @@ mod recent_files_commands;
 mod recent_files_dto;
 mod record_commands;
 mod record_dto;
+mod recovery_commands;
+mod recovery_dto;
 mod spectro_commands;
 mod spectro_dto;
 
@@ -81,6 +83,10 @@ pub use recent_files_commands::*;
 pub use recent_files_dto::RecentFileDto;
 pub use record_commands::*;
 pub use record_dto::{RecordStateDto, engine_monitor_mode};
+pub use recovery_commands::*;
+pub use recovery_dto::{
+    RecoverResultDto, RecoverableSessionDto, RecoveredTakeActionDto, StorageInfoDto,
+};
 pub use spectro_commands::*;
 pub use spectro_dto::SpectroRequestDto;
 
@@ -133,11 +139,16 @@ crate::ipc_commands!(
     document_probe,
     document_save,
     document_save_as,
+    document_close,
     sidecar_view_set_spectral,
     sidecar_view_set_waveform,
     recent_files_get,
     recent_files_remove,
     recent_files_clear,
+    recovery_list,
+    recovery_recover,
+    recovery_discard,
+    storage_info,
     peaks_get,
     spectro_attach,
     spectro_detach,
@@ -211,11 +222,16 @@ crate::ipc_commands!(
     document_probe,
     document_save,
     document_save_as,
+    document_close,
     sidecar_view_set_spectral,
     sidecar_view_set_waveform,
     recent_files_get,
     recent_files_remove,
     recent_files_clear,
+    recovery_list,
+    recovery_recover,
+    recovery_discard,
+    storage_info,
     peaks_get,
     spectro_attach,
     spectro_detach,

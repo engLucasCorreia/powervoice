@@ -25,10 +25,14 @@ import type {
   PeaksRequestDto,
   RackStateDto,
   RecentFileDto,
+  RecoverableSessionDto,
+  RecoverResultDto,
+  RecoveredTakeActionDto,
   ResponseCurveDto,
   Settings,
   SpectralViewDto,
   SpectroRequestDto,
+  StorageInfoDto,
   TransportStateDto,
   WaveformViewDto,
 } from "./bindings";
@@ -497,4 +501,32 @@ export async function loudnessAnalyzeCancel(jobId: number): Promise<void> {
  */
 export async function acxCheck(request: AcxCheckRequestDto): Promise<AcxCheckReportDto> {
   return invoke<AcxCheckReportDto>("acx_check" satisfies CommandName, { request });
+}
+
+/** T-301 (SPEC-004 §2.7): the recoverable sessions (also removes cleanly closed ones). */
+export async function recoveryList(): Promise<RecoverableSessionDto[]> {
+  return invoke<RecoverableSessionDto[]>("recovery_list" satisfies CommandName);
+}
+
+/** T-301: Recover session `id`, handling its interrupted take per `takeAction`. */
+export async function recoveryRecover(
+  id: string,
+  takeAction: RecoveredTakeActionDto,
+): Promise<RecoverResultDto> {
+  return invoke<RecoverResultDto>("recovery_recover" satisfies CommandName, { id, takeAction });
+}
+
+/** T-301: permanently deletes recoverable session `id`; returns the remaining list. */
+export async function recoveryDiscard(id: string): Promise<RecoverableSessionDto[]> {
+  return invoke<RecoverableSessionDto[]>("recovery_discard" satisfies CommandName, { id });
+}
+
+/** T-301 (SPEC-004 §2.5): Recovery & Storage's figures. */
+export async function storageInfo(): Promise<StorageInfoDto> {
+  return invoke<StorageInfoDto>("storage_info" satisfies CommandName);
+}
+
+/** T-301 (SPEC-004 §2.8): closes the document for good after the quit prompt. */
+export async function documentClose(): Promise<void> {
+  return invoke<void>("document_close" satisfies CommandName);
 }

@@ -58,9 +58,10 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-16 | Analyzer follow-ups (T-208): floor/ceiling, frequency zoom, hover, device state, View menu toggle, settings persistence; wire `telemetry_rate_hz` (30 Hz) into VXTM/VXMT/VXSA | S | done |
 | H-19 | Real menu bar (File/Edit/View/Effects/Help dropdowns, keyboard access, shortcuts shown) replacing the flat always-visible "menu" toolbars | S | done |
 | H-20 | Save/open gaps (SPEC-005): dither None, keep FLAC when opened FLAC + full WAV promotion table, format-mapped/metadata-dropped notices, stereo→mono save warning, progressive import display | S | todo |
-| H-21 | Punch-in follow-ups (T-304): markers during an operation, live take drawn at the punch point, device loss per phase, talent-source exactness tests (drift, dropouts), AC-11/AC-15, Settings → Recording page | S | todo |
+| H-22 | Preset UX (T-406): rename in slot/rack menus, overwrite-confirm on save, manage dialog, import/export preset files | S | todo |
+| H-21 | Punch-in follow-ups (T-304): markers during an operation, live take drawn at the punch point, device loss per phase, talent-source exactness tests (drift, dropouts), AC-11/AC-15, Settings → Recording page | S | in progress |
 | H-18 | Shared test factories for DTOs (`ui/src/lib/test/fixtures.ts` + Rust builders) so a new DTO field touches one helper, not 20 test literals (merge-friction fix) | H | todo |
-| H-17 | Recovery follow-ups (T-301): dialog stays open for remaining sessions (A-015), AC-3/AC-11 timing on a real disk (test-big), compaction off the document lock, markers during an interrupted take, Memory-for-audio UI, `/tmp/vox-project-*` sweep | S | in progress |
+| H-17 | Recovery follow-ups (T-301): dialog stays open for remaining sessions (A-015), AC-3/AC-11 timing on a real disk (test-big), compaction off the document lock, markers during an interrupted take, Memory-for-audio UI, `/tmp/vox-project-*` sweep | S | done |
 | H-15 | Sidecar follow-ups (T-306): recent-file-missing dialog, read-only folder matrix (AC-13), SIGKILL-during-sidecar-save test (AC-6), per-slot leniency for a malformed rack slot, perf budget (AC-18) | S | done |
 | H-13 | WebGL2 renderers (ADR-009 primary): spectrogram R8 textures + colormap shader, waveform; Canvas2D stays the fallback; FFT-size texture gating live | S+OR | done (renderer setting UI → H-19; owner smoke on real hardware pending) |
 | H-14 | FLAC export is malformed: flacenc frame numbering makes `flac -t` warn (not seekable) and symphonia reject our own exports — fix or replace the encoder; then FLAC verify-before-rename (SPEC-005 §2.11) | S | done |
@@ -127,7 +128,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-403 | Dynamics A: detector, compressor, limiter | W1 | O | M3 | done (via S3-02) |
 | T-404 | True-peak limiter | W1 | O | M3 | done (via S3-05 + H-03) |
 | T-405 | Rack panel + generic parameter UI | W2 | S | T-401 | done (via S3-01) |
-| T-406 | Module & rack presets | W2 | S | T-401 | in progress |
+| T-406 | Module & rack presets | W2 | S | T-401 | done (rename/overwrite UX → H-22) |
 | T-407 | Dynamics B: expander + AutoGate | W2 | O | T-403 | → S3-02 (params implemented); rest: verify SPEC-016 part-2 ACs |
 | T-408 | Noise gate (shared envelope/hysteresis) | W3 | O | T-407 | done (via S3-02) |
 | T-409 | EQ graph UI (analyzer + ResponseCurve) | W3 | S | T-402, T-405, T-208 | → S3-07 (done); rest: analyzer overlay, keyboard nodes, expanded view |
@@ -159,7 +160,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-702 | i18n audit | W1 | H | M6 | todo |
 | T-703 | Settings audit | W1 | S | M6 | todo |
 | T-704 | Performance tuning vs targets | W1 | O | M6 | todo |
-| T-705 | AppImage/deb, Win/mac build docs, README/user guide | W2 | S | T-701..T-704 | todo |
+| T-705 | AppImage/deb, Win/mac build docs, README/user guide | W2 | S | T-701..T-704 | in progress |
 
 ## M8 — External plugins
 | ID | Title | Wave | Tier | Deps | Status |

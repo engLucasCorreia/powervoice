@@ -122,6 +122,7 @@ check-cross:
     cargo check -p vox-project --target x86_64-pc-windows-gnu
     cargo check -p vox-testkit --target x86_64-pc-windows-gnu
     cargo check -p powervoice-cli --target x86_64-pc-windows-gnu
+    cargo check -p vox-sandbox-ipc --target x86_64-pc-windows-gnu
 
 # Build the roadmap dashboard (target/roadmap/index.html) from the board, git log and agent transcripts
 roadmap:

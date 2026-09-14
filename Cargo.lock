@@ -5095,6 +5095,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "vox-sandbox-ipc"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "thiserror 2.0.20",
+ "vox-module-api",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "vox-testkit"
 version = "0.1.0"
 dependencies = [

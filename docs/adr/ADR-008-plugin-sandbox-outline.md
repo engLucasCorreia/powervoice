@@ -211,3 +211,87 @@ exposes them as native VST3/CLAP.
    owner want the synchronous low-latency option as well? Decide after the T-801 measurements.
 2. Does the owner accept that sandboxing is crash isolation only, with no protection against
    malicious plugins?
+
+## Amendment 1 — T-801 transport, as implemented (2026-09-14)
+Crate `vox-sandbox-ipc` (std + libc; windows-sys on Windows; no new third-party crate).
+
+### 1. Segment layout, version 1 (`layout.rs`, frozen by `tests/layout.rs`)
+| Offset | Size | Content |
+|---|---|---|
+| 0 | 64 | header, host-written once: magic `PVSBXIPC`, version, sizes, sample rate, `max_block` B, ring capacity C, event capacity E, latency L, start position, host pid |
+| 64 | 64 | host cursors: `in_write_pos`, event cursors, `host_command` (run/shutdown) |
+| 128 | 64 | plugin cursors: `in_read_pos`, `out_write_pos`, `out_valid_from`, event cursors, overruns, chunks |
+| 192, 256 | 64 + 64 | doorbells host → plugin and plugin → host (`seq`, `waiters`) |
+| 320 | 64 | liveness, plugin-written: state (Created/Running/Stopped/Failed), plugin pid, heartbeat, in-call marker |
+| 384 | 64 | 16 telemetry cells (`f32` bits) |
+| 512 | 4C + 4C | input and output **sample rings** |
+| 512 + 8C | 32E + 32E | event rings host → plugin and plugin → host (`pos`, `id`, `kind`, `value`) |
+
+- The rings are **indexed by absolute stream position** (masked by C − 1), not by block, so the
+  output delay is exactly L for any callback size ≤ B. C = next_pow2(8·B), at least 64. The
+  total size is rounded up to 4 KiB.
+- L = `latency_samples` ∈ [0, B]. The default L = B is §2's pipelined mode. L = 0 is the
+  synchronous "low-latency" alternative, and uses the same code path.
+- Every word is an atomic. The host never indexes with a plugin cursor unmasked, and it treats
+  `out_write_pos` beyond its own published input as a miss. The dry signal comes from a host-local
+  copy of the input.
+- **Overrun:** the host never waits for ring space; it overwrites. The plugin re-checks
+  `in_write_pos` after copying (a seqlock-style check). If it lags by more than C − B, it
+  resynchronises to the present and publishes `out_valid_from`, and the host treats older output
+  as a miss.
+- **Event rings** are SPSC. When full, the event is dropped and counted. The plugin delivers the
+  events with `pos` < chunk end; late events land at offset 0.
+
+### 2. Wakeup and shared memory
+- **Linux:** futex as decided in §3: `FUTEX_WAKE` only when the peer is parked (waiter count),
+  `FUTEX_WAIT_BITSET` with an absolute deadline.
+- **Shared memory, Linux:** memfd with shrink/grow/seal seals. The fd is inherited by exactly one
+  child: `pre_exec` clears `FD_CLOEXEC` in that child only. The handle is `memfd:<fd>`.
+- **Shared memory, macOS:** `shm_open` (also built and tested on Linux).
+- **Shared memory, Windows:** `CreateFileMappingW`; only compile-checked (`just check-cross`).
+- **macOS/Windows wakeup:** they use the portable `SpinYieldWakeup` for now: spin, then yield for up
+  to 1 ms, then sleep in 100 µs steps, bounded by the deadline. The §3 primitives (named semaphores,
+  named events) need per-doorbell OS handles passed next to the segment handle. They come with the
+  process lifecycle (T-802) behind the same `Wakeup` trait.
+
+### 3. Host wait and failure model
+- **Wait budget:** `HostEnd::process` waits at most `WaitBudget::FractionOfBlock(0.25)` of the
+  block period by default. `Fixed(hang_timeout)` is §2's offline mode (`HostOptions::offline`),
+  where a miss means the render aborts. After 4 consecutive misses the host stops waiting until a
+  block is on time. ADR-002 Amendment 2 records the syscall exception.
+- **Miss:** the host outputs dry with a **splice crossfade** over 96 samples:
+  `dry + δ·(1 − t)`, where δ = last output − dry at that position. The wet signal is unknown at a
+  miss, so a true crossfade isn't possible. Recovery is a linear dry → wet crossfade over 96
+  samples. Fully wet and fully dry blocks are bit-exact copies. This short glitch fade is
+  separate from §5's 15 ms slot bypass, which T-802 applies on a fault.
+- **Fault detection:** `Monitor::poll(PeerStatus)` runs on the control thread and never blocks.
+  - `Crashed`: the process is gone (`Child::try_wait`; an unreaped crashed child is a zombie that
+    `kill(pid, 0)` misses).
+  - `Exited`: the plugin stopped cleanly without being asked to.
+  - `Failed`: the plugin reported a fatal error.
+  - `Hung { stale, in_call }`: the heartbeat has been stale for ≥ 250 ms. The clock starts at
+    attach.
+- **Effect of a fault:** the first fault sets the host's bypass flag. From then on the host
+  outputs dry and makes no wake or wait. Misses are not faults; they reach the control thread as
+  counters (`Health::new_misses`).
+- **Heartbeat and shutdown:** the plugin bumps the heartbeat on every chunk and on every idle
+  wake-up; the idle timeout must stay well below the hang timeout (the test plugins use 20 ms).
+  Shutdown is `host_command` + a ring; the plugin then marks itself Stopped, which is not a fault.
+
+### 4. Measurements (T-801 follow-up; this machine: 16 threads, Linux 7.2, release build)
+Setup: the gain test plugin runs in a child process, paced at the real-time rate, 3 s per row,
+with no RT priority on either side (`just bench`). Round trip = `HostEnd::process` duration.
+
+| Block (period) | sync futex p50 / p99 / max µs | sync spin-yield p50 / p99 / max µs | pipelined futex (host cost) p50 / p99 / max µs | misses |
+|---|---|---|---|---|
+| 64 (1333 µs) | 113 / 211 / 365 | 70 / 200 / 268 | 7.8 / 21 / 95 | 0 |
+| 128 (2667 µs) | 142 / 250 / 680 | 60 / 150 / 776 | 11 / 33 / 97 | 0 |
+| 256 (5333 µs) | 115 / 226 / 526 | 66 / 144 / 605 | 17 / 26 / 70 | 0 |
+| 512 (10667 µs) | 124 / 244 / 317 | 71 / 160 / 564 | 18 / 36 / 147 | 0 |
+
+**Open question 1:** a synchronous (L = 0) round trip fits comfortably in the budget: its p99 is
+16 % of a 64-frame period. That makes a per-plugin "low-latency" option viable later. Pipelined
+L = B stays the default: it adds about 8–18 µs per callback and had no misses. Most of the
+synchronous cost is waking the idle sandbox thread; RT priority (T-802) should shrink the tails.
+iceoryx2 was not benchmarked, since that would add a dependency and the hand-rolled layer already
+meets the budget.

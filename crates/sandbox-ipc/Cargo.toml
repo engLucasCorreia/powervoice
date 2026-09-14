@@ -1,0 +1,37 @@
+[package]
+name = "vox-sandbox-ipc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# T-801 (ADR-008 + Amendment 1): the plugin-sandbox transport — one shared-memory segment per
+# plugin instance (sample rings, event rings, heartbeat/state words), the platform wakeup shim,
+# the host-side failure model, and the four test plugins (`src/bin/vox-sbx-test-*.rs`).
+# No new third-party crates: std + libc (unix) + windows-sys (Windows, already in the workspace).
+
+[dependencies]
+thiserror.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+# Pagefile-backed named file mappings (ADR-008 §3). `Win32_Security` gates `CreateFileMappingW`'s
+# signature (the SECURITY_ATTRIBUTES pointer) in windows-sys.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Memory",
+] }
+
+[dev-dependencies]
+vox-module-api = { path = "../module-api", features = ["test-util"] }
+
+# Round-trip latency distribution (`just bench`; plain `main`, no bench framework dependency).
+[[bench]]
+name = "round_trip"
+harness = false
+
+[lints]
+workspace = true

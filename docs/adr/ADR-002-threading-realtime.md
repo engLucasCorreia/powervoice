@@ -297,3 +297,20 @@ is sufficient.
   transport restart skips the rack reset while the monitor feeds it.
 - rubato's `log` feature stays off: its `trace!` in `process_into_buffer` allocates on the audio
   thread.
+
+## Amendment 2 — the sandbox transport's syscall exception (T-801, 2026-09-14)
+ADR-008 §2 foresaw one exception to §2's "no syscalls" rule. As implemented in
+`vox-sandbox-ipc::HostEnd::process` (the transport of T-802's `ProxyModule`, and nowhere else):
+- **One non-blocking wake per callback** (`FUTEX_WAKE` on Linux), issued only when the sandbox's
+  audio thread is actually parked (a waiter count in the shared segment); otherwise no syscall.
+- **At most one bounded wait** when the plugin's output is late: `FUTEX_WAIT_BITSET` with an
+  absolute `CLOCK_MONOTONIC` deadline = a configurable fraction of the block period (default 25 %),
+  at most 64 park rounds. It is skipped after 4 consecutive misses (until a block arrives on time)
+  and never happens once the channel is bypassed after a fault.
+- **One extra clock read** (`clock_gettime`, vDSO) to set that deadline, besides §2's one
+  `Instant::now()` per callback.
+- Nothing else: no allocation (tests run `process` under `no_alloc`), no locks, no logging, no
+  unbounded loops. The dry substitute comes from a host-local copy of the input, never from the
+  shared segment.
+- The portable spin-then-yield fallback (the macOS/Windows primitive until the real ones land)
+  yields/sleeps while waiting, bounded by the same deadline.

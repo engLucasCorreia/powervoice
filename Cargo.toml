@@ -11,6 +11,7 @@ members = [
     "crates/project",
     "crates/testkit",
     "crates/cli",
+    "crates/sandbox-ipc",
     "src-tauri",
 ]
 

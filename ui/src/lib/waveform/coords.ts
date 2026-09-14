@@ -171,6 +171,19 @@ export function reduceColumns(
   return out;
 }
 
+/**
+ * The device-pixel `[top, bottom)` span of one min/max column (SPEC-006 §2.3), given its
+ * `(min, max)` amplitude pair (`-1..1`) and the vertical center `centerY`: `1.0` is the top of the
+ * pane, `-1.0` the bottom. At least 1 px tall, so a silent column still draws a visible line
+ * (H-13: the one implementation both the Canvas2D and WebGL2 renderers call, so they always agree
+ * pixel-for-pixel).
+ */
+export function columnYRange(min: number, max: number, centerY: number): [top: number, bottom: number] {
+  const top = centerY - max * centerY;
+  const bottom = centerY - min * centerY;
+  return [top, Math.max(top + 1, bottom)];
+}
+
 export interface TimeTick {
   /** Exact document sample this tick sits at (SPEC-006 AC-6: never rounded twice). */
   sample: number;

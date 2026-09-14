@@ -2,14 +2,18 @@ import { describe, expect, it } from "vitest";
 import {
   FFT_SIZES,
   MAX_TILES_PER_REQUEST,
+  TILE_FRAMES,
   autoFftSize,
   frameCenterSample,
   frameColumnBounds,
+  frameLinearMapping,
   hopForZoom,
   isOverview,
   tileCount,
+  tileDevicePxRange,
   tilesForView,
   totalFrames,
+  visibleTileIndices,
 } from "./geometry";
 
 describe("spectrogram geometry (SPEC-007 §2.6, §4.3)", () => {
@@ -95,5 +99,70 @@ describe("spectrogram geometry (SPEC-007 §2.6, §4.3)", () => {
 
     // A later column starts where the document position has advanced accordingly.
     expect(dpr2.lo[10]).toBeCloseTo((startSample + 5 * samplesPerPixel) / hop, 10);
+  });
+});
+
+describe("frameLinearMapping / visibleTileIndices / tileDevicePxRange (H-13, WebGL2 renderer)", () => {
+  it("frameLinearMapping's frame(px) formula matches frameColumnBounds's per-column values", () => {
+    const startSample = 12_345;
+    const samplesPerPixel = 37;
+    const dpr = 2;
+    const hop = 128;
+    const backingWidthPx = 50;
+    const { frameAtPx0, framesPerPx } = frameLinearMapping(startSample, samplesPerPixel, dpr, hop);
+    const { lo, hi } = frameColumnBounds(backingWidthPx, startSample, samplesPerPixel, dpr, hop);
+    for (let px = 0; px < backingWidthPx; px++) {
+      expect(frameAtPx0 + framesPerPx * px).toBeCloseTo(lo[px]!, 9);
+      expect(frameAtPx0 + framesPerPx * (px + 1)).toBeCloseTo(hi[px]!, 9);
+    }
+  });
+
+  it("tileDevicePxRange partitions [0, backingWidthPx) with no gap or overlap between tiles", () => {
+    const frameAtPx0 = 0;
+    const framesPerPx = 3.3;
+    const backingWidthPx = 400;
+    const count = 5;
+    let prevX1 = 0;
+    for (let k = 0; k < count; k++) {
+      const { x0, x1 } = tileDevicePxRange(k, frameAtPx0, framesPerPx, backingWidthPx);
+      expect(x0).toBe(prevX1);
+      expect(x1).toBeGreaterThanOrEqual(x0);
+      prevX1 = x1;
+    }
+  });
+
+  it("tileDevicePxRange is the exact inverse of frame(px) at each tile boundary", () => {
+    const frameAtPx0 = -50; // a negative frameAtPx0 is normal (startSample can be 0, hop large)
+    const framesPerPx = 0.7;
+    const backingWidthPx = 1000;
+    const { x0 } = tileDevicePxRange(2, frameAtPx0, framesPerPx, backingWidthPx);
+    const frameAtX0 = frameAtPx0 + framesPerPx * x0;
+    expect(Math.abs(frameAtX0 - 2 * TILE_FRAMES)).toBeLessThanOrEqual(framesPerPx / 2 + 1e-9);
+  });
+
+  it("tileDevicePxRange clamps to [0, backingWidthPx]", () => {
+    const { x0, x1 } = tileDevicePxRange(0, 10_000, 1, 100);
+    expect(x0).toBe(0);
+    expect(x1).toBe(0);
+  });
+
+  it("visibleTileIndices covers every tile whose quad could touch [0, backingWidthPx)", () => {
+    const frameAtPx0 = 0;
+    const framesPerPx = 2;
+    const backingWidthPx = 300;
+    const count = 20;
+    const visible = visibleTileIndices(frameAtPx0, framesPerPx, backingWidthPx, count);
+    // Every tile whose device-pixel range actually intersects the backing width must be included.
+    for (let k = 0; k < count; k++) {
+      const { x0, x1 } = tileDevicePxRange(k, frameAtPx0, framesPerPx, backingWidthPx);
+      if (x1 > x0) {
+        expect(visible).toContain(k);
+      }
+    }
+  });
+
+  it("visibleTileIndices is empty for an empty document or a zero-width canvas", () => {
+    expect(visibleTileIndices(0, 1, 100, 0)).toEqual([]);
+    expect(visibleTileIndices(0, 1, 0, 10)).toEqual([]);
   });
 });

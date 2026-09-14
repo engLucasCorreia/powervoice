@@ -64,6 +64,71 @@ export function frameColumnBounds(
   return { lo, hi };
 }
 
+/**
+ * H-13 (WebGL2 renderer): the linear frame-at-device-pixel mapping `frameColumnBounds` uses per
+ * column (`frame(px) = frameAtPx0 + framesPerPx * px`), as two scalars instead of a per-column
+ * array — the fragment shader recomputes `frame(px)` itself from these two uniforms rather than
+ * sampling a per-column lookup, so this is the CPU-side derivation shared with the tests.
+ */
+export function frameLinearMapping(
+  startSample: number,
+  samplesPerPixel: number,
+  dpr: number,
+  hop: number,
+): { frameAtPx0: number; framesPerPx: number } {
+  return {
+    frameAtPx0: startSample / hop,
+    framesPerPx: samplesPerPixel / (dpr * hop),
+  };
+}
+
+/**
+ * H-13: which tile indices' quads could be visible across device-pixel columns
+ * `[0, backingWidthPx)`, given {@link frameLinearMapping}'s scalars — one tile of margin on each
+ * side so a quad's edge is never clipped by a rounding sliver. Ordered ascending (draw order
+ * doesn't matter: tiles never overlap after {@link tileDevicePxRange}'s partition).
+ */
+export function visibleTileIndices(
+  frameAtPx0: number,
+  framesPerPx: number,
+  backingWidthPx: number,
+  tileCount: number,
+): number[] {
+  if (tileCount <= 0 || backingWidthPx <= 0) {
+    return [];
+  }
+  const lastFrame = frameAtPx0 + framesPerPx * backingWidthPx;
+  const first = Math.max(0, Math.floor(frameAtPx0 / TILE_FRAMES) - 1);
+  const last = Math.min(tileCount - 1, Math.floor(lastFrame / TILE_FRAMES) + 1);
+  const out: number[] = [];
+  for (let k = first; k <= last; k++) {
+    out.push(k);
+  }
+  return out;
+}
+
+/**
+ * H-13: the device-pixel column range `[x0, x1)` tile `tileIndex`'s quad should cover, the exact
+ * inverse of {@link frameLinearMapping}'s `frame(px)` — adjacent tiles partition `[0,
+ * backingWidthPx)` with no gap or overlap because both boundaries are computed from the same
+ * formula rounded the same way.
+ */
+export function tileDevicePxRange(
+  tileIndex: number,
+  frameAtPx0: number,
+  framesPerPx: number,
+  backingWidthPx: number,
+): { x0: number; x1: number } {
+  if (!(framesPerPx > 0)) {
+    return { x0: 0, x1: 0 };
+  }
+  const pxAtFrame = (frame: number) => (frame - frameAtPx0) / framesPerPx;
+  const clamp = (px: number) => Math.max(0, Math.min(backingWidthPx, Math.round(px)));
+  const x0 = clamp(pxAtFrame(tileIndex * TILE_FRAMES));
+  const x1 = clamp(pxAtFrame((tileIndex + 1) * TILE_FRAMES));
+  return { x0, x1 };
+}
+
 /** Overview hops (`hop > N`) get a `PREVIEW` tile before the refined one (SPEC-007 §4.4). */
 export function isOverview(fftSize: number, hop: number): boolean {
   return hop > fftSize;

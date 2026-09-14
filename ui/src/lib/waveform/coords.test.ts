@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   clampSamplesPerPixel,
   clampStartSample,
+  columnYRange,
   MIN_SAMPLES_PER_PIXEL,
   niceTickStepSeconds,
   pickLevel,
@@ -16,6 +17,22 @@ import {
   zoomFullSamplesPerPixel,
   zoomStep,
 } from "./coords";
+
+describe("columnYRange (H-13, SPEC-006 §2.3/§4.5: shared by both renderers)", () => {
+  it("maps [-1, 1] amplitude to [0, 2*centerY] pixel span", () => {
+    expect(columnYRange(-1, 1, 50)).toEqual([0, 100]);
+  });
+
+  it("is at least 1px tall for a silent (min === max) column", () => {
+    expect(columnYRange(0, 0, 50)).toEqual([50, 51]);
+  });
+
+  it("top is derived from max, bottom from min (screen y grows downward)", () => {
+    const [top, bottom] = columnYRange(-0.5, 0.8, 40);
+    expect(top).toBeCloseTo(40 - 0.8 * 40, 10);
+    expect(bottom).toBeCloseTo(40 - -0.5 * 40, 10);
+  });
+});
 
 describe("sampleAtPixel / pixelAtSample (SPEC-006 §4.1)", () => {
   it("round-trips exactly at integer spp", () => {

@@ -21,6 +21,7 @@
   import {
     clampSamplesPerPixel,
     clampStartSample,
+    columnYRange,
     MIN_SAMPLES_PER_PIXEL,
     pickLevel,
     pixelAtSample,
@@ -33,16 +34,25 @@
     zoomFullSamplesPerPixel,
     zoomStep,
   } from "./coords";
+  import { GlContextHost } from "../render/glContext";
+  import { buildOverlayBatch } from "../render/overlayGeometry";
+  import { cssColorToRgba, hexToRgba, QuadBatch } from "../render/quads";
+  import { pushNotice } from "../state/notices.svelte";
+  import { rendererPref } from "../state/rendererPref.svelte";
   import { decodeVxpk } from "./vxpk";
   import { PeaksRequester } from "./peaksRequester";
+  import { buildColumnQuads, buildRawPolyline } from "./webglGeometry";
+  import { type WaveformGlContent, WaveformGlRenderer } from "./webglRenderer";
 
   /**
-   * The waveform view (S1-03, SPEC-006 essential subset; H-07 adds the live view while recording):
-   * Canvas2D min/max fill and raw-sample polyline (ADR-009's WebGL2 primary / Canvas2D fallback
-   * choice is deferred — this ticket starts with Canvas2D, per its own scope note), horizontal
-   * zoom/scroll, the shared playhead (SPEC-003 §2.2's extrapolation, read from the transport
-   * store — never re-derived here), and click-to-seek. HiDPI aware. Selection, vertical zoom,
-   * markers and the overview strip are deferred to hardening/Slice 2 (ticket's "Out" list).
+   * The waveform view (S1-03, SPEC-006 essential subset; H-07 adds the live view while recording;
+   * H-13 adds the WebGL2 renderer): min/max fill and raw-sample polyline, drawn by WebGL2
+   * (`webglRenderer.ts`/`webglGeometry.ts`) when available, Canvas2D otherwise (ADR-009 §2/§4) —
+   * `drawWebgl2`/`drawCanvas2d` share the same pixel math (`coords.ts`, `../render/
+   * overlayGeometry.ts`) so the two renderers agree pixel-for-pixel. Horizontal zoom/scroll, the
+   * shared playhead (SPEC-003 §2.2's extrapolation, read from the transport store — never
+   * re-derived here), and click-to-seek. HiDPI aware. Selection, vertical zoom, markers and the
+   * overview strip are deferred to hardening/Slice 2 (ticket's "Out" list).
    *
    * H-12: the time ruler and scrollbar that used to live here now live in `EditorView` (shared
    * with `SpectralView`, SPEC-007 §2.1's ruler → waveform → divider → spectral → scrollbar
@@ -218,13 +228,51 @@
     return value || fallback;
   }
 
+  // H-13 (ADR-009 §2/§4): WebGL2 primary renderer, Canvas2D automatic fallback (context creation
+  // failure, `webglcontextlost`, or the `rendererPref` setting). Owns the canvas's context choice
+  // for its whole lifetime — re-created only when the canvas element itself is re-created (the
+  // `{#if isOpen}` branch closing/opening), matching the size-observer effect below (S1-03
+  // gotcha: an element bound inside a closed `{#if}` is `undefined` in `onMount`).
+  let glHost: GlContextHost | null = null;
+  let glRenderer: WaveformGlRenderer | null = null;
+
+  $effect(() => {
+    const el = canvasEl;
+    if (!el) {
+      return;
+    }
+    const host = new GlContextHost(el, rendererPref().value, {
+      // Deferred to a microtask (Svelte 5: mutating unrelated `$state` — here `notices.svelte.ts`'s
+      // toast list — synchronously from inside an `$effect`'s own body can re-trigger that same
+      // effect during the current flush; pushing the notice after this flush settles avoids it).
+      onKindDecided: (kind, reason) => {
+        if (kind === "canvas2d" && reason === "unavailable") {
+          queueMicrotask(() =>
+            pushNotice({ level: "info", key: "notice.renderer.fallback_waveform", params: {}, persistent: false, id: null }),
+          );
+        }
+      },
+      onContextLost: () => {
+        glRenderer?.dispose();
+        glRenderer = null;
+        queueMicrotask(() =>
+          pushNotice({ level: "warning", key: "notice.renderer.context_lost_waveform", params: {}, persistent: false, id: null }),
+        );
+      },
+    });
+    glHost = host;
+    glRenderer = host.gl ? new WaveformGlRenderer(host.gl) : null;
+    return () => {
+      glRenderer?.dispose();
+      glRenderer = null;
+      host.dispose();
+      glHost = null;
+    };
+  });
+
   function draw(): void {
     if (!canvasEl || viewportPx <= 0) {
       return;
-    }
-    const ctx = canvasEl.getContext("2d");
-    if (!ctx) {
-      return; // e.g. jsdom in tests, or a browser with no 2D canvas support
     }
     const dpr = window.devicePixelRatio || 1;
     const backingW = Math.max(1, Math.round(viewportPx * dpr));
@@ -232,6 +280,89 @@
     if (canvasEl.width !== backingW || canvasEl.height !== backingH) {
       canvasEl.width = backingW;
       canvasEl.height = backingH;
+    }
+    if (glHost?.kind === "webgl2" && glRenderer) {
+      drawWebgl2(glRenderer, dpr, backingW, backingH);
+      return;
+    }
+    drawCanvas2d(dpr);
+  }
+
+  /** SPEC-006 §4.5: the WebGL2 path shares its geometry with the Canvas2D fallback (`coords.ts`'s
+   * `columnYRange`/`pixelAtSample`, `../render/overlayGeometry.ts`) rather than reimplementing the
+   * pixel math, so the two renderers agree by construction. */
+  function drawWebgl2(renderer: WaveformGlRenderer, dpr: number, backingW: number, backingH: number): void {
+    const centerY = heightPx / 2;
+    const bgColor = hexToRgba(colorToken("--wave-bg", "#16171a"));
+    const fillColor = hexToRgba(colorToken("--wave-fill", "#7fc8ff"));
+    const overlay = new QuadBatch();
+    let content: WaveformGlContent | null = null;
+
+    if (isRecording) {
+      if (liveBuckets.length > 0) {
+        const columns = reduceColumns(liveBuckets, liveStartSample, liveSpb, startSample, samplesPerPixel, Math.ceil(viewportPx));
+        content = { mode: "columns", vertices: buildColumnQuads(columns, centerY, fillColor).toFloat32Array() };
+      }
+      const recordHeadColor = hexToRgba(colorToken("--wave-record-head", "#ff5c5c"));
+      const px = pixelAtSample(rec.elapsedSamples, startSample, samplesPerPixel);
+      overlay.vLine(px, 0, heightPx, recordHeadColor);
+    } else {
+      const state = requester.state;
+      const level = pickLevel(samplesPerPixel);
+      if (state && state.level === level && state.buckets.length > 0) {
+        if (level === RAW_SPP) {
+          const geometry = buildRawPolyline(
+            state.buckets,
+            state.startSample,
+            startSample,
+            samplesPerPixel,
+            centerY,
+            fillColor,
+            showsDots(samplesPerPixel),
+          );
+          content = { mode: "raw", geometry };
+        } else {
+          const columns = reduceColumns(state.buckets, state.startSample, level, startSample, samplesPerPixel, Math.ceil(viewportPx));
+          content = { mode: "columns", vertices: buildColumnQuads(columns, centerY, fillColor).toFloat32Array() };
+        }
+      } else if (state?.partial) {
+        overlay.rect(0, 0, viewportPx, heightPx, hexToRgba(colorToken("--wave-pending", "#3a3d44")));
+      }
+      overlay.append(
+        buildOverlayBatch({
+          startSample,
+          samplesPerPixel,
+          viewportPx,
+          heightPx,
+          selection: selection.current,
+          markers: markers.list,
+          playheadSample: isOpen ? transport.playheadSamples : null,
+          colors: {
+            selectionFill: cssColorToRgba(colorToken("--wave-selection-fill", "rgba(77, 163, 255, 0.22)")),
+            marker: hexToRgba(colorToken("--wave-marker", "#35c46a")),
+            markerRegionFill: cssColorToRgba(colorToken("--wave-marker-region", "rgba(53, 196, 106, 0.18)")),
+            playhead: hexToRgba(colorToken("--wave-playhead", "#ffb454")),
+          },
+        }),
+      );
+    }
+
+    renderer.draw({
+      backingWidthPx: backingW,
+      backingHeightPx: backingH,
+      cssWidthPx: viewportPx,
+      cssHeightPx: heightPx,
+      devicePixelRatio: dpr,
+      background: bgColor,
+      content,
+      overlay: overlay.vertexCount > 0 ? overlay.toFloat32Array() : null,
+    });
+  }
+
+  function drawCanvas2d(dpr: number): void {
+    const ctx = canvasEl?.getContext("2d");
+    if (!ctx) {
+      return; // e.g. jsdom in tests, or a browser with no 2D canvas support
     }
     ctx.save();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -353,9 +484,8 @@
         continue;
       }
       const [mn, mx] = column;
-      const yTop = centerY - mx * centerY;
-      const yBot = centerY - mn * centerY;
-      ctx.fillRect(px, yTop, 1, Math.max(1, yBot - yTop));
+      const [yTop, yBot] = columnYRange(mn, mx, centerY);
+      ctx.fillRect(px, yTop, 1, yBot - yTop);
     }
   }
 

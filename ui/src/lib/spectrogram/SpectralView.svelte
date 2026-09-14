@@ -35,12 +35,28 @@
     zoomAroundSample,
     ZOOM_STEP_FACTOR,
   } from "../waveform/coords";
+  import { GlContextHost } from "../render/glContext";
+  import { buildOverlayBatch } from "../render/overlayGeometry";
+  import { cssColorToRgba, hexToRgba } from "../render/quads";
+  import { pushNotice } from "../state/notices.svelte";
+  import { rendererPref } from "../state/rendererPref.svelte";
   import { colorForT, type ColormapName, normalizeDb } from "./colormap";
   import { detectMaxTextureSize, isFftSizeDisabled } from "./fftLimit";
-  import { autoFftSize, FFT_SIZES, frameColumnBounds, hopForZoom, totalFrames } from "./geometry";
+  import {
+    autoFftSize,
+    FFT_SIZES,
+    frameColumnBounds,
+    frameLinearMapping,
+    hopForZoom,
+    tileCount as tileCountFor,
+    tileDevicePxRange,
+    totalFrames,
+    visibleTileIndices,
+  } from "./geometry";
   import { formatLevelDb } from "./hoverFormat";
   import { nearestCode, pixelDb, type TileLookup } from "./sampler";
   import { createSpectroRequester, type SpectroRequester } from "./spectroRequester";
+  import { type SpectrogramTileEntry, SpectrogramGlRenderer } from "./webglRenderer";
 
   /**
    * The spectral pane (T-207, SPEC-007 essential subset; T-306/H-12 add persistence and HiDPI):
@@ -210,6 +226,110 @@
     return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
   }
 
+  // H-13 (ADR-009 §2/§4): WebGL2 primary renderer, Canvas2D automatic fallback. See
+  // WaveformView.svelte's identical pattern for the rationale (context lifetime tied to the
+  // canvas element, not the component).
+  let glHost: GlContextHost | null = null;
+  let glRenderer: SpectrogramGlRenderer | null = null;
+
+  $effect(() => {
+    const el = canvasEl;
+    if (!el) {
+      return;
+    }
+    const host = new GlContextHost(el, rendererPref().value, {
+      // Deferred to a microtask — see WaveformView.svelte's identical comment: mutating
+      // `notices.svelte.ts`'s `$state` synchronously from inside this `$effect` can re-trigger it
+      // during the current flush.
+      onKindDecided: (kind, reason) => {
+        if (kind === "canvas2d" && reason === "unavailable") {
+          queueMicrotask(() =>
+            pushNotice({ level: "info", key: "notice.renderer.fallback_spectral", params: {}, persistent: false, id: null }),
+          );
+        }
+      },
+      onContextLost: () => {
+        glRenderer?.dispose();
+        glRenderer = null;
+        queueMicrotask(() =>
+          pushNotice({ level: "warning", key: "notice.renderer.context_lost_spectral", params: {}, persistent: false, id: null }),
+        );
+      },
+    });
+    glHost = host;
+    glRenderer = host.gl ? new SpectrogramGlRenderer(host.gl) : null;
+    return () => {
+      glRenderer?.dispose();
+      glRenderer = null;
+      host.dispose();
+      glHost = null;
+    };
+  });
+
+  /** SPEC-007 §4.7: tiles as R8 textures, colormap as a 256×1 LUT, floor/ceiling/scale as
+   * uniforms — see `webglRenderer.ts`'s doc comment for the sampling rule and its known
+   * tile-boundary approximation. Overlays reuse the same `../render/overlayGeometry.ts` builder
+   * as the waveform, with `markerStyle: "lines"` to match this pane's own (simpler) Canvas2D
+   * overlay look. */
+  function drawSpectrogramWebgl2(renderer: SpectrogramGlRenderer, backingW: number, backingH: number, dpr: number): void {
+    const fftSize = spectral.fftSize ?? autoFftSize(rateHz);
+    const sppDev = samplesPerPixel / dpr;
+    const hop = hopForZoom(sppDev, fftSize);
+    const { frameAtPx0, framesPerPx } = frameLinearMapping(startSample, samplesPerPixel, dpr, hop);
+    const count = tileCountFor(lenSamples, hop);
+    const tiles: SpectrogramTileEntry[] = [];
+    for (const tileIndex of visibleTileIndices(frameAtPx0, framesPerPx, backingW, count)) {
+      const tile = requester?.tile(fftSize, hop, tileIndex);
+      if (!tile) {
+        continue;
+      }
+      const { x0, x1 } = tileDevicePxRange(tileIndex, frameAtPx0, framesPerPx, backingW);
+      if (x1 > x0) {
+        tiles.push({ tile, tileIndex, x0, x1 });
+      }
+    }
+
+    // The tile quads are in device-pixel space (H-12's one-column-per-device-pixel convention), so
+    // the overlay must be built in the same space: pass the device-pixel `samplesPerPixel`
+    // (`sppDev`) and the backing (device-pixel) width/height rather than the CSS ones, or the
+    // overlay would be scaled by `devicePixelRatio` relative to the tiles it's drawn over.
+    const overlay = buildOverlayBatch({
+      startSample,
+      samplesPerPixel: sppDev,
+      viewportPx: backingW,
+      heightPx: backingH,
+      selection: selection.current,
+      markers: markers.list,
+      playheadSample: transport.playheadSamples,
+      markerStyle: "lines",
+      colors: {
+        selectionFill: cssColorToRgba(colorToken("--wave-selection-fill", "rgba(77, 163, 255, 0.22)")),
+        marker: hexToRgba(colorToken("--wave-marker", "#35c46a")),
+        markerRegionFill: cssColorToRgba(colorToken("--wave-marker-region", "rgba(53, 196, 106, 0.18)")),
+        playhead: hexToRgba(colorToken("--wave-playhead", "#ffb454")),
+      },
+    });
+
+    renderer.draw({
+      backingWidthPx: backingW,
+      backingHeightPx: backingH,
+      background: hexToRgba(colorToken("--spec-bg", "#0d0e10")),
+      pending: hexToRgba(colorToken("--spec-pending", "#232630")),
+      colormap: spectral.colormap,
+      floorDb: spectral.floorDb,
+      ceilDb: spectral.ceilDb,
+      freqLo,
+      freqHi,
+      freqScale: spectral.freqScale,
+      sampleRateHz: rateHz,
+      fftSize,
+      frameAtPx0,
+      framesPerPx,
+      tiles,
+      overlay: overlay.vertexCount > 0 ? overlay.toFloat32Array() : null,
+    });
+  }
+
   function drawSpectrogram(ctx: CanvasRenderingContext2D, backingW: number, backingH: number, dpr: number): void {
     if (!requester) {
       return;
@@ -313,6 +433,33 @@
     if (canvasEl.width !== backingW || canvasEl.height !== backingH) {
       canvasEl.width = backingW;
       canvasEl.height = backingH;
+    }
+    if (glHost?.kind === "webgl2" && glRenderer) {
+      if (isOpen && lenSamples > 0 && rateHz > 0) {
+        drawSpectrogramWebgl2(glRenderer, backingW, backingH, dpr);
+      } else {
+        // No document (or not enough info yet): still clear to the background so the pane never
+        // shows a stale frame from a previously open document.
+        glRenderer.draw({
+          backingWidthPx: backingW,
+          backingHeightPx: backingH,
+          background: hexToRgba(colorToken("--spec-bg", "#0d0e10")),
+          pending: hexToRgba(colorToken("--spec-pending", "#232630")),
+          colormap: spectral.colormap,
+          floorDb: spectral.floorDb,
+          ceilDb: spectral.ceilDb,
+          freqLo,
+          freqHi,
+          freqScale: spectral.freqScale,
+          sampleRateHz: rateHz > 0 ? rateHz : 48_000,
+          fftSize: spectral.fftSize ?? autoFftSize(48_000),
+          frameAtPx0: 0,
+          framesPerPx: 1,
+          tiles: [],
+          overlay: null,
+        });
+      }
+      return;
     }
     const ctx = canvasEl.getContext("2d");
     if (!ctx) {

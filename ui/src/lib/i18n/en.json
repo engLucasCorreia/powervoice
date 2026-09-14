@@ -299,6 +299,8 @@
 
   "waveform.empty": "Open a WAV file to see its waveform",
   "waveform.canvas_label": "Waveform",
+  "notice.renderer.fallback_waveform": "Using the Canvas2D waveform renderer — WebGL2 isn't available on this system.",
+  "notice.renderer.context_lost_waveform": "The waveform's graphics context was lost — switched to the Canvas2D renderer.",
 
   "spectral.toggle": "Spectral",
   "spectral.empty": "Open a WAV file to see its spectrogram",
@@ -317,6 +319,8 @@
   "spectral.fft_disabled_tooltip": "Not supported by this graphics driver",
   "spectral.floor_label": "Floor",
   "spectral.ceiling_label": "Ceiling",
+  "notice.renderer.fallback_spectral": "Using the Canvas2D spectrogram renderer — WebGL2 isn't available on this system.",
+  "notice.renderer.context_lost_spectral": "The spectrogram's graphics context was lost — switched to the Canvas2D renderer.",
 
   "edit.cut": "Cut",
   "edit.copy": "Copy",

@@ -52,7 +52,10 @@ pub use disk::{FixedFreeSpace, FreeSpaceProvider, SystemFreeSpace};
 pub use edit::{PostEdit, Range, RangeError, Target as EditTarget, validate_range};
 pub use error::{ProjectError, Result};
 pub use history::{Edit, EditOp, History, HistoryStep, MarkerMapping, MarkerOp};
-pub use import::import_wav;
+pub use import::{
+    CHANNEL_PROBE_WINDOW_S, ImportChannel, ImportProbe, ImportResult, MAX_CHANNELS,
+    MAX_SAMPLE_RATE_HZ, MIN_SAMPLE_RATE_HZ, import_file, import_wav, probe_for_import,
+};
 pub use normalize::{
     ALREADY_TOL_DB, LABEL_NORMALIZE, LABEL_NORMALIZE_LUFS, LufsNormalizeOutcome,
     LufsNormalizeResult, MIN_INTEGRATED_LUFS, MIN_PEAK_DBFS, NormalizeLufsPlan, NormalizeOutcome,

@@ -44,8 +44,8 @@ pub use audio_dto::{
 pub use commands::*;
 pub use document_commands::*;
 pub use document_dto::{
-    ClipboardChangedDto, DocumentDto, EditResultDto, EditTargetDto, HistoryStateDto, MarkerDto,
-    MarkerRangeKindDto, PeaksRequestDto,
+    ClipboardChangedDto, DocumentDto, DocumentProbeDto, EditResultDto, EditTargetDto,
+    HistoryStateDto, MarkerDto, MarkerRangeKindDto, PeaksRequestDto, ProbeChannelDto,
 };
 pub use dto::AppInfo;
 pub use error::{IpcError, IpcErrorCode};
@@ -118,6 +118,7 @@ crate::ipc_commands!(
     record_set_monitor,
     record_peaks_get,
     document_open,
+    document_probe,
     document_save,
     document_save_as,
     peaks_get,
@@ -187,6 +188,7 @@ crate::ipc_commands!(
     record_set_monitor,
     record_peaks_get,
     document_open,
+    document_probe,
     document_save,
     document_save_as,
     peaks_get,

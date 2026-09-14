@@ -17,6 +17,8 @@ flacenc.workspace = true
 # S4-02: LAME loaded at runtime via `libloading` (ADR-007 §4, D-013); LAME itself is never linked
 # or vendored.
 libloading.workspace = true
+# T-202: import decode (ADR-007 §3 Amendment 2, SPEC-005 §4.1).
+symphonia.workspace = true
 
 [dev-dependencies]
 # ADR-001 §3 exception: testkit's own hound-based WAV I/O is an independent measuring stick.

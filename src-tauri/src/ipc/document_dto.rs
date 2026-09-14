@@ -183,3 +183,50 @@ pub struct PeaksRequestDto {
     pub start_sample: u64,
     pub count: u32,
 }
+
+/// T-202: one source channel's role (SPEC-005 §2.4), part of `document_probe`'s payload — the
+/// data a future channel-choice dialog (T-209) needs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct ProbeChannelDto {
+    pub label: String,
+    pub is_lfe: bool,
+}
+
+/// T-202: `document_probe`'s result (SPEC-005 §2.3 step 1, §2.4). `channel_peaks_dbfs` is empty
+/// for mono (no downmix choice applies); `-inf`/`NaN` peaks serialize as JSON `null`
+/// (`serde_json`'s `float_roundtrip` behaviour, same convention as `loudness_dto`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct DocumentProbeDto {
+    pub container: String,
+    pub codec: String,
+    pub sample_rate_hz: u32,
+    pub channels: Vec<ProbeChannelDto>,
+    pub len_samples: Option<u64>,
+    pub channel_peaks_dbfs: Vec<f64>,
+    pub identical_channels: bool,
+    pub suggested_channel: Option<u32>,
+}
+
+impl From<vox_project::ImportProbe> for DocumentProbeDto {
+    fn from(p: vox_project::ImportProbe) -> Self {
+        Self {
+            container: p.container,
+            codec: p.codec,
+            sample_rate_hz: p.sample_rate_hz,
+            channels: p
+                .channels
+                .into_iter()
+                .map(|c| ProbeChannelDto {
+                    label: c.label,
+                    is_lfe: c.is_lfe,
+                })
+                .collect(),
+            len_samples: p.len_samples,
+            channel_peaks_dbfs: p.channel_peaks_dbfs.into_iter().map(f64::from).collect(),
+            identical_channels: p.identical_channels,
+            suggested_channel: p.suggested_channel.map(|i| i as u32),
+        }
+    }
+}

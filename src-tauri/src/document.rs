@@ -345,27 +345,22 @@ pub(crate) fn document_error(err: ProjectError) -> IpcError {
         | ProjectError::InvalidEdit(_)
         | ProjectError::NonFiniteSample => IpcErrorCode::InvalidArgument,
         ProjectError::Cancelled => IpcErrorCode::Cancelled,
+        // T-202: SPEC-005 §2.5's open/import errors each get the closest-matching coarse code;
+        // everything else (write/encode failures, plain I/O) stays `Internal`, as before.
+        ProjectError::Wav(vox_io::IoError::UnrecognizedFormat(_))
+        | ProjectError::Wav(vox_io::IoError::UnsupportedCodec(_))
+        | ProjectError::Wav(vox_io::IoError::NoAudioTrack)
+        | ProjectError::Wav(vox_io::IoError::RateOutOfRange(_))
+        | ProjectError::Wav(vox_io::IoError::TooManyChannels(_))
+        | ProjectError::Wav(vox_io::IoError::ChainedStreamChanged)
+        | ProjectError::Wav(vox_io::IoError::TooDamaged(_, _)) => IpcErrorCode::InvalidArgument,
+        ProjectError::Wav(vox_io::IoError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+            IpcErrorCode::NotFound
+        }
+        ProjectError::Wav(vox_io::IoError::Io(_)) => IpcErrorCode::Io,
         _ => IpcErrorCode::Internal,
     };
     IpcError::new(code, err.i18n_key()).with_param("message", err.to_string())
-}
-
-/// Maps a [`vox_io::IoError`] (from `read_wav`) to an [`IpcError`]. Only 16/24-bit integer and
-/// 32-bit float WAV are accepted (S1-02 scope); every other variant is `Unsupported` (ticket:
-/// "show it as a notice").
-fn io_open_error(err: vox_io::IoError) -> IpcError {
-    match err {
-        vox_io::IoError::Unsupported(message) => IpcError::new(
-            IpcErrorCode::InvalidArgument,
-            "error.open.unsupported_format",
-        )
-        .with_param("message", message),
-        vox_io::IoError::Io(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            IpcError::new(IpcErrorCode::NotFound, "error.open.not_found")
-        }
-        other => IpcError::new(IpcErrorCode::Io, "error.open.io")
-            .with_param("message", other.to_string()),
-    }
 }
 
 fn io_save_error(err: vox_io::IoError) -> IpcError {
@@ -382,6 +377,25 @@ fn save_bits_for(format: vox_io::WavFormat) -> BitDepth {
         (vox_io::SampleFormat::Int, 16) => BitDepth::Bit16,
         _ => BitDepth::Bit24,
     }
+}
+
+/// T-202: the save format an *imported* document keeps (SPEC-005 §2.6), generalized beyond
+/// `save_bits_for`'s plain-WAV table to every format `vox_project::import_file` now accepts.
+///
+/// **Scope note:** this reuses `save_bits_for`'s exact table for a WAV `hound` can parse (16/24-
+/// bit int, 32-bit float — a cheap header-only re-open; `vox_io::read_wav` never reads samples
+/// until `read_mono` is called, so this costs one extra file open, not a second decode). Every
+/// WAV variant hound can't parse (8-bit/A-law/µ-law/32-bit int/64-bit float/`EXTENSIBLE`) and
+/// every lossy/FLAC container default to WAV 24-bit, matching SPEC-005 §2.6's "lossy imports
+/// default to WAV 24-bit" — the exact variant->16/32f promotion table for those, and lossy
+/// imports' Save-acts-as-Save-As routing, are Save's job (T-201, out of this ticket's scope).
+fn save_bits_for_import(path: &Path, container: &str) -> BitDepth {
+    if container == "wav"
+        && let Ok((_, _, source)) = vox_io::read_wav(path)
+    {
+        return save_bits_for(source.format());
+    }
+    BitDepth::Bit24
 }
 
 impl From<BitDepth> for vox_io::BitDepth {
@@ -466,27 +480,41 @@ impl DocumentService {
         info_of(self.0.open.lock().unwrap().as_ref())
     }
 
-    /// Imports `path` as a new session (SPEC-005 §2.3, S1-02 `import_wav`) and makes it the
-    /// engine's playback document. Replaces whatever was open before (the frontend is
-    /// responsible for the unsaved-changes prompt — SPEC-004 §2.8 "simple version", ticket scope
-    /// — before calling this).
+    /// Imports `path` as a new session (SPEC-005 §2.2-2.4, T-202 `vox_project::import_file`) and
+    /// makes it the engine's playback document. Any format `vox_io::decode` supports opens (WAV
+    /// incl. the tolerated variants, FLAC, MP3, M4A AAC-LC, Ogg Vorbis); multichannel input
+    /// always downmixes by average (the channel-choice dialog is T-209; `document_probe` /
+    /// [`vox_project::probe_for_import`] already report everything it would need). Replaces
+    /// whatever was open before (the frontend is responsible for the
+    /// unsaved-changes prompt — SPEC-004 §2.8 "simple version", ticket scope — before calling
+    /// this).
     pub fn open(&self, path: &Path) -> Result<DocumentInfo, IpcError> {
         if self.is_recording() {
             return Err(IpcError::not_while_recording());
         }
-        let (rate, _channels, mut source) = vox_io::read_wav(path).map_err(io_open_error)?;
-        let save_bits = save_bits_for(source.format());
-        // SPEC-005 §2.9 / SPEC-009 §2.13 case 5 (no sidecar yet, T-306): read the WAV's own
-        // `cue `/`LIST adtl` markers. A malformed chunk layout quietly yields no markers
-        // (`read_wav_markers`'s own contract) rather than failing the whole open.
-        let wav_markers = vox_io::read_wav_markers(path).unwrap_or_default();
-        let mut session = Session::create(&self.0.sessions_dir, SessionConfig::new(rate))
-            .map_err(document_error)?;
-        if let Err(err) = vox_project::import_wav(&mut session, &mut source, wav_markers) {
-            let _ = std::fs::remove_dir_all(session.dir());
-            return Err(document_error(err));
-        }
-        let snapshot = session.current();
+        let probe = vox_project::probe_for_import(path).map_err(document_error)?;
+        let save_bits = save_bits_for_import(path, &probe.container);
+        let mut session = Session::create(
+            &self.0.sessions_dir,
+            SessionConfig::new(probe.sample_rate_hz),
+        )
+        .map_err(document_error)?;
+        let cancel = vox_project::CancelToken::new();
+        let import = vox_project::import_file(
+            &mut session,
+            path,
+            vox_io::DownmixChoice::Average,
+            &cancel,
+            |_frames_done, _len_hint| {},
+        );
+        let import = match import {
+            Ok(result) => result,
+            Err(err) => {
+                let _ = std::fs::remove_dir_all(session.dir());
+                return Err(document_error(err));
+            }
+        };
+        let snapshot = import.snapshot;
         let store = Arc::clone(session.store());
         self.0
             .engine
@@ -1450,24 +1478,70 @@ mod tests {
         assert_eq!(transport.doc_rate_hz, 48_000);
     }
 
+    /// T-202: 8-bit WAV is now *tolerated* (SPEC-005 §2.2), not rejected — this test used to be
+    /// named `open_rejects_an_unsupported_wav_variant` (S1-02 scope only had 16/24-bit int and
+    /// 32-bit float); `crates/io/src/decode.rs`'s own tests cover the exact `(u-128)/128`
+    /// conversion, so this only checks that `document.rs::open` accepts the file end to end.
     #[test]
-    fn open_rejects_an_unsupported_wav_variant() {
-        let (service, _engine, dir) = service("unsupported");
+    fn open_accepts_an_8_bit_wav_via_the_symphonia_decode_path() {
+        let (service, _engine, dir) = service("eight-bit");
         let wav_path = dir.join("in.wav");
-        // 8-bit WAVs are outside S1-02's supported set (16/24-bit int, 32-bit float).
         let spec = hound::WavSpec {
             channels: 1,
             sample_rate: 48_000,
             bits_per_sample: 8,
             sample_format: hound::SampleFormat::Int,
         };
+        // `hound` expects 8-bit samples as *signed* i8 values (it applies the +128 offset to the
+        // unsigned byte itself when writing), even though the WAV format tag is unsigned PCM.
         let mut w = hound::WavWriter::create(&wav_path, spec).unwrap();
-        w.write_sample(0i32).unwrap();
+        for v in [-128i32, 0, 100] {
+            w.write_sample(v).unwrap();
+        }
         w.finalize().unwrap();
+
+        let info = service.open(&wav_path).unwrap();
+        assert_eq!(info.sample_rate_hz, 48_000);
+        assert_eq!(info.len_samples, 3);
+    }
+
+    /// A container/codec T-202's `symphonia` feature set doesn't register a decoder for at all
+    /// (MS-ADPCM WAV, SPEC-005 §2.2) opens as `error.open.unsupported_codec`. Uses system
+    /// `ffmpeg` to build a real MS-ADPCM WAV (a hand-built minimal `fmt ` chunk isn't a complete
+    /// enough ADPCM header for symphonia's WAV reader to recognize the codec and reach
+    /// `make_audio_decoder`; it would instead reject the file as a malformed container, testing
+    /// the wrong code path) — skips gracefully if `ffmpeg` isn't installed.
+    #[test]
+    fn open_rejects_an_unsupported_codec() {
+        if std::process::Command::new("ffmpeg")
+            .arg("-version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipping: ffmpeg not installed");
+            return;
+        }
+        let (service, _engine, dir) = service("ms-adpcm");
+        let src_wav = dir.join("src.wav");
+        write_fixture_wav(
+            &src_wav,
+            &vox_testkit::signal::silence(0.05, 48_000).unwrap(),
+            vox_testkit::wav::BitDepth::Int16,
+            48_000,
+        );
+        let wav_path = dir.join("in.wav");
+        let status = std::process::Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-i"])
+            .arg(&src_wav)
+            .args(["-c:a", "adpcm_ms"])
+            .arg(&wav_path)
+            .status()
+            .unwrap();
+        assert!(status.success());
 
         let err = service.open(&wav_path).unwrap_err();
         assert_eq!(err.code, IpcErrorCode::InvalidArgument);
-        assert_eq!(err.key, "error.open.unsupported_format");
+        assert_eq!(err.key, "error.open.unsupported_codec");
     }
 
     #[test]

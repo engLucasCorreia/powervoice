@@ -54,8 +54,11 @@ enum Commands {
     /// Render a mono WAV through an effects rack (32-bit float output, same length and
     /// time-aligned with the input).
     Render(RenderArgs),
-    /// Convert a WAV to WAV/FLAC/MP3, optionally resampling (S4-02 export encoders).
+    /// Convert any SPEC-005 §2.2 input format to WAV/FLAC/MP3, optionally resampling (S4-02
+    /// export encoders, T-202 import decode).
     Convert(ConvertArgs),
+    /// List the markers `vox_io::read_wav_markers` reads from a WAV file (T-202).
+    Markers(MarkersArgs),
     /// Benchmark DSP modules (T-110).
     Bench,
 }
@@ -188,6 +191,7 @@ fn main() -> Result<()> {
         Some(Commands::Analyze(args)) => cmd_analyze(args),
         Some(Commands::Render(args)) => cmd_render(args),
         Some(Commands::Convert(args)) => cmd_convert(args),
+        Some(Commands::Markers(args)) => cmd_markers(args),
         Some(Commands::Bench) => {
             println!("bench: not implemented yet (T-110)");
             Ok(())
@@ -246,7 +250,8 @@ fn cmd_render(args: RenderArgs) -> Result<()> {
 
 #[derive(clap::Args)]
 struct ConvertArgs {
-    /// Input WAV (multichannel is downmixed to mono by average, like Save/Export).
+    /// Input file: any SPEC-005 §2.2 format (WAV incl. the tolerated variants, FLAC, MP3, M4A
+    /// AAC-LC, Ogg Vorbis). Multichannel input is downmixed to mono per `--downmix`.
     input: PathBuf,
 
     /// Output path; the format is inferred from its extension (.wav, .flac or .mp3).
@@ -270,22 +275,46 @@ struct ConvertArgs {
     /// in `.mp3`, this switches from CBR (`--bitrate`) to VBR.
     #[arg(long)]
     vbr: Option<u8>,
+
+    /// How multichannel input becomes mono (SPEC-005 §2.4): `average` (default, LFE excluded) or
+    /// `ch:N` to copy channel N (0-based).
+    #[arg(long, default_value = "average")]
+    downmix: String,
+}
+
+fn parse_downmix(s: &str) -> Result<vox_io::DownmixChoice> {
+    if s == "average" {
+        return Ok(vox_io::DownmixChoice::Average);
+    }
+    if let Some(n) = s.strip_prefix("ch:") {
+        let index: usize = n
+            .parse()
+            .with_context(|| format!("--downmix ch:N: {n:?} isn't a channel index"))?;
+        return Ok(vox_io::DownmixChoice::Channel(index));
+    }
+    bail!("--downmix must be \"average\" or \"ch:N\", got {s:?}")
 }
 
 fn cmd_convert(args: ConvertArgs) -> Result<()> {
-    let (rate_in, _channels, mut source) = vox_io::read_wav(&args.input)
-        .with_context(|| format!("reading WAV input {:?}", args.input))?;
+    let downmix = parse_downmix(&args.downmix)?;
+    let (info, mut source) = vox_io::DecodeSource::open(&args.input)
+        .with_context(|| format!("opening input {:?}", args.input))?;
+    let rate_in = info.track.sample_rate_hz;
+    let channels = source.channels().max(1);
+    let lfe: Vec<bool> = info.track.channels.iter().map(|c| c.is_lfe).collect();
 
     let mut samples = Vec::new();
-    let mut buf = [0f32; 65_536];
+    let mut raw = vec![0f32; channels * 65_536];
     loop {
         let n = source
-            .read_mono(&mut buf)
+            .read_frames(&mut raw)
             .with_context(|| format!("reading samples from {:?}", args.input))?;
         if n == 0 {
             break;
         }
-        samples.extend_from_slice(&buf[..n]);
+        for frame in raw[..n * channels].chunks_exact(channels) {
+            samples.push(vox_io::downmix_frame(frame, &lfe, downmix));
+        }
     }
     drop(source);
 
@@ -347,6 +376,50 @@ fn cmd_convert(args: ConvertArgs) -> Result<()> {
             "warning: {clipped} of {} sample(s) exceeded full scale (|x| > 1.0) and were clamped",
             samples.len()
         );
+    }
+    Ok(())
+}
+
+#[derive(clap::Args)]
+struct MarkersArgs {
+    /// Input WAV file (`cue `/`LIST adtl` chunks, SPEC-005 §2.9).
+    input: PathBuf,
+
+    /// Print markers as a JSON array instead of a human-readable table.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Serialize)]
+struct MarkerReport {
+    pos_samples: u64,
+    len_samples: u64,
+    name: String,
+}
+
+fn cmd_markers(args: MarkersArgs) -> Result<()> {
+    let markers = vox_io::read_wav_markers(&args.input)
+        .with_context(|| format!("reading markers from {:?}", args.input))?;
+    let report: Vec<MarkerReport> = markers
+        .into_iter()
+        .map(|m| MarkerReport {
+            pos_samples: m.pos_samples,
+            len_samples: m.len_samples,
+            name: m.name,
+        })
+        .collect();
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else if report.is_empty() {
+        println!("no markers");
+    } else {
+        for m in &report {
+            if m.len_samples > 0 {
+                println!("{:>12}  +{:<10}  {}", m.pos_samples, m.len_samples, m.name);
+            } else {
+                println!("{:>12}              {}", m.pos_samples, m.name);
+            }
+        }
     }
     Ok(())
 }

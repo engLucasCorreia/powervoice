@@ -8,8 +8,8 @@ use vox_project::{PEAKS_RAW_SPP, VxpkHeader, encode_vxpk};
 
 use crate::document::{DocumentService, PasteTarget};
 use crate::ipc::document_dto::{
-    ClipboardChangedDto, DocumentDto, EditResultDto, EditTargetDto, HistoryStateDto, MarkerDto,
-    MarkerRangeKindDto, PeaksRequestDto,
+    ClipboardChangedDto, DocumentDto, DocumentProbeDto, EditResultDto, EditTargetDto,
+    HistoryStateDto, MarkerDto, MarkerRangeKindDto, PeaksRequestDto,
 };
 use crate::ipc::error::IpcError;
 use crate::ipc::events::EventName;
@@ -60,9 +60,17 @@ pub(crate) async fn run_blocking<T: Send + 'static>(
         .map_err(|e| IpcError::internal(e.to_string()))?
 }
 
-/// Opens `path` as the document (SPEC-005 §2.3: only WAV 16/24-bit int and 32-bit float are
-/// accepted, S1-02 scope; other variants are `error.open.unsupported_format`). Replaces whatever
-/// was open — the frontend runs the unsaved-changes prompt (simple version, SPEC-004 §2.8) first.
+/// Opens `path` as the document (SPEC-005 §2.2-2.4: any container/codec `vox_io::decode`
+/// supports — WAV incl. the tolerated variants, FLAC, MP3, M4A AAC-LC, Ogg Vorbis; every other
+/// container/codec is `error.open.unsupported_format`/`error.open.unsupported_codec`). Replaces
+/// whatever was open — the frontend runs the unsaved-changes prompt (simple version, SPEC-004
+/// §2.8) first.
+///
+/// **T-202 scope note:** multichannel input always downmixes by average (SPEC-005 §2.4's
+/// default); the channel-choice dialog and the `multichannel_policy` setting are T-209's job.
+/// [`document_probe`] already returns everything that future dialog needs (channel labels, peaks,
+/// the silent-channel hint, the identical-channels flag) so T-209 can call it first without
+/// waiting on this command's contract to change.
 #[tauri::command]
 pub async fn document_open<R: Runtime>(
     app: AppHandle<R>,
@@ -75,6 +83,21 @@ pub async fn document_open<R: Runtime>(
         .into();
     emit_document_changed(&app, &info);
     Ok(info)
+}
+
+/// Probes `path` without importing it (SPEC-005 §2.3 step 1, §2.4): container/codec/rate/
+/// channels, and — for multichannel input — each channel's peak over the first 30 s plus the
+/// identical-channels/silent-channel-hint data a future channel-choice dialog (T-209) needs.
+/// Errors the same way [`document_open`] would (`error.open.*`), so the frontend can show them
+/// before ever starting an import.
+#[tauri::command]
+pub async fn document_probe(path: String) -> Result<DocumentProbeDto, IpcError> {
+    run_blocking(move || {
+        vox_project::probe_for_import(std::path::Path::new(&path))
+            .map(DocumentProbeDto::from)
+            .map_err(crate::document::document_error)
+    })
+    .await
 }
 
 /// Saves the current revision back to its bound path and format (SPEC-005 §2.7). No rack

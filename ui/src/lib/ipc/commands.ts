@@ -8,6 +8,7 @@ import type {
   DevicePrefsDto,
   DevicesDto,
   DocumentDto,
+  DocumentProbeDto,
   EditResultDto,
   EditTargetDto,
   ExportFormatsDto,
@@ -179,9 +180,22 @@ export async function rackResponseCurve(
   return invoke<ResponseCurveDto>("rack_response_curve" satisfies CommandName, { slot, points });
 }
 
-/** S1-03: opens `path` as the document (SPEC-005 §2.3), replacing whatever was open. */
+/**
+ * Opens `path` as the document (SPEC-005 §2.2-2.4: any format `vox_io::decode` supports, not
+ * just WAV — T-202), replacing whatever was open. Multichannel input always downmixes by
+ * average; the channel-choice dialog (T-209) will call `documentProbe` first once it exists.
+ */
 export async function documentOpen(path: string): Promise<DocumentDto> {
   return invoke<DocumentDto>("document_open" satisfies CommandName, { path });
+}
+
+/**
+ * T-202: probes `path` without importing it (SPEC-005 §2.3 step 1, §2.4) — container/codec/rate/
+ * channels, and for multichannel input each channel's peak plus the identical-channels/silent-
+ * channel-hint data a future channel-choice dialog (T-209) needs.
+ */
+export async function documentProbe(path: string): Promise<DocumentProbeDto> {
+  return invoke<DocumentProbeDto>("document_probe" satisfies CommandName, { path });
 }
 
 /** S1-03: saves the current revision back to its bound path and format (SPEC-005 §2.7). */

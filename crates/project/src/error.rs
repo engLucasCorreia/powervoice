@@ -122,7 +122,25 @@ impl ProjectError {
             | ProjectError::InvalidTakeFile(_)
             | ProjectError::Loudness(_)
             | ProjectError::Json(_) => "error.internal",
-            ProjectError::Wav(_) => "error.io",
+            // T-202: SPEC-005 §2.5's specific open/import error keys, when the wrapped `IoError`
+            // says which one applies; every other `IoError` (write/encode failures, plain I/O)
+            // keeps the general `error.io` key.
+            ProjectError::Wav(io_err) => match io_err {
+                vox_io::IoError::UnrecognizedFormat(_) => "error.open.unsupported_format",
+                vox_io::IoError::UnsupportedCodec(_) => "error.open.unsupported_codec",
+                vox_io::IoError::NoAudioTrack => "error.open.no_audio_track",
+                vox_io::IoError::RateOutOfRange(_) => "error.open.rate_out_of_range",
+                vox_io::IoError::TooManyChannels(_) => "error.open.too_many_channels",
+                vox_io::IoError::ChainedStreamChanged => "error.open.unsupported_format",
+                vox_io::IoError::TooDamaged(_, _) => "error.open.damaged",
+                vox_io::IoError::Io(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    "error.open.not_found"
+                }
+                vox_io::IoError::Io(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    "error.open.permission"
+                }
+                _ => "error.io",
+            },
         }
     }
 

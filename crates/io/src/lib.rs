@@ -14,12 +14,20 @@
 //! instead of collecting the whole document into one buffer first.
 
 mod atomic;
+pub mod decode;
+pub mod downmix;
 pub mod encoder;
 pub mod error;
 pub mod flac;
 pub mod mp3;
 pub mod wav;
 
+pub use decode::{ChannelProbeResult, DecodeSource, ProbeInfo, TrackFacts, probe, probe_channels};
+pub use downmix::{
+    ACTIVE_CHANNEL_DBFS, ChannelInfo, ChannelPeak, ChannelPeakAccumulator, DownmixChoice,
+    IdenticalChannelsCheck, SILENT_CHANNEL_DBFS, channel_infos, downmix_average, downmix_frame,
+    downmix_pick, suggest_silent_channel,
+};
 pub use encoder::{Encoder, FlacEncoder, Mp3Encoder, WavEncoder};
 pub use error::{IoError, Result};
 pub use flac::{FlacBitDepth, write_flac};

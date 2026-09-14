@@ -25,6 +25,16 @@ const EMPTY: DocumentDto = {
 };
 
 const WAV_FILTERS = [{ name: "WAV", extensions: ["wav"] }];
+/**
+ * File → Open's dialog filter (T-202, SPEC-005 §2.2): every format `vox_io::decode` accepts. Save
+ * and Save As stay WAV-only ([`WAV_FILTERS`]; save format choice is T-201's scope).
+ */
+const OPEN_FILTERS = [
+  {
+    name: "Audio",
+    extensions: ["wav", "flac", "mp3", "m4a", "ogg"],
+  },
+];
 
 export type UnsavedDecision = "save" | "discard" | "cancel";
 
@@ -177,7 +187,7 @@ export async function withUnsavedChangesGuard(action: () => Promise<void>): Prom
 /** File → Open… (Ctrl+O): the native dialog, guarded by unsaved changes. */
 export async function requestOpen(): Promise<void> {
   await withUnsavedChangesGuard(async () => {
-    const picked = await openFileDialog({ multiple: false, filters: WAV_FILTERS });
+    const picked = await openFileDialog({ multiple: false, filters: OPEN_FILTERS });
     if (typeof picked === "string") {
       await openDocument(picked);
     }

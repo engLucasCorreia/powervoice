@@ -60,3 +60,15 @@ realfft = "3.5"
 flacenc = "0.5"
 # S4-02: runtime-loaded LAME MP3 encoder (ADR-007 §4, D-013), `io` only.
 libloading = "0.9"
+# T-202: import decode (ADR-007 §3, Amendment 2) — MPL-2.0, `io` only. `default-features = false`:
+# only the codecs SPEC-005 §2.2 supports are enabled.
+symphonia = { version = "0.6.1", default-features = false, features = [
+    "wav",
+    "pcm",
+    "flac",
+    "ogg",
+    "vorbis",
+    "mp3",
+    "isomp4",
+    "aac",
+] }

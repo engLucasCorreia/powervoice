@@ -35,7 +35,7 @@ export type BitDepth = "16" | "24" | "32f";
  */
 export type ClipboardChangedDto = { len_samples: number | null, sample_rate_hz: number | null, };
 
-export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "module_telemetry_subscribe" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_save" | "document_save_as" | "peaks_get" | "spectro_attach" | "spectro_detach" | "spectro_request" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check";
+export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "module_telemetry_subscribe" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_probe" | "document_save" | "document_save_as" | "peaks_get" | "spectro_attach" | "spectro_detach" | "spectro_request" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check";
 
 /**
  * One draggable EQ-graph node (S3-07, SPEC-015 §3 "ResponseCurve components"): the band's
@@ -144,6 +144,13 @@ input_device: string | null, input_status: DeviceStatusDto, };
  * `document_save_as`. `name: None` means no document is open.
  */
 export type DocumentDto = { name: string | null, path: string | null, sample_rate_hz: number, len_samples: number, dirty: boolean, audio_rev: number, };
+
+/**
+ * T-202: `document_probe`'s result (SPEC-005 §2.3 step 1, §2.4). `channel_peaks_dbfs` is empty
+ * for mono (no downmix choice applies); `-inf`/`NaN` peaks serialize as JSON `null`
+ * (`serde_json`'s `float_roundtrip` behaviour, same convention as `loudness_dto`).
+ */
+export type DocumentProbeDto = { container: string, codec: string, sample_rate_hz: number, channels: Array<ProbeChannelDto>, len_samples: number | null, channel_peaks_dbfs: Array<number>, identical_channels: boolean, suggested_channel: number | null, };
 
 /**
  * S2-01: the result of a cut/copy/paste/delete/trim/silence command or an undo/redo (SPEC-008
@@ -386,6 +393,12 @@ export type ParamValueDto = { id: number, value: number, normalized: number, tex
  * any response whose `audio_rev` is not current"), not something this command refuses.
  */
 export type PeaksRequestDto = { request_id: number, audio_rev: number, spp: number, start_sample: number, count: number, };
+
+/**
+ * T-202: one source channel's role (SPEC-005 §2.4), part of `document_probe`'s payload — the
+ * data a future channel-choice dialog (T-209) needs.
+ */
+export type ProbeChannelDto = { label: string, is_lfe: boolean, };
 
 /**
  * The rack's total latency changed (`rack_latency` event, SPEC-012 §2.5).

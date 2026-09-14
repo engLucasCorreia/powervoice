@@ -33,4 +33,29 @@ pub enum IoError {
     /// A LAME call failed or returned an error code (S4-02).
     #[error("MP3 encode error: {0}")]
     Mp3Encode(String),
+
+    // --- T-202: import decode (SPEC-005 §2.5) ------------------------------------------------
+    /// No reader recognized the container at all (SPEC-005 `error.open.unsupported_format`).
+    #[error("unrecognized container: {0}")]
+    UnrecognizedFormat(String),
+    /// The container was recognized but its codec isn't one PowerVoice reads
+    /// (`error.open.unsupported_codec`), e.g. WAV MS-ADPCM, M4A ALAC/HE-AAC, Ogg Opus.
+    #[error("unsupported codec: {0}")]
+    UnsupportedCodec(String),
+    /// The container has no audio track (`error.open.no_audio_track`).
+    #[error("no audio track")]
+    NoAudioTrack,
+    /// Sample rate outside 8 000-384 000 Hz (`error.open.rate_out_of_range`).
+    #[error("sample rate {0} Hz is outside 8 000-384 000 Hz")]
+    RateOutOfRange(u32),
+    /// More than 32 channels (`error.open.too_many_channels`).
+    #[error("{0} channels exceeds the 32-channel limit")]
+    TooManyChannels(u16),
+    /// A chained Ogg stream changes rate or channel count mid-file
+    /// (`error.open.unsupported_format`).
+    #[error("chained Ogg stream changes rate or channel count")]
+    ChainedStreamChanged,
+    /// More than `max(10, 1% of packets)` packets were damaged (`error.open.damaged`).
+    #[error("too damaged to open: {0} of {1} packets were damaged")]
+    TooDamaged(usize, usize),
 }

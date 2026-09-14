@@ -7,7 +7,7 @@ use ts_rs::TS;
 
 use crate::document::{
     ClipboardInfo, DocumentInfo, EditResult, HistoryState, MarkerInfo, MarkerRangeEditKind,
-    PasteTarget, SpectralViewInfo,
+    PasteTarget, SpectralViewInfo, WaveformViewInfo,
 };
 
 /// `document_changed` event payload, and the result of `document_open`/`document_save`/
@@ -26,6 +26,9 @@ pub struct DocumentDto {
     /// T-306 (SPEC-018 §2.6.5): the sidecar's spectral-pane settings, if any (`null` = keep the
     /// UI's current/last-used settings, SPEC-007 §2.1).
     pub spectral_view: Option<SpectralViewDto>,
+    /// H-12 (SPEC-018 §2.6.5): the sidecar's waveform viewport/selection/cursor, if any (`null` =
+    /// keep the UI's current viewport, e.g. a newly opened document zooms to fit instead).
+    pub waveform_view: Option<WaveformViewDto>,
 }
 
 impl From<DocumentInfo> for DocumentDto {
@@ -39,6 +42,7 @@ impl From<DocumentInfo> for DocumentDto {
             audio_rev: info.audio_rev,
             sidecar_dirty: info.sidecar_dirty,
             spectral_view: info.spectral_view.map(SpectralViewDto::from),
+            waveform_view: info.waveform_view.map(WaveformViewDto::from),
         }
     }
 }
@@ -81,6 +85,54 @@ impl From<SpectralViewDto> for SpectralViewInfo {
             display_floor_db: v.display_floor_db,
             display_ceil_db: v.display_ceil_db,
             colormap: v.colormap,
+        }
+    }
+}
+
+/// H-12 (SPEC-018 §2.6.5's `view.waveform`, this ticket's subset — see `WaveformViewInfo`'s doc
+/// for what's deferred): the shared waveform/spectral viewport plus the selection and edit
+/// cursor, persisted like `SpectralViewDto`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct WaveformViewDto {
+    pub start_sample: u64,
+    pub samples_per_pixel: f64,
+    /// `null` = no selection.
+    pub selection: Option<WaveformSelectionDto>,
+    pub cursor_samples: u64,
+}
+
+/// `[start_sample, end_sample)` document samples (SPEC-006 §2.2's selection shape).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct WaveformSelectionDto {
+    pub start_sample: u64,
+    pub end_sample: u64,
+}
+
+impl From<WaveformViewInfo> for WaveformViewDto {
+    fn from(v: WaveformViewInfo) -> Self {
+        Self {
+            start_sample: v.start_sample,
+            samples_per_pixel: v.samples_per_pixel,
+            selection: v
+                .selection
+                .map(|(start_sample, end_sample)| WaveformSelectionDto {
+                    start_sample,
+                    end_sample,
+                }),
+            cursor_samples: v.cursor_samples,
+        }
+    }
+}
+
+impl From<WaveformViewDto> for WaveformViewInfo {
+    fn from(v: WaveformViewDto) -> Self {
+        Self {
+            start_sample: v.start_sample,
+            samples_per_pixel: v.samples_per_pixel,
+            selection: v.selection.map(|s| (s.start_sample, s.end_sample)),
+            cursor_samples: v.cursor_samples,
         }
     }
 }

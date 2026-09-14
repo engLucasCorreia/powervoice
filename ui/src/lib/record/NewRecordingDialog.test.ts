@@ -7,6 +7,7 @@ import { clearNotices } from "../state/notices.svelte";
 import { openNewRecordingPrompt, recordState, resetRecordForTest } from "../state/record.svelte";
 import { loadSettings, resetSettingsStateForTest } from "../state/settings.svelte";
 import NewRecordingDialog from "./NewRecordingDialog.svelte";
+import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 
 function settingsFixture(): Settings {
   return {
@@ -26,6 +27,13 @@ function settingsFixture(): Settings {
     memory_budget_mib: 2048,
     normalize_dialog: { value: -1, unit: "db" },
     recent_files: [],
+    spectral_defaults: {
+      freq_scale: "log",
+      colormap: "inferno",
+      display_floor_db: -120,
+      display_ceil_db: 0,
+      fft_size: null,
+    },
   };
 }
 
@@ -52,6 +60,7 @@ afterEach(() => {
   clearMocks();
   clearNotices();
   resetDocumentStateForTest();
+  resetWaveformViewForTest();
   resetRecordForTest();
   resetSettingsStateForTest();
 });

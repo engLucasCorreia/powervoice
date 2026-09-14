@@ -4,6 +4,7 @@ import {
   MAX_TILES_PER_REQUEST,
   autoFftSize,
   frameCenterSample,
+  frameColumnBounds,
   hopForZoom,
   isOverview,
   tileCount,
@@ -67,5 +68,32 @@ describe("spectrogram geometry (SPEC-007 §2.6, §4.3)", () => {
       MAX_TILES_PER_REQUEST,
     );
     expect(tilesForView(0, 100, 0, hop)).toEqual([]);
+  });
+
+  it("frameColumnBounds draws one column per device pixel at devicePixelRatio 2 (H-12 HiDPI)", () => {
+    const startSample = 0;
+    const samplesPerPixel = 10; // CSS-pixel (document) units
+    const hop = 64;
+
+    // A 100 CSS-pixel-wide viewport is 100 device-pixel columns at dpr 1, and 200 at dpr 2 — the
+    // column count follows the *backing* (device-pixel) width, not the CSS width.
+    const dpr1 = frameColumnBounds(100, startSample, samplesPerPixel, 1, hop);
+    const dpr2 = frameColumnBounds(200, startSample, samplesPerPixel, 2, hop);
+    expect(dpr1.lo.length).toBe(100);
+    expect(dpr2.lo.length).toBe(200);
+
+    // Each dpr-2 column spans half the samples (and so half the frames) of a dpr-1 column, since
+    // there are twice as many columns covering the same CSS-pixel span.
+    const spanDpr1 = dpr1.hi[0]! - dpr1.lo[0]!;
+    const spanDpr2 = dpr2.hi[0]! - dpr2.lo[0]!;
+    expect(spanDpr2).toBeCloseTo(spanDpr1 / 2, 10);
+
+    // The two device-pixel columns covering dpr-1's first CSS pixel span the same total range as
+    // that one CSS-pixel column (device pixels subdivide, they don't change the covered range).
+    expect(dpr2.lo[0]).toBeCloseTo(dpr1.lo[0]!, 10);
+    expect(dpr2.hi[1]).toBeCloseTo(dpr1.hi[0]!, 10);
+
+    // A later column starts where the document position has advanced accordingly.
+    expect(dpr2.lo[10]).toBeCloseTo((startSample + 5 * samplesPerPixel) / hop, 10);
   });
 });

@@ -8,6 +8,7 @@ import { clearActionHandlers } from "../keymap";
 import { initRecord, resetRecordForTest } from "../state/record.svelte";
 import { resetSpectralForTest, spectralState } from "../state/spectral.svelte";
 import SpectralView from "./SpectralView.svelte";
+import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 
 const widthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
 const heightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
@@ -30,6 +31,7 @@ afterEach(() => {
   clearMocks();
   clearActionHandlers();
   resetDocumentStateForTest();
+  resetWaveformViewForTest();
   resetRecordForTest();
   resetSpectralForTest();
   unstubSize();
@@ -41,7 +43,7 @@ const FIXTURE: DocumentDto = {
   sample_rate_hz: 48_000,
   len_samples: 480_000,
   dirty: false,
-  audio_rev: 1, sidecar_dirty: false, spectral_view: null,
+  audio_rev: 1, sidecar_dirty: false, spectral_view: null, waveform_view: null,
 };
 
 interface SpectroCall {
@@ -132,6 +134,34 @@ describe("SpectralView (T-207, SPEC-007 essential subset)", () => {
 
     unmount(app);
     target.remove();
+  });
+
+  it("sizes the canvas backing store in device pixels (H-12 HiDPI)", async () => {
+    stubSize(800, 200);
+    const dprDescriptor = Object.getOwnPropertyDescriptor(window, "devicePixelRatio");
+    Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: 2 });
+    setupIpc([]);
+
+    await openDocument("/home/user/take.wav");
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(SpectralView, { target });
+    // The draw loop runs off a real `requestAnimationFrame` (jsdom has no canvas, but its rAF is
+    // a real ~16 ms timer, MEMORY.md) — wait for at least one tick.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    flushSync();
+
+    const canvas = target.querySelector<HTMLCanvasElement>('[data-testid="spectral-canvas"]')!;
+    expect(canvas.width).toBe(1_600); // 800 CSS px * dpr 2
+    expect(canvas.height).toBe(400); // 200 CSS px * dpr 2
+
+    unmount(app);
+    target.remove();
+    if (dprDescriptor) {
+      Object.defineProperty(window, "devicePixelRatio", dprDescriptor);
+    } else {
+      Reflect.deleteProperty(window, "devicePixelRatio");
+    }
   });
 
   it("shows the recording-frozen overlay and issues no further spectro_request while recording", async () => {

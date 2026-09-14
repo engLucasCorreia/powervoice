@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { RecentFileDto } from "../ipc/bindings";
 import { clearNotices } from "../state/notices.svelte";
 import { resetDocumentStateForTest } from "./document.svelte";
+import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 import {
   clearRecentFiles,
   recentFilesState,
@@ -21,6 +22,7 @@ afterEach(() => {
   clearMocks();
   clearNotices();
   resetDocumentStateForTest();
+  resetWaveformViewForTest();
   resetRecentFilesForTest();
 });
 

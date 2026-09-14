@@ -6,11 +6,13 @@ import { clearNotices } from "../state/notices.svelte";
 import { resetDocumentStateForTest } from "./document.svelte";
 import RecentFilesMenu from "./RecentFilesMenu.svelte";
 import { resetRecentFilesForTest } from "./recentFiles.svelte";
+import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 
 afterEach(() => {
   clearMocks();
   clearNotices();
   resetDocumentStateForTest();
+  resetWaveformViewForTest();
   resetRecentFilesForTest();
 });
 
@@ -69,7 +71,7 @@ describe("RecentFilesMenu (T-306, SPEC-018 §2.12)", () => {
           dirty: false,
           audio_rev: 1,
           sidecar_dirty: false,
-          spectral_view: null,
+          spectral_view: null, waveform_view: null,
         };
       }
       throw new Error(`unmocked command: ${cmd}`);

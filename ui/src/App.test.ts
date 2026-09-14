@@ -36,6 +36,14 @@ describe("App shell", () => {
           telemetry_rate_hz: 60,
           memory_budget_mib: 2048,
           normalize_dialog: { value: -1, unit: "db" },
+          recent_files: [],
+          spectral_defaults: {
+            freq_scale: "log",
+            colormap: "inferno",
+            display_floor_db: -120,
+            display_ceil_db: 0,
+            fft_size: null,
+          },
         };
       }
       if (cmd === "transport_get") {

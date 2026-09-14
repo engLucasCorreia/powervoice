@@ -7,7 +7,10 @@ import { registerAction } from "../keymap";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { t } from "../i18n";
 import { pushNotice } from "../state/notices.svelte";
+import { setSelectionFromResult } from "../state/selection.svelte";
 import { applyRestoredSpectralView } from "../state/spectral.svelte";
+import { seek } from "../state/transport.svelte";
+import { audioKeyFor, clearPendingRestore, setPendingRestore } from "../state/waveformView.svelte";
 
 /**
  * Document store (S1-03): the open document's facts (`document_changed` event + command
@@ -25,6 +28,7 @@ const EMPTY: DocumentDto = {
   audio_rev: 0,
   sidecar_dirty: false,
   spectral_view: null,
+  waveform_view: null,
 };
 
 const WAV_FILTERS = [{ name: "WAV", extensions: ["wav"] }];
@@ -141,16 +145,38 @@ function updateWindowTitle(info: DocumentDto): void {
 }
 
 /**
- * `isOpen`: only a successful *open* restores the sidecar's spectral view (T-306, SPEC-018
- * §2.6.5) — every other `document_changed` (an edit, a save, ...) leaves the pane's current
- * settings alone, so a live tweak never gets clobbered by a stale value from before it was
- * pushed to the backend (`spectral.svelte.ts`'s own debounce).
+ * `isOpen`: only a successful *open* restores the sidecar's spectral/waveform view (T-306/H-12,
+ * SPEC-018 §2.6.5) — every other `document_changed` (an edit, a save, ...) leaves the panes'
+ * current view alone, so a live tweak never gets clobbered by a stale value from before it was
+ * pushed to the backend (`spectral.svelte.ts`/`waveformView.svelte.ts`'s own debounce).
+ *
+ * H-12: the waveform viewport (`start_sample`/`samples_per_pixel`) can't be validated/clamped
+ * here — SPEC-018 §2.6.5's "an out-of-range `samples_per_pixel` -> zoom full" needs the
+ * viewport's pixel width, which only `WaveformView` knows — so it's recorded as a *pending*
+ * restore (`setPendingRestore`) for `WaveformView`'s own zoom-to-fit effect to consume once that
+ * width is known. Selection and cursor need no viewport to validate (already clamped to `[0, L]`
+ * on the Rust side) and are applied immediately.
  */
 function applyDoc(next: DocumentDto, isOpen = false): void {
   doc = next;
   updateWindowTitle(next);
-  if (isOpen && next.spectral_view) {
+  if (!isOpen) {
+    return;
+  }
+  if (next.spectral_view) {
     applyRestoredSpectralView(next.spectral_view);
+  }
+  const view = next.waveform_view;
+  if (view) {
+    setPendingRestore(
+      audioKeyFor(next.sample_rate_hz, next.len_samples),
+      view.start_sample,
+      view.samples_per_pixel,
+    );
+    setSelectionFromResult(view.selection ? [view.selection.start_sample, view.selection.end_sample] : null);
+    void seek(view.cursor_samples);
+  } else {
+    clearPendingRestore();
   }
 }
 

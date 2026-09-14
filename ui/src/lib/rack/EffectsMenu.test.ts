@@ -11,6 +11,7 @@ import { resetSettingsStateForTest } from "../state/settings.svelte";
 import EffectsMenu from "./EffectsMenu.svelte";
 import { resetNrCaptureForTest } from "./nrCapture.svelte";
 import { resetRackForTest } from "./rack.svelte";
+import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 
 /** Effects menu/toolbar (S3-06, SPEC-014 §2.3: "Capture Noise Print"; H-09, SPEC-010 §2.5:
  * "Normalize…"/"Normalize (LUFS)…"). */
@@ -24,7 +25,7 @@ function doc(overrides: Partial<DocumentDto> = {}): DocumentDto {
     dirty: false,
     audio_rev: 1,
     sidecar_dirty: false,
-    spectral_view: null,
+    spectral_view: null, waveform_view: null,
     ...overrides,
   };
 }
@@ -43,6 +44,7 @@ async function openFixture(): Promise<void> {
 afterEach(() => {
   clearMocks();
   resetDocumentStateForTest();
+  resetWaveformViewForTest();
   resetSelectionForTest();
   resetRecordForTest();
   resetRackForTest();

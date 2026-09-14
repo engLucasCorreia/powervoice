@@ -10,12 +10,14 @@ import { clearNotices } from "../state/notices.svelte";
 import { initRecord, onInputTelemetry, resetRecordForTest } from "../state/record.svelte";
 import { resetSelectionForTest, selectionState } from "../state/selection.svelte";
 import WaveformView from "./WaveformView.svelte";
+import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 
 afterEach(() => {
   clearMocks();
   clearActionHandlers();
   clearNotices();
   resetDocumentStateForTest();
+  resetWaveformViewForTest();
   resetRecordForTest();
   resetSelectionForTest();
 });
@@ -87,14 +89,14 @@ describe("WaveformView (S1-03)", () => {
     target.remove();
   });
 
-  it("renders the canvas, ruler and scrollbar once a document is open", async () => {
+  it("renders the canvas once a document is open", async () => {
     const fixture: DocumentDto = {
       name: "take.wav",
       path: "/home/user/take.wav",
       sample_rate_hz: 48_000,
       len_samples: 480_000,
       dirty: false,
-      audio_rev: 1, sidecar_dirty: false, spectral_view: null,
+      audio_rev: 1, sidecar_dirty: false, spectral_view: null, waveform_view: null,
     };
     mockIPC((cmd) => {
       if (cmd === "document_open") {
@@ -121,9 +123,9 @@ describe("WaveformView (S1-03)", () => {
     const app = mount(WaveformView, { target });
     flushSync();
 
+    // H-12: the ruler/scrollbar moved to `EditorView` (shared with the spectral pane) — this
+    // view only owns the canvas now (see `EditorView.test.ts` for the ruler/scrollbar tests).
     expect(target.querySelector('[data-testid="waveform-canvas"]')).not.toBeNull();
-    expect(target.querySelector('[data-testid="waveform-ruler"]')).not.toBeNull();
-    expect(target.querySelector('[data-testid="waveform-scrollbar"]')).not.toBeNull();
     expect(target.querySelector('[data-testid="waveform-empty"]')).toBeNull();
 
     unmount(app);
@@ -147,7 +149,7 @@ describe("WaveformView (S1-03)", () => {
           sample_rate_hz: 48_000,
           len_samples: 480_000,
           dirty: false,
-          audio_rev: 1, sidecar_dirty: false, spectral_view: null,
+          audio_rev: 1, sidecar_dirty: false, spectral_view: null, waveform_view: null,
         } satisfies DocumentDto;
       }
       if (cmd === "peaks_get") {
@@ -211,7 +213,7 @@ describe("WaveformView (S1-03)", () => {
       sample_rate_hz: 48_000,
       len_samples: 0, // S1-04: the take isn't committed until Stop
       dirty: false,
-      audio_rev: 0, sidecar_dirty: false, spectral_view: null,
+      audio_rev: 0, sidecar_dirty: false, spectral_view: null, waveform_view: null,
     };
     const recordingState: RecordStateDto = {
       input_device: "Mic",
@@ -292,7 +294,7 @@ describe("WaveformView (S1-03)", () => {
       sample_rate_hz: 48_000,
       len_samples: 0,
       dirty: false,
-      audio_rev: 0, sidecar_dirty: false, spectral_view: null,
+      audio_rev: 0, sidecar_dirty: false, spectral_view: null, waveform_view: null,
     };
     const recordingState: RecordStateDto = {
       input_device: "Mic",
@@ -398,7 +400,7 @@ describe("WaveformView selection (S2-01)", () => {
       sample_rate_hz: 48_000,
       len_samples: lenSamples,
       dirty: false,
-      audio_rev: 1, sidecar_dirty: false, spectral_view: null,
+      audio_rev: 1, sidecar_dirty: false, spectral_view: null, waveform_view: null,
     };
     mockIPC((cmd) => {
       if (cmd === "document_open") {

@@ -4,11 +4,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { clearNotices } from "../state/notices.svelte";
 import { documentState, openSaveAsPrompt, resetDocumentStateForTest } from "./document.svelte";
 import SaveAsDialog from "./SaveAsDialog.svelte";
+import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 
 afterEach(() => {
   clearMocks();
   clearNotices();
   resetDocumentStateForTest();
+  resetWaveformViewForTest();
 });
 
 describe("SaveAsDialog (ticket: Save As with bit-depth choice)", () => {

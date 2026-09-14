@@ -2,6 +2,7 @@ import { sidecarViewSetSpectral } from "../ipc/commands";
 import { registerAction } from "../keymap";
 import type { ColormapName } from "../spectrogram/colormap";
 import type { FreqScale } from "../spectrum/freqAxis";
+import { saveSettings } from "./settings.svelte";
 
 /**
  * Spectral pane store (T-207, SPEC-007 §2.1/§2.5/§2.6): visibility, the waveform/spectral split
@@ -12,13 +13,14 @@ import type { FreqScale } from "../spectrum/freqAxis";
  * **T-306 (SPEC-018 §2.6.5):** per-document persistence. Every mutator debounces a
  * `sidecar_view_set_spectral` call (the Rust side merges it into the open document's sidecar
  * `view` for the next Save — never marks the document modified, SPEC-018 §2.4); restoring on
- * open is `document.svelte.ts`'s job (it owns `document_changed`'s `spectral_view`). A document
- * without a sidecar leaves this store's current values alone (the app's "last-used" defaults,
- * SPEC-007 §2.1) — there is nothing to apply.
+ * open is `document.svelte.ts`'s job (it owns `document_changed`'s `spectral_view`).
  *
- * **Still deferred:** the waveform's own zoom/scroll/selection view state (SPEC-018 §2.6.5's
- * `waveform` section) — `EditorView.svelte` keeps that as local, unlifted `$state`, not a store;
- * lifting it is a larger refactor left for a follow-up (ticket report).
+ * **H-12 (A-014):** the *display* settings — colormap, frequency scale, floor/ceiling, FFT size,
+ * not visibility/split ratio — also debounce a `settings_set` write to `Settings.spectral_defaults`
+ * (`saveSettings`, `settings.svelte.ts`), so they become the app-wide default a document with no
+ * sidecar view starts from. `App.svelte` applies the loaded settings once via
+ * {@link applySpectralDefaults}; a document's own sidecar `spectral_view`, if any, is applied
+ * afterwards by `document.svelte.ts` and wins.
  */
 
 /** Debounce for pushing a settings change to the backend (matches the digest-baseline debounce
@@ -26,7 +28,12 @@ import type { FreqScale } from "../spectrum/freqAxis";
 const PERSIST_DEBOUNCE_MS = 250;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 
-function schedulePersist(): void {
+/**
+ * `persistDefaults`: also write the display settings to `Settings.spectral_defaults` (A-014) —
+ * `true` for the display-setting mutators (colormap/scale/floor/ceiling/FFT size), `false` for
+ * visibility/split-ratio (per-document only, SPEC-018 §2.6.5).
+ */
+function schedulePersist(persistDefaults: boolean): void {
   if (persistTimer !== null) {
     clearTimeout(persistTimer);
   }
@@ -45,6 +52,19 @@ function schedulePersist(): void {
       // (there is no document open, or the IPC call itself failed) — the next Save just won't
       // carry this particular tweak.
     });
+    if (persistDefaults) {
+      // `saveSettings` already reports/swallows its own errors (settings.svelte.ts) — nothing
+      // further to catch here.
+      void saveSettings({
+        spectral_defaults: {
+          freq_scale: state.freqScale,
+          colormap: state.colormap,
+          display_floor_db: state.floorDb,
+          display_ceil_db: state.ceilDb,
+          fft_size: state.fftSize,
+        },
+      });
+    }
   }, PERSIST_DEBOUNCE_MS);
 }
 
@@ -126,35 +146,35 @@ export function spectralState(): SpectralStateApi {
     },
     toggle() {
       state = { ...state, visible: !state.visible };
-      schedulePersist();
+      schedulePersist(false);
     },
     setVisible(visible: boolean) {
       state = { ...state, visible };
-      schedulePersist();
+      schedulePersist(false);
     },
     setSplitRatio(pct: number) {
       state = { ...state, splitRatio: Math.min(100, Math.max(0, pct)) };
-      schedulePersist();
+      schedulePersist(false);
     },
     setFreqScale(scale: FreqScale) {
       state = { ...state, freqScale: scale };
-      schedulePersist();
+      schedulePersist(true);
     },
     setColormap(name: ColormapName) {
       state = { ...state, colormap: name };
-      schedulePersist();
+      schedulePersist(true);
     },
     setFloorDb(db: number) {
       state = { ...state, ...clampFloorCeil(db, state.ceilDb) };
-      schedulePersist();
+      schedulePersist(true);
     },
     setCeilDb(db: number) {
       state = { ...state, ...clampFloorCeil(state.floorDb, db) };
-      schedulePersist();
+      schedulePersist(true);
     },
     setFftSize(size: number | null) {
       state = { ...state, fftSize: size };
-      schedulePersist();
+      schedulePersist(true);
     },
   };
 }
@@ -193,6 +213,38 @@ export function applyRestoredSpectralView(view: {
     floorDb,
     ceilDb,
     fftSize: view.fft_size,
+  };
+}
+
+/**
+ * H-12 (A-014): applies `Settings.spectral_defaults`, loaded once at startup (`App.svelte`, after
+ * `loadSettings`) — sets the *display* settings only (colormap/scale/floor/ceiling/FFT size), not
+ * visibility/split ratio (SPEC-018 §2.6.5 keeps those per document only, with no app-wide
+ * default). Never re-schedules a persist, same reasoning as {@link applyRestoredSpectralView}.
+ * Invalid enum values are ignored, same tolerance as the restored-view path. A document's own
+ * sidecar `spectral_view`, applied afterwards by `document.svelte.ts`, overrides this.
+ */
+export function applySpectralDefaults(defaults: {
+  freq_scale: string;
+  colormap: string;
+  display_floor_db: number;
+  display_ceil_db: number;
+  fft_size: number | null;
+}): void {
+  const freqScale: FreqScale | null =
+    defaults.freq_scale === "log" || defaults.freq_scale === "linear" ? defaults.freq_scale : null;
+  const colormap: ColormapName | null =
+    defaults.colormap === "inferno" || defaults.colormap === "viridis" || defaults.colormap === "gray"
+      ? defaults.colormap
+      : null;
+  const { floorDb, ceilDb } = clampFloorCeil(defaults.display_floor_db, defaults.display_ceil_db);
+  state = {
+    ...state,
+    freqScale: freqScale ?? state.freqScale,
+    colormap: colormap ?? state.colormap,
+    floorDb,
+    ceilDb,
+    fftSize: defaults.fft_size,
   };
 }
 

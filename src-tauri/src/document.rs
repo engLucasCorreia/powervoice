@@ -139,6 +139,10 @@ pub struct DocumentInfo {
     /// prior `set_spectral_view` this session) has one. `None` means "no opinion" — the UI keeps
     /// its current settings / the app's last-used defaults (SPEC-007 §2.1).
     pub spectral_view: Option<SpectralViewInfo>,
+    /// H-12 (SPEC-018 §2.6.5): the sidecar's `view.waveform` section, if the open sidecar (or a
+    /// prior `set_waveform_view` this session) has one. `None` means "no opinion" — the UI keeps
+    /// whatever viewport it already has (e.g. zoom-to-fit for a newly opened document).
+    pub waveform_view: Option<WaveformViewInfo>,
 }
 
 /// T-306 (SPEC-018 §2.6.5's `view.spectral`): SPEC-007 §3's per-document spectral pane settings.
@@ -154,6 +158,21 @@ pub struct SpectralViewInfo {
     pub display_floor_db: f64,
     pub display_ceil_db: f64,
     pub colormap: String,
+}
+
+/// H-12 (SPEC-018 §2.6.5's `view.waveform`): the shared waveform/spectral viewport plus the
+/// selection and edit cursor, lifted out of `EditorView`'s own state so it can be persisted per
+/// document (like [`SpectralViewInfo`]) and restored on open. `vertical_zoom`,
+/// `amplitude_ruler_mode` and `time_ruler_format` (SPEC-018 §2.6.5) have no corresponding UI yet
+/// (no vertical zoom, one fixed ruler mode) and are left for whichever ticket adds them. Plain
+/// data — [`crate::ipc::document_dto::WaveformViewDto`] is the ts-rs wire type.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WaveformViewInfo {
+    pub start_sample: u64,
+    pub samples_per_pixel: f64,
+    /// `[start, end)` document samples, or `None` (no selection).
+    pub selection: Option<(u64, u64)>,
+    pub cursor_samples: u64,
 }
 
 /// S2-01: the in-app clipboard (SPEC-008 §2.6), same-document only for now (cleared whenever a
@@ -645,6 +664,43 @@ fn spectral_view_of(view: &serde_json::Value) -> Option<SpectralViewInfo> {
     })
 }
 
+/// `doc.sidecar.view["waveform"]` -> [`WaveformViewInfo`] (SPEC-018 §2.6.5, this ticket's subset:
+/// `start_sample`/`samples_per_pixel`/`selection`/`cursor_samples` only — see the struct doc for
+/// what's deferred). A malformed or partial section (missing `start_sample`/`samples_per_pixel`)
+/// reports "no opinion" (`None`), same as a missing one. `selection`/`cursor_samples` are
+/// restored only when they fit `[0, len_samples]` (§2.6.5: "restored when within `[0, L]`...
+/// otherwise `null` / 0"); `start_sample`/`samples_per_pixel` are restored as-is here — clamping
+/// them to the current viewport width (§2.6.5's "an out-of-range `samples_per_pixel` -> zoom
+/// full") needs the viewport's pixel width, which only `WaveformView` knows, so that half of the
+/// rule is applied there (`state/waveformView.svelte.ts`'s pending-restore mechanism).
+fn waveform_view_of(view: &serde_json::Value, len_samples: u64) -> Option<WaveformViewInfo> {
+    let w = view.get("waveform")?;
+    let start_sample = w.get("start_sample")?.as_u64()?;
+    let samples_per_pixel = w.get("samples_per_pixel")?.as_f64()?;
+    let selection = match w.get("selection") {
+        Some(serde_json::Value::Object(sel)) => {
+            let start = sel.get("start_sample").and_then(|v| v.as_u64());
+            let end = sel.get("end_sample").and_then(|v| v.as_u64());
+            match (start, end) {
+                (Some(s), Some(e)) if s <= e && e <= len_samples => Some((s, e)),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    let cursor_samples = w
+        .get("cursor_samples")
+        .and_then(|v| v.as_u64())
+        .filter(|&c| c <= len_samples)
+        .unwrap_or(0);
+    Some(WaveformViewInfo {
+        start_sample,
+        samples_per_pixel,
+        selection,
+        cursor_samples,
+    })
+}
+
 fn info_of(engine: &EngineHandle, doc: Option<&OpenDocument>) -> DocumentInfo {
     let Some(doc) = doc else {
         return DocumentInfo::default();
@@ -663,6 +719,7 @@ fn info_of(engine: &EngineHandle, doc: Option<&OpenDocument>) -> DocumentInfo {
         audio_rev: snapshot.audio_rev,
         sidecar_dirty: sidecar_dirty_of(engine, doc),
         spectral_view: spectral_view_of(&doc.sidecar.view),
+        waveform_view: waveform_view_of(&doc.sidecar.view, snapshot.len_samples),
     }
 }
 
@@ -875,6 +932,35 @@ impl DocumentService {
                 "display_floor_db": spectral.display_floor_db,
                 "display_ceil_db": spectral.display_ceil_db,
                 "colormap": spectral.colormap,
+            }),
+        );
+        doc.sidecar.view = serde_json::Value::Object(view);
+    }
+
+    /// H-12 (SPEC-018 §2.6.5): merges `waveform` into the open document's `view` JSON for the
+    /// next save — a no-op (not an error) with no document open. Never touches `sidecar_dirty`,
+    /// same guarantee as [`Self::set_spectral_view`]. Other `view` sections are preserved
+    /// untouched: this only ever replaces the `waveform` key.
+    pub fn set_waveform_view(&self, waveform: WaveformViewInfo) {
+        let mut guard = self.0.open.lock().unwrap();
+        let Some(doc) = guard.as_mut() else {
+            return;
+        };
+        let mut view = match std::mem::take(&mut doc.sidecar.view) {
+            serde_json::Value::Object(map) => map,
+            _ => serde_json::Map::new(),
+        };
+        let selection = match waveform.selection {
+            Some((start, end)) => serde_json::json!({ "start_sample": start, "end_sample": end }),
+            None => serde_json::Value::Null,
+        };
+        view.insert(
+            "waveform".to_string(),
+            serde_json::json!({
+                "start_sample": waveform.start_sample,
+                "samples_per_pixel": waveform.samples_per_pixel,
+                "selection": selection,
+                "cursor_samples": waveform.cursor_samples,
             }),
         );
         doc.sidecar.view = serde_json::Value::Object(view);
@@ -3315,6 +3401,12 @@ mod tests {
             display_ceil_db: -10.0,
             colormap: "viridis".to_string(),
         });
+        service.set_waveform_view(WaveformViewInfo {
+            start_sample: 1_234,
+            samples_per_pixel: 37.25,
+            selection: Some((2_000, 4_000)),
+            cursor_samples: 3_000,
+        });
 
         let save_path = dir.join("with-rack.wav");
         let saved_info = service.save_as(&save_path, BitDepth::Bit24).unwrap();
@@ -3360,9 +3452,100 @@ mod tests {
         assert_eq!(view.freq_scale, "linear");
         assert_eq!(view.colormap, "viridis");
 
+        let waveform_view = info
+            .waveform_view
+            .expect("the saved waveform view loads back (H-12)");
+        assert_eq!(waveform_view.start_sample, 1_234);
+        assert!((waveform_view.samples_per_pixel - 37.25).abs() < 1e-9);
+        assert_eq!(waveform_view.selection, Some((2_000, 4_000)));
+        assert_eq!(waveform_view.cursor_samples, 3_000);
+
         assert!(
             !info.sidecar_dirty,
             "opening a file with a matching sidecar never sets * (SPEC-018 §2.5)"
+        );
+    }
+
+    /// H-12: `set_waveform_view`/`set_spectral_view` are fire-and-forget view-only writes — with
+    /// no document open they must not panic, and `info().waveform_view` stays `None` (SPEC-018
+    /// §2.6.5's "no opinion").
+    #[test]
+    fn set_waveform_view_with_no_document_open_is_a_harmless_no_op() {
+        let (service, _engine, _dir) = service("waveform-view-no-doc");
+        service.set_waveform_view(WaveformViewInfo {
+            start_sample: 10,
+            samples_per_pixel: 2.0,
+            selection: None,
+            cursor_samples: 0,
+        });
+        assert_eq!(service.info().waveform_view, None);
+    }
+
+    /// H-12 (SPEC-018 §2.4): a waveform-view-only change never marks the document modified —
+    /// `sidecar_dirty` only reacts to save format/markers/rack (§4.3's persisted-content digest
+    /// deliberately excludes `view`).
+    #[test]
+    fn set_waveform_view_never_marks_the_document_modified() {
+        let (service, _engine, dir) = service("waveform-view-not-dirty");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.1, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let save_path = dir.join("a.wav");
+        service.save_as(&save_path, BitDepth::Bit24).unwrap();
+        assert!(!service.info().sidecar_dirty);
+        assert!(!service.info().dirty);
+
+        service.set_waveform_view(WaveformViewInfo {
+            start_sample: 500,
+            samples_per_pixel: 4.0,
+            selection: Some((0, 100)),
+            cursor_samples: 100,
+        });
+
+        assert!(!service.info().sidecar_dirty);
+        assert!(!service.info().dirty);
+    }
+
+    /// H-12: an invalid `selection` (missing a field, `start > end`, or out of `[0, L]`) is
+    /// ignored rather than restoring garbage — same "no opinion on the invalid part" spirit as
+    /// the rest of §2.6.5.
+    #[test]
+    fn waveform_view_of_ignores_a_malformed_selection() {
+        let view = serde_json::json!({
+            "waveform": {
+                "start_sample": 10,
+                "samples_per_pixel": 2.0,
+                "selection": { "start_sample": 500, "end_sample": 100 },
+                "cursor_samples": 42,
+            }
+        });
+        let info =
+            waveform_view_of(&view, 1_000).expect("start_sample/samples_per_pixel are present");
+        assert_eq!(info.selection, None, "start > end is dropped");
+        assert_eq!(info.cursor_samples, 42);
+
+        let missing_view = serde_json::json!({ "waveform": { "start_sample": 10 } });
+        assert_eq!(
+            waveform_view_of(&missing_view, 1_000),
+            None,
+            "no samples_per_pixel -> no opinion at all"
+        );
+
+        assert_eq!(waveform_view_of(&serde_json::json!({}), 1_000), None);
+
+        // SPEC-018 §2.6.5: "restored when within [0, L]; otherwise null / 0".
+        let out_of_range = serde_json::json!({
+            "waveform": {
+                "start_sample": 0,
+                "samples_per_pixel": 1.0,
+                "selection": { "start_sample": 0, "end_sample": 2_000 },
+                "cursor_samples": 5_000,
+            }
+        });
+        let info = waveform_view_of(&out_of_range, 1_000).unwrap();
+        assert_eq!(info.selection, None, "end beyond len_samples is dropped");
+        assert_eq!(
+            info.cursor_samples, 0,
+            "cursor beyond len_samples falls back to 0"
         );
     }
 

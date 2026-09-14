@@ -30,6 +30,7 @@ import type {
   SpectralViewDto,
   SpectroRequestDto,
   TransportStateDto,
+  WaveformViewDto,
 } from "./bindings";
 
 /**
@@ -255,6 +256,15 @@ export async function documentSaveAs(path: string, bits: BitDepth): Promise<Docu
  */
 export async function sidecarViewSetSpectral(spectral: SpectralViewDto): Promise<void> {
   return invoke<void>("sidecar_view_set_spectral" satisfies CommandName, { spectral });
+}
+
+/**
+ * H-12 (SPEC-018 §2.6.5): records the shared waveform/spectral viewport plus the selection and
+ * edit cursor for the next save (fire-and-forget, same contract as
+ * {@link sidecarViewSetSpectral}).
+ */
+export async function sidecarViewSetWaveform(waveform: WaveformViewDto): Promise<void> {
+  return invoke<void>("sidecar_view_set_waveform" satisfies CommandName, { waveform });
 }
 
 /** T-306 (SPEC-018 §2.12): the current `File → Open Recent` list, most-recent-first. */

@@ -38,6 +38,32 @@ export function hopForZoom(samplesPerDevicePixel: number, fftSize: number): numb
   return Math.max(floor, fftSize / 16);
 }
 
+/**
+ * H-12 (HiDPI): the STFT-frame boundaries `[lo, hi)` of each **device**-pixel column of a
+ * `backingWidthPx`-wide (i.e. `Math.round(viewportPx * dpr)`) spectrogram canvas — one column per
+ * physical pixel, not per CSS pixel, so the pane doesn't look blurry/blocky on a HiDPI display.
+ * `startSample`/`samplesPerPixel` are in CSS-pixel (document) units, as the shared viewport always
+ * is; `dpr` converts a device-pixel column index back to a CSS-pixel offset before turning it into
+ * a sample position. Pure and canvas-free so it's testable without a 2D context (jsdom has none).
+ */
+export function frameColumnBounds(
+  backingWidthPx: number,
+  startSample: number,
+  samplesPerPixel: number,
+  dpr: number,
+  hop: number,
+): { lo: Float64Array; hi: Float64Array } {
+  const lo = new Float64Array(backingWidthPx);
+  const hi = new Float64Array(backingWidthPx);
+  for (let px = 0; px < backingWidthPx; px++) {
+    const s0 = startSample + (px / dpr) * samplesPerPixel;
+    const s1 = s0 + samplesPerPixel / dpr;
+    lo[px] = s0 / hop;
+    hi[px] = s1 / hop;
+  }
+  return { lo, hi };
+}
+
 /** Overview hops (`hop > N`) get a `PREVIEW` tile before the refined one (SPEC-007 §4.4). */
 export function isOverview(fftSize: number, hop: number): boolean {
   return hop > fftSize;

@@ -202,6 +202,40 @@ pub fn default_memory_budget_mib(total_ram_bytes: u64) -> u32 {
     quarter_mib.clamp(512, 4096) as u32
 }
 
+// --- Spectral display defaults (H-12, A-014, SPEC-007 §2.1/§2.5/§2.6) ---------------------------
+
+/// App-wide default spectral **display** settings (colormap, frequency scale, floor/ceiling, FFT
+/// size) — used for a document with no sidecar `view.spectral` section (T-306 already persists
+/// those per document, `sidecar_view_set_spectral`; this is only the fallback/seed). Pane
+/// visibility and the waveform/spectral split ratio are *not* here: SPEC-018 §2.6.5 keeps those
+/// per document only, with no app-wide default (a document without a sidecar just starts with
+/// the pane hidden, SPEC-007 §2.1's factory default). Changing a spectral setting in the UI
+/// updates both the open document's sidecar view and this default (so the next document without
+/// its own sidecar view starts from the last-used look).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct SpectralDefaultsDto {
+    pub freq_scale: String,
+    pub colormap: String,
+    pub display_floor_db: f64,
+    pub display_ceil_db: f64,
+    /// `None` = Auto (SPEC-007 §2.6).
+    pub fft_size: Option<u32>,
+}
+
+impl Default for SpectralDefaultsDto {
+    fn default() -> Self {
+        // SPEC-007 §2.4/§2.5/§2.6 factory defaults.
+        Self {
+            freq_scale: "log".to_string(),
+            colormap: "inferno".to_string(),
+            display_floor_db: -120.0,
+            display_ceil_db: 0.0,
+            fft_size: None,
+        }
+    }
+}
+
 // --- Recent files (T-306, SPEC-018 §2.12) --------------------------------------------------------
 
 /// At most this many entries, most-recent-first (SPEC-018 §2.12 `recent_max`).
@@ -267,6 +301,9 @@ pub struct Settings {
     /// T-306 (SPEC-018 §2.12): File → Open Recent, most-recent-first, capped at
     /// [`RECENT_FILES_MAX`]. Additive field — the settings version stays 1.
     pub recent_files: Vec<RecentFileEntry>,
+    /// H-12 (A-014): app-wide spectral display defaults, for documents with no sidecar view.
+    /// Additive field — the settings version stays 1.
+    pub spectral_defaults: SpectralDefaultsDto,
     #[serde(flatten)]
     #[ts(skip)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -284,6 +321,7 @@ impl Default for Settings {
             memory_budget_mib: default_memory_budget_mib(total_ram_bytes()),
             normalize_dialog: NormalizeDialogPrefsDto::default(),
             recent_files: Vec::new(),
+            spectral_defaults: SpectralDefaultsDto::default(),
             extra: serde_json::Map::new(),
         }
     }
@@ -477,8 +515,48 @@ mod tests {
         assert!((512..=4096).contains(&settings.memory_budget_mib));
         assert_eq!(settings.normalize_dialog.value, -1.0);
         assert_eq!(settings.normalize_dialog.unit, NormalizeTargetUnit::Db);
+        assert_eq!(settings.spectral_defaults.freq_scale, "log");
+        assert_eq!(settings.spectral_defaults.colormap, "inferno");
+        assert_eq!(settings.spectral_defaults.display_floor_db, -120.0);
+        assert_eq!(settings.spectral_defaults.display_ceil_db, 0.0);
+        assert_eq!(settings.spectral_defaults.fft_size, None);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// H-12 (A-014): the spectral display defaults round-trip through save/load, same pattern as
+    /// the normalize dialog prefs above.
+    #[test]
+    #[allow(clippy::float_cmp)] // exact round-tripped value
+    fn spectral_defaults_round_trip_through_save_and_load() {
+        let dir = temp_dir("spectral-defaults");
+        let path = dir.join("settings.json");
+
+        let settings = Settings {
+            spectral_defaults: SpectralDefaultsDto {
+                freq_scale: "linear".to_string(),
+                colormap: "viridis".to_string(),
+                display_floor_db: -100.0,
+                display_ceil_db: -10.0,
+                fft_size: Some(4096),
+            },
+            ..Settings::default()
+        };
+        save(&path, &settings).unwrap();
+        let loaded = load_or_default(&path);
+
+        assert_eq!(loaded.spectral_defaults, settings.spectral_defaults);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An older settings file with no `spectral_defaults` key at all (pre-H-12) still loads, and
+    /// falls back to the SPEC-007 factory defaults (container-level `#[serde(default)]`).
+    #[test]
+    fn spectral_defaults_falls_back_on_a_settings_file_that_predates_it() {
+        let json = br#"{"version":1,"monitor_mode":"dry"}"#;
+        let settings = parse_and_migrate(json).unwrap();
+        assert_eq!(settings.spectral_defaults, SpectralDefaultsDto::default());
     }
 
     /// H-09/SPEC-010 §2.4: "the last applied value and unit are remembered ... across restarts".

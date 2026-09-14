@@ -2,6 +2,7 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it } from "vitest";
 import type { DocumentDto } from "../ipc/bindings";
 import { clearNotices } from "../state/notices.svelte";
+import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 import {
   cancelSaveAsPrompt,
   confirmSaveAsPrompt,
@@ -26,7 +27,7 @@ function doc(overrides: Partial<DocumentDto> = {}): DocumentDto {
     dirty: false,
     audio_rev: 1,
     sidecar_dirty: false,
-    spectral_view: null,
+    spectral_view: null, waveform_view: null,
     ...overrides,
   };
 }
@@ -35,6 +36,7 @@ afterEach(() => {
   clearMocks();
   clearNotices();
   resetDocumentStateForTest();
+  resetWaveformViewForTest();
 });
 
 describe("titleFor (ticket: title '‹name› — PowerVoice' with * when modified)", () => {
@@ -280,6 +282,7 @@ describe("requestSave / Save As prompt", () => {
     });
     // Populate the prompt via requestSave's no-path branch, then cancel it.
     resetDocumentStateForTest();
+    resetWaveformViewForTest();
     cancelSaveAsPrompt();
     expect(documentState().saveAsPrompt).toBeNull();
   });

@@ -6,7 +6,6 @@
   import { recordPeaksGet } from "../ipc/record_commands";
   import { registerAction } from "../keymap";
   import { markersState } from "../markers/markers.svelte";
-  import { formatTime } from "../transport/playhead";
   import { recordState } from "../state/record.svelte";
   import {
     beginDrag,
@@ -18,16 +17,17 @@
     shiftClickTo,
   } from "../state/selection.svelte";
   import { seek, transportState } from "../state/transport.svelte";
+  import { audioKeyFor, consumePendingRestore } from "../state/waveformView.svelte";
   import {
     clampSamplesPerPixel,
     clampStartSample,
+    MIN_SAMPLES_PER_PIXEL,
     pickLevel,
     pixelAtSample,
     RAW_SPP,
     reduceColumns,
     sampleAtPixel,
     showsDots,
-    timeTicks,
     zoomAroundSample,
     ZOOM_STEP_FACTOR,
     zoomFullSamplesPerPixel,
@@ -40,10 +40,17 @@
    * The waveform view (S1-03, SPEC-006 essential subset; H-07 adds the live view while recording):
    * Canvas2D min/max fill and raw-sample polyline (ADR-009's WebGL2 primary / Canvas2D fallback
    * choice is deferred — this ticket starts with Canvas2D, per its own scope note), horizontal
-   * zoom/scroll, a timecode ruler, the shared playhead (SPEC-003 §2.2's extrapolation, read from
-   * the transport store — never re-derived here), and click-to-seek. HiDPI aware. Selection,
-   * vertical zoom, markers and the overview strip are deferred to hardening/Slice 2 (ticket's
-   * "Out" list).
+   * zoom/scroll, the shared playhead (SPEC-003 §2.2's extrapolation, read from the transport
+   * store — never re-derived here), and click-to-seek. HiDPI aware. Selection, vertical zoom,
+   * markers and the overview strip are deferred to hardening/Slice 2 (ticket's "Out" list).
+   *
+   * H-12: the time ruler and scrollbar that used to live here now live in `EditorView` (shared
+   * with `SpectralView`, SPEC-007 §2.1's ruler → waveform → divider → spectral → scrollbar
+   * stack) — this view only owns the canvas. `EditorView` also owns the persisted viewport
+   * (`state/waveformView.svelte.ts`) this component's `startSample`/`samplesPerPixel` bind to;
+   * this component still decides *when* to zoom-to-fit a newly opened document (it's the one that
+   * knows the canvas's pixel width), consuming a pending restored viewport instead when the just
+   * opened document's sidecar had one (`consumePendingRestore`, SPEC-018 §2.6.5).
    *
    * H-07: while `recordState` is recording, the document has no committed audio yet (S1-04: an
    * open take's document is empty until Stop), so instead of the normal `peaks_get` path this
@@ -104,17 +111,31 @@
   // Zoom-full the first time a newly opened document's audio (rate + length — not just its path,
   // so Save As to a new path/format doesn't re-fit the still-unchanged audio) gets a known
   // viewport width (SPEC-006 §2.6 "zoom full at open"). Re-fits if the viewport wasn't known yet
-  // when the document opened.
+  // when the document opened. H-12 (SPEC-018 §2.6.5): a document opened with a saved
+  // `waveform_view` restores that viewport instead — clamped to this width, falling back to zoom
+  // full when the restored `samples_per_pixel` is out of range ("an out-of-range
+  // `samples_per_pixel` -> zoom full").
   $effect(() => {
     if (!isOpen) {
       fittedForAudio = null;
       return;
     }
-    const audioKey = `${rateHz}:${lenSamples}`;
+    const audioKey = audioKeyFor(rateHz, lenSamples);
     if (audioKey !== fittedForAudio && viewportPx > 0) {
       fittedForAudio = audioKey;
-      samplesPerPixel = zoomFullSamplesPerPixel(lenSamples, viewportPx);
-      startSample = 0;
+      const pending = consumePendingRestore(audioKey);
+      const maxSpp = zoomFullSamplesPerPixel(lenSamples, viewportPx);
+      if (
+        pending &&
+        pending.samplesPerPixel >= MIN_SAMPLES_PER_PIXEL &&
+        pending.samplesPerPixel <= maxSpp
+      ) {
+        samplesPerPixel = pending.samplesPerPixel;
+        startSample = clampStartSample(pending.startSample, samplesPerPixel, lenSamples, viewportPx);
+      } else {
+        samplesPerPixel = maxSpp;
+        startSample = 0;
+      }
     }
   });
 
@@ -188,19 +209,6 @@
     };
   });
 
-  const maxStart = $derived(Math.max(0, lenSamples - samplesPerPixel * viewportPx));
-
-  const ticks = $derived.by(() => {
-    if (rateHz <= 0 || viewportPx <= 0) {
-      return [];
-    }
-    return timeTicks(startSample, samplesPerPixel, Math.ceil(viewportPx), rateHz, 70).map(
-      (tick) => ({
-        px: pixelAtSample(tick.sample, startSample, samplesPerPixel),
-        label: formatTime(tick.sample, rateHz),
-      }),
-    );
-  });
 
   function colorToken(name: string, fallback: string): string {
     if (!canvasEl) {
@@ -537,11 +545,6 @@
     }
   }
 
-  function onScrollbarInput(event: Event): void {
-    const value = Number((event.currentTarget as HTMLInputElement).value);
-    startSample = clampStartSample(value, samplesPerPixel, lenSamples, viewportPx);
-  }
-
   // The canvas container only exists while a document is open (`{#if isOpen}`), so the size
   // observer must be (re)attached whenever the element appears — not once at mount, when no
   // document is open yet (that left viewportPx at 0 and the waveform blank).
@@ -613,11 +616,6 @@
 
 <div class="waveform-view" data-testid="waveform-view">
   {#if isOpen}
-    <div class="ruler" data-testid="waveform-ruler">
-      {#each ticks as tick (tick.px)}
-        <span class="tick" style={`left: ${tick.px}px`}>{tick.label}</span>
-      {/each}
-    </div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="canvas-container"
@@ -634,16 +632,6 @@
         data-testid="waveform-canvas"
       ></canvas>
     </div>
-    <input
-      class="scrollbar"
-      type="range"
-      data-testid="waveform-scrollbar"
-      min="0"
-      max={maxStart}
-      step="1"
-      value={startSample}
-      oninput={onScrollbarInput}
-    />
   {:else}
     <p class="empty" data-testid="waveform-empty">{t("waveform.empty")}</p>
   {/if}
@@ -664,24 +652,6 @@
     color: var(--text-secondary);
   }
 
-  .ruler {
-    position: relative;
-    height: 20px;
-    flex: none;
-    border-bottom: 1px solid var(--wave-ruler-grid);
-    background: var(--surface-panel);
-    overflow: hidden;
-  }
-
-  .tick {
-    position: absolute;
-    top: 2px;
-    color: var(--wave-ruler-text);
-    font-size: 0.7rem;
-    white-space: nowrap;
-    transform: translateX(2px);
-  }
-
   .canvas-container {
     position: relative;
     flex: 1;
@@ -692,11 +662,5 @@
     display: block;
     width: 100%;
     height: 100%;
-  }
-
-  .scrollbar {
-    flex: none;
-    width: 100%;
-    margin: 0;
   }
 </style>

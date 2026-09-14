@@ -41,7 +41,7 @@ export type BitDepth = "16" | "24" | "32f";
  */
 export type ClipboardChangedDto = { len_samples: number | null, sample_rate_hz: number | null, };
 
-export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "module_telemetry_subscribe" | "analyzer_subscribe" | "analyzer_set_response" | "analyzer_unsubscribe" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_probe" | "document_save" | "document_save_as" | "sidecar_view_set_spectral" | "recent_files_get" | "recent_files_remove" | "recent_files_clear" | "peaks_get" | "spectro_attach" | "spectro_detach" | "spectro_request" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check";
+export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "module_telemetry_subscribe" | "analyzer_subscribe" | "analyzer_set_response" | "analyzer_unsubscribe" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_probe" | "document_save" | "document_save_as" | "sidecar_view_set_spectral" | "sidecar_view_set_waveform" | "recent_files_get" | "recent_files_remove" | "recent_files_clear" | "peaks_get" | "spectro_attach" | "spectro_detach" | "spectro_request" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check";
 
 /**
  * One draggable EQ-graph node (S3-07, SPEC-015 §3 "ResponseCurve components"): the band's
@@ -158,7 +158,12 @@ sidecar_dirty: boolean,
  * T-306 (SPEC-018 §2.6.5): the sidecar's spectral-pane settings, if any (`null` = keep the
  * UI's current/last-used settings, SPEC-007 §2.1).
  */
-spectral_view: SpectralViewDto | null, };
+spectral_view: SpectralViewDto | null, 
+/**
+ * H-12 (SPEC-018 §2.6.5): the sidecar's waveform viewport/selection/cursor, if any (`null` =
+ * keep the UI's current viewport, e.g. a newly opened document zooms to fit instead).
+ */
+waveform_view: WaveformViewDto | null, };
 
 /**
  * T-202: `document_probe`'s result (SPEC-005 §2.3 step 1, §2.4). `channel_peaks_dbfs` is empty
@@ -568,13 +573,34 @@ normalize_dialog: NormalizeDialogPrefsDto,
  * T-306 (SPEC-018 §2.12): File → Open Recent, most-recent-first, capped at
  * [`RECENT_FILES_MAX`]. Additive field — the settings version stays 1.
  */
-recent_files: Array<RecentFileEntry>, };
+recent_files: Array<RecentFileEntry>, 
+/**
+ * H-12 (A-014): app-wide spectral display defaults, for documents with no sidecar view.
+ * Additive field — the settings version stays 1.
+ */
+spectral_defaults: SpectralDefaultsDto, };
 
 /**
  * Slot status (SPEC-012 §2.2, §2.9). `message` is pre-rendered English text shown verbatim (see
  * the module docs) — a plugin or module name isn't something the UI can key into i18n.
  */
 export type SlotStatusDto = { "kind": "active" } | { "kind": "missing", message: string, too_new: boolean, } | { "kind": "failed", message: string, };
+
+/**
+ * App-wide default spectral **display** settings (colormap, frequency scale, floor/ceiling, FFT
+ * size) — used for a document with no sidecar `view.spectral` section (T-306 already persists
+ * those per document, `sidecar_view_set_spectral`; this is only the fallback/seed). Pane
+ * visibility and the waveform/spectral split ratio are *not* here: SPEC-018 §2.6.5 keeps those
+ * per document only, with no app-wide default (a document without a sidecar just starts with
+ * the pane hidden, SPEC-007 §2.1's factory default). Changing a spectral setting in the UI
+ * updates both the open document's sidecar view and this default (so the next document without
+ * its own sidecar view starts from the last-used look).
+ */
+export type SpectralDefaultsDto = { freq_scale: string, colormap: string, display_floor_db: number, display_ceil_db: number, 
+/**
+ * `None` = Auto (SPEC-007 §2.6).
+ */
+fft_size: number | null, };
 
 /**
  * T-306 (SPEC-018 §2.6.5's `view.spectral`, SPEC-007 §3): per-document spectral pane settings.
@@ -627,3 +653,19 @@ can_play: boolean, };
  * Display unit ([`Unit`]); `Custom` carries the adapter-provided label.
  */
 export type UnitDto = { "kind": "none" } | { "kind": "db" } | { "kind": "dbfs" } | { "kind": "dbtp" } | { "kind": "lufs" } | { "kind": "hz" } | { "kind": "ms" } | { "kind": "seconds" } | { "kind": "percent" } | { "kind": "ratio" } | { "kind": "samples" } | { "kind": "custom", label: string, };
+
+/**
+ * `[start_sample, end_sample)` document samples (SPEC-006 §2.2's selection shape).
+ */
+export type WaveformSelectionDto = { start_sample: number, end_sample: number, };
+
+/**
+ * H-12 (SPEC-018 §2.6.5's `view.waveform`, this ticket's subset — see `WaveformViewInfo`'s doc
+ * for what's deferred): the shared waveform/spectral viewport plus the selection and edit
+ * cursor, persisted like `SpectralViewDto`.
+ */
+export type WaveformViewDto = { start_sample: number, samples_per_pixel: number, 
+/**
+ * `null` = no selection.
+ */
+selection: WaveformSelectionDto | null, cursor_samples: number, };

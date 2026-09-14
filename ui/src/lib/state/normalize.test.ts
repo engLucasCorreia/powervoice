@@ -24,6 +24,7 @@ import {
 } from "./normalize.svelte";
 import { resetSelectionForTest, selectionState, setSelectionFromResult } from "./selection.svelte";
 import { loadSettings, resetSettingsStateForTest } from "./settings.svelte";
+import { resetWaveformViewForTest } from "./waveformView.svelte";
 
 function doc(overrides: Partial<DocumentDto> = {}): DocumentDto {
   return {
@@ -34,7 +35,7 @@ function doc(overrides: Partial<DocumentDto> = {}): DocumentDto {
     dirty: false,
     audio_rev: 1,
     sidecar_dirty: false,
-    spectral_view: null,
+    spectral_view: null, waveform_view: null,
     ...overrides,
   };
 }
@@ -57,6 +58,13 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     memory_budget_mib: 2048,
     normalize_dialog: { value: -1, unit: "db" },
     recent_files: [],
+    spectral_defaults: {
+      freq_scale: "log",
+      colormap: "inferno",
+      display_floor_db: -120,
+      display_ceil_db: 0,
+      fft_size: null,
+    },
     ...overrides,
   };
 }
@@ -76,6 +84,7 @@ afterEach(() => {
   clearMocks();
   clearNotices();
   resetDocumentStateForTest();
+  resetWaveformViewForTest();
   resetSelectionForTest();
   resetNormalizeForTest();
   resetSettingsStateForTest();

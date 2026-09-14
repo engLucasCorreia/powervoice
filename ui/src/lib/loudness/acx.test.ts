@@ -6,6 +6,7 @@ import { clearNotices, noticesState } from "../state/notices.svelte";
 import { resetSelectionForTest } from "../state/selection.svelte";
 import { acxState, resetAcxForTest, runAcxCheck } from "./acx.svelte";
 import { resetLoudnessForTest, setLoudnessSource } from "./loudness.svelte";
+import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 
 function doc(overrides: Partial<DocumentDto> = {}): DocumentDto {
   return {
@@ -16,7 +17,7 @@ function doc(overrides: Partial<DocumentDto> = {}): DocumentDto {
     dirty: false,
     audio_rev: 1,
     sidecar_dirty: false,
-    spectral_view: null,
+    spectral_view: null, waveform_view: null,
     ...overrides,
   };
 }
@@ -43,6 +44,7 @@ afterEach(() => {
   clearMocks();
   clearNotices();
   resetDocumentStateForTest();
+  resetWaveformViewForTest();
   resetSelectionForTest();
   resetLoudnessForTest();
   resetAcxForTest();

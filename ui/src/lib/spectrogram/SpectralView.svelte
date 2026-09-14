@@ -37,24 +37,28 @@
   } from "../waveform/coords";
   import { colorForT, type ColormapName, normalizeDb } from "./colormap";
   import { detectMaxTextureSize, isFftSizeDisabled } from "./fftLimit";
-  import { autoFftSize, FFT_SIZES, hopForZoom, totalFrames } from "./geometry";
+  import { autoFftSize, FFT_SIZES, frameColumnBounds, hopForZoom, totalFrames } from "./geometry";
   import { formatLevelDb } from "./hoverFormat";
   import { nearestCode, pixelDb, type TileLookup } from "./sampler";
   import { createSpectroRequester, type SpectroRequester } from "./spectroRequester";
 
   /**
-   * The spectral pane (T-207, SPEC-007 essential subset): the STFT spectrogram, colored through a
-   * shader-equivalent CPU colormap pass (Canvas2D — see the report for why this ticket starts
-   * with Canvas2D rather than WebGL2), a log/linear frequency ruler, and a hover readout. Shares
-   * the waveform's time axis via the bindable `startSample`/`samplesPerPixel` props (SPEC-007
-   * §2.3 "one viewport") so `EditorView` can bind both views to the same variables.
+   * The spectral pane (T-207, SPEC-007 essential subset; T-306/H-12 add persistence and HiDPI):
+   * the STFT spectrogram, colored through a shader-equivalent CPU colormap pass (Canvas2D — see
+   * the T-207 ticket report for why it starts with Canvas2D rather than WebGL2), a log/linear
+   * frequency ruler, and a hover readout. Shares the waveform's time axis via the bindable
+   * `startSample`/`samplesPerPixel` props (SPEC-007 §2.3 "one viewport"), now backed by
+   * `state/waveformView.svelte.ts` so `EditorView` can persist and restore it (H-12).
    *
-   * Deferred (see the ticket report): WebGL2 R8-texture rendering (ADR-009 hardening item); a
-   * distinct "importing" freeze message (SPEC-007 §2.1) — the app has no import-progress state
-   * yet, only "no document open", which this view already handles; persisted visibility/ratio/
-   * display settings (AC-12) — kept in memory only, like the waveform's own zoom; a native
-   * right-click menu for the frequency scale (a toolbar toggle button substitutes); the shared
-   * top time ruler / bottom scrollbar living in `EditorView` rather than inside `WaveformView`.
+   * **H-12 (HiDPI):** the spectrogram is drawn one column per **device** pixel, not per CSS pixel
+   * (`geometry.ts::frameColumnBounds`) — the canvas's backing store (`canvasEl.width`/`height`)
+   * is sized in device pixels too, independent of whether a 2D context is available.
+   *
+   * Deferred (see the T-207 ticket report): WebGL2 R8-texture rendering (ADR-009 hardening item);
+   * a distinct "importing" freeze message (SPEC-007 §2.1) — the app still has no import-progress
+   * state (T-202's import stays synchronous), only "no document open", which this view already
+   * handles; a native right-click menu for the frequency scale (a toolbar toggle button
+   * substitutes).
    */
 
   let {
@@ -225,14 +229,9 @@
     const image = ctx.createImageData(backingW, backingH);
     const data = image.data;
 
-    const frameLoArr = new Float64Array(backingW);
-    const frameHiArr = new Float64Array(backingW);
-    for (let px = 0; px < backingW; px++) {
-      const s0 = startSample + (px / dpr) * samplesPerPixel;
-      const s1 = s0 + samplesPerPixel / dpr;
-      frameLoArr[px] = s0 / hop;
-      frameHiArr[px] = s1 / hop;
-    }
+    // H-12 (HiDPI): one column per device pixel (`geometry.ts::frameColumnBounds`) — `backingW`
+    // is already the device-pixel canvas width (`draw()` below).
+    const { lo: frameLoArr, hi: frameHiArr } = frameColumnBounds(backingW, startSample, samplesPerPixel, dpr, hop);
     const binLoArr = new Float64Array(backingH);
     const binHiArr = new Float64Array(backingH);
     for (let py = 0; py < backingH; py++) {
@@ -305,16 +304,19 @@
     if (!canvasEl || viewportPx <= 0 || heightPx <= 0) {
       return;
     }
-    const ctx = canvasEl.getContext("2d");
-    if (!ctx) {
-      return; // jsdom in tests, or a browser with no 2D canvas support
-    }
+    // H-12 (HiDPI): the canvas's backing store is sized in device pixels regardless of whether a
+    // 2D context is available, so the element itself is always HiDPI-correct (and this part is
+    // testable in jsdom, which has no 2D context at all).
     const dpr = window.devicePixelRatio || 1;
     const backingW = Math.max(1, Math.round(viewportPx * dpr));
     const backingH = Math.max(1, Math.round(heightPx * dpr));
     if (canvasEl.width !== backingW || canvasEl.height !== backingH) {
       canvasEl.width = backingW;
       canvasEl.height = backingH;
+    }
+    const ctx = canvasEl.getContext("2d");
+    if (!ctx) {
+      return; // jsdom in tests, or a browser with no 2D canvas support
     }
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);

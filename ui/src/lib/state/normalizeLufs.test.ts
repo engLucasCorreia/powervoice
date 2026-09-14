@@ -19,6 +19,7 @@ import {
   setNormalizeLufsDialogText,
 } from "./normalizeLufs.svelte";
 import { resetSelectionForTest, selectionState, setSelectionFromResult } from "./selection.svelte";
+import { resetWaveformViewForTest } from "./waveformView.svelte";
 
 function doc(overrides: Partial<DocumentDto> = {}): DocumentDto {
   return {
@@ -29,7 +30,7 @@ function doc(overrides: Partial<DocumentDto> = {}): DocumentDto {
     dirty: false,
     audio_rev: 1,
     sidecar_dirty: false,
-    spectral_view: null,
+    spectral_view: null, waveform_view: null,
     ...overrides,
   };
 }
@@ -49,6 +50,7 @@ afterEach(() => {
   clearMocks();
   clearNotices();
   resetDocumentStateForTest();
+  resetWaveformViewForTest();
   resetSelectionForTest();
   resetNormalizeLufsForTest();
 });

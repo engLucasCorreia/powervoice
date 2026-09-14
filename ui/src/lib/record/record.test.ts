@@ -29,6 +29,7 @@ import {
   monitorLatencyLevel,
 } from "./format";
 import RecordControls from "./RecordControls.svelte";
+import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 
 let calls: Array<{ cmd: string; args: unknown }> = [];
 let docLen = 0;
@@ -78,7 +79,7 @@ function docDto(len_samples: number, dirty: boolean): DocumentDto {
     dirty,
     audio_rev: 1,
     sidecar_dirty: false,
-    spectral_view: null,
+    spectral_view: null, waveform_view: null,
   };
 }
 
@@ -142,6 +143,7 @@ afterEach(() => {
   resetTransportForTest();
   resetRecordForTest();
   resetDocumentStateForTest();
+  resetWaveformViewForTest();
   document.body.innerHTML = "";
 });
 

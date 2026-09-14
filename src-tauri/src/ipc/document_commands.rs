@@ -206,6 +206,23 @@ pub async fn sidecar_view_set_spectral(
     .await
 }
 
+/// H-12 (SPEC-018 §2.6.5): records the shared waveform/spectral viewport plus the selection and
+/// edit cursor for the next save. Fire-and-forget, same contract as `sidecar_view_set_spectral`
+/// (no result, no `document_changed`, never marks the document modified) — the caller
+/// (`EditorView`) debounces its own calls.
+#[tauri::command]
+pub async fn sidecar_view_set_waveform(
+    doc: State<'_, DocumentService>,
+    waveform: crate::ipc::document_dto::WaveformViewDto,
+) -> Result<(), IpcError> {
+    let doc = (*doc).clone();
+    run_blocking(move || {
+        doc.set_waveform_view(waveform.into());
+        Ok(())
+    })
+    .await
+}
+
 /// `count` buckets of `(min, max)` (or raw samples below `PEAKS_RAW_SPP`'s pyramid floor) as a
 /// binary `VXPK` frame (ADR-003 §2, S1-02 `peaks_query::peaks` + `encode_vxpk`).
 #[tauri::command]

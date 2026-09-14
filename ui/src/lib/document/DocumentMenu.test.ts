@@ -6,11 +6,13 @@ import { openDocument, resetDocumentStateForTest } from "./document.svelte";
 import { clearNotices } from "../state/notices.svelte";
 import { applyRecordStateForTest, recordState, resetRecordForTest } from "../state/record.svelte";
 import DocumentMenu from "./DocumentMenu.svelte";
+import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 
 afterEach(() => {
   clearMocks();
   clearNotices();
   resetDocumentStateForTest();
+  resetWaveformViewForTest();
   resetRecordForTest();
 });
 
@@ -45,7 +47,7 @@ describe("DocumentMenu (S1-03)", () => {
       sample_rate_hz: 48_000,
       len_samples: 480_000,
       dirty: true,
-      audio_rev: 1, sidecar_dirty: false, spectral_view: null,
+      audio_rev: 1, sidecar_dirty: false, spectral_view: null, waveform_view: null,
     };
     mockIPC((cmd) => {
       if (cmd === "document_open") {

@@ -1,16 +1,48 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Settings } from "../ipc/bindings";
 import { clearActionHandlers, dispatchAction } from "../keymap";
 import {
   applyRestoredSpectralView,
+  applySpectralDefaults,
   initSpectral,
   resetSpectralForTest,
   spectralState,
 } from "./spectral.svelte";
+import { loadSettings, resetSettingsStateForTest } from "./settings.svelte";
+
+function settingsFixture(): Settings {
+  return {
+    version: 1,
+    device: {
+      host: "pipewire",
+      input_device: null,
+      input_channel: 1,
+      output_device: null,
+      sample_rate_hz: null,
+      buffer_size_frames: null,
+    },
+    default_format: { sample_rate_hz: 48_000, bit_depth: "24" },
+    monitor_mode: "off",
+    monitor_hint_shown: false,
+    telemetry_rate_hz: 60,
+    memory_budget_mib: 2048,
+    normalize_dialog: { value: -1, unit: "db" },
+    recent_files: [],
+    spectral_defaults: {
+      freq_scale: "log",
+      colormap: "inferno",
+      display_floor_db: -120,
+      display_ceil_db: 0,
+      fft_size: null,
+    },
+  };
+}
 
 afterEach(() => {
   clearActionHandlers();
   resetSpectralForTest();
+  resetSettingsStateForTest();
   clearMocks();
   vi.useRealTimers();
 });
@@ -156,6 +188,98 @@ describe("T-306: sidecar persistence (SPEC-018 §2.6.5)", () => {
       display_floor_db: -120,
       display_ceil_db: 0,
       colormap: "sunset", // unrecognized
+    });
+    const s = spectralState();
+    expect(s.freqScale).toBe("log");
+    expect(s.colormap).toBe("inferno");
+  });
+});
+
+describe("H-12 (A-014): app-wide spectral display defaults", () => {
+  it("a display setter also debounces a settings_set write to spectral_defaults", async () => {
+    vi.useFakeTimers();
+    const settingsSetCalls: unknown[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "settings_get") {
+        return settingsFixture();
+      }
+      if (cmd === "settings_set") {
+        settingsSetCalls.push((args as { settings: Settings }).settings);
+        return (args as { settings: Settings }).settings;
+      }
+      if (cmd === "sidecar_view_set_spectral") {
+        return null;
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    await loadSettings();
+
+    spectralState().setColormap("viridis");
+    spectralState().setFloorDb(-100);
+    expect(settingsSetCalls).toHaveLength(0); // debounced
+
+    await vi.advanceTimersByTimeAsync(300);
+    expect(settingsSetCalls).toHaveLength(1); // only the trailing call survives the debounce
+    expect((settingsSetCalls[0] as Settings).spectral_defaults).toEqual({
+      freq_scale: "log",
+      colormap: "viridis",
+      display_floor_db: -100,
+      display_ceil_db: 0, // unchanged: -100..0 is already a 100 dB span
+      fft_size: null,
+    });
+  });
+
+  it("visibility/split-ratio changes never write to settings_set (per document only, SPEC-018 §2.6.5)", async () => {
+    vi.useFakeTimers();
+    let settingsSetCalled = false;
+    mockIPC((cmd) => {
+      if (cmd === "settings_get") {
+        return settingsFixture();
+      }
+      if (cmd === "settings_set") {
+        settingsSetCalled = true;
+        return settingsFixture();
+      }
+      return null;
+    });
+    await loadSettings();
+
+    spectralState().toggle();
+    spectralState().setSplitRatio(75);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(settingsSetCalled).toBe(false);
+  });
+
+  it("applySpectralDefaults sets only the display settings, leaving visibility/split ratio alone", () => {
+    spectralState().setVisible(true);
+    spectralState().setSplitRatio(75);
+
+    applySpectralDefaults({
+      freq_scale: "linear",
+      colormap: "viridis",
+      display_floor_db: -100,
+      display_ceil_db: -10,
+      fft_size: 4096,
+    });
+
+    const s = spectralState();
+    expect(s.visible).toBe(true); // untouched
+    expect(s.splitRatio).toBe(75); // untouched
+    expect(s.freqScale).toBe("linear");
+    expect(s.colormap).toBe("viridis");
+    expect(s.floorDb).toBe(-100);
+    expect(s.ceilDb).toBe(-10);
+    expect(s.fftSize).toBe(4096);
+  });
+
+  it("applySpectralDefaults ignores an unrecognized enum value, keeping the current one", () => {
+    applySpectralDefaults({
+      freq_scale: "log-ish", // unrecognized
+      colormap: "sunset", // unrecognized
+      display_floor_db: -120,
+      display_ceil_db: 0,
+      fft_size: null,
     });
     const s = spectralState();
     expect(s.freqScale).toBe("log");

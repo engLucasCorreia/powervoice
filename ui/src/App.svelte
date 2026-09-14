@@ -30,8 +30,8 @@
   import { initNormalizeLufs } from "./lib/state/normalizeLufs.svelte";
   import { initNotices } from "./lib/state/notices.svelte";
   import { initRecord } from "./lib/state/record.svelte";
-  import { initSpectral } from "./lib/state/spectral.svelte";
-  import { loadSettings } from "./lib/state/settings.svelte";
+  import { applySpectralDefaults, initSpectral } from "./lib/state/spectral.svelte";
+  import { loadSettings, settingsState } from "./lib/state/settings.svelte";
   import { initTransport } from "./lib/state/transport.svelte";
 
   let version = $state("");
@@ -46,8 +46,16 @@
     return attachKeymap();
   });
 
+  // H-12 (A-014): once settings load, seed the spectral pane's display settings from the app's
+  // last-used defaults (a document's own sidecar `spectral_view`, applied later by
+  // `document.svelte.ts` on open, overrides this).
   onMount(() => {
-    void loadSettings();
+    void loadSettings().then(() => {
+      const defaults = settingsState().current?.spectral_defaults;
+      if (defaults) {
+        applySpectralDefaults(defaults);
+      }
+    });
   });
 
   // S2-02: the backend's `notice` event (silent/already-normalized notices, and every other

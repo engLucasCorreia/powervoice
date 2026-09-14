@@ -52,6 +52,7 @@ pub use document_commands::*;
 pub use document_dto::{
     ClipboardChangedDto, DocumentDto, DocumentProbeDto, EditResultDto, EditTargetDto,
     HistoryStateDto, MarkerDto, MarkerRangeKindDto, PeaksRequestDto, ProbeChannelDto,
+    WaveformSelectionDto, WaveformViewDto,
 };
 pub use dto::AppInfo;
 pub use error::{IpcError, IpcErrorCode};
@@ -133,6 +134,7 @@ crate::ipc_commands!(
     document_save,
     document_save_as,
     sidecar_view_set_spectral,
+    sidecar_view_set_waveform,
     recent_files_get,
     recent_files_remove,
     recent_files_clear,
@@ -210,6 +212,7 @@ crate::ipc_commands!(
     document_save,
     document_save_as,
     sidecar_view_set_spectral,
+    sidecar_view_set_waveform,
     recent_files_get,
     recent_files_remove,
     recent_files_clear,

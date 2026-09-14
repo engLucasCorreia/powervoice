@@ -7,6 +7,7 @@ check:
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
     just check-types
+    python3 scripts/notices/generate.py --check
     @if [ -f ui/package.json ]; then npm --prefix ui run check; fi
     @if [ -f ui/package.json ]; then npm --prefix ui test -- --run; fi
 
@@ -56,10 +57,22 @@ check-types:
         exit 1
     fi
 
-# Build release binary (+ the Linux Tauri bundle)
+# Regenerate THIRD_PARTY_NOTICES (+ its ui/ copy for Help -> About) from cargo metadata and
+# ui/package.json (T-705, ADR-007). Run after any dependency change and commit the result;
+# `just check` fails if it's stale.
+notices:
+    python3 scripts/notices/generate.py
+
+# Regenerate docs/user-guide.md's shortcuts table from ui/src/lib/keymap/bindings.ts (T-705). Run
+# after any keymap change and commit the result.
+shortcuts-table:
+    node scripts/docs/generate_shortcuts.mjs
+
+# Build release binary (+ the Linux Tauri bundle: AppImage + .deb, T-705)
 build:
     cargo build --workspace --release
     npm --prefix ui run tauri build
+    python3 scripts/packaging/check_desktop_entry.py
 
 # Run benchmarks
 bench:

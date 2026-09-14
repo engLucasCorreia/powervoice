@@ -1,17 +1,26 @@
 <script lang="ts">
   import { t } from "../i18n";
   import { aboutState, closeAbout } from "./about.svelte";
+  // T-705: `scripts/notices/generate.py` (`just notices`) writes this alongside the root
+  // `THIRD_PARTY_NOTICES` file — see that script's docstring. Regenerate, don't hand-edit.
+  import thirdPartyNotices from "./thirdPartyNotices.generated.txt?raw";
 
   /** H-19: Help → About with version (`app_info`'s `version`, already fetched once by
    * `App.svelte` at startup — passed in rather than re-fetched here). Same modal shape as
-   * `ConfirmDialog.svelte`. */
+   * `ConfirmDialog.svelte`. T-705 adds a collapsible third-party notices panel (ADR-007). */
   let { version = "" }: { version?: string } = $props();
+
+  let noticesOpen = $state(false);
 
   function onKeydown(event: KeyboardEvent): void {
     event.stopPropagation();
     if (event.key === "Escape") {
       closeAbout();
     }
+  }
+
+  function toggleNotices(): void {
+    noticesOpen = !noticesOpen;
   }
 </script>
 
@@ -29,6 +38,18 @@
     >
       <h2 id="about-dialog-title">{t("about.title")}</h2>
       <p data-testid="about-version">{t("about.version", { version })}</p>
+      <button
+        type="button"
+        class="notices-toggle"
+        data-testid="about-notices-toggle"
+        aria-expanded={noticesOpen}
+        onclick={toggleNotices}
+      >
+        {noticesOpen ? t("about.notices.hide") : t("about.notices.show")}
+      </button>
+      {#if noticesOpen}
+        <pre class="notices" data-testid="about-notices">{thirdPartyNotices}</pre>
+      {/if}
       <div class="actions">
         <button type="button" class="primary" data-testid="about-close" onclick={closeAbout}>
           {t("about.close")}
@@ -89,5 +110,23 @@
   button.primary {
     border-color: var(--accent);
     color: var(--accent);
+  }
+
+  .notices-toggle {
+    align-self: flex-start;
+  }
+
+  .notices {
+    max-width: 60vw;
+    max-height: 50vh;
+    margin: 0;
+    padding: 0.5rem;
+    overflow: auto;
+    white-space: pre-wrap;
+    font-family: monospace;
+    font-size: 0.75rem;
+    background: var(--surface-panel-raised);
+    border: 1px solid var(--surface-border);
+    border-radius: 4px;
   }
 </style>

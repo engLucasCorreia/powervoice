@@ -34,6 +34,59 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "category": "Music",
+    "copyright": "Copyright © 2026 the PowerVoice contributors",
+    "license": "MIT OR Apache-2.0",
+    "shortDescription": "A single-file voice-over waveform editor",
+    "longDescription": "PowerVoice is a mono voice-over waveform editor: record, clean up with a non-destructive effects rack (noise reduction, EQ, dynamics, true-peak limiter), and export to WAV/FLAC/MP3 with ACX/loudness checks.",
+    "fileAssociations": [
+      {
+        "ext": ["wav"],
+        "name": "WAV Audio",
+        "description": "WAV Audio",
+        "mimeType": "audio/wav",
+        "role": "Editor"
+      },
+      {
+        "ext": ["flac"],
+        "name": "FLAC Audio",
+        "description": "FLAC Audio",
+        "mimeType": "audio/flac",
+        "role": "Editor"
+      },
+      {
+        "ext": ["mp3"],
+        "name": "MP3 Audio",
+        "description": "MP3 Audio",
+        "mimeType": "audio/mpeg",
+        "role": "Editor"
+      },
+      {
+        "ext": ["m4a"],
+        "name": "M4A Audio",
+        "description": "M4A (AAC) Audio",
+        "mimeType": "audio/mp4",
+        "role": "Editor"
+      },
+      {
+        "ext": ["ogg"],
+        "name": "Ogg Audio",
+        "description": "Ogg Vorbis Audio",
+        "mimeType": "audio/ogg",
+        "role": "Editor"
+      }
+    ],
+    "linux": {
+      "deb": {
+        "depends": ["libasound2"],
+        "recommends": ["libmp3lame0"],
+        "section": "sound",
+        "priority": "optional"
+      },
+      "appimage": {
+        "bundleMediaFramework": false
+      }
+    }
   }
 }

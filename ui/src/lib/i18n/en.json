@@ -6,6 +6,8 @@
   "about.title": "About PowerVoice",
   "about.version": "Version {version}",
   "about.close": "Close",
+  "about.notices.show": "Third-party notices",
+  "about.notices.hide": "Hide third-party notices",
   "panel.editor.empty": "No file open",
   "panel.rack.title": "Rack",
   "panel.markers.title": "Markers",

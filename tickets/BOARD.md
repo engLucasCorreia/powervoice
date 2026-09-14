@@ -59,7 +59,8 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-19 | Real menu bar (File/Edit/View/Effects/Help dropdowns, keyboard access, shortcuts shown) replacing the flat always-visible "menu" toolbars | S | done |
 | H-20 | Save/open gaps (SPEC-005): dither None, keep FLAC when opened FLAC + full WAV promotion table, format-mapped/metadata-dropped notices, stereo→mono save warning, progressive import display | S | in progress |
 | H-22 | Preset UX (T-406): rename in slot/rack menus, overwrite-confirm on save, manage dialog, import/export preset files | S | todo |
-| H-21 | Punch-in follow-ups (T-304): markers during an operation, live take drawn at the punch point, device loss per phase, talent-source exactness tests (drift, dropouts), AC-11/AC-15, Settings → Recording page | S | in progress |
+| H-21 | Punch-in follow-ups (T-304): markers during an operation, live take drawn at the punch point, device loss per phase, talent-source exactness tests (drift, dropouts), AC-11/AC-15, Settings → Recording page | S | done (polish → H-23) |
+| H-23 | Punch-in polish (A-016): no phantom PostRoll on output loss, waveform follows the record head during an operation, AC-13 length-unknown variant | S | todo |
 | H-18 | Shared test factories for DTOs (`ui/src/lib/test/fixtures.ts` + Rust builders) so a new DTO field touches one helper, not 20 test literals (merge-friction fix) | H | todo |
 | H-17 | Recovery follow-ups (T-301): dialog stays open for remaining sessions (A-015), AC-3/AC-11 timing on a real disk (test-big), compaction off the document lock, markers during an interrupted take, Memory-for-audio UI, `/tmp/vox-project-*` sweep | S | done |
 | H-15 | Sidecar follow-ups (T-306): recent-file-missing dialog, read-only folder matrix (AC-13), SIGKILL-during-sidecar-save test (AC-6), per-slot leniency for a malformed rack slot, perf budget (AC-18) | S | done |
@@ -165,7 +166,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 ## M8 — External plugins
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
-| T-801 | Shared-memory ring + wakeup shim + crash/hang/gain test plugins | W1 | O | M7 | todo |
+| T-801 | Shared-memory ring + wakeup shim + crash/hang/gain test plugins | W1 | O | M7 | in progress |
 | T-802 | Sandbox process, watchdog, proxy module | W2 | O | T-801 | todo |
 | T-803 | CLAP adapter (+ enumerate) | W3 | O | T-802 | todo |
 | T-804 | Scanner orchestration, cache, blocklist | W3 | S | T-802 | todo |

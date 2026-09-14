@@ -5,8 +5,8 @@
   import { spectralState } from "../state/spectral.svelte";
   import { transportState } from "../state/transport.svelte";
   import { schedulePersistWaveformView, waveformViewApi } from "../state/waveformView.svelte";
-  import { formatTime } from "../transport/playhead";
-  import { clampStartSample, pixelAtSample, timeTicks } from "../waveform/coords";
+  import { clampStartSample, niceTickStepSeconds, pixelAtSample, timeTicks } from "../waveform/coords";
+  import { formatRulerTime } from "../waveform/timeRuler";
   import WaveformView from "../waveform/WaveformView.svelte";
 
   /**
@@ -39,12 +39,17 @@
   const isOpen = $derived(hasDocument(doc.current));
 
   let containerEl: HTMLElement | undefined = $state();
-  /** The editor's own measured width — the same width both panes' canvases render at, since
-   * they're full-width block children of this flex column (there is no left gutter yet: an
-   * amplitude ruler for the waveform pane, matching the spectral pane's frequency ruler width,
-   * is deferred to hardening, SPEC-007 §2.1). */
+  /** The editor's own measured width — the full pane width, including both panes' left gutter
+   * (H-24 item 7: `WaveformView`'s amplitude ruler and `SpectralView`'s frequency ruler, both
+   * `RULER_GUTTER_PX` wide). `canvasWidthPx` below is what the ticks/scrollbar actually need:
+   * the canvas area *excluding* that gutter, matching SPEC-006 §2.1 ("the time ruler ... spans
+   * the same horizontal extent as the waveform canvas, not the amplitude gutter"). */
   let viewportPx = $state(0);
   let dragging = false;
+
+  /** Matches `WaveformView.svelte`'s `.amp-ruler` and `SpectralView.svelte`'s `.ruler` width. */
+  const RULER_GUTTER_PX = 48;
+  const canvasWidthPx = $derived(Math.max(0, viewportPx - RULER_GUTTER_PX));
 
   // H-12: persists the shared viewport plus the selection and the edit cursor (SPEC-018 §2.6.5),
   // debounced (never marks the document modified, §2.4). The cursor is the transport's
@@ -82,23 +87,30 @@
     return () => ro.disconnect();
   });
 
-  const maxStart = $derived(Math.max(0, lenSamples - wv.samplesPerPixel * viewportPx));
+  const maxStart = $derived(Math.max(0, lenSamples - wv.samplesPerPixel * canvasWidthPx));
+
+  /** H-24 item 7: the document is >= 1 hour — SPEC-006 §2.5's own timecode rule ("the `hh:`
+   * group only shown once the document is >= 1 hour"), reused here for the ruler's compact
+   * labels so every tick in one ruler has the same shape. */
+  const includeHours = $derived(rateHz > 0 && lenSamples / rateHz >= 3600);
 
   const ticks = $derived.by(() => {
-    if (rateHz <= 0 || viewportPx <= 0) {
+    if (rateHz <= 0 || canvasWidthPx <= 0) {
       return [];
     }
-    return timeTicks(wv.startSample, wv.samplesPerPixel, Math.ceil(viewportPx), rateHz, 70).map(
+    const minGapSeconds = (70 * wv.samplesPerPixel) / rateHz;
+    const step = niceTickStepSeconds(minGapSeconds);
+    return timeTicks(wv.startSample, wv.samplesPerPixel, Math.ceil(canvasWidthPx), rateHz, 70).map(
       (tick) => ({
-        px: pixelAtSample(tick.sample, wv.startSample, wv.samplesPerPixel),
-        label: formatTime(tick.sample, rateHz),
+        px: pixelAtSample(tick.sample, wv.startSample, wv.samplesPerPixel) + RULER_GUTTER_PX,
+        label: formatRulerTime(tick.seconds, step, includeHours),
       }),
     );
   });
 
   function onScrollbarInput(event: Event): void {
     const value = Number((event.currentTarget as HTMLInputElement).value);
-    wv.startSample = clampStartSample(value, wv.samplesPerPixel, lenSamples, viewportPx);
+    wv.startSample = clampStartSample(value, wv.samplesPerPixel, lenSamples, canvasWidthPx);
   }
 
   function onDividerPointerDown(event: PointerEvent): void {
@@ -131,6 +143,7 @@
 <main class="editor" data-testid="editor" bind:this={containerEl}>
   {#if isOpen}
     <div class="ruler" data-testid="editor-ruler">
+      <div class="ruler-gutter" data-testid="editor-ruler-gutter"></div>
       {#each ticks as tick (tick.px)}
         <span class="tick" style={`left: ${tick.px}px`}>{tick.label}</span>
       {/each}
@@ -213,6 +226,19 @@
     border-bottom: 1px solid var(--wave-ruler-grid);
     background: var(--surface-panel);
     overflow: hidden;
+  }
+
+  /* H-24 item 7: a visual placeholder matching the width of both panes' left gutter
+   * (`WaveformView`'s amplitude ruler, `SpectralView`'s frequency ruler) — the ticks themselves
+   * are already offset past it (`RULER_GUTTER_PX` added to every tick's `left`, SPEC-006 §2.1:
+   * "spanning the same horizontal extent as the waveform canvas, not the amplitude gutter"). */
+  .ruler-gutter {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 48px;
+    border-right: 1px solid var(--wave-ruler-grid);
   }
 
   .tick {

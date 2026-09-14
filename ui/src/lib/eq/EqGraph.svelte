@@ -6,9 +6,16 @@
   import { totalCurveToScreen } from "./curvePoints";
   import { CoalescedCurveRequest } from "./curveRequest";
   import { wheelQFactor, dragPosition, type DragStart } from "./drag";
-  import { curveRequestFreqs, freqForX, graphMaxHz, EQ_MIN_HZ, xForFreq } from "./freqAxis";
-  import { dbForY, yForDb, EQ_GAIN_RANGE_DEFAULT_DB, EQ_GAIN_RANGE_WIDE_DB } from "./gainAxis";
+  import { curveRequestFreqs, eqFrequencyTicks, freqForX, graphMaxHz, EQ_MIN_HZ, xForFreq } from "./freqAxis";
+  import {
+    dbForY,
+    gainAxisTicks,
+    yForDb,
+    EQ_GAIN_RANGE_DEFAULT_DB,
+    EQ_GAIN_RANGE_WIDE_DB,
+  } from "./gainAxis";
   import { buildEqNodes, hitTestNode, nodeGainDb, nodeFreqsHz, type EqNode } from "./nodes";
+  import { formatRulerFreqHz } from "../spectrum/freqAxis";
 
   /**
    * The EQ graph panel (S3-07, SPEC-015 §2.6, lean slice): log-frequency axis, ±12/±24 dB gain
@@ -107,18 +114,40 @@
     ctx.clearRect(0, 0, width, GRAPH_HEIGHT_PX);
 
     // Grid: 0 dB emphasised, every 3 dB (±12) or 6 dB (±24) otherwise (SPEC-015 §2.6.2).
-    const gridStepDb = gainRangeDb === EQ_GAIN_RANGE_WIDE_DB ? 6 : 3;
+    const gainTicks = gainAxisTicks(GRAPH_HEIGHT_PX, gainRangeDb);
     ctx.strokeStyle = colorToken("--eq-grid", "#34373d");
     ctx.lineWidth = 1;
-    for (let db = -gainRangeDb; db <= gainRangeDb; db += gridStepDb) {
-      const y = Math.round(yForDb(db, GRAPH_HEIGHT_PX, gainRangeDb)) + 0.5;
-      ctx.globalAlpha = db === 0 ? 1 : 0.4;
+    for (const tick of gainTicks) {
+      const y = Math.round(tick.y) + 0.5;
+      ctx.globalAlpha = tick.db === 0 ? 1 : 0.4;
       ctx.beginPath();
       ctx.moveTo(0, y);
       ctx.lineTo(width, y);
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
+
+    // H-24 item 8: Hz/kHz labels at the standard decades and dB labels at the grid lines, unit
+    // shown once each (SPEC-007 §2.4's "unit appears once" convention, reused here).
+    const textColor = colorToken("--text-secondary", "#9a9da4");
+    ctx.fillStyle = textColor;
+    ctx.font = "10px sans-serif";
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "left";
+    for (const tick of gainTicks) {
+      ctx.fillText(tick.label, 2, Math.round(tick.y) + (tick.db === 0 ? -6 : 0));
+    }
+    ctx.fillText(t("eq.graph.gain_unit"), 2, 8);
+
+    ctx.textBaseline = "bottom";
+    for (const tick of eqFrequencyTicks(fLo, fHi, width, 30, formatRulerFreqHz)) {
+      ctx.textAlign = tick.x < 12 ? "left" : tick.x > width - 12 ? "right" : "center";
+      ctx.fillText(tick.label, tick.x, GRAPH_HEIGHT_PX - 2);
+    }
+    ctx.textAlign = "right";
+    ctx.fillText(t("eq.graph.freq_unit"), width - 2, GRAPH_HEIGHT_PX - 2);
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
 
     // Total response curve, filled to 0 dB (SPEC-015 §2.6.3 "Total response").
     const c = curve;

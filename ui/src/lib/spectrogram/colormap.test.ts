@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { colorForT, colormapLut, COLORMAP_NAMES, normalizeDb } from "./colormap";
+import { colorForT, colormapLut, COLORMAP_NAMES, cssGradientFor, normalizeDb } from "./colormap";
 
 describe("colormap (SPEC-007 §2.5)", () => {
   it("every colormap is a 256-entry RGB LUT", () => {
@@ -56,5 +56,23 @@ describe("colormap (SPEC-007 §2.5)", () => {
       seen.add(colorForT("inferno", i / 255).join(","));
     }
     expect(seen.size).toBeGreaterThan(200); // most steps distinct; some may tie in flat segments
+  });
+});
+
+describe("cssGradientFor (H-24 item 6: spectral pane's colour-bar legend)", () => {
+  it("produces a linear-gradient with the colormap's first/last colors at 0%/100%", () => {
+    for (const name of COLORMAP_NAMES) {
+      const gradient = cssGradientFor(name, 8);
+      expect(gradient).toMatch(/^linear-gradient\(to right, /);
+      const [r0, g0, b0] = colorForT(name, 0);
+      const [r1, g1, b1] = colorForT(name, 1);
+      expect(gradient).toContain(`rgb(${r0}, ${g0}, ${b0}) 0.0%`);
+      expect(gradient).toContain(`rgb(${r1}, ${g1}, ${b1}) 100.0%`);
+    }
+  });
+
+  it("clamps the stop count to at least 2", () => {
+    const gradient = cssGradientFor("gray", 1);
+    expect(gradient.split(", rgb(").length).toBeGreaterThanOrEqual(2);
   });
 });

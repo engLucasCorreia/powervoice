@@ -301,6 +301,34 @@ describe("EditorView shared ruler/scrollbar (H-12, SPEC-007 §2.1's ruler → wa
     target.remove();
   });
 
+  it("ruler ticks use compact adaptive labels and are offset past the amplitude/frequency gutter (H-24 item 7)", async () => {
+    stubSize(800, 400);
+    setupIpc();
+    await openDocument("/home/user/take.wav");
+
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(EditorView, { target });
+    await settle();
+
+    const ruler = target.querySelector('[data-testid="editor-ruler"]')!;
+    expect(ruler.querySelector('[data-testid="editor-ruler-gutter"]')).not.toBeNull();
+
+    const tickEls = Array.from(ruler.querySelectorAll<HTMLElement>(".tick"));
+    expect(tickEls.length).toBeGreaterThan(0);
+    // Compact "m:ss" labels (no "00:00:00.000" transport-style padding) at this zoom.
+    for (const el of tickEls) {
+      expect(el.textContent).toMatch(/^\d+:\d{2}$/);
+    }
+    // Every tick sits at or past the 48px gutter width (SPEC-006 §2.1: the ruler spans the
+    // canvas, not the amplitude gutter) — the leftmost tick (sample 0) sits exactly at it.
+    const leftPx = tickEls.map((el) => Number(el.style.left.replace("px", "")));
+    expect(Math.min(...leftPx)).toBe(48);
+
+    unmount(app);
+    target.remove();
+  });
+
   it("stacks ruler -> waveform -> divider -> spectral -> scrollbar (SPEC-007 §2.1)", async () => {
     stubSize(800, 400);
     setupIpc();

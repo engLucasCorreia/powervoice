@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ANALYZER_CEIL_OPTIONS_DB,
   ANALYZER_FLOOR_OPTIONS_DB,
+  dbAxisTicks,
   dbForAnalyzerY,
   nearestAnalyzerBand,
   yForAnalyzerDb,
@@ -65,5 +66,29 @@ describe("nearestAnalyzerBand (H-16, SPEC-007 §4.8 f_k = 20·2^(k/24))", () => 
     expect(nearestAnalyzerBand(0, F0, BANDS_PER_OCTAVE, BAND_COUNT)).toBe(0);
     expect(nearestAnalyzerBand(-5, F0, BANDS_PER_OCTAVE, BAND_COUNT)).toBe(0);
     expect(nearestAnalyzerBand(1000, F0, BANDS_PER_OCTAVE, 0)).toBe(0);
+  });
+});
+
+describe("dbAxisTicks (H-24 item 5: 10 dB spacing, or 20 dB when the pane is too short)", () => {
+  it("uses 10 dB steps on a tall pane", () => {
+    const ticks = dbAxisTicks(-120, 0, 400, 20);
+    expect(ticks.map((t) => t.db)).toEqual([-120, -110, -100, -90, -80, -70, -60, -50, -40, -30, -20, -10, 0]);
+    expect(ticks[0]!.y).toBe(400); // floor at the bottom
+    expect(ticks[ticks.length - 1]!.y).toBe(0); // ceiling at the top
+  });
+
+  it("falls back to 20 dB steps when 10 dB spacing would be tighter than the minimum gap", () => {
+    const ticks = dbAxisTicks(-120, 0, 60, 20); // 60px / 12 steps = 5px per 10dB step, too tight
+    expect(ticks.map((t) => t.db)).toEqual([-120, -100, -80, -60, -40, -20, 0]);
+  });
+
+  it("labels are whole-number dB strings", () => {
+    const ticks = dbAxisTicks(-120, 0, 400, 20);
+    expect(ticks.every((t) => /^-?\d+$/.test(t.label))).toBe(true);
+  });
+
+  it("returns an empty list for a degenerate range or non-positive height", () => {
+    expect(dbAxisTicks(0, 0, 400, 20)).toEqual([]);
+    expect(dbAxisTicks(-120, 0, 0, 20)).toEqual([]);
   });
 });

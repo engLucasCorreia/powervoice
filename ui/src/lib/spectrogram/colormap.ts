@@ -110,3 +110,20 @@ export function normalizeDb(db: number, floorDb: number, ceilDb: number): number
   }
   return clamp01((db - floorDb) / (ceilDb - floorDb));
 }
+
+/**
+ * A CSS `linear-gradient()` sampling `name`'s LUT at `stops` even steps (H-24 item 6: "a small
+ * colour-bar legend with its dB range"). Low `t` (floor) first, so the caller can lay the bar out
+ * floor-to-ceiling in either direction with `to right`/`to top`.
+ */
+export function cssGradientFor(name: ColormapName, stops = 8): string {
+  const n = Math.max(2, stops);
+  const parts: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1);
+    const [r, g, b] = colorForT(name, t);
+    const pct = (t * 100).toFixed(1);
+    parts.push(`rgb(${r}, ${g}, ${b}) ${pct}%`);
+  }
+  return `linear-gradient(to right, ${parts.join(", ")})`;
+}

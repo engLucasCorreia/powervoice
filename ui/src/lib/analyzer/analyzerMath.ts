@@ -44,6 +44,38 @@ export function dbForAnalyzerY(
   return floorDb + t * (ceilDb - floorDb);
 }
 
+export interface DbTick {
+  /** Pixel y (0 = top, `heightPx` = bottom). */
+  y: number;
+  label: string;
+  db: number;
+}
+
+/**
+ * dB axis ticks for the analyzer panel's left gutter (H-24 item 5): every 10 dB by default, or
+ * every 20 dB when the pane is too short for 10 dB spacing to avoid overlapping labels ("labels
+ * never overlap (drop minor labels by available pixels)").
+ */
+export function dbAxisTicks(
+  floorDb: number,
+  ceilDb: number,
+  heightPx: number,
+  minLabelGapPx: number,
+): DbTick[] {
+  if (!(ceilDb > floorDb) || !(heightPx > 0)) {
+    return [];
+  }
+  const span = ceilDb - floorDb;
+  const stepFor = (step: number): number => (heightPx * step) / span;
+  const step = stepFor(10) >= minLabelGapPx ? 10 : 20;
+  const ticks: DbTick[] = [];
+  const first = Math.ceil(floorDb / step) * step;
+  for (let db = first; db <= ceilDb + 1e-9; db += step) {
+    ticks.push({ y: yForAnalyzerDb(db, floorDb, ceilDb, heightPx), label: String(Math.round(db)), db });
+  }
+  return ticks;
+}
+
 /**
  * The band index whose centre `f0Hz · 2^(k / bandsPerOctave)` (SPEC-007 §4.8: `f_k = 20·2^(k/24)`)
  * is nearest `freqHz`, clamped to `[0, bandCount - 1]`. Used for the hover readout: the pointer's

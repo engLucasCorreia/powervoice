@@ -70,6 +70,14 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     analyzer_peak_hold: true,
     multichannel_policy: "ask",
     renderer_preference: "auto",
+    layout: {
+      markers_width_px: 240,
+      rack_width_px: 280,
+      dock_height_px: 240,
+      markers_collapsed: false,
+      rack_collapsed: false,
+      dock_tab: "meters",
+    },
     record: {
       mode: "insert",
       punch_on_selection: true,

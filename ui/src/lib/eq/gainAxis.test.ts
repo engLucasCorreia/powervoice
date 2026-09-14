@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { EQ_GAIN_RANGE_DEFAULT_DB, dbForY, yForDb } from "./gainAxis";
+import {
+  EQ_GAIN_RANGE_DEFAULT_DB,
+  EQ_GAIN_RANGE_WIDE_DB,
+  dbForY,
+  formatGainDb,
+  gainAxisTicks,
+  gainGridStepDb,
+  yForDb,
+} from "./gainAxis";
 
 /** Linear-dB gain axis tests (S3-07, SPEC-015 §2.6.2). */
 
@@ -34,5 +42,40 @@ describe("yForDb / dbForY round trip", () => {
     const y12 = yForDb(6, height, 12);
     const y24 = yForDb(6, height, 24);
     expect(height / 2 - y24).toBeCloseTo((height / 2 - y12) / 2, 6);
+  });
+});
+
+describe("gainGridStepDb (H-24 item 8)", () => {
+  it("is 3 dB for the default ±12 dB range, 6 dB for the wide ±24 dB one", () => {
+    expect(gainGridStepDb(EQ_GAIN_RANGE_DEFAULT_DB)).toBe(3);
+    expect(gainGridStepDb(EQ_GAIN_RANGE_WIDE_DB)).toBe(6);
+  });
+});
+
+describe("formatGainDb (H-24 item 8)", () => {
+  it("signs positive values, leaves 0 and negative values as-is", () => {
+    expect(formatGainDb(12)).toBe("+12");
+    expect(formatGainDb(0)).toBe("0");
+    expect(formatGainDb(-12)).toBe("-12");
+  });
+});
+
+describe("gainAxisTicks (H-24 item 8: dB labels at ±12/±24)", () => {
+  it("spans -range..range at the grid step, 0 dB at mid-height", () => {
+    const ticks = gainAxisTicks(160, EQ_GAIN_RANGE_DEFAULT_DB);
+    expect(ticks.map((t) => t.db)).toEqual([-12, -9, -6, -3, 0, 3, 6, 9, 12]);
+    const zero = ticks.find((t) => t.db === 0)!;
+    expect(zero.y).toBeCloseTo(80, 6);
+    expect(zero.label).toBe("0");
+  });
+
+  it("uses the 6 dB step for the wide range", () => {
+    const ticks = gainAxisTicks(160, EQ_GAIN_RANGE_WIDE_DB);
+    expect(ticks.map((t) => t.db)).toEqual([-24, -18, -12, -6, 0, 6, 12, 18, 24]);
+  });
+
+  it("is empty for a non-positive height or range", () => {
+    expect(gainAxisTicks(0, EQ_GAIN_RANGE_DEFAULT_DB)).toEqual([]);
+    expect(gainAxisTicks(160, 0)).toEqual([]);
   });
 });

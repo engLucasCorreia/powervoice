@@ -20,8 +20,21 @@
   import { getAppInfo } from "./lib/ipc/commands";
   import { attachKeymap } from "./lib/keymap";
   import EditorView from "./lib/layout/EditorView.svelte";
+  import {
+    applyLayoutPrefs,
+    DEFAULT_LAYOUT_PREFS,
+    layoutState,
+    setDockHeightPx,
+    setDockTab,
+    setMarkersCollapsed,
+    setMarkersWidthPx,
+    setRackCollapsed,
+    setRackWidthPx,
+  } from "./lib/layout/layoutSettings.svelte";
   import MarkersProperties from "./lib/layout/MarkersProperties.svelte";
   import MeterBridge from "./lib/layout/MeterBridge.svelte";
+  import Splitter from "./lib/layout/Splitter.svelte";
+  import { clampColumnWidthPx, clampDockHeightPx, stepSizePx } from "./lib/layout/splitterMath";
   import Toolbar from "./lib/layout/Toolbar.svelte";
   import ViewMenu from "./lib/layout/ViewMenu.svelte";
   import LoudnessPanel from "./lib/loudness/LoudnessPanel.svelte";
@@ -58,6 +71,93 @@
     version = info.version;
   });
 
+  /**
+   * H-24: the resizable app shell. `layout` mirrors `Settings.layout` (item 3, debounced
+   * persistence lives in `layoutSettings.svelte.ts`); `mainAreaWidthPx`/`mainAreaHeightPx` are
+   * this component's own measurement of the space available below the toolbar (item 1's "main
+   * area is a vertical split: workspace ... above the bottom dock"), used to clamp every
+   * splitter's value against the *current* window size on every render — a value saved on a
+   * large monitor never wedges a smaller one (item 3's own note in `settings.rs`).
+   */
+  const layout = layoutState();
+
+  let mainAreaEl: HTMLElement | undefined = $state();
+  let mainAreaWidthPx = $state(0);
+  let mainAreaHeightPx = $state(0);
+
+  $effect(() => {
+    const el = mainAreaEl;
+    if (!el) {
+      mainAreaWidthPx = 0;
+      mainAreaHeightPx = 0;
+      return;
+    }
+    mainAreaWidthPx = el.clientWidth;
+    mainAreaHeightPx = el.clientHeight;
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        mainAreaWidthPx = Math.max(0, Math.round(entry.contentRect.width));
+        mainAreaHeightPx = Math.max(0, Math.round(entry.contentRect.height));
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
+
+  const MARKERS_MIN_PX = 180;
+  const RACK_MIN_PX = 200;
+  const SIDE_COLUMN_MAX_PX = 480;
+
+  // A column never eats more than 35% of the main area, so the editor always keeps most of the
+  // width even on a narrow window (SPEC-007 §2.1-adjacent "nothing overlaps or clips" concern,
+  // item 9).
+  const sideColumnMaxPx = $derived(
+    mainAreaWidthPx > 0 ? Math.min(SIDE_COLUMN_MAX_PX, mainAreaWidthPx * 0.35) : SIDE_COLUMN_MAX_PX,
+  );
+  const markersWidthPx = $derived(
+    clampColumnWidthPx(layout.markersWidthPx, MARKERS_MIN_PX, sideColumnMaxPx),
+  );
+  const rackWidthPx = $derived(clampColumnWidthPx(layout.rackWidthPx, RACK_MIN_PX, sideColumnMaxPx));
+  const dockHeightPx = $derived(clampDockHeightPx(mainAreaHeightPx, layout.dockHeightPx));
+
+  function onMarkersDrag(deltaPx: number): void {
+    if (layout.markersCollapsed) {
+      setMarkersCollapsed(false);
+    }
+    setMarkersWidthPx(clampColumnWidthPx(markersWidthPx + deltaPx, MARKERS_MIN_PX, sideColumnMaxPx));
+  }
+
+  function onMarkersStep(direction: 1 | -1): void {
+    setMarkersWidthPx(stepSizePx(markersWidthPx, direction, MARKERS_MIN_PX, sideColumnMaxPx));
+  }
+
+  // The Rack splitter sits on Rack's *left* edge: dragging right shrinks it, dragging left grows
+  // it (splitterMath.ts's "reverse" convention) — both the drag delta and the keyboard direction
+  // are negated so "ArrowRight"/dragging right always visually moves the divider right.
+  function onRackDrag(deltaPx: number): void {
+    if (layout.rackCollapsed) {
+      setRackCollapsed(false);
+    }
+    setRackWidthPx(clampColumnWidthPx(rackWidthPx - deltaPx, RACK_MIN_PX, sideColumnMaxPx));
+  }
+
+  function onRackStep(direction: 1 | -1): void {
+    setRackWidthPx(stepSizePx(rackWidthPx, direction === 1 ? -1 : 1, RACK_MIN_PX, sideColumnMaxPx));
+  }
+
+  // The dock splitter sits above the dock: dragging/stepping "down" shrinks the dock (grows the
+  // workspace above it), matching the physical direction of the drag.
+  function onDockDrag(deltaPx: number): void {
+    setDockHeightPx(clampDockHeightPx(mainAreaHeightPx, dockHeightPx - deltaPx));
+  }
+
+  function onDockStep(direction: 1 | -1): void {
+    setDockHeightPx(clampDockHeightPx(mainAreaHeightPx, dockHeightPx - direction * 16));
+  }
+
   onMount(() => {
     // Features register their action handlers (S1-01: transport); unhandled keys are no-ops.
     return attachKeymap();
@@ -86,6 +186,10 @@
       // H-19 (ADR-009 §4): View → Renderer's persisted choice, seeded before any waveform/
       // spectral view mounts. `?? "auto"` tolerates a mocked/pre-H-19 settings object in tests.
       setRendererPreference(current.renderer_preference ?? "auto");
+      // H-24 (item 3): the app-shell layout (column widths, dock height, collapsed panels, dock
+      // tab), seeded before the splitters' first render. `?? DEFAULT_LAYOUT_PREFS` tolerates a
+      // mocked/pre-H-24 settings object in tests, same convention as `renderer_preference`.
+      applyLayoutPrefs(current.layout ?? DEFAULT_LAYOUT_PREFS);
     });
   });
 
@@ -224,17 +328,96 @@
     <HelpMenu />
   </MenuBar>
   <Toolbar {version} />
-  <div class="workspace">
-    <MarkersProperties />
-    <EditorView />
-    <RackPanel />
-  </div>
-  <LoudnessPanel />
-  <div class="bottom-dock">
-    <MeterBridge />
-    {#if analyzerState().visible}
-      <AnalyzerPanel />
-    {/if}
+  <!--
+    H-24 items 1/2/9: an explicit `main-area` row (menu, toolbar, main-area — three grid rows for
+    three children, fixing the old "5 children on 4 row tracks" mismatch) holding a vertical
+    split: the workspace (Markers | editor | Rack, each column individually resizable) above the
+    bottom dock (Meters/Analyzer or Loudness, tabbed so it can't squeeze the editor). Every
+    splitter clamps against `mainAreaWidthPx`/`mainAreaHeightPx` (measured here), so a size saved
+    on a larger window never wedges a smaller one.
+  -->
+  <div class="main-area" data-testid="main-area" bind:this={mainAreaEl}>
+    <div class="workspace" data-testid="workspace">
+      {#if !layout.markersCollapsed}
+        <div class="col col-markers" data-testid="col-markers" style={`width: ${markersWidthPx}px`}>
+          <MarkersProperties />
+        </div>
+      {/if}
+      <Splitter
+        orientation="vertical"
+        ariaLabel={t("layout.splitter.markers")}
+        testid="splitter-markers"
+        collapsible
+        collapsed={layout.markersCollapsed}
+        onDrag={onMarkersDrag}
+        onReset={() => setMarkersWidthPx(DEFAULT_LAYOUT_PREFS.markers_width_px)}
+        onStep={onMarkersStep}
+        onToggleCollapse={() => setMarkersCollapsed(!layout.markersCollapsed)}
+      />
+      <EditorView />
+      <Splitter
+        orientation="vertical"
+        ariaLabel={t("layout.splitter.rack")}
+        testid="splitter-rack"
+        collapsible
+        collapsed={layout.rackCollapsed}
+        onDrag={onRackDrag}
+        onReset={() => setRackWidthPx(DEFAULT_LAYOUT_PREFS.rack_width_px)}
+        onStep={onRackStep}
+        onToggleCollapse={() => setRackCollapsed(!layout.rackCollapsed)}
+      />
+      {#if !layout.rackCollapsed}
+        <div class="col col-rack" data-testid="col-rack" style={`width: ${rackWidthPx}px`}>
+          <RackPanel />
+        </div>
+      {/if}
+    </div>
+    <Splitter
+      orientation="horizontal"
+      ariaLabel={t("layout.splitter.dock")}
+      testid="splitter-dock"
+      onDrag={onDockDrag}
+      onReset={() => setDockHeightPx(DEFAULT_LAYOUT_PREFS.dock_height_px)}
+      onStep={onDockStep}
+    />
+    <div class="dock" data-testid="bottom-dock" style={`height: ${dockHeightPx}px`}>
+      <div class="dock-tabs" role="tablist" aria-label={t("panel.meters.title")}>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={layout.dockTab === "meters"}
+          class:active={layout.dockTab === "meters"}
+          data-testid="dock-tab-meters"
+          onclick={() => setDockTab("meters")}
+        >
+          {t("layout.dock.tab_meters")}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={layout.dockTab === "loudness"}
+          class:active={layout.dockTab === "loudness"}
+          data-testid="dock-tab-loudness"
+          onclick={() => setDockTab("loudness")}
+        >
+          {t("layout.dock.tab_loudness")}
+        </button>
+      </div>
+      <div class="dock-body">
+        <!-- Both tabs stay mounted (H-24 item 10: never remounted just by switching tabs, so the
+             meter bridge/analyzer's own state and subscriptions are never disturbed) — only
+             hidden with the `hidden` attribute. -->
+        <div class="meters-row" data-testid="dock-tab-panel-meters" hidden={layout.dockTab !== "meters"}>
+          <MeterBridge />
+          {#if analyzerState().visible}
+            <AnalyzerPanel />
+          {/if}
+        </div>
+        <div class="loudness-tab" data-testid="dock-tab-panel-loudness" hidden={layout.dockTab !== "loudness"}>
+          <LoudnessPanel />
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 <NoticeHost />
@@ -258,22 +441,98 @@
 <style>
   .shell {
     display: grid;
-    /* H-19: menu bar, toolbar, the flexible workspace, then the bottom dock (was 5 separate flat
-       menu rows + toolbar before, with the tracks below no longer lined up with the right
-       children — down to one real menu bar row now). */
-    grid-template-rows: auto auto 1fr auto;
+    /* H-24: exactly three row tracks for exactly three children (menu bar, toolbar, main-area) —
+       the old `auto auto 1fr auto` had four tracks for what became five children (the Loudness
+       panel and the bottom dock both landed in/after the `1fr` row), so the dock's height was
+       never actually bounded and could grow to fill the window (item 1's diagnosis). */
+    grid-template-rows: auto auto 1fr;
     height: 100vh;
   }
 
-  .workspace {
-    display: grid;
-    grid-template-columns: minmax(200px, 240px) 1fr minmax(240px, 300px);
+  /* H-24 items 1/2: the main area is itself a vertical split — the workspace (item 1: "flex,
+     min 40% of the window") above the bottom dock (item 1: "default ~240px, min 120, max 60%"),
+     with a draggable horizontal splitter between them. Both are always given an explicit,
+     definite size (`workspace` via flex, `dock` via its own `height` from `clampDockHeightPx`)
+     — never sized from their content (item 4: no more feedback loop through the analyzer's
+     canvas). */
+  .main-area {
+    display: flex;
+    flex-direction: column;
     min-height: 0;
   }
 
+  .workspace {
+    display: flex;
+    flex: 1;
+    min-height: 40%;
+    min-width: 0;
+  }
+
+  .col {
+    flex: none;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* The Markers/Rack panels' own root elements (`<aside class="markers-properties">`/`<aside
+     class="rack">`) used to be direct CSS Grid children, stretched to the row's full height by
+     Grid's own default `align-items: stretch`. Wrapping them in a sized `.col` for the resizable
+     layout (item 2) loses that for free, so it's restored explicitly here rather than editing
+     either panel's own file (kept out of scope: T-802 touches `RackPanel.svelte` concurrently). */
+  .col-markers :global(.markers-properties),
+  .col-rack :global(.rack) {
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* H-24 item 1: a fixed height from the layout store (`clampDockHeightPx`), never `auto` —
+     this is what actually fixes the "bottom dock fills the window" bug; every canvas inside it
+     (the analyzer's) now sits in a container with a definite size. */
+  .dock {
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--surface-panel);
+    border-top: 1px solid var(--surface-border);
+  }
+
+  /* H-24 item 1: the Loudness/ACX panel moved into the dock as a tab next to Meters/Analyzer, so
+     it can no longer squeeze the editor by growing the old flat `.bottom-dock` row. */
+  .dock-tabs {
+    display: flex;
+    flex: none;
+    gap: 0.15rem;
+    padding: 0.2rem 0.4rem 0;
+  }
+
+  .dock-tabs button {
+    background: var(--surface-inset);
+    color: var(--text-secondary);
+    border: 1px solid var(--surface-border);
+    border-bottom: none;
+    border-radius: 4px 4px 0 0;
+    padding: 0.15rem 0.6rem;
+    font-size: 0.75rem;
+  }
+
+  .dock-tabs button.active {
+    background: var(--surface-panel);
+    color: var(--text-primary);
+  }
+
+  .dock-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
   /* T-208: the analyzer panel sits to the right of the meter bridge (SPEC-007 §2.9). */
-  .bottom-dock {
+  .meters-row {
     display: flex;
     min-height: 0;
+    height: 100%;
   }
 </style>

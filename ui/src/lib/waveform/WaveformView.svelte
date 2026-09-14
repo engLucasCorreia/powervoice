@@ -19,6 +19,7 @@
   } from "../state/selection.svelte";
   import { seek, transportState } from "../state/transport.svelte";
   import { audioKeyFor, consumePendingRestore } from "../state/waveformView.svelte";
+  import { amplitudeTicksDbfs, centerlineY } from "./amplitudeAxis";
   import {
     clampSamplesPerPixel,
     clampStartSample,
@@ -141,6 +142,12 @@
   const peaksFrom = $derived(
     opPeaksRequestStart(layout, Math.max(0, Math.floor(startSample)), viewportPx * samplesPerPixel),
   );
+
+  // H-24 item 7: the amplitude ruler gutter — fixed at verticalZoom 1 (SPEC-006 §2.2's actual
+  // vertical-zoom-and-drag feature is out of this ticket's scope; see amplitudeAxis.ts's doc
+  // comment). `heightPx` is this view's own measured canvas height (below).
+  const ampTicks = $derived.by(() => (heightPx > 0 ? amplitudeTicksDbfs(heightPx, 1, 16) : []));
+  const zeroLineY = $derived(centerlineY(heightPx));
 
   // Zoom-full the first time a newly opened document's audio (rate + length — not just its path,
   // so Save As to a new path/format doesn't re-fit the still-unchanged audio) gets a known
@@ -844,21 +851,35 @@
 
 <div class="waveform-view" data-testid="waveform-view">
   {#if isOpen}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="canvas-container"
-      bind:this={containerEl}
-      onwheel={onWheel}
-      onpointerdown={onPointerDown}
-      onpointermove={onPointerMove}
-      onpointerup={onPointerUp}
-      ondblclick={onDoubleClick}
-    >
-      <canvas
-        bind:this={canvasEl}
-        aria-label={t("waveform.canvas_label")}
-        data-testid="waveform-canvas"
-      ></canvas>
+    <div class="body" data-testid="waveform-body">
+      <div class="amp-ruler" data-testid="waveform-amp-ruler">
+        <span class="unit">{t("waveform.amp_unit")}</span>
+        {#each ampTicks as tick, i (tick.y + "-" + i)}
+          <span class="tick" style={`top: ${tick.y}px`}>{tick.label}</span>
+        {/each}
+      </div>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="canvas-container"
+        bind:this={containerEl}
+        onwheel={onWheel}
+        onpointerdown={onPointerDown}
+        onpointermove={onPointerMove}
+        onpointerup={onPointerUp}
+        ondblclick={onDoubleClick}
+      >
+        <canvas
+          bind:this={canvasEl}
+          aria-label={t("waveform.canvas_label")}
+          data-testid="waveform-canvas"
+        ></canvas>
+        <div class="amp-grid" data-testid="waveform-amp-grid">
+          {#each ampTicks as tick, i (tick.y + "-" + i)}
+            <div class="grid-line" style={`top: ${tick.y}px`}></div>
+          {/each}
+          <div class="zero-line" data-testid="waveform-zero-line" style={`top: ${zeroLineY}px`}></div>
+        </div>
+      </div>
     </div>
   {:else}
     <p class="empty" data-testid="waveform-empty">{t("waveform.empty")}</p>
@@ -880,6 +901,41 @@
     color: var(--text-secondary);
   }
 
+  /* H-24 item 7: the amplitude gutter — same width/style convention as the spectral pane's
+   * frequency ruler (`spectrogram/SpectralView.svelte`'s `.ruler`), so the shared time ruler
+   * above both panes (`EditorView.svelte`) can align to one fixed inset. */
+  .body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .amp-ruler {
+    position: relative;
+    width: 48px;
+    flex: none;
+    border-right: 1px solid var(--wave-ruler-grid);
+    background: var(--surface-panel);
+    overflow: hidden;
+  }
+
+  .amp-ruler .unit {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    color: var(--wave-ruler-text);
+    font-size: 0.6rem;
+  }
+
+  .amp-ruler .tick {
+    position: absolute;
+    right: 2px;
+    color: var(--wave-ruler-text);
+    font-size: 0.65rem;
+    transform: translateY(-50%);
+    white-space: nowrap;
+  }
+
   .canvas-container {
     position: relative;
     flex: 1;
@@ -890,5 +946,31 @@
     display: block;
     width: 100%;
     height: 100%;
+  }
+
+  /* DOM-positioned grid lines (not canvas-drawn): they stay correct under both the WebGL2 and
+   * Canvas2D renderers without touching either one's drawing code (item 4: never sized from the
+   * canvas's own content — these come straight from `amplitudeAxis.ts`'s pure tick math). */
+  .amp-grid {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+
+  .grid-line {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: var(--wave-ruler-grid);
+    opacity: 0.5;
+  }
+
+  .zero-line {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: var(--wave-zero-line);
   }
 </style>

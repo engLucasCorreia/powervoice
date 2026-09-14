@@ -25,3 +25,39 @@ export function dbForY(y: number, height: number, rangeDb: number): number {
   const t = (height / 2 - y) / (height / 2);
   return Math.min(Math.max(t * rangeDb, -rangeDb), rangeDb);
 }
+
+/** The grid/label step for `rangeDb` (H-24 item 8, matching `EqGraph.svelte`'s existing grid:
+ * every 3 dB for the ±12 dB range, every 6 dB for the wider ±24 dB one). */
+export function gainGridStepDb(rangeDb: number): number {
+  return rangeDb === EQ_GAIN_RANGE_WIDE_DB ? 6 : 3;
+}
+
+export interface GainTick {
+  db: number;
+  /** Pixel y (0…height). */
+  y: number;
+  label: string;
+}
+
+/** "+12", "0", "-12" (H-24 item 8: dB labels at the standard ±12/±24 range, unit shown once by
+ * the caller). */
+export function formatGainDb(db: number): string {
+  if (db === 0) {
+    return "0";
+  }
+  return db > 0 ? `+${db}` : String(db);
+}
+
+/** Every grid-line dB value for `rangeDb`, with its y and label (H-24 item 8). */
+export function gainAxisTicks(height: number, rangeDb: number): GainTick[] {
+  if (!(height > 0) || !(rangeDb > 0)) {
+    return [];
+  }
+  const step = gainGridStepDb(rangeDb);
+  const ticks: GainTick[] = [];
+  for (let db = -rangeDb; db <= rangeDb + 1e-9; db += step) {
+    const rounded = Math.round(db);
+    ticks.push({ db: rounded, y: yForDb(rounded, height, rangeDb), label: formatGainDb(rounded) });
+  }
+  return ticks;
+}

@@ -23,6 +23,17 @@
   "analyzer.hover": "{freq} · {db} dB",
   "analyzer.floor": "Floor",
   "analyzer.ceiling": "Ceiling",
+  "analyzer.unit_dbfs": "dBFS",
+
+  "layout.dock.tab_meters": "Meters",
+  "layout.dock.tab_loudness": "Loudness",
+  "layout.splitter.markers": "Resize Markers panel",
+  "layout.splitter.rack": "Resize Rack panel",
+  "layout.splitter.dock": "Resize bottom panel",
+  "layout.collapse_markers": "Collapse Markers panel",
+  "layout.expand_markers": "Expand Markers panel",
+  "layout.collapse_rack": "Collapse Rack panel",
+  "layout.expand_rack": "Expand Rack panel",
 
   "menu.view": "View",
   "menu.view.analyzer": "Analyzer",
@@ -351,6 +362,7 @@
 
   "waveform.empty": "Open a WAV file to see its waveform",
   "waveform.canvas_label": "Waveform",
+  "waveform.amp_unit": "dBFS",
   "notice.renderer.fallback_waveform": "Using the Canvas2D waveform renderer — WebGL2 isn't available on this system.",
   "notice.renderer.context_lost_waveform": "The waveform's graphics context was lost — switched to the Canvas2D renderer.",
 
@@ -371,6 +383,7 @@
   "spectral.fft_disabled_tooltip": "Not supported by this graphics driver",
   "spectral.floor_label": "Floor",
   "spectral.ceiling_label": "Ceiling",
+  "spectral.legend_value": "{value} dB",
   "notice.renderer.fallback_spectral": "Using the Canvas2D spectrogram renderer — WebGL2 isn't available on this system.",
   "notice.renderer.context_lost_spectral": "The spectrogram's graphics context was lost — switched to the Canvas2D renderer.",
 
@@ -694,6 +707,8 @@
   "eq.graph.range_12": "±12 dB",
   "eq.graph.range_24": "±24 dB",
   "eq.graph.range_toggle": "Gain range",
+  "eq.graph.freq_unit": "Hz",
+  "eq.graph.gain_unit": "dB",
   "eq.band.hp": "HP",
   "eq.band.ls": "L",
   "eq.band.1": "1",

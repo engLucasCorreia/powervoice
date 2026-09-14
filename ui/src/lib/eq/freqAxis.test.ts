@@ -3,6 +3,7 @@ import {
   EQ_MAX_HZ,
   EQ_MIN_HZ,
   curveRequestFreqs,
+  eqFrequencyTicks,
   freqForX,
   graphMaxHz,
   inRange,
@@ -108,5 +109,42 @@ describe("curveRequestFreqs (SPEC-015 §4.10 lean form)", () => {
     const many = Array.from({ length: 600 }, (_, i) => 20 + i);
     const freqs = curveRequestFreqs(20, 20_000, 0, many, 512);
     expect(freqs.length).toBeLessThanOrEqual(512);
+  });
+});
+
+describe("eqFrequencyTicks (H-24 item 8: Hz/kHz labels at the standard decades)", () => {
+  const label = (f: number) => (f < 1000 ? String(Math.round(f)) : `${f / 1000}k`);
+
+  it("includes the standard decade ticks on a wide graph", () => {
+    const ticks = eqFrequencyTicks(EQ_MIN_HZ, EQ_MAX_HZ, 800, 24, label);
+    const freqs = ticks.map((t) => t.freqHz);
+    for (const f of [20, 100, 1_000, 10_000, 20_000]) {
+      expect(freqs).toContain(f);
+    }
+  });
+
+  it("is sorted by ascending x", () => {
+    const ticks = eqFrequencyTicks(EQ_MIN_HZ, EQ_MAX_HZ, 800, 24, label);
+    for (let i = 1; i < ticks.length; i++) {
+      expect(ticks[i]!.x).toBeGreaterThan(ticks[i - 1]!.x);
+    }
+  });
+
+  it("thins so labels never overlap on a narrow graph", () => {
+    const ticks = eqFrequencyTicks(EQ_MIN_HZ, EQ_MAX_HZ, 60, 24, label);
+    for (let i = 1; i < ticks.length; i++) {
+      expect(ticks[i]!.x - ticks[i - 1]!.x).toBeGreaterThanOrEqual(24);
+    }
+  });
+
+  it("uses the caller's label formatter", () => {
+    const ticks = eqFrequencyTicks(EQ_MIN_HZ, EQ_MAX_HZ, 800, 24, () => "X");
+    expect(ticks.length).toBeGreaterThan(0);
+    expect(ticks.every((t) => t.label === "X")).toBe(true);
+  });
+
+  it("is empty for a degenerate range or non-positive width", () => {
+    expect(eqFrequencyTicks(100, 100, 800, 24, label)).toEqual([]);
+    expect(eqFrequencyTicks(EQ_MIN_HZ, EQ_MAX_HZ, 0, 24, label)).toEqual([]);
   });
 });

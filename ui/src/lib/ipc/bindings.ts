@@ -172,6 +172,12 @@ output_device: string | null, output_rate_hz: number | null, output_buffer_frame
 input_device: string | null, input_status: DeviceStatusDto, };
 
 /**
+ * Which bottom-dock tab is active (H-24: the Loudness/ACX panel moved into the dock as a tab
+ * next to the meter bridge/analyzer, so it can no longer squeeze the editor).
+ */
+export type DockTabPref = "meters" | "loudness";
+
+/**
  * `document_changed` event payload, and the result of `document_open`/`document_save`/
  * `document_save_as`. `name: None` means no document is open.
  */
@@ -316,6 +322,27 @@ export type JobProgressDto = { job_id: number, kind: JobKind, state: JobState, f
  * (SPEC-010 §2.8's normalize-job convention, generalized here for S4-04's export job).
  */
 export type JobState = "running" | "done" | "cancelled" | "failed";
+
+/**
+ * Persisted app-shell layout (H-24: resizable Markers | editor | Rack columns and a resizable
+ * bottom dock, debounced from the UI's splitter drags). Sizes are the *last requested* value —
+ * the UI still clamps them against the current window size on every render (min widths, dock
+ * `[120, 60% of the window]`, workspace `>= 40%`), so a value saved on a large monitor never
+ * wedges a smaller one. Additive field — the settings version stays 1.
+ */
+export type LayoutPrefsDto = { 
+/**
+ * Markers/Properties column width, px.
+ */
+markers_width_px: number, 
+/**
+ * Rack column width, px.
+ */
+rack_width_px: number, 
+/**
+ * Bottom dock height, px.
+ */
+dock_height_px: number, markers_collapsed: boolean, rack_collapsed: boolean, dock_tab: DockTabPref, };
 
 /**
  * Localized display text: English fallback plus an optional i18n key (ADR-005 §2).
@@ -913,7 +940,12 @@ record_offsets: Array<RecordOffsetEntry>,
  * H-20 (SPEC-005 §2.7/§3 `save_dither`): the Save As dialog's remembered Dither choice.
  * Additive field — the settings version stays 1.
  */
-save_dither: SaveDitherPref, };
+save_dither: SaveDitherPref, 
+/**
+ * H-24: the app shell's resizable layout (column widths, dock height, collapsed panels,
+ * active dock tab). Additive field — the settings version stays 1.
+ */
+layout: LayoutPrefsDto, };
 
 /**
  * Slot status (SPEC-012 §2.2, §2.9). `message` is pre-rendered English text shown verbatim (see

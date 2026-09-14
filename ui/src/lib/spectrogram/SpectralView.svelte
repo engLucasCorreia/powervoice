@@ -40,7 +40,7 @@
   import { cssColorToRgba, hexToRgba } from "../render/quads";
   import { pushNotice } from "../state/notices.svelte";
   import { rendererPref } from "../state/rendererPref.svelte";
-  import { colorForT, type ColormapName, normalizeDb } from "./colormap";
+  import { colorForT, type ColormapName, cssGradientFor, normalizeDb } from "./colormap";
   import { detectMaxTextureSize, isFftSizeDisabled } from "./fftLimit";
   import {
     autoFftSize,
@@ -156,6 +156,10 @@
       fftSize,
     });
   });
+
+  // H-24 item 6: a small colour-bar legend with its dB range (the pane's floor/ceiling — the
+  // colormap itself carries no scale otherwise).
+  const legendGradient = $derived(cssGradientFor(spectral.colormap));
 
   const ticks = $derived.by(() => {
     if (heightPx <= 0) {
@@ -781,6 +785,11 @@
           oninput={(e) => spectral.setCeilDb(Number((e.currentTarget as HTMLInputElement).value))}
         />
       </label>
+      <div class="legend" data-testid="spectral-legend">
+        <span class="legend-value">{t("spectral.legend_value", { value: spectral.floorDb })}</span>
+        <span class="legend-bar" style={`background: ${legendGradient}`}></span>
+        <span class="legend-value">{t("spectral.legend_value", { value: spectral.ceilDb })}</span>
+      </div>
     </div>
     <div class="body">
       <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -870,6 +879,26 @@
 
   .toolbar input[type="number"] {
     width: 3.5rem;
+  }
+
+  .legend {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin-left: auto;
+  }
+
+  .legend-bar {
+    display: inline-block;
+    width: 4.5rem;
+    height: 0.6rem;
+    border: 1px solid var(--surface-border);
+    border-radius: 2px;
+  }
+
+  .legend-value {
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
 
   .body {

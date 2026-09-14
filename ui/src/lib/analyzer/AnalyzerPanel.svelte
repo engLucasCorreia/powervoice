@@ -13,6 +13,7 @@
   import {
     ANALYZER_CEIL_OPTIONS_DB,
     ANALYZER_FLOOR_OPTIONS_DB,
+    dbAxisTicks,
     DEFAULT_ANALYZER_CEIL_DB,
     DEFAULT_ANALYZER_FLOOR_DB,
     nearestAnalyzerBand,
@@ -54,6 +55,24 @@
   const noOutputDevice = $derived(
     device.current === "not_selected" || device.current === "lost",
   );
+
+  // H-24 item 5: persistent frequency (bottom) and dB (left gutter) axis labels — the analyzer
+  // used to draw grid lines with no labels at all. `frequencyTicks` walks a *vertical* axis
+  // (SPEC-007 §2.4/§4.7); this pane is horizontal, so only its `freqHz`/`label` are used and the
+  // x position is recomputed with `xForFreq` (`draw()` already does this for the grid lines).
+  const freqAxisTicks = $derived.by(() => {
+    if (width <= 0) {
+      return [];
+    }
+    const [fLo, fHi] = displayRange;
+    return frequencyTicks(fLo, fHi, "log", width, 40).map((tick) => ({
+      freqHz: tick.freqHz,
+      x: xForFreq(tick.freqHz),
+      label: tick.label,
+    }));
+  });
+
+  const dbTicks = $derived.by(() => (height > 0 ? dbAxisTicks(floorDb, ceilDb, height, 22) : []));
 
   $effect(() => {
     let cleanup: (() => void) | undefined;
@@ -180,16 +199,17 @@
     ctx.strokeStyle = gridColor;
     ctx.lineWidth = 1;
     ctx.globalAlpha = 0.6;
-    for (let db = ceilDb; db >= floorDb; db -= 12) {
-      const y = Math.round(yForDb(db)) + 0.5;
+    // H-24 item 5: the grid lines sit exactly at the labeled dB/Hz ticks (10 dB/20 dB and the
+    // log-frequency ladder), not an independent 12 dB spacing — so a line always has a label.
+    for (const tick of dbTicks) {
+      const y = Math.round(tick.y) + 0.5;
       ctx.beginPath();
       ctx.moveTo(0, y);
       ctx.lineTo(width, y);
       ctx.stroke();
     }
-    const [fLo, fHi] = displayRange;
-    for (const tick of frequencyTicks(fLo, fHi, "log", width, 28)) {
-      const x = Math.round(xForFreq(tick.freqHz)) + 0.5;
+    for (const tick of freqAxisTicks) {
+      const x = Math.round(tick.x) + 0.5;
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, height);
@@ -358,22 +378,37 @@
       {t("analyzer.peak_hold")}
     </label>
   </div>
-  <div class="canvas-wrap">
-    <canvas
-      bind:this={canvasEl}
-      onclick={handleClick}
-      ondblclick={handleDoubleClick}
-      onwheel={handleWheel}
-      onmousedown={handleMouseDown}
-      onmousemove={handleMouseMove}
-      onmouseup={endDrag}
-      onmouseleave={handleMouseLeave}
-    ></canvas>
-    {#if noOutputDevice}
-      <div class="overlay">{t("analyzer.no_device")}</div>
-    {:else if hoverText}
-      <div class="hover" style:left="{hover?.x ?? 0}px">{hoverText}</div>
-    {/if}
+  <div class="body">
+    <div class="db-axis" data-testid="analyzer-db-axis">
+      <span class="unit">{t("analyzer.unit_dbfs")}</span>
+      {#each dbTicks as tick (tick.db)}
+        <span class="tick" style={`top: ${tick.y}px`}>{tick.label}</span>
+      {/each}
+    </div>
+    <div class="plot">
+      <div class="canvas-wrap">
+        <canvas
+          bind:this={canvasEl}
+          onclick={handleClick}
+          ondblclick={handleDoubleClick}
+          onwheel={handleWheel}
+          onmousedown={handleMouseDown}
+          onmousemove={handleMouseMove}
+          onmouseup={endDrag}
+          onmouseleave={handleMouseLeave}
+        ></canvas>
+        {#if noOutputDevice}
+          <div class="overlay">{t("analyzer.no_device")}</div>
+        {:else if hoverText}
+          <div class="hover" style:left="{hover?.x ?? 0}px">{hoverText}</div>
+        {/if}
+      </div>
+      <div class="freq-axis" data-testid="analyzer-freq-axis">
+        {#each freqAxisTicks as tick (tick.freqHz)}
+          <span class="tick" style={`left: ${tick.x}px`}>{tick.label}</span>
+        {/each}
+      </div>
+    </div>
   </div>
 </section>
 
@@ -440,6 +475,50 @@
     margin-left: auto;
   }
 
+  /* H-24 item 5: a left dB gutter (SPEC-007 §2.9's floor/ceiling axis) and a bottom frequency
+   * axis (SPEC-007 §2.4) — persistent labels, unlike the old grid-lines-with-no-text. Both are
+   * plain DOM overlays (not canvas-drawn text) positioned from the same pure-math tick lists the
+   * grid lines already use, so they never fight the canvas's own draw loop (item 4: no container
+   * is ever sized from its own content — these are siblings with their own fixed CSS size). */
+  .body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .db-axis {
+    position: relative;
+    width: 30px;
+    flex: none;
+    border-right: 1px solid var(--analyzer-grid);
+    overflow: hidden;
+  }
+
+  .db-axis .unit {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    font-size: 0.6rem;
+    color: var(--text-secondary);
+  }
+
+  .db-axis .tick {
+    position: absolute;
+    right: 2px;
+    transform: translateY(-50%);
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+  }
+
+  .plot {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+  }
+
   .canvas-wrap {
     position: relative;
     flex: 1;
@@ -450,6 +529,23 @@
     display: block;
     width: 100%;
     height: 100%;
+  }
+
+  .freq-axis {
+    position: relative;
+    flex: none;
+    height: 14px;
+    border-top: 1px solid var(--analyzer-grid);
+    overflow: hidden;
+  }
+
+  .freq-axis .tick {
+    position: absolute;
+    top: 1px;
+    transform: translateX(-50%);
+    font-size: 0.6rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
   }
 
   .overlay {

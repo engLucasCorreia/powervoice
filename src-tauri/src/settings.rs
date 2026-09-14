@@ -442,6 +442,52 @@ pub fn upsert_record_offset(entries: &mut Vec<RecordOffsetEntry>, entry: RecordO
     entries.push(entry);
 }
 
+// --- App shell layout (H-24) ---------------------------------------------------------------------
+
+/// Which bottom-dock tab is active (H-24: the Loudness/ACX panel moved into the dock as a tab
+/// next to the meter bridge/analyzer, so it can no longer squeeze the editor).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum DockTabPref {
+    #[default]
+    Meters,
+    Loudness,
+}
+
+/// Persisted app-shell layout (H-24: resizable Markers | editor | Rack columns and a resizable
+/// bottom dock, debounced from the UI's splitter drags). Sizes are the *last requested* value —
+/// the UI still clamps them against the current window size on every render (min widths, dock
+/// `[120, 60% of the window]`, workspace `>= 40%`), so a value saved on a large monitor never
+/// wedges a smaller one. Additive field — the settings version stays 1.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[serde(default)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct LayoutPrefsDto {
+    /// Markers/Properties column width, px.
+    pub markers_width_px: f64,
+    /// Rack column width, px.
+    pub rack_width_px: f64,
+    /// Bottom dock height, px.
+    pub dock_height_px: f64,
+    pub markers_collapsed: bool,
+    pub rack_collapsed: bool,
+    pub dock_tab: DockTabPref,
+}
+
+impl Default for LayoutPrefsDto {
+    fn default() -> Self {
+        Self {
+            markers_width_px: 240.0,
+            rack_width_px: 280.0,
+            dock_height_px: 240.0,
+            markers_collapsed: false,
+            rack_collapsed: false,
+            dock_tab: DockTabPref::Meters,
+        }
+    }
+}
+
 // --- Settings root -------------------------------------------------------------------------------
 
 /// The whole settings file. `#[serde(default)]` at the container level means any field missing
@@ -495,6 +541,9 @@ pub struct Settings {
     /// H-20 (SPEC-005 §2.7/§3 `save_dither`): the Save As dialog's remembered Dither choice.
     /// Additive field — the settings version stays 1.
     pub save_dither: SaveDitherPref,
+    /// H-24: the app shell's resizable layout (column widths, dock height, collapsed panels,
+    /// active dock tab). Additive field — the settings version stays 1.
+    pub layout: LayoutPrefsDto,
     #[serde(flatten)]
     #[ts(skip)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -521,6 +570,7 @@ impl Default for Settings {
             record: RecordPrefsDto::default(),
             record_offsets: Vec::new(),
             save_dither: SaveDitherPref::default(),
+            layout: LayoutPrefsDto::default(),
             extra: serde_json::Map::new(),
         }
     }
@@ -872,6 +922,38 @@ mod tests {
         let json = br#"{"version":1,"monitor_mode":"dry"}"#;
         let migrated = parse_and_migrate(json).unwrap();
         assert_eq!(migrated.renderer_preference, RendererPreference::Auto);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// H-24: the app-shell layout (column widths, dock height, collapsed panels, dock tab)
+    /// round-trips through save/load, and an older settings file with no `layout` key falls back
+    /// to the factory defaults (container-level `#[serde(default)]`, same convention as
+    /// `renderer_preference`/`multichannel_policy`).
+    #[test]
+    #[allow(clippy::float_cmp)] // exact round-tripped value
+    fn layout_prefs_round_trip_and_fall_back_to_defaults() {
+        let dir = temp_dir("layout-prefs");
+        let path = dir.join("settings.json");
+
+        let settings = Settings {
+            layout: LayoutPrefsDto {
+                markers_width_px: 260.0,
+                rack_width_px: 300.0,
+                dock_height_px: 320.0,
+                markers_collapsed: true,
+                rack_collapsed: false,
+                dock_tab: DockTabPref::Loudness,
+            },
+            ..Settings::default()
+        };
+        save(&path, &settings).unwrap();
+        let loaded = load_or_default(&path);
+        assert_eq!(loaded.layout, settings.layout);
+
+        let json = br#"{"version":1,"monitor_mode":"dry"}"#;
+        let migrated = parse_and_migrate(json).unwrap();
+        assert_eq!(migrated.layout, LayoutPrefsDto::default());
 
         std::fs::remove_dir_all(&dir).ok();
     }

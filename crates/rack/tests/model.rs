@@ -109,6 +109,44 @@ fn ac13_missing_module_is_a_verbatim_placeholder() {
     assert_eq!(back, slot_json);
 }
 
+/// H-15 (SPEC-018 §2.6.4): a slot object that isn't even well-formed (no `module` string) never
+/// invalidates the rest of the rack or the sidecar — it becomes an "Unreadable module" placeholder
+/// on its own, written back verbatim, while sibling slots keep working normally.
+#[test]
+fn a_malformed_slot_is_an_unreadable_placeholder_and_does_not_invalidate_the_rest_of_the_rack() {
+    let malformed = json!({ "bypass": true, "state": { "k": 1 }, "note": "no module field" });
+    let m: RackModel = serde_json::from_value(json!({
+        "slots": [
+            { "module": "org.powervoice.gain@1.0.0", "bypass": false,
+              "state": { "format_version": 1, "params": { "gain_db": 0.0 } } },
+            malformed.clone(),
+            { "module": "org.powervoice.gain@1.0.0", "bypass": false,
+              "state": { "format_version": 1, "params": { "gain_db": -6.0 } } },
+        ]
+    }))
+    .unwrap();
+    assert!(m.slots[1].is_malformed());
+    assert_eq!(m.slots[1].module, "");
+
+    let (host, _live) = RackHost::new(registry(), rt_config(), RackOptions::default(), &m).unwrap();
+    assert_eq!(
+        host.slot_info(1).unwrap().status,
+        SlotStatus::Missing {
+            message: "Unreadable module".into(),
+            too_new: false
+        }
+    );
+    // Siblings resolved normally, untouched by the malformed slot between them.
+    assert_eq!(host.slot_info(0).unwrap().status, SlotStatus::Active);
+    assert_eq!(host.slot_info(2).unwrap().status, SlotStatus::Active);
+    assert_eq!(
+        serde_json::to_value(&host.model().slots[1]).unwrap(),
+        malformed
+    );
+    // Also excluded from the "missing modules" install prompt — there's no id to install.
+    assert!(!registry().missing_ids(&m).contains(&String::new()));
+}
+
 #[test]
 fn too_new_state_is_a_placeholder_too() {
     let mut s = gain_slot(-6.0);

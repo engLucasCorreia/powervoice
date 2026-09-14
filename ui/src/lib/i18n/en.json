@@ -225,6 +225,7 @@
 
   "dialog.recent_missing.title": "File not found",
   "dialog.recent_missing.message": "\"{name}\" can't be found.",
+  "dialog.recent_missing.locate": "Locate…",
   "dialog.recent_missing.remove": "Remove from List",
   "dialog.recent_missing.cancel": "Cancel",
 

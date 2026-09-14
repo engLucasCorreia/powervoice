@@ -18,8 +18,12 @@ pub struct RecentFileDto {
     pub exists: Option<bool>,
 }
 
-impl From<&RecentFileEntry> for RecentFileDto {
-    fn from(entry: &RecentFileEntry) -> Self {
+impl RecentFileDto {
+    /// Builds the DTO with `exists` already resolved by the caller — `recent_files_commands`'s
+    /// bounded, off-thread existence check (SPEC-018 §2.12 `recent_check_budget_ms`) for
+    /// `recent_files_get`, or an immediate check for `recent_files_remove`/`_clear`'s returned
+    /// list (not on the menu-open path, so no budget concern there).
+    pub fn from_entry(entry: &RecentFileEntry, exists: Option<bool>) -> Self {
         let path = std::path::Path::new(&entry.path);
         let name = path
             .file_name()
@@ -29,15 +33,18 @@ impl From<&RecentFileEntry> for RecentFileDto {
             .parent()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
-        // SPEC-018 §2.12: existence is checked when the menu opens, off the UI thread (this
-        // command already runs through `spawn_blocking`, CLAUDE.md's IPC pattern) — the 300 ms
-        // per-entry timeout for a stalled network mount is deferred (ticket report).
-        let exists = Some(path.exists());
         Self {
             path: entry.path.clone(),
             name,
             folder,
             exists,
         }
+    }
+}
+
+impl From<&RecentFileEntry> for RecentFileDto {
+    fn from(entry: &RecentFileEntry) -> Self {
+        let exists = Some(std::path::Path::new(&entry.path).exists());
+        Self::from_entry(entry, exists)
     }
 }

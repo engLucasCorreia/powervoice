@@ -246,7 +246,7 @@ describe("DocumentMenu / File menu (H-19)", () => {
       target.remove();
     });
 
-    it("a missing entry shows the missing marker and is disabled", async () => {
+    it("a missing entry shows the missing marker, muted but still clickable (H-15)", async () => {
       const entries: RecentFileDto[] = [
         { path: "/a/gone.wav", name: "gone.wav", folder: "/a", exists: false },
       ];
@@ -264,8 +264,36 @@ describe("DocumentMenu / File menu (H-19)", () => {
       flushSync();
 
       const entry = target.querySelector<HTMLButtonElement>('[data-testid="recent-entry-open"]');
-      expect(entry?.disabled).toBe(true);
+      expect(entry?.disabled).toBe(false);
+      expect(entry?.classList.contains("muted")).toBe(true);
       expect(entry?.textContent).toContain("(missing)");
+
+      unmount(app);
+      target.remove();
+    });
+
+    it("H-15 (SPEC-018 §2.12): choosing a missing entry closes the File menu and shows the dedicated dialog instead of opening it directly", async () => {
+      const entries: RecentFileDto[] = [
+        { path: "/a/gone.wav", name: "gone.wav", folder: "/a", exists: false },
+      ];
+      mockIPC((cmd) => {
+        if (cmd === "recent_files_get") {
+          return entries;
+        }
+        throw new Error(`unmocked command: ${cmd}`);
+      });
+      const { target, app } = mountMenu();
+      openMenu(target);
+      target.querySelector<HTMLButtonElement>('[data-testid="menu-open-recent"]')!.click();
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+
+      target.querySelector<HTMLButtonElement>('[data-testid="recent-entry-open"]')!.click();
+      flushSync();
+      // The File menu closes immediately — the missing-file dialog lives outside this popup
+      // (mounted separately as `RecentMissingDialog`, exercised in its own test file).
+      expect(target.querySelector('[data-testid="document-menu"]')).toBeNull();
 
       unmount(app);
       target.remove();

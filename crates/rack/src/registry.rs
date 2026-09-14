@@ -109,6 +109,11 @@ impl Registry {
     pub fn missing_ids(&self, model: &RackModel) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for s in &model.slots {
+            // A malformed slot (SPEC-018 §2.6.4) has no module id the user could install — it
+            // isn't a "missing module" in that sense, just unreadable.
+            if s.is_malformed() {
+                continue;
+            }
             let known = s
                 .module_ref()
                 .is_ok_and(|r| self.factories.contains_key(&r.id));
@@ -121,8 +126,15 @@ impl Registry {
 
     /// Creates an inactive instance for `slot` with its state loaded (through
     /// [`prepare_state`]), wrapped in the dual-mono shim if needed. Missing modules and too-new
-    /// states resolve to [`Resolved::Placeholder`].
+    /// states resolve to [`Resolved::Placeholder`]; so does a slot whose source JSON wasn't even
+    /// a well-formed slot object (SPEC-018 §2.6.4, [`SlotModel::is_malformed`]).
     pub fn resolve(&self, slot: &SlotModel) -> Result<Resolved, RackError> {
+        if slot.is_malformed() {
+            return Ok(Resolved::Placeholder {
+                message: "Unreadable module".to_string(),
+                too_new: false,
+            });
+        }
         let missing = || Resolved::Placeholder {
             message: format!("Missing module {}", slot.module),
             too_new: false,

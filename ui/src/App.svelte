@@ -6,6 +6,7 @@
   import ClipPromptDialog from "./lib/document/ClipPromptDialog.svelte";
   import ConfirmDialog from "./lib/document/ConfirmDialog.svelte";
   import DocumentMenu from "./lib/document/DocumentMenu.svelte";
+  import RecentMissingDialog from "./lib/document/RecentMissingDialog.svelte";
   import SaveAsDialog from "./lib/document/SaveAsDialog.svelte";
   import UnsavedChangesDialog from "./lib/document/UnsavedChangesDialog.svelte";
   import {
@@ -244,6 +245,7 @@
 <RecoveryDialog />
 <UnsavedChangesDialog />
 <ConfirmDialog />
+<RecentMissingDialog />
 <SaveAsDialog />
 <ChannelChoiceDialog />
 <ClipPromptDialog />

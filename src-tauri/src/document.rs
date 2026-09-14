@@ -567,6 +567,43 @@ fn io_save_error(err: vox_io::IoError) -> IpcError {
     IpcError::new(IpcErrorCode::Io, "error.save.io").with_param("message", err.to_string())
 }
 
+/// H-15 (SPEC-018 §2.9 "Read-only folders"): the bound file's folder can't be written to at all.
+/// Distinct from `error.save.sidecar_locked` (the folder is writable, only the sidecar file
+/// itself can't be replaced — a Windows read-only attribute, or a directory in its place). The
+/// message names Save As as the way out, same as `sidecar_locked`'s.
+fn permission_error(path: &Path) -> IpcError {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    IpcError::new(IpcErrorCode::Io, "error.save.permission").with_param("name", name)
+}
+
+/// SPEC-018 §2.9's read-only-folder pre-flight: "Save fails... before any byte is written". A
+/// harmless probe (create + remove a throwaway file in `path`'s folder) rather than inspecting
+/// Unix mode bits, which aren't a reliable cross-platform proxy for "can I write here" (root,
+/// ACLs, read-only mounts, Windows attributes) — this is exactly the operation the real save is
+/// about to attempt, just on a name nothing else uses. A non-permission probe failure (e.g. the
+/// folder itself is gone) is left for the real write to report normally.
+fn check_folder_writable(path: &Path) -> Result<(), IpcError> {
+    let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) else {
+        return Ok(());
+    };
+    let probe = parent.join(format!(".powervoice-writable-probe-{}", std::process::id()));
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Err(permission_error(path)),
+        Err(_) => Ok(()),
+    }
+}
+
 /// `WavSource`'s container format → the save format a document opened from it keeps (SPEC-005
 /// §2.6, restricted to this ticket's three supported variants — 8-bit/A-law/µ-law/32-int/64-float
 /// mapping is deferred, S1-02 ticket scope already documents that read of those variants is
@@ -1480,6 +1517,9 @@ impl DocumentService {
         if !overwrite && changed_on_disk(doc, &path) {
             return Err(changed_on_disk_error(&path));
         }
+        // H-15 (SPEC-018 §2.9): a read-only folder is refused here, before the audio or the
+        // sidecar is touched — full and sidecar-only saves alike (`needs_full` isn't decided yet).
+        check_folder_writable(&path)?;
         if !confirm_clip && let Some(overs) = check_overs(doc, bits)? {
             return Err(clip_confirmation_error(overs));
         }
@@ -4468,6 +4508,7 @@ mod tests {
                 bypass: false,
                 state: serde_json::json!({"format_version": 1, "params": {"gain_db": gain_db}}),
                 extra: Default::default(),
+                raw: None,
             }],
         }
     }
@@ -4817,6 +4858,128 @@ mod tests {
         // "Open Anyway": re-issuing with the confirm flag proceeds normally.
         let info = service2.open(&path, true).unwrap();
         assert_eq!(info.name.as_deref(), Some("a.wav"));
+    }
+
+    // --- H-15: AC-13 read-only folder matrix (SPEC-018 §2.9) ---------------------------------
+
+    /// AC-13: "opening from read-only media works and never tries to write the sidecar until a
+    /// save" — a fresh open (no prior sidecar) in a read-only folder loads fully and leaves the
+    /// folder untouched (no sidecar appears).
+    #[test]
+    fn ac13_opening_from_a_read_only_folder_works_and_writes_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let (service, _engine, dir) = service("readonly-open");
+        let audio_dir = dir.join("audio");
+        std::fs::create_dir_all(&audio_dir).unwrap();
+        let path = audio_dir.join("a.wav");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.05, 48_000).unwrap();
+        write_fixture_wav(&path, &samples, vox_testkit::wav::BitDepth::Float32, 48_000);
+        let names_before: Vec<_> = std::fs::read_dir(&audio_dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name()))
+            .collect();
+
+        std::fs::set_permissions(&audio_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let opened = service.open(&path, false);
+        // Restore before any assertion can early-return/panic, so the temp dir is always
+        // removable afterwards regardless of test outcome.
+        std::fs::set_permissions(&audio_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let info = opened.unwrap();
+        assert_eq!(info.sample_rate_hz, 48_000);
+        assert!(
+            !info.sidecar_dirty,
+            "opening never writes or dirties the sidecar"
+        );
+
+        let mut names_after: Vec<_> = std::fs::read_dir(&audio_dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name()))
+            .collect();
+        let mut names_before = names_before;
+        names_before.sort();
+        names_after.sort();
+        assert_eq!(
+            names_before, names_after,
+            "no sidecar and no temp file appeared"
+        );
+    }
+
+    /// AC-13: a read-only folder refuses Save with `error.save.permission` before any byte is
+    /// written — for a sidecar-only save (only the rack changed) as well as a full save (an audio
+    /// edit) — target/sidecar/folder are byte-for-byte unchanged, and Save As to a writable folder
+    /// recovers by writing both files there and re-binding the document.
+    #[test]
+    fn ac13_save_in_a_read_only_folder_fails_clearly_and_save_as_recovers() {
+        use std::os::unix::fs::PermissionsExt;
+        let (service, engine, dir) = service("readonly-save");
+        let audio_dir = dir.join("audio");
+        std::fs::create_dir_all(&audio_dir).unwrap();
+        let path = audio_dir.join("a.wav");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.05, 48_000).unwrap();
+        write_fixture_wav(&path, &samples, vox_testkit::wav::BitDepth::Float32, 48_000);
+
+        service.open(&path, false).unwrap();
+        service.save(false, false).unwrap(); // writes a real sidecar while still writable
+        engine
+            .handle()
+            .rack_load_model(gain_rack_model(-3.0))
+            .unwrap()
+            .unwrap();
+
+        let sidecar_path = vox_project::sidecar_path_for(&path);
+        let audio_before = std::fs::read(&path).unwrap();
+        let sidecar_before = std::fs::read(&sidecar_path).unwrap();
+        let mut names_before: Vec<_> = std::fs::read_dir(&audio_dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name()))
+            .collect();
+        names_before.sort();
+
+        std::fs::set_permissions(&audio_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // Sidecar-only save (only the rack/persisted content changed, no audio edit).
+        let err = service.save(false, false).unwrap_err();
+        std::fs::set_permissions(&audio_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(err.key, "error.save.permission");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            audio_before,
+            "audio untouched"
+        );
+        assert_eq!(
+            std::fs::read(&sidecar_path).unwrap(),
+            sidecar_before,
+            "sidecar untouched"
+        );
+        let mut names_after: Vec<_> = std::fs::read_dir(&audio_dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name()))
+            .collect();
+        names_after.sort();
+        assert_eq!(names_before, names_after, "no temp file left behind");
+
+        // A full save (an audio-affecting change) is refused the same way, before anything is
+        // written: an audio edit bumps `audio_rev`, so `needs_full` would otherwise be true.
+        service.edit_cut(0, 1_000).unwrap();
+        std::fs::set_permissions(&audio_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let err = service.save(false, false).unwrap_err();
+        std::fs::set_permissions(&audio_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(err.key, "error.save.permission");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            audio_before,
+            "audio still untouched"
+        );
+
+        // Save As to a writable folder recovers: both files land there, bound to the new path.
+        let new_dir = dir.join("elsewhere");
+        std::fs::create_dir_all(&new_dir).unwrap();
+        let new_path = new_dir.join("b.wav");
+        let info = service
+            .save_as(&new_path, SaveContainer::Wav, BitDepth::Bit24, false)
+            .unwrap();
+        assert_eq!(info.path.as_deref(), Some(new_path.to_str().unwrap()));
+        assert!(new_path.exists());
+        assert!(vox_project::sidecar_path_for(&new_path).exists());
     }
 
     // --- T-301: crash recovery, session cleanup, memory budget, state journaling -------------

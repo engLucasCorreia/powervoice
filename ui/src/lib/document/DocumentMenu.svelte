@@ -14,7 +14,7 @@
   import { settingsState } from "../state/settings.svelte";
   import {
     clearRecentFiles,
-    openRecentFile,
+    pickRecentFile,
     recentFilesState,
     refreshRecentFiles,
   } from "./recentFiles.svelte";
@@ -118,12 +118,15 @@
     });
   }
 
+  /**
+   * H-15 (SPEC-018 §2.12): a missing entry no longer bails out silently — `pickRecentFile` shows
+   * the dedicated dialog (Locate…/Remove from List/Cancel). The menu closes either way: a missing
+   * entry's dialog is its own modal (`RecentMissingDialog`, mounted in `App.svelte`), not part of
+   * this popup.
+   */
   async function pickRecent(path: string, exists: boolean | null): Promise<void> {
-    if (exists === false) {
-      return;
-    }
-    await openRecentFile(path);
     closeAllMenus();
+    await pickRecentFile(path, exists);
   }
 </script>
 
@@ -187,7 +190,7 @@
             {#each recent.entries as entry (entry.path)}
               <MenuItemRow
                 label={entry.exists === false ? `${entry.name} ${t("recent.missing")}` : entry.name}
-                disabled={entry.exists === false}
+                muted={entry.exists === false}
                 testid="recent-entry-open"
                 onSelect={() => void pickRecent(entry.path, entry.exists)}
               />

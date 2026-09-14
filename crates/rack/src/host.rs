@@ -833,6 +833,7 @@ impl RackHost {
                 bypass: false,
                 state: serde_json::Value::Null,
                 extra: Map::new(),
+                raw: None,
             },
         )
     }

@@ -10,6 +10,7 @@
     label,
     shortcut,
     disabled = false,
+    muted = false,
     testid,
     isSubmenuTrigger = false,
     expanded = false,
@@ -18,6 +19,9 @@
     label: string;
     shortcut?: string;
     disabled?: boolean;
+    /** H-15: dims the label without disabling the row — a missing Recent Files entry is still
+     * clickable (it opens the "can't be found" dialog), just shown as unavailable. */
+    muted?: boolean;
     testid?: string;
     isSubmenuTrigger?: boolean;
     expanded?: boolean;
@@ -31,6 +35,7 @@
   tabindex="-1"
   data-testid={testid}
   disabled={disabled}
+  class:muted
   aria-haspopup={isSubmenuTrigger ? "menu" : undefined}
   aria-expanded={isSubmenuTrigger ? expanded : undefined}
   onclick={onSelect}
@@ -66,6 +71,10 @@
   }
 
   button:disabled {
+    color: var(--text-disabled);
+  }
+
+  button.muted .label {
     color: var(--text-disabled);
   }
 

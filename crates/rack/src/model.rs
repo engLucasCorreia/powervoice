@@ -9,25 +9,45 @@
 //! `state` is kept as raw JSON and unknown keys are preserved, so a slot whose module is not
 //! installed (a placeholder) is written back verbatim.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 use vox_module_api::{ModuleRef, ModuleState, ParseModuleRefError};
 
-/// One slot of a [`RackModel`].
+/// The well-formed slot shape (ADR-005 §10, SPEC-018 §2.6.4): used for the happy-path (de)
+/// serialization of [`SlotModel`]. A JSON array element that doesn't fit this shape (no `module`
+/// string, or not even an object) is kept as [`SlotModel::raw`] instead (SPEC-018 §2.6.4:
+/// "a slot object that is not even a well-formed slot… becomes an 'Unreadable module' placeholder
+/// and is also written back verbatim").
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct SlotModel {
-    /// `"id@version"` of the module that wrote the slot (kept as text so an unparsable or
-    /// unknown reference round-trips verbatim).
+struct WellFormedSlot {
     pub module: String,
-    /// Host bypass flag (belongs to the slot, not to the module state).
     #[serde(default)]
     pub bypass: bool,
-    /// The module's [`ModuleState`], as raw JSON.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub state: Value,
-    /// Any other keys, preserved.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+/// One slot of a [`RackModel`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct SlotModel {
+    /// `"id@version"` of the module that wrote the slot (kept as text so an unparsable or
+    /// unknown reference round-trips verbatim). Empty when [`Self::raw`] is set — the module
+    /// couldn't even be read out of the slot's JSON.
+    pub module: String,
+    /// Host bypass flag (belongs to the slot, not to the module state).
+    pub bypass: bool,
+    /// The module's [`ModuleState`], as raw JSON.
+    pub state: Value,
+    /// Any other keys, preserved.
+    pub extra: Map<String, Value>,
+    /// Set when this slot's source JSON was not a well-formed slot object (SPEC-018 §2.6.4): the
+    /// exact value read, serialized back verbatim instead of being reconstructed from
+    /// `module`/`bypass`/`state`/`extra` (which are left at their defaults). `Registry::resolve`
+    /// turns this into an "Unreadable module" placeholder — never a deserialization error, so one
+    /// bad slot never invalidates the rest of the rack or the sidecar.
+    pub raw: Option<Value>,
 }
 
 impl SlotModel {
@@ -38,12 +58,58 @@ impl SlotModel {
             bypass,
             state: serde_json::to_value(state).unwrap_or(Value::Null),
             extra: Map::new(),
+            raw: None,
         }
     }
 
     /// The parsed module reference.
     pub fn module_ref(&self) -> Result<ModuleRef, ParseModuleRefError> {
         self.module.parse()
+    }
+
+    /// Whether this slot's JSON wasn't even a well-formed slot object (SPEC-018 §2.6.4) — an
+    /// "Unreadable module" placeholder, kept and written back verbatim.
+    pub fn is_malformed(&self) -> bool {
+        self.raw.is_some()
+    }
+}
+
+impl Serialize for SlotModel {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match &self.raw {
+            Some(raw) => raw.serialize(serializer),
+            None => WellFormedSlot {
+                module: self.module.clone(),
+                bypass: self.bypass,
+                state: self.state.clone(),
+                extra: self.extra.clone(),
+            }
+            .serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SlotModel {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        Ok(
+            match serde_json::from_value::<WellFormedSlot>(value.clone()) {
+                Ok(w) => SlotModel {
+                    module: w.module,
+                    bypass: w.bypass,
+                    state: w.state,
+                    extra: w.extra,
+                    raw: None,
+                },
+                Err(_) => SlotModel {
+                    module: String::new(),
+                    bypass: false,
+                    state: Value::Null,
+                    extra: Map::new(),
+                    raw: Some(value),
+                },
+            },
+        )
     }
 }
 

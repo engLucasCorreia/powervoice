@@ -348,3 +348,16 @@ supersedes Amendment 1's `VXSA` table.**
   option is stored but not wired to the tick loop for any channel (`VXTM`/`VXMT`/`VXSA` alike).
   Wiring it is a separate ticket.
 - **Golden fixture:** `ui/src/lib/ipc/vxsa_fixture.ts` (Rust-generated, `vox_engine::AnalyzerFrame`).
+
+## Amendment 5 — T-304 record operations + H-16 telemetry rate, as implemented (2026-09-14)
+- **Record operations (SPEC-022):** commands `record_start_at` (Insert / Overwrite at the cursor,
+  Punch over a selection — replaces Amendment 2's placeholder naming), `record_offset_get` /
+  `record_offset_set` (per host, input, output and device rate), `calibration_run` /
+  `calibration_cancel` (a job reporting through `job_progress`, kind `Calibration`). Events
+  `record_phase { take_id, op, phase: PreRoll | Recording | PostRoll | Committing, doc_pos_samples,
+  app_ns }`, `record_finished { take_id, op, outcome, len_samples, offset_samples }`, and
+  `calibration_result { measured_offset_samples, confidence, accepted, reason }`.
+- **Telemetry rate (resolves Amendment 4's "gap" note):** the control tick stays a fixed 60 Hz;
+  `Settings.telemetry_rate_hz` (60 or 30) gates how often `VXTM`, `VXMT` and `VXSA` publish (every
+  tick or every other tick) and re-derives the analyzer's averaging constants. It applies at start-up
+  and live when the setting changes.

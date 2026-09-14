@@ -58,6 +58,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-16 | Analyzer follow-ups (T-208): floor/ceiling, frequency zoom, hover, device state, View menu toggle, settings persistence; wire `telemetry_rate_hz` (30 Hz) into VXTM/VXMT/VXSA | S | done |
 | H-19 | Real menu bar (File/Edit/View/Effects/Help dropdowns, keyboard access, shortcuts shown) replacing the flat always-visible "menu" toolbars | S | done |
 | H-20 | Save/open gaps (SPEC-005): dither None, keep FLAC when opened FLAC + full WAV promotion table, format-mapped/metadata-dropped notices, stereo→mono save warning, progressive import display | S | todo |
+| H-21 | Punch-in follow-ups (T-304): markers during an operation, live take drawn at the punch point, device loss per phase, talent-source exactness tests (drift, dropouts), AC-11/AC-15, Settings → Recording page | S | todo |
 | H-18 | Shared test factories for DTOs (`ui/src/lib/test/fixtures.ts` + Rust builders) so a new DTO field touches one helper, not 20 test literals (merge-friction fix) | H | todo |
 | H-17 | Recovery follow-ups (T-301): dialog stays open for remaining sessions (A-015), AC-3/AC-11 timing on a real disk (test-big), compaction off the document lock, markers during an interrupted take, Memory-for-audio UI, `/tmp/vox-project-*` sweep | S | todo |
 | H-15 | Sidecar follow-ups (T-306): recent-file-missing dialog, read-only folder matrix (AC-13), SIGKILL-during-sidecar-save test (AC-6), per-slot leniency for a malformed rack slot, perf budget (AC-18) | S | in progress |
@@ -113,7 +114,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-301 | Undo/redo, resident memory budget, edit journal, crash recovery | W1 | O | M2 | done (follow-ups → H-17) |
 | T-302 | Cut/copy/paste/delete, trim, silence, insert silence, clipboard | W2 | S+OR | T-301 | → S2-01 (done); rest: insert silence, cross-document clipboard |
 | T-303 | Markers: kinds, add/region, rename, drag, delete, navigation, Markers panel | W2 | S | T-301 | → S2-03 (done); rest: marker kind in the core model, drag, region→selection |
-| T-304 | Record at cursor (Insert/Overwrite) + punch-in + latency offset & calibration | W2 | O | T-301 | in progress |
+| T-304 | Record at cursor (Insert/Overwrite) + punch-in + latency offset & calibration | W2 | O | T-301 | done (follow-ups → H-21) |
 | T-305 | Peak normalize favorites | W2 | S+OR | T-301 | done (via S2-02 + H-09) |
 | T-306 | Sidecar `.vo.json`, identity check, sidecar-only saves, recent files, second-instance warning | W3 | S+OR | T-302, T-303 | done (follow-ups → H-12, H-15, T-303) |
 
@@ -126,7 +127,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-403 | Dynamics A: detector, compressor, limiter | W1 | O | M3 | done (via S3-02) |
 | T-404 | True-peak limiter | W1 | O | M3 | done (via S3-05 + H-03) |
 | T-405 | Rack panel + generic parameter UI | W2 | S | T-401 | done (via S3-01) |
-| T-406 | Module & rack presets | W2 | S | T-401 | todo |
+| T-406 | Module & rack presets | W2 | S | T-401 | in progress |
 | T-407 | Dynamics B: expander + AutoGate | W2 | O | T-403 | → S3-02 (params implemented); rest: verify SPEC-016 part-2 ACs |
 | T-408 | Noise gate (shared envelope/hysteresis) | W3 | O | T-407 | done (via S3-02) |
 | T-409 | EQ graph UI (analyzer + ResponseCurve) | W3 | S | T-402, T-405, T-208 | → S3-07 (done); rest: analyzer overlay, keyboard nodes, expanded view |

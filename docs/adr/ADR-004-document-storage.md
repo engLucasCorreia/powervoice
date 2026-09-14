@@ -377,3 +377,20 @@ attachments exactly like the rest of the journal.
 - **Preallocation:** on `EOPNOTSUPP` the segment is still created but counted in
   `unreserved_segments()` so the engine can warn; copy-on-write file systems (btrfs, ZFS, APFS) weaken
   the no-SIGBUS guarantee (documented).
+
+## Amendment 6 — T-304 record operations, as implemented (2026-09-14)
+- **Identity mapping for a growing replace.** `MarkerMapping::Identity` is allowed for a replace that
+  also grows the document at its end (Overwrite running past the current length): markers keep their
+  positions, and the appended part has none. Other length-changing ops still refuse Identity.
+- **`take_cancel` deletes the take file** (SPEC-022 §2.10), superseding Amendment 4's "stays as a backup
+  until GC": a pre-roll cancel captured nothing the owner asked to keep.
+- **Free starts write no `take_window {0}` record;** `take_begin.aligned = false` implies the whole
+  take is the window.
+- **Whole pass into the store, window sliced at commit.** The capture writer puts the entire pass
+  (pre-roll through post-roll) into the chunk store and `commit_take_window` slices the window at
+  commit, instead of starting at `k_start` from Amendment 4's ~2 s look-back (kept only for live
+  peaks). The committed audio is identical.
+- **Failed operation commit** closes the take with `take_discard` (the WAV is kept on disk) rather than
+  swapping in a fresh session as a failed new-recording commit does (H-10).
+- **Recovery:** an interrupted operation is applied from its `take_window` if one was journaled, and
+  discarded if the crash happened during pre-roll (T-301 recovery path).

@@ -111,10 +111,10 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 |---|---|---|---|---|---|
 | T-300 | M3 spec wave: SPEC-008, SPEC-009, SPEC-010, SPEC-018, SPEC-022 | W0 | O | M0, SPEC-005 | done |
 | T-301 | Undo/redo, resident memory budget, edit journal, crash recovery | W1 | O | M2 | done (follow-ups → H-17) |
-| T-302 | Cut/copy/paste/delete, trim, silence, insert silence, clipboard | W2 | S+OR | T-301 | todo |
-| T-303 | Markers: kinds, add/region, rename, drag, delete, navigation, Markers panel | W2 | S | T-301 | todo |
+| T-302 | Cut/copy/paste/delete, trim, silence, insert silence, clipboard | W2 | S+OR | T-301 | → S2-01 (done); rest: insert silence, cross-document clipboard |
+| T-303 | Markers: kinds, add/region, rename, drag, delete, navigation, Markers panel | W2 | S | T-301 | → S2-03 (done); rest: marker kind in the core model, drag, region→selection |
 | T-304 | Record at cursor (Insert/Overwrite) + punch-in + latency offset & calibration | W2 | O | T-301 | in progress |
-| T-305 | Peak normalize favorites | W2 | S+OR | T-301 | todo |
+| T-305 | Peak normalize favorites | W2 | S+OR | T-301 | done (via S2-02 + H-09) |
 | T-306 | Sidecar `.vo.json`, identity check, sidecar-only saves, recent files, second-instance warning | W3 | S+OR | T-302, T-303 | done (follow-ups → H-12, H-15, T-303) |
 
 ## M4 — Effects modules & rack UI
@@ -122,34 +122,34 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 |---|---|---|---|---|---|
 | T-400 | M4 spec wave: SPEC-015 parametric EQ + SPEC-017 true-peak limiter (part 1); SPEC-013 noise gate + SPEC-016 dynamics (part 2) | W0 | O | M0 | done |
 | T-401 | Latency compensation, latency_changed re-activation, A/B dry delay | W1 | O | M3 | todo |
-| T-402 | Parametric EQ DSP + ResponseCurve | W1 | O | M3 | todo |
-| T-403 | Dynamics A: detector, compressor, limiter | W1 | O | M3 | todo |
-| T-404 | True-peak limiter | W1 | O | M3 | todo |
-| T-405 | Rack panel + generic parameter UI | W2 | S | T-401 | todo |
+| T-402 | Parametric EQ DSP + ResponseCurve | W1 | O | M3 | done (via S3-03) |
+| T-403 | Dynamics A: detector, compressor, limiter | W1 | O | M3 | done (via S3-02) |
+| T-404 | True-peak limiter | W1 | O | M3 | done (via S3-05 + H-03) |
+| T-405 | Rack panel + generic parameter UI | W2 | S | T-401 | done (via S3-01) |
 | T-406 | Module & rack presets | W2 | S | T-401 | todo |
-| T-407 | Dynamics B: expander + AutoGate | W2 | O | T-403 | todo |
-| T-408 | Noise gate (shared envelope/hysteresis) | W3 | O | T-407 | todo |
-| T-409 | EQ graph UI (analyzer + ResponseCurve) | W3 | S | T-402, T-405, T-208 | todo |
-| T-410 | Dynamics UI + gain-reduction meter (Telemetry) | W3 | S | T-405, T-407 | todo |
+| T-407 | Dynamics B: expander + AutoGate | W2 | O | T-403 | → S3-02 (params implemented); rest: verify SPEC-016 part-2 ACs |
+| T-408 | Noise gate (shared envelope/hysteresis) | W3 | O | T-407 | done (via S3-02) |
+| T-409 | EQ graph UI (analyzer + ResponseCurve) | W3 | S | T-402, T-405, T-208 | → S3-07 (done); rest: analyzer overlay, keyboard nodes, expanded view |
+| T-410 | Dynamics UI + gain-reduction meter (Telemetry) | W3 | S | T-405, T-407 | → H-03 (GR meters done); rest: VXTC transfer curve + dynamics graph UI |
 
 ## M5 — Noise reduction
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
 | T-500 | M5 spec wave: SPEC-014 noise reduction (module, noise print capture, UI) | W0 | O | M0 | done |
-| T-501 | Offline NR algorithm (decision-directed Wiener + smoothing) + goldens | W1 | O | M4 | todo |
-| T-502 | Noise print capture + profile storage (state blob) | W1 | S | M4 | todo |
-| T-503 | Streaming NR module, latency_changed on FFT size | W2 | O | T-501, T-502 | todo |
-| T-504 | NR UI: capture, profile graph, output-noise-only | W3 | S | T-503 | todo |
+| T-501 | Offline NR algorithm (decision-directed Wiener + smoothing) + goldens | W1 | O | M4 | done (via S3-04) |
+| T-502 | Noise print capture + profile storage (state blob) | W1 | S | M4 | done (via S3-04 + S3-06) |
+| T-503 | Streaming NR module, latency_changed on FFT size | W2 | O | T-501, T-502 | done (via S3-04) |
+| T-504 | NR UI: capture, profile graph, output-noise-only | W3 | S | T-503 | → S3-06 + H-08 (done); rest: profile graph, Clear Noise Print, Ctrl+Shift+P |
 
 ## M6 — Loudness & export
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
-| T-601 | Loudness analysis I/S/M/LRA/TP | W1 | S+OR | M5 | todo |
+| T-601 | Loudness analysis I/S/M/LRA/TP | W1 | S+OR | M5 | done (via S4-01) |
 | T-602 | Bake rack (offline render, pre-roll, latency trim, tail) | W1 | O | M5 | todo |
-| T-603 | LUFS normalize favorites | W2 | S | T-601 | todo |
-| T-604 | ACX check on processed output | W2 | S | T-601, T-602 | todo |
-| T-605 | Encoders (LAME dynamic), rubato, TPDF dither | W2 | S+OR | T-602 | todo |
-| T-606 | Export dialog | W3 | S | T-605 | todo |
+| T-603 | LUFS normalize favorites | W2 | S | T-601 | done (via S4-01 + H-09) |
+| T-604 | ACX check on processed output | W2 | S | T-601, T-602 | done (via S4-03) |
+| T-605 | Encoders (LAME dynamic), rubato, TPDF dither | W2 | S+OR | T-602 | done (via S4-02 + H-02 + H-14) |
+| T-606 | Export dialog | W3 | S | T-605 | done (via S4-04 + H-08) |
 
 ## M7 — Polish & packaging
 | ID | Title | Wave | Tier | Deps | Status |

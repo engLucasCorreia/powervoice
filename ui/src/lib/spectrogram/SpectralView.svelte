@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { fitGutterLabels } from "../ui/axisLabels";
+  import { formatNumber } from "../ui/units";
   import { onMount } from "svelte";
   import { documentState, hasDocument } from "../document/document.svelte";
   import { t } from "../i18n";
@@ -167,6 +169,21 @@
     }
     return frequencyTicks(freqLo, freqHi, spectral.freqScale, heightPx, 24);
   });
+
+  // H-26: ruler labels that fit — edge-aligned at the top and bottom (never cut off), clear of
+  // each other and of the "Hz" unit in the corner (`fitGutterLabels`). Grid lines keep every tick.
+  const rulerLabels = $derived(
+    fitGutterLabels(
+      ticks.map((tick) => ({ ...tick, pos: tick.y, text: tick.label })),
+      {
+        length: heightPx,
+        width: 48,
+        fontPx: 10,
+        lineHeightPx: 12,
+        unit: { text: t("spectral.freq_unit"), fontPx: 10 },
+      },
+    ),
+  );
 
   const hoverInfo = $derived.by(() => {
     if (
@@ -786,9 +803,9 @@
         />
       </label>
       <div class="legend" data-testid="spectral-legend">
-        <span class="legend-value">{t("spectral.legend_value", { value: spectral.floorDb })}</span>
+        <span class="legend-value">{t("spectral.legend_value", { value: formatNumber(spectral.floorDb, 0) })}</span>
         <span class="legend-bar" style={`background: ${legendGradient}`}></span>
-        <span class="legend-value">{t("spectral.legend_value", { value: spectral.ceilDb })}</span>
+        <span class="legend-value">{t("spectral.legend_value", { value: formatNumber(spectral.ceilDb, 0) })}</span>
       </div>
     </div>
     <div class="body">
@@ -804,8 +821,8 @@
         ondblclick={resetFreqRange}
       >
         <span class="unit">{t("spectral.freq_unit")}</span>
-        {#each ticks as tick (tick.freqHz)}
-          <span class="tick" style={`top: ${tick.y}px`}>{tick.label}</span>
+        {#each rulerLabels as tick (tick.freqHz)}
+          <span class="tick" data-align={tick.align} style={`top: ${tick.y}px`}>{tick.label}</span>
         {/each}
       </div>
       <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -907,8 +924,9 @@
     outline-offset: 0;
   }
 
+  /* H-26: room for "−120" plus the spin arrows (3.5rem clipped it). */
   .toolbar input[type="number"] {
-    width: 3.5rem;
+    width: 4.75rem;
   }
 
   .legend {
@@ -952,16 +970,27 @@
     top: 2px;
     left: 2px;
     color: var(--spec-ruler-text);
-    font-size: 0.6rem;
+    font-size: 10px;
+    line-height: 12px;
   }
 
   .tick {
     position: absolute;
     right: 2px;
     color: var(--spec-ruler-text);
-    font-size: 0.65rem;
+    font-size: 10px;
+    line-height: 12px;
+    font-variant-numeric: tabular-nums;
     transform: translateY(-50%);
     white-space: nowrap;
+  }
+
+  .tick[data-align="start"] {
+    transform: translateY(0);
+  }
+
+  .tick[data-align="end"] {
+    transform: translateY(-100%);
   }
 
   .canvas-container {

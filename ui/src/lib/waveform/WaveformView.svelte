@@ -25,6 +25,7 @@
   import { seek, transportState } from "../state/transport.svelte";
   import { audioKeyFor, consumePendingRestore } from "../state/waveformView.svelte";
   import { amplitudeTicksDbfs, centerlineY } from "./amplitudeAxis";
+  import { fitGutterLabels } from "../ui/axisLabels";
   import {
     clampSamplesPerPixel,
     clampStartSample,
@@ -180,6 +181,15 @@
   // vertical-zoom-and-drag feature is out of this ticket's scope; see amplitudeAxis.ts's doc
   // comment). `heightPx` is this view's own measured canvas height (below).
   const ampTicks = $derived.by(() => (heightPx > 0 ? amplitudeTicksDbfs(heightPx, 1, 16) : []));
+  // H-26: the ruler's labels, fitted (`fitGutterLabels`): the 0 dBFS labels at the top and
+  // bottom edges align inward instead of being cut in half, and none touches the unit. The grid
+  // lines still use every tick.
+  const ampLabels = $derived(
+    fitGutterLabels(
+      ampTicks.map((tick) => ({ ...tick, pos: tick.y, text: tick.label })),
+      { length: heightPx, width: 48, fontPx: 10, lineHeightPx: 12, unit: { text: t("waveform.amp_unit"), fontPx: 10 } },
+    ),
+  );
   const zeroLineY = $derived(centerlineY(heightPx));
 
   // Zoom-full the first time a newly opened document's audio (rate + length — not just its path,
@@ -944,8 +954,8 @@
     <div class="body" data-testid="waveform-body">
       <div class="amp-ruler" data-testid="waveform-amp-ruler">
         <span class="unit">{t("waveform.amp_unit")}</span>
-        {#each ampTicks as tick, i (tick.y + "-" + i)}
-          <span class="tick" style={`top: ${tick.y}px`}>{tick.label}</span>
+        {#each ampLabels as tick, i (tick.y + "-" + i)}
+          <span class="tick" data-align={tick.align} style={`top: ${tick.y}px`}>{tick.label}</span>
         {/each}
       </div>
       <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1043,9 +1053,19 @@
     position: absolute;
     right: 2px;
     color: var(--wave-ruler-text);
-    font-size: 0.65rem;
+    font-size: 10px;
+    line-height: 12px;
+    font-variant-numeric: tabular-nums;
     transform: translateY(-50%);
     white-space: nowrap;
+  }
+
+  .amp-ruler .tick[data-align="start"] {
+    transform: translateY(0);
+  }
+
+  .amp-ruler .tick[data-align="end"] {
+    transform: translateY(-100%);
   }
 
   .canvas-container {

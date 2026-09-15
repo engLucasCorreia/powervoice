@@ -1,8 +1,10 @@
 # PowerVoice design system (H-25)
 
 Status: **phase 1 + phase 2 applied** (tokens, kit, gallery; every screen on the system — see
-§17 for what changed per screen and what's deferred). Decisions: A-017 (Lucide icons via
-`lucide-svelte`; system font stack). Audit: `docs/design/ui-audit.md`.
+§17 for what changed per screen and what's deferred), **H-26 follow-ups applied** (§19: one menu
+and popover, platform dialog button order, true minus everywhere, axis labels that never collide).
+Decisions: A-017 (Lucide icons via `@lucide/svelte`; system font stack). Audit:
+`docs/design/ui-audit.md`.
 
 - Tokens: `ui/src/lib/theme/design-tokens.css` (`--pv-*`, imported once from `main.ts`).
 - Kit: `ui/src/lib/ui/` (import from `ui/src/lib/ui/index.ts`).
@@ -170,7 +172,7 @@ and the analyzer are data, not motion — they keep animating.
 
 ## 8. Iconography
 
-- **Lucide** via `lucide-svelte` (A-017), wrapped by `Icon.svelte`. Components ask for a *semantic*
+- **Lucide** via `@lucide/svelte` (A-017; H-26 replaced the deprecated `lucide-svelte`), wrapped by `Icon.svelte`. Components ask for a *semantic*
   name from `ui/src/lib/ui/icons.ts` (`returnToStart`, `bypass`, `marker` …) — one concept, one
   icon, app-wide. Add new icons to the registry, never import Lucide directly in features.
 - Sizes: 14 px (sm controls), 16 px (default), 20 px (lg transport keys). Stroke 1.75. `filled` only
@@ -254,17 +256,27 @@ settings).
 - Width by content: 400 px (confirm), 480 px (forms), 640 px (Preferences/Export); max 90 vw/85 vh,
   body scrolls.
 - Header: 15 px semibold title (+ optional close IconButton). Body: fields stacked, 12 px apart,
-  labels above (`layout="stacked"`). Footer: right-aligned buttons, 8 px apart.
-- **Button order per platform:** Linux and macOS: `[Secondary] [Primary]` (primary last, on the
-  right); Windows: `[Primary] [Secondary]`. Destructive primary uses `danger`. Enter = primary,
-  Esc = cancel; focus goes to the first field (or the primary button), is trapped, and returns to the
-  opener on close.
+  labels above (`layout="stacked"`). Footer: buttons 8 px apart, described by **role** through
+  `Dialog`'s `actions` prop — never hand-ordered.
+- **Button order per platform** (H-26, `ui/dialogActions.ts`, platform from `ui/platform.ts`):
+  - Linux and macOS: `[utility][destructive] ··· [alternate][Cancel][Primary]` — primary last,
+    Cancel just left of it, a destructive alternative ("Don't save") apart on the far left.
+  - Windows: `[utility] ··· [Primary][alternate][destructive][Cancel]` — primary first, Cancel last.
+  - Roles: `primary` (the default answer, Enter), `cancel` (Esc), `alternate` (another answer:
+    "Keep as float", "Retry"), `destructive` (loses work), `utility` (not an answer: "ACX preset").
+    Variants follow the role (primary → primary, destructive/utility → ghost, others secondary).
+    Destructive primary uses `variant: "danger"`. Focus goes to the first field (or the dialog), is
+    trapped, and returns to the opener on close.
 - Phase 2 adds one `Dialog.svelte` shell to the kit and moves all 17 dialogs onto it.
 
 ## 13. Numbers and units
 
 - Tabular figures everywhere a number can change (`font-variant-numeric: tabular-nums`).
-- True minus sign U+2212 for negatives; never "−0.0"; silence is "−∞".
+- True minus sign U+2212 for negatives — in every readout **and every axis label** (analyzer dB,
+  amplitude ruler, EQ gain, meters, loudness, offsets); never "−0.0"; silence is "−∞". One
+  formatter: `formatNumber` / `formatWithUnit`. Parsers (`parseNumber`, `NumberField`) accept an
+  ASCII `-`, U+2212 and pasted dash variants. Editable text fields with their own parser (the
+  Normalize dialogs' target) and module-provided parameter text (Rust) keep their own format.
 - Value and unit joined by a no-break space ("−23.0 LUFS"); `%` attaches directly ("50%").
 - Units: dB (gain/relative), dBFS (level), dBTP (true peak), LUFS/LU (loudness), Hz/kHz (≥ 1 kHz
   shows kHz), ms (< 1 s), s, samples. Show the unit next to every value, or once in a column header.
@@ -331,6 +343,9 @@ keyboard).
 | `Separator` | `orientation` · `decorative` | `role=separator` + `aria-orientation` |
 | `EmptyState` | `icon` · `title` · `description` · `actions` · `shortcuts` · `size` | section labelled by its heading |
 | `Icon` | `name` (registry) · `size` · `label` · `filled` | decorative unless labelled |
+| `Menu` (H-26) | `open` · `anchor` (element or point) · `items: MenuEntry[]` · `label` · `placement` · `minWidth` (`"anchor"`) · `initialFocus` · `onclose(reason)` · `onnavigate` | `role=menu`; items `menuitem` / `menuitemcheckbox` / `menuitemradio`, submenus, separators, headings, notes, inline custom content, trailing icon action; ↑↓ Home End, typeahead, Enter/Space, → ← submenus and menu-bar neighbours, Esc returns focus to the trigger, Tab closes; Kbd shortcut chips; hover highlights and opens submenus |
+| `Popover` (H-26) | `open` · `anchor` · `placement` · `variant` menu/panel · `role` · `label` · `minWidth` · `onclose(reason)` | fixed, flips/shifts inside the viewport (`placement.ts`), scrolls when it can't fit; outside press closes; Esc closes and refocuses the anchor |
+| `Dialog` `actions` (H-26) | `DialogAction[]` (`label`, `role`, `onclick`, `testid`, `icon`, `variant`, `disabled`, `loading`) | footer ordered per platform (`orderDialogActions`) |
 
 ## 17. Phase 2 plan (after H-24 merges)
 
@@ -417,3 +432,38 @@ their own slider (not the kit `Slider`) because their drag/wheel/typing behaviou
   `ui/src/lib/ui/testing.ts`).
 - Vitest stubs CSS imports to "" except files matched by `test.css.include` in `vitest.config.ts`
   (only `design-tokens.css`, for the contrast test).
+
+## 19. H-26 follow-ups
+
+### 19.1 One menu, one popover
+Every dropdown renders through `Menu` (on `Popover`): the five menu-bar menus (`menu/MenuBarMenu.svelte`
+wraps a trigger + `Menu`; the feature menus only build `MenuEntry[]`), Normalize ▾, Add module
+(as wide as its button), the rack slot menu with its Presets submenu, Effects → Favorites / Rack
+Presets, and the Record context menu (opens at the pointer, or under the key from the keyboard).
+The Punch & pre-roll panel is a `Popover` (`role=dialog`). One row look (24 px, neutral highlight,
+check/dot column only when needed, right-aligned `Kbd` chips, chevron for submenus), one
+elevation, one dismissal model. Menu-bar menus now also close on an outside click and switch on
+hover while one is open. Inline forms inside a menu (a preset name) are `custom` entries; keys
+typed there never drive the menu except Escape.
+
+### 19.2 Axis labels never collide
+All scale labels go through `ui/axisLabels.ts` (tested): `fitAxisLabels` keeps labels inside the
+axis, edge-aligned at its ends (never cut off), clear of each other and of reserved slots, in
+priority order; `fitGutterLabels` does the same for vertical rulers with a unit in the corner;
+`rectsOverlap` for canvas-drawn graphs. Units always have their own slot:
+
+| Axis | Unit slot |
+|---|---|
+| Analyzer dB | Axis-title band above the gutter ("dBFS"); ticks in the cell below |
+| Analyzer frequency | Corner cell under the dB gutter ("Hz") |
+| EQ gain | Axis title in the graph's toolbar row, above the gain labels ("dB") |
+| EQ frequency | Reserved slot at the right end of the frequency row ("Hz"); the bottom-left corner belongs to the gain scale (`eq/axisLayout.ts`) |
+| Spectral frequency ruler | Top-left corner of the gutter; a tick that would touch it is dropped |
+| Time ruler | No unit (the labels are timecode); a label that would run past the right end is dropped |
+| Waveform amplitude ruler | Top-left corner; labels via `fitGutterLabels` (0 dBFS edge labels align inward); `amplitudeTicksDbfs` drops mirrored pairs that would crowd the centerline |
+| Meters | No scale today — only readouts, which use the true minus |
+
+### 19.3 Preview scenes
+`?preview` takes `&scene=` (see `ui/src/dev/previewIpc.ts`) to open the real App on fixtures —
+a document in waveform or spectral view, recording, a 4-module rack with an EQ graph,
+loudness/ACX results, and each dialog — for screenshots at 1280×720 and 2126×850.

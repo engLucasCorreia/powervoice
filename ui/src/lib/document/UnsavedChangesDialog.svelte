@@ -1,6 +1,6 @@
 <script lang="ts">
   import { t } from "../i18n";
-  import { Button, Dialog } from "../ui";
+  import { Dialog } from "../ui";
   import { documentState, resolveUnsavedPrompt } from "./document.svelte";
 
   /**
@@ -20,6 +20,11 @@
 
 {#if doc.unsavedPrompt}
   <Dialog
+    actions={[
+      { label: t("dialog.unsaved.discard"), role: "destructive", testid: "unsaved-discard", onclick: () => resolveUnsavedPrompt("discard") },
+      { label: t("dialog.unsaved.cancel"), role: "cancel", testid: "unsaved-cancel", onclick: () => resolveUnsavedPrompt("cancel") },
+      { label: t("dialog.unsaved.save"), role: "primary", testid: "unsaved-save", onclick: () => resolveUnsavedPrompt("save") },
+    ]}
     role="alertdialog"
     size="sm"
     title={t("dialog.unsaved.title")}
@@ -33,17 +38,5 @@
         {t("dialog.unsaved.effect_settings_changed")}
       </p>
     {/if}
-    {#snippet footer()}
-      <Button variant="ghost" testid="unsaved-discard" onclick={() => resolveUnsavedPrompt("discard")}>
-        {t("dialog.unsaved.discard")}
-      </Button>
-      <span class="spacer"></span>
-      <Button testid="unsaved-cancel" onclick={() => resolveUnsavedPrompt("cancel")}>
-        {t("dialog.unsaved.cancel")}
-      </Button>
-      <Button variant="primary" testid="unsaved-save" onclick={() => resolveUnsavedPrompt("save")}>
-        {t("dialog.unsaved.save")}
-      </Button>
-    {/snippet}
   </Dialog>
 {/if}

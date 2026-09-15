@@ -1,5 +1,6 @@
 <script lang="ts">
   import { t } from "../i18n";
+  import { formatNumber } from "../ui/units";
   import InputMeter from "../record/InputMeter.svelte";
   import { transportState } from "../state/transport.svelte";
 
@@ -16,7 +17,7 @@
   }
 
   function label(db: number): string {
-    return Number.isFinite(db) ? db.toFixed(1) : t("meter.silence");
+    return Number.isFinite(db) ? formatNumber(db, 1) : t("meter.silence");
   }
 </script>
 

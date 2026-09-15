@@ -4,6 +4,7 @@
  * store-free so they are unit-testable.
  */
 
+import { formatNumber } from "../ui/units";
 import type { RecordOffsetDto, RecordPhaseDto, RecordPrefsDto, RecordStartedDto } from "../ipc/bindings";
 
 /** SPEC-022 §2.3 factory defaults (used until settings load). */
@@ -97,8 +98,8 @@ export function offsetReadout(
   if (!offset || offset.source === null) {
     return { key: "record.offset.not_calibrated", params: {} };
   }
-  const ms = `${offset.offset_ms >= 0 ? "+" : ""}${offset.offset_ms.toFixed(2)}`;
-  const samples = String(Math.round((offset.offset_ms / 1000) * offset.device_rate_hz));
+  const ms = formatNumber(offset.offset_ms, 2, { signed: true });
+  const samples = formatNumber(Math.round((offset.offset_ms / 1000) * offset.device_rate_hz), 0);
   if (offset.source === "manual") {
     return { key: "record.offset.manual", params: { ms, samples } };
   }

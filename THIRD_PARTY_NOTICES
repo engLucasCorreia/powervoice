@@ -612,9 +612,9 @@ JavaScript dependencies (ui/)
 
 Shipped in the built UI bundle (`ui/package.json` "dependencies"):
 
+- @lucide/svelte 1.46.0 — ISC
 - @tauri-apps/api 2.11.1 — Apache-2.0 OR MIT
 - @tauri-apps/plugin-dialog 2.7.3 — MIT OR Apache-2.0
-- lucide-svelte 1.0.1 — ISC
 - svelte 5.57.0 — MIT
 
 

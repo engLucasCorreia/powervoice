@@ -234,7 +234,7 @@ describe("Preferences → Recording (H-21 item 6, SPEC-022 §2.3/§2.13)", () =>
     expect(rows).toHaveLength(2);
     expect(rows[0]!.textContent).toContain("USB Mic → Speakers (pipewire, 48 kHz)");
     expect(rows[0]!.textContent).toContain("+3.00 ms · calibrated");
-    expect(rows[1]!.textContent).toContain("-1.25 ms · manual");
+    expect(rows[1]!.textContent).toContain("−1.25 ms · manual");
     rows[0]!.querySelector<HTMLButtonElement>('[data-testid="preferences-offset-remove"]')!.click();
     await settle();
     expect(ipc.saved()?.record_offsets).toEqual([headset]);

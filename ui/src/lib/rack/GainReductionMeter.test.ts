@@ -36,7 +36,7 @@ function readout(root: HTMLElement): string {
 describe("GainReductionMeter", () => {
   it("shows the reduction as a bar from 0 dB and as a value", () => {
     const root = render(-6);
-    expect(readout(root)).toBe("-6.0");
+    expect(readout(root)).toBe("−6.0");
     expect(fill(root)).toBe("25%");
     const meter = root.querySelector("[role=meter]");
     expect(meter?.getAttribute("aria-valuenow")).toBe("-6");
@@ -50,7 +50,7 @@ describe("GainReductionMeter", () => {
     unmount(mounted!);
     mounted = null;
     root = render(-40);
-    expect(readout(root)).toBe("-24.0");
+    expect(readout(root)).toBe("−24.0");
     expect(fill(root)).toBe("100%");
   });
 });

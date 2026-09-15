@@ -9,7 +9,7 @@
     setNormalizeDialogText,
     setNormalizeDialogUnit,
   } from "../state/normalize.svelte";
-  import { Button, Dialog, SegmentedControl, type SegmentOption } from "../ui";
+  import { Dialog, SegmentedControl, type SegmentOption } from "../ui";
   import NormalizeProgressDialog from "./NormalizeProgressDialog.svelte";
 
   /**
@@ -38,6 +38,16 @@
 
 {#if state.dialogOpen}
   <Dialog
+    actions={[
+      { label: t("dialog.normalize.cancel"), role: "cancel", testid: "normalize-dialog-cancel", onclick: closeNormalizeDialog },
+      {
+        label: t("dialog.normalize.apply"),
+        role: "primary",
+        testid: "normalize-dialog-apply",
+        disabled: !state.dialogValid,
+        onclick: () => void applyNormalizeDialog(),
+      },
+    ]}
     size="sm"
     title={t("dialog.normalize.title")}
     titleId="normalize-dialog-title"
@@ -66,19 +76,6 @@
         onchange={setNormalizeDialogUnit}
       />
     </div>
-    {#snippet footer()}
-      <Button testid="normalize-dialog-cancel" onclick={closeNormalizeDialog}>
-        {t("dialog.normalize.cancel")}
-      </Button>
-      <Button
-        variant="primary"
-        testid="normalize-dialog-apply"
-        disabled={!state.dialogValid}
-        onclick={() => void applyNormalizeDialog()}
-      >
-        {t("dialog.normalize.apply")}
-      </Button>
-    {/snippet}
   </Dialog>
 {/if}
 

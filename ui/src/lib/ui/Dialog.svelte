@@ -5,6 +5,10 @@
 <script lang="ts">
   import { onDestroy, onMount, type Snippet } from "svelte";
   import type { HTMLAttributes } from "svelte/elements";
+  import Button from "./Button.svelte";
+  import { orderDialogActions, type DialogActionRole } from "./dialogActions";
+  import { currentPlatform } from "./platform";
+  import type { DialogAction } from "./types";
 
   /**
    * Modal dialog shell (H-25 phase 2, design-system §12): backdrop, a `role="dialog"` /
@@ -14,6 +18,10 @@
    * cancels, Enter applies…) stay with each dialog through `onkeydown`. Common form elements in
    * the body (fieldsets, radios, checkboxes, text inputs, selects, hints) get the system look
    * here, so feature dialogs carry no per-dialog chrome CSS.
+   *
+   * H-26: the footer is `actions` — buttons described by role (primary, cancel, alternate,
+   * destructive, utility) and ordered for the platform (`dialogActions.ts`: primary first on
+   * Windows, last on macOS/Linux). The `footer` snippet remains for footers that aren't buttons.
    */
   type Size = "sm" | "md" | "lg";
 
@@ -26,6 +34,7 @@
     onkeydown,
     children,
     footer,
+    actions,
     ...rest
   }: {
     title: string;
@@ -36,11 +45,23 @@
     onkeydown?: (event: KeyboardEvent) => void;
     children: Snippet;
     footer?: Snippet;
+    actions?: DialogAction[];
   } & Omit<HTMLAttributes<HTMLDivElement>, "title" | "role" | "onkeydown" | "children"> = $props();
 
   uid += 1;
   const fallbackId = `pv-dialog-${uid}-title`;
   const headingId = $derived(titleId ?? fallbackId);
+
+  const platform = currentPlatform();
+  const ordered = $derived(actions ? orderDialogActions(actions, platform) : null);
+
+  const DEFAULT_VARIANT: Record<DialogActionRole, NonNullable<DialogAction["variant"]>> = {
+    primary: "primary",
+    cancel: "secondary",
+    alternate: "secondary",
+    destructive: "ghost",
+    utility: "ghost",
+  };
 
   let box: HTMLDivElement | undefined = $state();
   let opener: HTMLElement | null = null;
@@ -87,6 +108,21 @@
   });
 </script>
 
+{#snippet actionButton(action: DialogAction)}
+  <Button
+    variant={action.variant ?? DEFAULT_VARIANT[action.role]}
+    icon={action.icon}
+    testid={action.testid}
+    disabled={action.disabled ?? false}
+    loading={action.loading ?? false}
+    title={action.title}
+    data-role={action.role}
+    onclick={() => action.onclick()}
+  >
+    {action.label}
+  </Button>
+{/snippet}
+
 <div class="pv-backdrop">
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div
@@ -105,7 +141,17 @@
     <div class="body">
       {@render children()}
     </div>
-    {#if footer}
+    {#if ordered && ordered.leading.length + ordered.trailing.length > 0}
+      <div class="footer" data-button-order={platform === "windows" ? "primary-first" : "primary-last"}>
+        {#each ordered.leading as action (action.testid ?? action.label)}
+          {@render actionButton(action)}
+        {/each}
+        <span class="spacer"></span>
+        {#each ordered.trailing as action (action.testid ?? action.label)}
+          {@render actionButton(action)}
+        {/each}
+      </div>
+    {:else if footer}
       <div class="footer">{@render footer()}</div>
     {/if}
   </div>

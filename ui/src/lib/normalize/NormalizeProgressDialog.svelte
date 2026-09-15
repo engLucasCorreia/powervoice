@@ -1,6 +1,6 @@
 <script lang="ts">
   import { t, type MessageKey } from "../i18n";
-  import { Button, Dialog } from "../ui";
+  import { Dialog } from "../ui";
 
   /**
    * Shared normalize job progress dialog (H-09, SPEC-010 §2.8): a determinate bar and Cancel,
@@ -55,16 +55,12 @@
 </script>
 
 {#if visible && job}
-  <Dialog size="sm" title={t(titleKey)} titleId="normalize-progress-title" testid="normalize-progress-dialog">
+  <Dialog
+    actions={[{ label: t("dialog.progress.cancel"), role: "cancel", testid: "normalize-progress-cancel", onclick: onCancel }]} size="sm" title={t(titleKey)} titleId="normalize-progress-title" testid="normalize-progress-dialog">
     <div class="progress-row">
       <progress data-testid="normalize-progress-bar" value={job.fraction} max="1"></progress>
       <span class="percent">{Math.round(job.fraction * 100)}%</span>
     </div>
-    {#snippet footer()}
-      <Button testid="normalize-progress-cancel" onclick={onCancel}>
-        {t("dialog.progress.cancel")}
-      </Button>
-    {/snippet}
   </Dialog>
 {/if}
 

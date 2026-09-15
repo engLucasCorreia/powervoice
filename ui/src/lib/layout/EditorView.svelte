@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { estimateLabelWidthPx, fitAxisLabels } from "../ui/axisLabels";
   import { documentState, hasDocument } from "../document/document.svelte";
   import SpectralView from "../spectrogram/SpectralView.svelte";
   import { selectionState } from "../state/selection.svelte";
@@ -108,6 +109,20 @@
     );
   });
 
+  // H-26: labels start 2 px right of their tick; one that would run past the ruler's right end
+  // (and be clipped) or into its neighbour is dropped — the tick's grid line stays.
+  const rulerLabels = $derived(
+    fitAxisLabels(
+      ticks.map((tick) => ({
+        ...tick,
+        pos: tick.px + 2,
+        size: estimateLabelWidthPx(tick.label, 10),
+        align: "start" as const,
+      })),
+      { length: viewportPx, gapPx: 6 },
+    ),
+  );
+
   function onScrollbarInput(event: Event): void {
     const value = Number((event.currentTarget as HTMLInputElement).value);
     wv.startSample = clampStartSample(value, wv.samplesPerPixel, lenSamples, canvasWidthPx);
@@ -144,7 +159,7 @@
   {#if isOpen}
     <div class="ruler" data-testid="editor-ruler">
       <div class="ruler-gutter" data-testid="editor-ruler-gutter"></div>
-      {#each ticks as tick (tick.px)}
+      {#each rulerLabels as tick (tick.px)}
         <span class="tick" style={`left: ${tick.px}px`}>{tick.label}</span>
       {/each}
     </div>

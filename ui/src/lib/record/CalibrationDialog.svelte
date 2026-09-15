@@ -1,6 +1,6 @@
 <script lang="ts">
   import { t } from "../i18n";
-  import { Button, Dialog } from "../ui";
+  import { Dialog, formatNumber, type DialogAction } from "../ui";
   import {
     applyCalibration,
     closeCalibration,
@@ -24,11 +24,64 @@
     }
   }
 
-  const signedMs = (ms: number): string => `${ms >= 0 ? "+" : ""}${ms.toFixed(2)}`;
+  const signedMs = (ms: number): string => formatNumber(ms, 2, { signed: true });
+
+  // H-26: the footer by stage, as role-described actions (the Dialog orders them per platform).
+  const actions = $derived.by((): DialogAction[] => {
+    const cancel: DialogAction = {
+      label: t("calibration.cancel"),
+      role: "cancel",
+      testid: "calibration-cancel",
+      onclick: () => void closeCalibration(),
+    };
+    if (cal?.stage === "connect") {
+      return [
+        cancel,
+        { label: t("calibration.start"), role: "primary", testid: "calibration-start", onclick: () => void startCalibration(false) },
+      ];
+    }
+    if (cal?.stage === "measuring") {
+      return [cancel];
+    }
+    if (cal?.stage === "failed") {
+      return [
+        { label: t("calibration.close"), role: "cancel", testid: "calibration-close", onclick: () => void closeCalibration() },
+        {
+          label: t("calibration.retry"),
+          role: "primary",
+          testid: "calibration-retry",
+          onclick: () => void startCalibration(cal?.verify ?? false),
+        },
+      ];
+    }
+    if (result) {
+      const done = cal?.applied || result.verify;
+      return [
+        {
+          label: done ? t("calibration.close") : t("calibration.cancel"),
+          role: "cancel",
+          testid: "calibration-close",
+          onclick: () => void closeCalibration(),
+        },
+        { label: t("calibration.retry"), role: "alternate", testid: "calibration-retry", onclick: () => void startCalibration(false) },
+        done
+          ? { label: t("calibration.verify"), role: "primary", testid: "calibration-verify", onclick: () => void startCalibration(true) }
+          : {
+              label: t("calibration.apply"),
+              role: "primary",
+              testid: "calibration-apply",
+              disabled: !result.accepted,
+              onclick: () => void applyCalibration(),
+            },
+      ];
+    }
+    return [];
+  });
 </script>
 
 {#if cal}
-  <Dialog title={t("calibration.title")} titleId="calibration-title" testid="calibration-dialog" onkeydown={onKeydown}>
+  <Dialog
+    actions={actions} title={t("calibration.title")} titleId="calibration-title" testid="calibration-dialog" onkeydown={onKeydown}>
     {#if cal.stage === "connect"}
       <p>{t("calibration.connect")}</p>
     {:else if cal.stage === "measuring"}
@@ -39,19 +92,19 @@
     {:else if result}
       {#if result.verify}
         <p data-testid="calibration-residual">
-          {t("calibration.residual", { ms: result.offset_ms.toFixed(2) })}
+          {t("calibration.residual", { ms: formatNumber(result.offset_ms, 2) })}
         </p>
       {:else if result.accepted}
         <p data-testid="calibration-accepted">
           {t("calibration.accepted", {
             ms: signedMs(result.offset_ms),
-            samples: String(Math.round(result.offset_samples)),
+            samples: formatNumber(Math.round(result.offset_samples), 0),
             rate: String(result.device_rate_hz / 1000),
             agree: String(result.reps_agreeing),
           })}
         </p>
         {#if result.peak_dbfs !== null}
-          <p class="hint">{t("calibration.peak", { db: result.peak_dbfs.toFixed(1) })}</p>
+          <p class="hint">{t("calibration.peak", { db: formatNumber(result.peak_dbfs, 1) })}</p>
         {/if}
         {#if result.clipped}
           <p class="warning" data-testid="calibration-warn-clipped">{t("calibration.warn_clipped")}</p>
@@ -67,47 +120,5 @@
         </p>
       {/if}
     {/if}
-    {#snippet footer()}
-      {#if cal?.stage === "connect"}
-        <Button testid="calibration-cancel" onclick={() => void closeCalibration()}>
-          {t("calibration.cancel")}
-        </Button>
-        <Button variant="primary" testid="calibration-start" onclick={() => void startCalibration(false)}>
-          {t("calibration.start")}
-        </Button>
-      {:else if cal?.stage === "measuring"}
-        <Button testid="calibration-cancel" onclick={() => void closeCalibration()}>
-          {t("calibration.cancel")}
-        </Button>
-      {:else if cal?.stage === "failed"}
-        <Button testid="calibration-close" onclick={() => void closeCalibration()}>
-          {t("calibration.close")}
-        </Button>
-        <Button variant="primary" testid="calibration-retry" onclick={() => void startCalibration(cal?.verify ?? false)}>
-          {t("calibration.retry")}
-        </Button>
-      {:else if result}
-        <Button testid="calibration-close" onclick={() => void closeCalibration()}>
-          {cal?.applied || result.verify ? t("calibration.close") : t("calibration.cancel")}
-        </Button>
-        <Button testid="calibration-retry" onclick={() => void startCalibration(false)}>
-          {t("calibration.retry")}
-        </Button>
-        {#if cal?.applied || result.verify}
-          <Button variant="primary" testid="calibration-verify" onclick={() => void startCalibration(true)}>
-            {t("calibration.verify")}
-          </Button>
-        {:else}
-          <Button
-            variant="primary"
-            testid="calibration-apply"
-            disabled={!result.accepted}
-            onclick={() => void applyCalibration()}
-          >
-            {t("calibration.apply")}
-          </Button>
-        {/if}
-      {/if}
-    {/snippet}
   </Dialog>
 {/if}

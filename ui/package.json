@@ -13,9 +13,9 @@
     "tauri": "TAURI_APP_PATH=../src-tauri tauri"
   },
   "dependencies": {
+    "@lucide/svelte": "1.46.0",
     "@tauri-apps/api": "2.11.1",
     "@tauri-apps/plugin-dialog": "2.7.3",
-    "lucide-svelte": "1.0.1",
     "svelte": "5.57.0"
   },
   "devDependencies": {

@@ -8,7 +8,7 @@
     normalizeLufsState,
     setNormalizeLufsDialogText,
   } from "../state/normalizeLufs.svelte";
-  import { Button, Dialog } from "../ui";
+  import { Dialog } from "../ui";
   import NormalizeProgressDialog from "./NormalizeProgressDialog.svelte";
 
   /**
@@ -31,6 +31,16 @@
 
 {#if state.dialogOpen}
   <Dialog
+    actions={[
+      { label: t("dialog.normalize_lufs.cancel"), role: "cancel", testid: "normalize-lufs-dialog-cancel", onclick: closeNormalizeLufsDialog },
+      {
+        label: t("dialog.normalize_lufs.apply"),
+        role: "primary",
+        testid: "normalize-lufs-dialog-apply",
+        disabled: !state.dialogValid,
+        onclick: () => void applyNormalizeLufsDialog(),
+      },
+    ]}
     size="sm"
     title={t("dialog.normalize_lufs.title")}
     titleId="normalize-lufs-dialog-title"
@@ -53,19 +63,6 @@
       />
       <span class="unit">{t("dialog.normalize_lufs.unit_lufs")}</span>
     </div>
-    {#snippet footer()}
-      <Button testid="normalize-lufs-dialog-cancel" onclick={closeNormalizeLufsDialog}>
-        {t("dialog.normalize_lufs.cancel")}
-      </Button>
-      <Button
-        variant="primary"
-        testid="normalize-lufs-dialog-apply"
-        disabled={!state.dialogValid}
-        onclick={() => void applyNormalizeLufsDialog()}
-      >
-        {t("dialog.normalize_lufs.apply")}
-      </Button>
-    {/snippet}
   </Dialog>
 {/if}
 

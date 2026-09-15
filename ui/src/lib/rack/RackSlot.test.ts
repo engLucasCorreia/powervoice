@@ -318,7 +318,7 @@ describe("gain-reduction meter (H-03)", () => {
     expect(value()).toBe("0.0");
     onModuleTelemetry(hexToBuffer(VXMT_FIXTURE_HEX));
     flushSync();
-    expect(value()).toBe("-6.5");
+    expect(value()).toBe("−6.5");
     expect(target.querySelector("header [role=meter]")?.getAttribute("aria-label")).toContain(
       "Gain reduction",
     );

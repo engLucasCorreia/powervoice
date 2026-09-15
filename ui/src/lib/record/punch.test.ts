@@ -87,8 +87,8 @@ describe("punch helpers (T-304, SPEC-022)", () => {
     expect(cal.params.ms).toBe("+3.00");
     expect(cal.params.samples).toBe("144");
     expect(offsetReadout(offset({ source: "manual", offset_ms: -1.25 })).params).toEqual({
-      ms: "-1.25",
-      samples: "-60",
+      ms: "−1.25",
+      samples: "−60",
     });
     expect(
       bufferHint(offset({ source: "calibrated", buffer_frames: 256, current_buffer_frames: 512 })),

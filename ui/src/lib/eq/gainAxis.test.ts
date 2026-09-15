@@ -56,7 +56,7 @@ describe("formatGainDb (H-24 item 8)", () => {
   it("signs positive values, leaves 0 and negative values as-is", () => {
     expect(formatGainDb(12)).toBe("+12");
     expect(formatGainDb(0)).toBe("0");
-    expect(formatGainDb(-12)).toBe("-12");
+    expect(formatGainDb(-12)).toBe("−12");
   });
 });
 

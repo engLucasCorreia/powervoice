@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import Gallery from "./Gallery.svelte";
 import { ICON_NAMES } from "./icons";
 import { byTestId, click, render, type Rendered } from "./testing";
+import { flushSync } from "svelte";
 
 let r: Rendered | null = null;
 afterEach(() => {
@@ -51,5 +52,23 @@ describe("Gallery (dev page)", () => {
     expect(bar?.classList.contains("on-air")).toBe(true);
     expect(record?.dataset.active).toBe("true");
     expect(bar?.querySelector('.pv-status[data-tone="record"]')?.textContent?.trim()).toBe("Recording");
+  });
+
+  it("shows the shared menu, a popover and both dialog button orders (H-26)", () => {
+    r = render(Gallery, {});
+    const card = byTestId(r.target, "gallery-menus-dark");
+    const trigger = card.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;
+    click(trigger);
+    flushSync();
+    const menu = card.querySelector('[role="menu"]');
+    expect(menu).not.toBeNull();
+    expect(menu!.querySelectorAll('[role="menuitemcheckbox"]').length).toBe(1);
+    const orders = [...card.querySelectorAll<HTMLElement>(".footer-demo")].map((demo) =>
+      [...demo.querySelectorAll(".pv-button")].map((b) => b.textContent?.trim()),
+    );
+    expect(orders).toEqual([
+      ["Don't Save", "Cancel", "Save"],
+      ["Save", "Don't Save", "Cancel"],
+    ]);
   });
 });

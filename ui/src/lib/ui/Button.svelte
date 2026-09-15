@@ -26,6 +26,7 @@
     fullWidth = false,
     type = "button",
     testid,
+    element = $bindable(),
     onclick,
     children,
     ...rest
@@ -40,6 +41,8 @@
     fullWidth?: boolean;
     type?: "button" | "submit" | "reset";
     testid?: string;
+    /** The rendered `<button>` (anchor for a menu, focus return). */
+    element?: HTMLButtonElement;
     onclick?: (event: MouseEvent) => void;
     children?: Snippet;
   } & Omit<HTMLButtonAttributes, "type" | "disabled" | "children" | "onclick"> = $props();
@@ -57,6 +60,7 @@
 
 <button
   {...rest}
+  bind:this={element}
   {type}
   class="pv-button"
   class:full={fullWidth}

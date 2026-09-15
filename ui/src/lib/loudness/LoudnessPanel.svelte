@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatNumber } from "../ui/units";
   import { t } from "../i18n";
   import { Badge, Button, SegmentedControl, type SegmentOption } from "../ui";
   import type { AcxRuleDto, AcxRuleStatusDto } from "../ipc/bindings";
@@ -41,7 +42,7 @@
     if (!Number.isFinite(value)) {
       return t("panel.loudness.silence");
     }
-    return value.toFixed(1);
+    return formatNumber(value, 1);
   }
 
   /** One ACX rule row's "Measured" column. */
@@ -55,7 +56,7 @@
     if (!Number.isFinite(rule.measured_db)) {
       return t("panel.loudness.silence");
     }
-    return t("panel.acx.value.db", { value: rule.measured_db.toFixed(1) });
+    return t("panel.acx.value.db", { value: formatNumber(rule.measured_db, 1) });
   }
 
   function acxStatusGlyph(status: AcxRuleStatusDto): string {

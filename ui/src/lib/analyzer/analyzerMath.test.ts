@@ -83,7 +83,7 @@ describe("dbAxisTicks (H-24 item 5: 10 dB spacing, or 20 dB when the pane is too
 
   it("labels are whole-number dB strings", () => {
     const ticks = dbAxisTicks(-120, 0, 400, 20);
-    expect(ticks.every((t) => /^-?\d+$/.test(t.label))).toBe(true);
+    expect(ticks.every((t) => /^−?\d+$/.test(t.label))).toBe(true);
   });
 
   it("returns an empty list for a degenerate range or non-positive height", () => {

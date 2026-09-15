@@ -27,6 +27,7 @@
 
 {#if aboutState().open}
   <Dialog
+    actions={[{ label: t("about.close"), role: "primary", testid: "about-close", onclick: closeAbout }]}
     size={noticesOpen ? "lg" : "sm"}
     title={t("about.title")}
     titleId="about-dialog-title"
@@ -49,11 +50,6 @@
     {#if noticesOpen}
       <pre class="notices" data-testid="about-notices">{thirdPartyNotices}</pre>
     {/if}
-    {#snippet footer()}
-      <Button variant="primary" testid="about-close" onclick={closeAbout}>
-        {t("about.close")}
-      </Button>
-    {/snippet}
   </Dialog>
 {/if}
 

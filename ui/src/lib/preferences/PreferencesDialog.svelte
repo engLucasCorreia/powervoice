@@ -7,7 +7,7 @@
   import { t, tDynamic } from "../i18n";
   import type { ThemePref } from "../ipc/bindings";
   import { applyThemePref } from "../theme/theme.svelte";
-  import { Button, Dialog, SegmentedControl, type SegmentOption } from "../ui";
+  import { Button, Dialog, formatNumber, SegmentedControl, type SegmentOption } from "../ui";
   import { closePreferences, preferencesState } from "./preferences.svelte";
 
   /**
@@ -52,7 +52,7 @@
   }
 
   function offsetMs(ms: number): string {
-    return `${ms >= 0 ? "+" : ""}${ms.toFixed(2)}`;
+    return formatNumber(ms, 2, { signed: true });
   }
 
   function offsetDate(unixMs: number): string {
@@ -100,7 +100,8 @@
 </script>
 
 {#if pref.open}
-  <Dialog size="lg" title={t("preferences.title")} titleId="preferences-title" testid="preferences-dialog" onkeydown={onKeydown}>
+  <Dialog
+    actions={[{ label: t("preferences.close"), role: "primary", testid: "preferences-close", onclick: closePreferences }]} size="lg" title={t("preferences.title")} titleId="preferences-title" testid="preferences-dialog" onkeydown={onKeydown}>
     <section data-testid="preferences-appearance">
       <h3>{t("preferences.section.appearance")}</h3>
       <div class="row">
@@ -301,11 +302,6 @@
         </ul>
       {/if}
     </section>
-    {#snippet footer()}
-      <Button variant="primary" testid="preferences-close" onclick={closePreferences}>
-        {t("preferences.close")}
-      </Button>
-    {/snippet}
   </Dialog>
 {/if}
 

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { estimateLabelWidthPx, fitAxisLabels } from "../ui/axisLabels";
+  import { formatNumber } from "../ui/units";
   import { SegmentedControl, Toggle, formatWithUnit, type SegmentOption } from "../ui";
   import { t } from "../i18n";
   import type { AnalyzerResponseDto } from "../ipc/bindings";
@@ -11,16 +13,7 @@
     zoomFreqRange,
     panFreqRange,
   } from "../spectrum/freqAxis";
-  import {
-    ANALYZER_CEIL_OPTIONS_DB,
-    ANALYZER_FLOOR_OPTIONS_DB,
-    edgeAlignedLabel,
-    dbAxisTicks,
-    DEFAULT_ANALYZER_CEIL_DB,
-    DEFAULT_ANALYZER_FLOOR_DB,
-    nearestAnalyzerBand,
-    yForAnalyzerDb,
-  } from "./analyzerMath";
+  import { ANALYZER_CEIL_OPTIONS_DB, ANALYZER_FLOOR_OPTIONS_DB, dbAxisTicks, DEFAULT_ANALYZER_CEIL_DB, DEFAULT_ANALYZER_FLOOR_DB, nearestAnalyzerBand, yForAnalyzerDb } from "./analyzerMath";
   import { analyzerState, initAnalyzer, setAnalyzerResponse } from "./analyzer.svelte";
   import { initOutputDeviceStatus, outputDeviceStatus } from "./outputDeviceStatus.svelte";
   import { createPeakHold, resetPeakHold, updatePeakHold, type PeakHoldBand } from "./peakHold";
@@ -74,11 +67,26 @@
     const [fLo, fHi] = displayRange;
     return frequencyTicks(fLo, fHi, "log", width, 40).map((tick) => {
       const x = xForFreq(tick.freqHz);
-      return { freqHz: tick.freqHz, x, label: tick.label, align: edgeAlignedLabel(x, width) };
+      return { freqHz: tick.freqHz, x, label: tick.label };
     });
   });
 
   const dbTicks = $derived.by(() => (height > 0 ? dbAxisTicks(floorDb, ceilDb, height, 22) : []));
+
+  // H-26: the labels that fit (`ui/axisLabels.ts`): inside the axis, edge-aligned at its ends,
+  // clear of each other. The units live in their own cells, so no tick ever sits on one.
+  const dbLabels = $derived(
+    fitAxisLabels(
+      dbTicks.map((tick) => ({ ...tick, pos: tick.y, size: 12 })),
+      { length: height },
+    ),
+  );
+  const freqLabels = $derived(
+    fitAxisLabels(
+      freqAxisTicks.map((tick) => ({ ...tick, pos: tick.x, size: estimateLabelWidthPx(tick.label, 10) })),
+      { length: width, gapPx: 4 },
+    ),
+  );
 
   $effect(() => {
     let cleanup: (() => void) | undefined;
@@ -338,7 +346,7 @@
       const band = nearestAnalyzerBand(freqHz, f.f0Hz, f.bandsPerOctave, f.levelsDb.length);
       const db = f.levelsDb[band];
       if (db !== undefined && Number.isFinite(db)) {
-        dbText = db.toFixed(1);
+        dbText = formatNumber(db, 1);
       }
     }
     return t("analyzer.hover", { freq: formatHoverFreqHz(freqHz), db: dbText });
@@ -379,14 +387,20 @@
     <Toggle bind:checked={analyzer.peakHold} label={t("analyzer.peak_hold")} size="sm" />
   </div>
   <div class="body">
+    <!-- H-26: the dB gutter is a column of three cells — the axis title ("dBFS") in a band above
+         the plot, the tick labels beside it, and the frequency unit in the corner under it — so
+         no unit ever sits on a tick label. -->
     <div class="db-axis" data-testid="analyzer-db-axis">
-      <span class="unit">{t("analyzer.unit_dbfs")}</span>
+      <span class="axis-title" data-testid="analyzer-db-unit">{t("analyzer.unit_dbfs")}</span>
+      <div class="db-ticks">
+        {#each dbLabels as tick (tick.db)}
+          <span class="tick" data-align={tick.align} style={`top: ${tick.y}px`}>{tick.label}</span>
+        {/each}
+      </div>
       <span class="corner-unit" data-testid="analyzer-freq-unit">{t("spectral.freq_unit")}</span>
-      {#each dbTicks as tick (tick.db)}
-        <span class="tick" data-align={edgeAlignedLabel(tick.y, height, 6)} style={`top: ${tick.y}px`}>{tick.label}</span>
-      {/each}
     </div>
     <div class="plot">
+      <div class="title-band" aria-hidden="true"></div>
       <div class="canvas-wrap">
         <canvas
           bind:this={canvasEl}
@@ -405,7 +419,7 @@
         {/if}
       </div>
       <div class="freq-axis" data-testid="analyzer-freq-axis">
-        {#each freqAxisTicks as tick (tick.freqHz)}
+        {#each freqLabels as tick (tick.freqHz)}
           <span class="tick" data-align={tick.align} style={`left: ${tick.x}px`}>{tick.label}</span>
         {/each}
       </div>
@@ -482,48 +496,51 @@
     min-height: 0;
   }
 
+  /* H-26: three stacked cells — title band, ticks, corner — matching the plot column's title
+     band, canvas and frequency strip row for row. */
   .db-axis {
-    position: relative;
+    display: flex;
+    flex-direction: column;
     width: 34px;
     flex: none;
+  }
+
+  .axis-title,
+  .title-band {
+    flex: none;
+    height: 14px;
+  }
+
+  .axis-title,
+  .corner-unit {
+    padding-right: 3px;
+    color: var(--pv-text-tertiary);
+    font-size: 10px;
+    line-height: 12px;
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .axis-title {
+    padding-top: 1px;
+  }
+
+  .corner-unit {
+    flex: none;
+    height: 14px;
+    border-top: 1px solid transparent;
+    padding-top: 1px;
+  }
+
+  .db-ticks {
+    position: relative;
+    flex: 1;
+    min-height: 0;
     border-right: 1px solid var(--analyzer-grid);
     overflow: hidden;
   }
 
-  .db-axis .unit,
-  .db-axis .corner-unit {
-    position: absolute;
-    left: 2px;
-    font-size: 9px;
-    line-height: 12px;
-    color: var(--pv-text-tertiary);
-  }
-
-  .db-axis .unit {
-    top: 2px;
-  }
-
-  /* H-25: top and bottom dB labels align inside the gutter instead of straddling its edges
-     (where they collided with the units). */
-  .db-axis .tick[data-align="start"] {
-    transform: translateY(0);
-  }
-
-  .db-axis .tick[data-align="end"] {
-    transform: translateY(-100%);
-  }
-
-  .db-axis .unit {
-    left: 2px;
-    top: 12px;
-  }
-
-  /* H-25: the frequency unit, once, in the corner under the dB gutter (next to "20"). */
-  .db-axis .corner-unit {
-    bottom: 1px;
-  }
-
-  .db-axis .tick {
+  .db-ticks .tick {
     position: absolute;
     right: 3px;
     transform: translateY(-50%);
@@ -532,6 +549,14 @@
     color: var(--pv-text-tertiary);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
+  }
+
+  .db-ticks .tick[data-align="start"] {
+    transform: translateY(0);
+  }
+
+  .db-ticks .tick[data-align="end"] {
+    transform: translateY(-100%);
   }
 
   .plot {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { eqAxisLayout, EQ_AXIS_FONT_PX } from "./axisLayout";
   import { t, tDynamic } from "../i18n";
   import type { RackSlotDto, ResponseCurveDto } from "../ipc/bindings";
   import { rackResponseCurve } from "../ipc/commands";
@@ -6,7 +7,7 @@
   import { totalCurveToScreen } from "./curvePoints";
   import { CoalescedCurveRequest } from "./curveRequest";
   import { wheelQFactor, dragPosition, type DragStart } from "./drag";
-  import { curveRequestFreqs, eqFrequencyTicks, freqForX, graphMaxHz, EQ_MIN_HZ, xForFreq } from "./freqAxis";
+  import { curveRequestFreqs, freqForX, graphMaxHz, EQ_MIN_HZ, xForFreq } from "./freqAxis";
   import {
     dbForY,
     gainAxisTicks,
@@ -127,25 +128,30 @@
     }
     ctx.globalAlpha = 1;
 
-    // H-24 item 8: Hz/kHz labels at the standard decades and dB labels at the grid lines, unit
-    // shown once each (SPEC-007 §2.4's "unit appears once" convention, reused here).
-    const textColor = colorToken("--text-secondary", "#9a9da4");
-    ctx.fillStyle = textColor;
-    ctx.font = "10px sans-serif";
-    ctx.textBaseline = "middle";
-    ctx.textAlign = "left";
-    for (const tick of gainTicks) {
-      ctx.fillText(tick.label, 2, Math.round(tick.y) + (tick.db === 0 ? -6 : 0));
+    // H-26: scale labels from the tested layout (`axisLayout.ts`) — gain labels down the left
+    // edge, frequencies along the bottom, "Hz" in its reserved slot at the end of that row, the
+    // gain unit as the toolbar's axis title; nothing overlaps. Each label sits on a small patch
+    // of the graph background so a grid line never runs through its text.
+    const labels = eqAxisLayout(
+      width,
+      GRAPH_HEIGHT_PX,
+      gainRangeDb,
+      fLo,
+      fHi,
+      formatRulerFreqHz,
+      t("eq.graph.freq_unit"),
+    );
+    const family = colorToken("--pv-font-sans", "sans-serif");
+    const patch = colorToken("--pv-bg-inset", "#111317");
+    ctx.font = `${EQ_AXIS_FONT_PX}px ${family}`;
+    for (const label of [...labels.gain, ...labels.freq, labels.freqUnit]) {
+      ctx.fillStyle = patch;
+      ctx.fillRect(label.rect.x - 1, label.rect.y, label.rect.width + 2, label.rect.height);
+      ctx.fillStyle = colorToken("--pv-text-tertiary", "#8b9099");
+      ctx.textAlign = label.align;
+      ctx.textBaseline = label.baseline;
+      ctx.fillText(label.text, label.x, label.y);
     }
-    ctx.fillText(t("eq.graph.gain_unit"), 2, 8);
-
-    ctx.textBaseline = "bottom";
-    for (const tick of eqFrequencyTicks(fLo, fHi, width, 30, formatRulerFreqHz)) {
-      ctx.textAlign = tick.x < 12 ? "left" : tick.x > width - 12 ? "right" : "center";
-      ctx.fillText(tick.label, tick.x, GRAPH_HEIGHT_PX - 2);
-    }
-    ctx.textAlign = "right";
-    ctx.fillText(t("eq.graph.freq_unit"), width - 2, GRAPH_HEIGHT_PX - 2);
     ctx.textAlign = "left";
     ctx.textBaseline = "alphabetic";
 
@@ -299,6 +305,7 @@
 
 <div class="eq-graph" data-testid="eq-graph">
   <div class="toolbar">
+    <span class="axis-title" data-testid="eq-gain-unit">{t("eq.graph.gain_unit")}</span>
     <button
       type="button"
       class="range-toggle"
@@ -343,9 +350,18 @@
     font-family: var(--pv-font-sans);
   }
 
+  /* H-26: the gain unit is the axis title, above the gain labels (canvas border + label inset). */
   .toolbar {
     display: flex;
-    justify-content: flex-end;
+    align-items: flex-end;
+    justify-content: space-between;
+  }
+
+  .axis-title {
+    padding-left: calc(var(--pv-border-width) + 3px);
+    color: var(--pv-text-tertiary);
+    font-size: var(--pv-text-xs);
+    line-height: var(--pv-leading-xs);
   }
 
   .range-toggle {

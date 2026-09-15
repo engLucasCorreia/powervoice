@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatNumber, formatWithUnit, parseNumber } from "./units";
+import { formatNumber, formatWithUnit, MINUS, parseNumber } from "./units";
 
 describe("formatNumber", () => {
   it("uses a true minus sign (U+2212) for negatives and fixed decimals", () => {
@@ -54,6 +54,25 @@ describe("parseNumber", () => {
     expect(parseNumber("150ms")).toBe(150);
     expect(parseNumber("2.5 kHz", "Hz")).toBe(2500);
     expect(parseNumber("50 %")).toBe(50);
+  });
+
+  it("accepts the dash variants people paste (en dash, figure dash, full-width hyphen)", () => {
+    expect(parseNumber("–6")).toBe(-6);
+    expect(parseNumber("‒6")).toBe(-6);
+    expect(parseNumber("－6")).toBe(-6);
+  });
+
+  it("round-trips everything the formatter writes, and ASCII input too", () => {
+    for (const value of [-120, -23.5, -3, -0.1, 0, 0.5, 6, 12.25]) {
+      expect(parseNumber(formatNumber(value, 2)), String(value)).toBe(value);
+      expect(parseNumber(formatNumber(value, 1, { signed: true })), String(value)).toBe(
+        Number(value.toFixed(1)),
+      );
+      expect(parseNumber(formatWithUnit(value, "dB", 2), "dB"), String(value)).toBe(value);
+      expect(parseNumber(String(value)), String(value)).toBe(value);
+    }
+    expect(formatNumber(-20, 0)).toBe(`${MINUS}20`);
+    expect(formatNumber(-20, 0)).not.toContain("-");
   });
 
   it("rejects empty and garbage input", () => {

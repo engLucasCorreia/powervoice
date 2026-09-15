@@ -60,6 +60,9 @@
 
 {#if rec.mode}
   <Dialog
+    actions={rec.mode === "startup"
+      ? [{ label: t("recovery.decide_later"), role: "cancel", testid: "recovery-decide-later", onclick: decideLater }]
+      : [{ label: t("recovery.close"), role: "primary", testid: "recovery-close", onclick: closeRecovery }]}
     size="lg"
     title={rec.mode === "startup" ? t("recovery.title") : t("recovery.storage_title")}
     titleId="recovery-title"
@@ -161,17 +164,6 @@
         </div>
       </div>
     {/if}
-    {#snippet footer()}
-      {#if rec.mode === "startup"}
-        <Button testid="recovery-decide-later" onclick={decideLater}>
-          {t("recovery.decide_later")}
-        </Button>
-      {:else}
-        <Button variant="primary" testid="recovery-close" onclick={closeRecovery}>
-          {t("recovery.close")}
-        </Button>
-      {/if}
-    {/snippet}
   </Dialog>
 {/if}
 

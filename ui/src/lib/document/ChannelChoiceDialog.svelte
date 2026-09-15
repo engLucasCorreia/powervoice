@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { DownmixChoiceDto } from "../ipc/bindings";
   import { t } from "../i18n";
-  import { Button, Dialog, Icon } from "../ui";
+  import { Dialog, Icon } from "../ui";
   import { documentState, resolveChannelChoicePrompt } from "./document.svelte";
 
   /**
@@ -75,6 +75,10 @@
   {@const probe = doc.channelChoicePrompt.probe}
   {@const hint = silentHint()}
   <Dialog
+    actions={[
+      { label: t("dialog.channel_choice.cancel"), role: "cancel", testid: "channel-choice-cancel", onclick: cancel },
+      { label: t("dialog.channel_choice.open"), role: "primary", testid: "channel-choice-open", onclick: confirm },
+    ]}
     title={probe.channels.length === 2
       ? t("dialog.channel_choice.title_stereo")
       : t("dialog.channel_choice.title_multi", { count: probe.channels.length })}
@@ -133,14 +137,6 @@
       />
       {t("dialog.channel_choice.remember")}
     </label>
-    {#snippet footer()}
-      <Button testid="channel-choice-cancel" onclick={cancel}>
-        {t("dialog.channel_choice.cancel")}
-      </Button>
-      <Button variant="primary" testid="channel-choice-open" onclick={confirm}>
-        {t("dialog.channel_choice.open")}
-      </Button>
-    {/snippet}
   </Dialog>
 {/if}
 

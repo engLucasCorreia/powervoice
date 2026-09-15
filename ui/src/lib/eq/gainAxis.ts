@@ -3,6 +3,8 @@
  * option. 0 dB sits at mid-height; positive gain draws upward (smaller `y`).
  */
 
+import { formatNumber } from "../ui/units";
+
 /** Default gain range (SPEC-015 §2.6.2 "±12 dB by default"). */
 export const EQ_GAIN_RANGE_DEFAULT_DB = 12;
 /** The wider option (SPEC-015 §2.6.2 "±24 covers the whole parameter range"). */
@@ -39,13 +41,10 @@ export interface GainTick {
   label: string;
 }
 
-/** "+12", "0", "-12" (H-24 item 8: dB labels at the standard ±12/±24 range, unit shown once by
- * the caller). */
+/** "+12", "0", "−12" (H-24 item 8: dB labels at the standard ±12/±24 range, unit shown once by
+ * the caller; H-26: the true minus sign from `ui/units.ts`). */
 export function formatGainDb(db: number): string {
-  if (db === 0) {
-    return "0";
-  }
-  return db > 0 ? `+${db}` : String(db);
+  return formatNumber(db, 0, { signed: true });
 }
 
 /** Every grid-line dB value for `rangeDb`, with its y and label (H-24 item 8). */

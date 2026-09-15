@@ -1,5 +1,6 @@
 <script lang="ts">
   import { t } from "../i18n";
+  import { formatNumber } from "../ui/units";
 
   /**
    * A slot-header gain-reduction meter (H-03; SPEC-017 §2.3 "Meter", SPEC-016 §4.12): a bar that
@@ -23,7 +24,7 @@
     value === undefined || !Number.isFinite(value) ? max : Math.min(max, Math.max(min, value)),
   );
   const fraction = $derived(max > min ? (max - db) / (max - min) : 0);
-  const text = $derived(db.toFixed(1));
+  const text = $derived(formatNumber(db, 1));
   const label = $derived(t("rack.slot.meter.gain_reduction", { name, value: text }));
 </script>
 

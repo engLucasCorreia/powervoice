@@ -13,6 +13,8 @@
  * leaves the centerline unlabeled instead — see the H-24 ticket report for why.
  */
 
+import { formatNumber } from "../ui/units";
+
 export interface AmplitudeTick {
   /** Pixel y (0 = top, `heightPx` = bottom). */
   y: number;
@@ -73,8 +75,13 @@ function thinnedHalf(
       continue; // beyond the top/bottom edge at this zoom — not visible
     }
     const y = bottom ? centerY + amp * centerY : centerY - amp * centerY;
+    // H-26: a tick this close to the centerline would collide with its own mirror image on the
+    // other half — drop both (the halves are thinned identically), keeping the ruler symmetric.
+    if (centerY - amp * centerY > centerY - minLabelGapPx / 2) {
+      continue;
+    }
     if (lastY === null || Math.abs(y - lastY) >= minLabelGapPx) {
-      out.push({ y, label: db === 0 ? "0" : String(db), db });
+      out.push({ y, label: formatNumber(db, 0), db });
       lastY = y;
     }
   }

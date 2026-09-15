@@ -56,15 +56,32 @@ function mountButtons(): { target: HTMLElement; app: object } {
 describe("NormalizeToolbarButtons (S2-02, SPEC-010 §2.5/AC-14)", () => {
   it("is disabled with no document open", () => {
     const { target, app } = mountButtons();
-    for (const id of [
-      "toolbar-normalize-1-0db",
-      "toolbar-normalize-0-1db",
-      "toolbar-normalize-3-0db",
-    ]) {
-      expect(target.querySelector<HTMLButtonElement>(`[data-testid="${id}"]`)?.disabled).toBe(
-        true,
-      );
-    }
+    // H-26: the favorites live in the shared menu, which only exists while open — with nothing
+    // to normalize its trigger is disabled, so it can't open.
+    expect(
+      target.querySelector<HTMLButtonElement>('[data-testid="toolbar-normalize-menu"]')?.disabled,
+    ).toBe(true);
+    expect(target.querySelector('[data-testid="toolbar-normalize-1-0db"]')).toBeNull();
+    unmount(app);
+    target.remove();
+  });
+
+  it("opens a Peak / Loudness menu with the six favorites, values with a true minus and a no-break space before the unit", async () => {
+    await openFixture();
+    const { target, app } = mountButtons();
+    target.querySelector<HTMLButtonElement>('[data-testid="toolbar-normalize-menu"]')!.click();
+    flushSync();
+    const menu = target.querySelector('[data-testid="toolbar-normalize-popup"]')!;
+    expect(menu.getAttribute("role")).toBe("menu");
+    const labels = [...menu.querySelectorAll('[role="menuitem"]')].map((i) => i.textContent?.trim());
+    expect(labels).toEqual([
+      "−1.0\u00a0dBFS",
+      "−0.1\u00a0dBFS",
+      "−3.0\u00a0dBFS",
+      "−16.0\u00a0LUFS",
+      "−19.0\u00a0LUFS",
+      "−23.0\u00a0LUFS",
+    ]);
     unmount(app);
     target.remove();
   });
@@ -81,6 +98,8 @@ describe("NormalizeToolbarButtons (S2-02, SPEC-010 §2.5/AC-14)", () => {
     });
     const { target, app } = mountButtons();
 
+    target.querySelector<HTMLButtonElement>('[data-testid="toolbar-normalize-menu"]')!.click();
+    flushSync();
     target.querySelector<HTMLButtonElement>('[data-testid="toolbar-normalize-3-0db"]')?.click();
     await Promise.resolve();
     await Promise.resolve();

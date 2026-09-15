@@ -1,7 +1,7 @@
 <script lang="ts">
   import { documentState } from "../document/document.svelte";
   import { t } from "../i18n";
-  import { Button, Dialog } from "../ui";
+  import { Dialog } from "../ui";
   import type { BitDepth, ExportFormatDto, ExportRangeDto, Mp3SettingsDto } from "../ipc/bindings";
   import { hasSelection, selectionState } from "../state/selection.svelte";
   import {
@@ -95,7 +95,17 @@
 </script>
 
 {#if exp.prompt}
-  <Dialog title={t("dialog.export.title")} titleId="export-title" testid="export-dialog" onkeydown={onKeydown}>
+  <Dialog
+    actions={[
+      { label: t("dialog.export.acx_preset"), role: "utility", testid: "export-acx", disabled: !exp.mp3Available, onclick: applyAcxPreset },
+      { label: t("dialog.export.cancel"), role: "cancel", testid: "export-cancel", onclick: cancelExportDialog },
+      {
+        label: t("dialog.export.choose_location"),
+        role: "primary",
+        testid: "export-choose",
+        onclick: () => void confirmExport(currentFormat(), rateHz, currentRange()),
+      },
+    ]} title={t("dialog.export.title")} titleId="export-title" testid="export-dialog" onkeydown={onKeydown}>
     <fieldset>
       <legend>{t("dialog.export.format")}</legend>
       <div class="options">
@@ -203,27 +213,20 @@
         {/each}
       </div>
     </fieldset>
-    {#snippet footer()}
-      <Button variant="ghost" testid="export-acx" disabled={!exp.mp3Available} onclick={applyAcxPreset}>
-        {t("dialog.export.acx_preset")}
-      </Button>
-      <span class="spacer"></span>
-      <Button testid="export-cancel" onclick={cancelExportDialog}>
-        {t("dialog.export.cancel")}
-      </Button>
-      <Button
-        variant="primary"
-        testid="export-choose"
-        onclick={() => void confirmExport(currentFormat(), rateHz, currentRange())}
-      >
-        {t("dialog.export.choose_location")}
-      </Button>
-    {/snippet}
   </Dialog>
 {/if}
 
 {#if exp.noiseOnlyConfirm}
   <Dialog
+    actions={[
+      { label: t("dialog.export.noise_only_confirm.cancel"), role: "cancel", testid: "export-noise-only-cancel", onclick: cancelNoiseOnlyExport },
+      {
+        label: t("dialog.export.noise_only_confirm.continue"),
+        role: "primary",
+        testid: "export-noise-only-continue",
+        onclick: () => void continueNoiseOnlyExport(),
+      },
+    ]}
     role="alertdialog"
     size="sm"
     title={t("dialog.export.noise_only_confirm.title")}
@@ -237,19 +240,14 @@
     }}
   >
     <p>{t("dialog.export.noise_only_confirm.message")}</p>
-    {#snippet footer()}
-      <Button testid="export-noise-only-cancel" onclick={cancelNoiseOnlyExport}>
-        {t("dialog.export.noise_only_confirm.cancel")}
-      </Button>
-      <Button variant="primary" testid="export-noise-only-continue" onclick={() => void continueNoiseOnlyExport()}>
-        {t("dialog.export.noise_only_confirm.continue")}
-      </Button>
-    {/snippet}
   </Dialog>
 {/if}
 
 {#if exp.job}
-  <Dialog size="sm" title={t("dialog.export.progress_title")} testid="export-progress">
+  <Dialog
+    actions={exp.job?.state === "running"
+      ? [{ label: t("dialog.export.cancel"), role: "cancel", testid: "export-progress-cancel", onclick: cancelExportJob }]
+      : [{ label: t("dialog.export.close"), role: "primary", testid: "export-progress-close", onclick: dismissExportJob }]} size="sm" title={t("dialog.export.progress_title")} testid="export-progress">
     <progress data-testid="export-progress-bar" value={exp.job.fraction} max="1"></progress>
     {#if exp.job.state !== "running"}
       <p data-testid="export-progress-state">
@@ -260,17 +258,6 @@
             : t("dialog.export.failed")}
       </p>
     {/if}
-    {#snippet footer()}
-      {#if exp.job?.state === "running"}
-        <Button testid="export-progress-cancel" onclick={cancelExportJob}>
-          {t("dialog.export.cancel")}
-        </Button>
-      {:else}
-        <Button variant="primary" testid="export-progress-close" onclick={dismissExportJob}>
-          {t("dialog.export.close")}
-        </Button>
-      {/if}
-    {/snippet}
   </Dialog>
 {/if}
 

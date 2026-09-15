@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tDynamic } from "../i18n";
-  import { Button, Dialog } from "../ui";
+  import { Dialog } from "../ui";
   import { documentState, resolveConfirmPrompt } from "./document.svelte";
 
   /**
@@ -21,6 +21,20 @@
 
 {#if doc.confirmPrompt}
   <Dialog
+    actions={[
+      {
+        label: tDynamic(`dialog.${doc.confirmPrompt?.kind}.cancel`),
+        role: "cancel",
+        testid: "confirm-cancel",
+        onclick: () => resolveConfirmPrompt(false),
+      },
+      {
+        label: tDynamic(`dialog.${doc.confirmPrompt?.kind}.confirm`),
+        role: "primary",
+        testid: "confirm-proceed",
+        onclick: () => resolveConfirmPrompt(true),
+      },
+    ]}
     role="alertdialog"
     size="sm"
     title={tDynamic(`dialog.${doc.confirmPrompt.kind}.title`)}
@@ -30,13 +44,5 @@
     onkeydown={onKeydown}
   >
     <p>{tDynamic(`dialog.${doc.confirmPrompt.kind}.message`, { name: doc.confirmPrompt.name })}</p>
-    {#snippet footer()}
-      <Button testid="confirm-cancel" onclick={() => resolveConfirmPrompt(false)}>
-        {tDynamic(`dialog.${doc.confirmPrompt?.kind}.cancel`)}
-      </Button>
-      <Button variant="primary" testid="confirm-proceed" onclick={() => resolveConfirmPrompt(true)}>
-        {tDynamic(`dialog.${doc.confirmPrompt?.kind}.confirm`)}
-      </Button>
-    {/snippet}
   </Dialog>
 {/if}

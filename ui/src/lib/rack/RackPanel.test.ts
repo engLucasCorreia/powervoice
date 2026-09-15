@@ -120,7 +120,7 @@ describe("RackPanel", () => {
     const { target, el, teardown } = await setup(rackFixture([]), modules);
     el("rack-add")?.click();
     flushSync();
-    const groupTitles = [...target.querySelectorAll(".group-title")].map((g) => g.textContent);
+    const groupTitles = [...target.querySelectorAll('[data-testid="rack-add-menu"] .heading')].map((g) => g.textContent);
     expect(groupTitles).toEqual(["EQ", "Dynamics", "Utility"]);
     const items = [...target.querySelectorAll('[data-testid="rack-add-item"]')].map((i) =>
       i.getAttribute("data-module-id"),
@@ -142,7 +142,7 @@ describe("RackPanel", () => {
     const { target, el, teardown } = await setup(rackFixture([]), modules);
     el("rack-add")?.click();
     flushSync();
-    const groupTitles = [...target.querySelectorAll(".group-title")].map((g) => g.textContent);
+    const groupTitles = [...target.querySelectorAll('[data-testid="rack-add-menu"] .heading')].map((g) => g.textContent);
     expect(groupTitles).toEqual(["Utility", "Plugins (CLAP)"]);
     const items = [...target.querySelectorAll('[data-testid="rack-add-item"]')].map((i) =>
       i.getAttribute("data-module-id"),

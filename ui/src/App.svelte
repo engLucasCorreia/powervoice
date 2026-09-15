@@ -573,6 +573,12 @@
     border-radius: var(--pv-radius-sm);
   }
 
+  /* H-26: the inactive tab panel is `hidden`, but `.meters-row`/`.loudness-tab` set their own
+     `display`, which beats the attribute's UA style — the Loudness tab used to show the meters. */
+  .dock-body > [hidden] {
+    display: none;
+  }
+
   .dock-body {
     flex: 1;
     min-height: 0;

@@ -8,6 +8,10 @@
   import IconButton from "./IconButton.svelte";
   import { ICON_NAMES } from "./icons";
   import Kbd from "./Kbd.svelte";
+  import Menu from "./Menu.svelte";
+  import type { MenuEntry } from "./menuModel";
+  import { orderDialogActions, type DialogActionRole } from "./dialogActions";
+  import Popover from "./Popover.svelte";
   import NumberField from "./NumberField.svelte";
   import PanelHeader from "./PanelHeader.svelte";
   import Readout from "./Readout.svelte";
@@ -104,6 +108,39 @@
   let recording = $state(false);
   let playing = $state(false);
   let loop = $state(false);
+
+  // H-26: the shared menu, a popover and the platform dialog button order.
+  let menuFor = $state<string | null>(null);
+  let popoverFor = $state<string | null>(null);
+  const menuAnchors: Record<string, HTMLButtonElement | undefined> = $state({});
+  const popoverAnchors: Record<string, HTMLButtonElement | undefined> = $state({});
+  let renderer = $state<"auto" | "webgl2">("auto");
+  const noop = (): void => {};
+  const demoMenu = $derived<MenuEntry[]>([
+    { kind: "item", id: "open", label: t("menu.file.open"), shortcut: sc.open, onselect: noop },
+    { kind: "item", id: "save", label: t("menu.file.save"), shortcut: shortcutLabelForAction("file.save"), disabled: true, onselect: noop },
+    { kind: "separator", id: "sep-view" },
+    { kind: "checkbox", id: "spectral", label: t("spectral.toggle"), checked: spectral, shortcut: sc.spectral, onselect: () => (spectral = !spectral) },
+    {
+      kind: "submenu",
+      id: "renderer",
+      label: t("menu.view.renderer"),
+      items: [
+        { kind: "radio", id: "auto", label: t("menu.view.renderer_auto"), checked: renderer === "auto", onselect: () => (renderer = "auto") },
+        { kind: "radio", id: "webgl2", label: t("menu.view.renderer_webgl2"), checked: renderer === "webgl2", onselect: () => (renderer = "webgl2") },
+      ],
+    },
+    { kind: "separator", id: "sep-normalize" },
+    { kind: "heading", id: "peak", label: t("toolbar.normalize.peak_heading") },
+    { kind: "item", id: "n1", label: formatWithUnit(-1, "dBFS", 1), onselect: noop },
+    { kind: "item", id: "n3", label: formatWithUnit(-3, "dBFS", 1), onselect: noop },
+  ]);
+  const FOOTER_PLATFORMS = ["linux", "windows"] as const;
+  const footerDemo: { label: string; role: DialogActionRole }[] = [
+    { label: t("dialog.unsaved.discard"), role: "destructive" },
+    { label: t("dialog.unsaved.cancel"), role: "cancel" },
+    { label: t("dialog.unsaved.save"), role: "primary" },
+  ];
 </script>
 
 <div class="gallery">
@@ -328,6 +365,62 @@
           </div>
         </section>
 
+        <section class="card" data-testid="gallery-menus-{theme}">
+          <h3>{t("gallery.section.menus")}</h3>
+          <div class="menu-demo">
+            <Button
+              iconEnd="chevronDown"
+              aria-haspopup="menu"
+              aria-expanded={menuFor === theme}
+              bind:element={menuAnchors[theme]}
+              onclick={() => (menuFor = menuFor === theme ? null : theme)}
+            >
+              {t("gallery.sample.menu")}
+            </Button>
+            <Menu
+              open={menuFor === theme}
+              anchor={menuAnchors[theme]}
+              items={demoMenu}
+              label={t("gallery.sample.menu")}
+              onclose={() => (menuFor = null)}
+            />
+            <Button
+              aria-haspopup="dialog"
+              aria-expanded={popoverFor === theme}
+              bind:element={popoverAnchors[theme]}
+              onclick={() => (popoverFor = popoverFor === theme ? null : theme)}
+            >
+              {t("gallery.sample.popover")}
+            </Button>
+            <Popover
+              open={popoverFor === theme}
+              anchor={popoverAnchors[theme]}
+              label={t("gallery.sample.popover")}
+              onclose={() => (popoverFor = null)}
+            >
+              <p class="hint">{t("gallery.sample.popover_body")}</p>
+              <Toggle bind:checked={hearOriginal} label={t("record.hear_original")} />
+            </Popover>
+          </div>
+          {#each FOOTER_PLATFORMS as platform (platform)}
+            {@const ordered = orderDialogActions(footerDemo, platform)}
+            <div class="footer-demo" data-platform={platform}>
+              <span class="footer-label">
+                {platform === "windows" ? t("gallery.sample.order_windows") : t("gallery.sample.order_mac_linux")}
+              </span>
+              <div class="footer-buttons">
+                {#each ordered.leading as action (action.label)}
+                  <Button size="sm" variant="ghost">{action.label}</Button>
+                {/each}
+                <span class="footer-spacer"></span>
+                {#each ordered.trailing as action (action.label)}
+                  <Button size="sm" variant={action.role === "primary" ? "primary" : "secondary"}>{action.label}</Button>
+                {/each}
+              </div>
+            </div>
+          {/each}
+        </section>
+
         <section class="card">
           <h3>{t("gallery.section.type")}</h3>
           {#each TYPE_SCALE as size (size)}
@@ -369,6 +462,37 @@
 </div>
 
 <style>
+  .menu-demo {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--pv-space-2);
+  }
+
+  .footer-demo {
+    display: flex;
+    flex-direction: column;
+    gap: var(--pv-space-1);
+    margin-top: var(--pv-space-3);
+  }
+
+  .footer-label {
+    color: var(--pv-text-tertiary);
+    font-size: var(--pv-text-xs);
+  }
+
+  .footer-buttons {
+    display: flex;
+    gap: var(--pv-space-2);
+    padding: var(--pv-space-2);
+    border: var(--pv-border-width) solid var(--pv-border-subtle);
+    border-radius: var(--pv-radius-md);
+    background: var(--pv-bg-overlay);
+  }
+
+  .footer-spacer {
+    flex: 1;
+  }
+
   .gallery {
     min-height: 100vh;
     background: var(--pv-bg-app);

@@ -13,7 +13,8 @@
     toggleRecord,
   } from "../state/record.svelte";
   import { transportState } from "../state/transport.svelte";
-  import { Button, Icon, IconButton, Separator } from "../ui";
+  import { Button, Icon, IconButton, Menu, Popover, Separator, type PopoverAnchor } from "../ui";
+  import type { MenuEntry } from "../ui/menuModel";
   import {
     DISK_WARN_MINUTES,
     formatElapsed,
@@ -66,7 +67,11 @@
   const hint = $derived(bufferHint(rec.offset));
 
   let panelOpen = $state(false);
-  let menuOpen = $state(false);
+  // H-26: the Record context menu opens at the pointer (or under the key when opened from the
+  // keyboard); the Punch & pre-roll panel is a Popover under its icon key.
+  let menuAnchor = $state<PopoverAnchor | null>(null);
+  let recordButton: HTMLButtonElement | undefined = $state();
+  let punchToggle: HTMLButtonElement | undefined = $state();
   let offsetText = $state("");
   let offsetInvalid = $state(false);
 
@@ -79,15 +84,44 @@
 
   function onRecordContextMenu(event: MouseEvent): void {
     event.preventDefault();
-    if (!busy) {
-      menuOpen = !menuOpen;
+    if (busy) {
+      return;
     }
+    const fromKeyboard = event.clientX === 0 && event.clientY === 0;
+    menuAnchor = fromKeyboard && recordButton ? recordButton : { x: event.clientX, y: event.clientY };
   }
 
   function chooseMode(mode: RecordModePref): void {
-    menuOpen = false;
     void setRecordPrefs({ mode });
   }
+
+  const recordMenuItems = $derived<MenuEntry[]>([
+    {
+      kind: "radio",
+      id: "insert",
+      label: t("record.mode.insert"),
+      checked: prefs.mode === "insert",
+      testid: "record-menu-insert",
+      onselect: () => chooseMode("insert"),
+    },
+    {
+      kind: "radio",
+      id: "overwrite",
+      label: t("record.mode.overwrite"),
+      checked: prefs.mode === "overwrite",
+      testid: "record-menu-overwrite",
+      onselect: () => chooseMode("overwrite"),
+    },
+    { kind: "separator", id: "sep-punch" },
+    {
+      kind: "checkbox",
+      id: "punch",
+      label: t("record.punch_on_selection"),
+      checked: prefs.punch_on_selection,
+      testid: "record-menu-punch",
+      onselect: () => void setRecordPrefs({ punch_on_selection: !prefs.punch_on_selection }),
+    },
+  ]);
 
   function numberFrom(event: Event, max: number): number | null {
     const value = Number((event.currentTarget as HTMLInputElement).value);
@@ -110,6 +144,7 @@
         active={rec.state.recording}
         icon={rec.state.recording ? "stop" : "record"}
         testid="record-button"
+        bind:element={recordButton}
         disabled={noInput || rec.state.finishing}
         title={noInput ? t("record.no_input_hint") : t("record.record_title")}
         onclick={() => void toggleRecord()}
@@ -117,43 +152,14 @@
       >
         {rec.state.recording ? t("record.stop") : t("record.record")}
       </Button>
-      {#if menuOpen}
-        <div class="menu" role="menu" aria-label={t("record.menu_title")} data-testid="record-context-menu">
-          <button
-            type="button"
-            role="menuitemradio"
-            aria-checked={prefs.mode === "insert"}
-            data-testid="record-menu-insert"
-            onclick={() => chooseMode("insert")}
-          >
-            <span class="check">{#if prefs.mode === "insert"}<Icon name="check" size="sm" />{/if}</span>
-            {t("record.mode.insert")}
-          </button>
-          <button
-            type="button"
-            role="menuitemradio"
-            aria-checked={prefs.mode === "overwrite"}
-            data-testid="record-menu-overwrite"
-            onclick={() => chooseMode("overwrite")}
-          >
-            <span class="check">{#if prefs.mode === "overwrite"}<Icon name="check" size="sm" />{/if}</span>
-            {t("record.mode.overwrite")}
-          </button>
-          <button
-            type="button"
-            role="menuitemcheckbox"
-            aria-checked={prefs.punch_on_selection}
-            data-testid="record-menu-punch"
-            onclick={() => {
-              menuOpen = false;
-              void setRecordPrefs({ punch_on_selection: !prefs.punch_on_selection });
-            }}
-          >
-            <span class="check">{#if prefs.punch_on_selection}<Icon name="check" size="sm" />{/if}</span>
-            {t("record.punch_on_selection")}
-          </button>
-        </div>
-      {/if}
+      <Menu
+        open={menuAnchor !== null}
+        anchor={menuAnchor}
+        items={recordMenuItems}
+        label={t("record.menu_title")}
+        testid="record-context-menu"
+        onclose={() => (menuAnchor = null)}
+      />
     </span>
     <span class="elapsed" class:live={rec.state.recording} data-testid="record-elapsed" title={t("record.elapsed_title")}>{elapsed}</span>
     {#if phase}
@@ -227,12 +233,21 @@
         icon="punch"
         label={t("record.punch_section")}
         testid="record-punch-toggle"
+        aria-haspopup="dialog"
+        bind:element={punchToggle}
         pressed={panelOpen}
         aria-expanded={panelOpen}
         onclick={togglePanel}
       />
-      {#if panelOpen}
-        <div class="panel" data-testid="record-punch-panel">
+      <Popover
+        open={panelOpen}
+        anchor={punchToggle}
+        placement="bottom-end"
+        label={t("record.punch_section")}
+        testid="record-punch-panel"
+        onclose={() => (panelOpen = false)}
+      >
+        <div class="panel">
           <div class="panel-title">{t("record.punch_section")}</div>
           <div class="row" role="group" aria-label={t("record.mode")} title={t("record.mode_title")}>
             <span class="row-label">{t("record.mode")}</span>
@@ -391,7 +406,7 @@
             <p class="hint warning">{t("record.offset.invalid")}</p>
           {/if}
         </div>
-      {/if}
+      </Popover>
     </span>
   </div>
 </div>
@@ -545,60 +560,13 @@
     }
   }
 
-  /* Popovers: the record context menu and the Punch & pre-roll panel. */
-  .menu,
+  /* The Punch & pre-roll panel's content (the Popover draws the surface). */
   .panel {
-    position: absolute;
-    top: calc(100% + var(--pv-space-1));
-    z-index: var(--pv-z-dropdown);
     display: flex;
     flex-direction: column;
-    padding: var(--pv-space-1);
-    border: var(--pv-border-width) solid var(--pv-border);
-    border-radius: var(--pv-radius-md);
-    background: var(--pv-bg-overlay);
-    box-shadow: var(--pv-shadow-2);
-    font-size: var(--pv-text-md);
-  }
-
-  .menu {
-    left: 0;
-    min-width: 13rem;
-  }
-
-  .menu button {
-    display: flex;
-    align-items: center;
-    gap: var(--pv-space-2);
-    height: var(--pv-control-h-sm);
-    padding: 0 var(--pv-space-2);
-    border: none;
-    border-radius: var(--pv-radius-sm);
-    background: transparent;
-    color: var(--pv-text-primary);
-    font: inherit;
-    text-align: left;
-    white-space: nowrap;
-    cursor: default;
-  }
-
-  .menu button:hover,
-  .menu button:focus-visible {
-    background: var(--pv-control-bg-active);
-    outline: none;
-  }
-
-  .check {
-    display: inline-flex;
-    width: var(--pv-icon-sm);
-    color: var(--pv-accent-text);
-  }
-
-  .panel {
-    right: 0;
     gap: var(--pv-space-2);
     width: 22rem;
-    padding: var(--pv-space-3);
+    max-width: 100%;
   }
 
   .panel-title {

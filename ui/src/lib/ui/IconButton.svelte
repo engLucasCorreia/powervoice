@@ -29,6 +29,7 @@
     tooltip = true,
     tooltipPlacement = "bottom",
     testid,
+    element = $bindable(),
     onclick,
     ...rest
   }: {
@@ -44,6 +45,8 @@
     tooltip?: boolean;
     tooltipPlacement?: "top" | "bottom";
     testid?: string;
+    /** The rendered `<button>` (anchor for a menu, focus return). */
+    element?: HTMLButtonElement;
     onclick?: (event: MouseEvent) => void;
   } & Omit<HTMLButtonAttributes, "type" | "disabled" | "children" | "onclick" | "aria-label"> =
     $props();
@@ -56,6 +59,7 @@
   <button
     {...rest}
     {...trigger}
+    bind:this={element}
     type="button"
     class="pv-icon-button"
     data-variant={variant}

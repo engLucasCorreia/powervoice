@@ -5,25 +5,16 @@
  * the spec's own examples.
  */
 
+import { formatNumber } from "../ui/units";
 import { Q_CEIL_DB, Q_FLOOR_DB, dequantizeDb } from "./vxst";
 
-const MINUS = "−";
-
+// H-26: the one number formatter (`ui/units.ts`) — true minus, never "−0", "+" on gains.
 function signedInt(db: number): string {
-  const n = Math.round(db);
-  if (n === 0) {
-    return "0";
-  }
-  return n > 0 ? `+${n}` : `${MINUS}${Math.abs(n)}`;
+  return formatNumber(Math.round(db), 0, { signed: true });
 }
 
 function signedFixed1(db: number): string {
-  const n = Math.round(db * 10) / 10;
-  const abs = Math.abs(n).toFixed(1);
-  if (n === 0) {
-    return "0.0";
-  }
-  return n > 0 ? `+${abs}` : `${MINUS}${abs}`;
+  return formatNumber(Math.round(db * 10) / 10, 1, { signed: true });
 }
 
 /**

@@ -1,6 +1,8 @@
 import { createRawSnippet, flushSync } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Dialog from "./Dialog.svelte";
+import { setPlatformForTest } from "./platform";
+import type { DialogAction } from "./types";
 import { key, render, type Rendered } from "./testing";
 
 const body = createRawSnippet(() => ({
@@ -12,6 +14,7 @@ const footer = createRawSnippet(() => ({
 
 let r: Rendered | null = null;
 afterEach(() => {
+  setPlatformForTest(null);
   r?.cleanup();
   r = null;
   document.body.innerHTML = "";
@@ -84,5 +87,47 @@ describe("Dialog shell", () => {
     key(dialog(r.target), "Escape");
     expect(onkeydown).toHaveBeenCalledTimes(1);
     expect((onkeydown.mock.calls[0]?.[0] as KeyboardEvent).key).toBe("Escape");
+  });
+
+  describe("footer button order per platform (H-26)", () => {
+    const actions = (log: string[]): DialogAction[] => [
+      { label: "Don't save", role: "destructive", testid: "discard", onclick: () => log.push("discard") },
+      { label: "Cancel", role: "cancel", testid: "cancel", onclick: () => log.push("cancel") },
+      { label: "Save", role: "primary", testid: "save", onclick: () => log.push("save") },
+    ];
+    const order = (root: ParentNode) =>
+      [...root.querySelectorAll<HTMLElement>(".footer [data-testid]")].map((b) => b.dataset.testid);
+
+    it("Linux and macOS: primary last, destructive apart on the left", () => {
+      for (const platform of ["linux", "mac"] as const) {
+        setPlatformForTest(platform);
+        r = render(Dialog, { title: "Unsaved", children: body, actions: actions([]) });
+        expect(order(r.target), platform).toEqual(["discard", "cancel", "save"]);
+        const footer = r.target.querySelector<HTMLElement>(".footer")!;
+        expect(footer.dataset.buttonOrder).toBe("primary-last");
+        // The flexible gap sits between the destructive button and the answer buttons.
+        expect(footer.children[1]?.classList.contains("spacer")).toBe(true);
+        r.cleanup();
+        r = null;
+      }
+    });
+
+    it("Windows: primary first, Cancel last", () => {
+      setPlatformForTest("windows");
+      r = render(Dialog, { title: "Unsaved", children: body, actions: actions([]) });
+      expect(order(r.target)).toEqual(["save", "discard", "cancel"]);
+      expect(r.target.querySelector<HTMLElement>(".footer")!.dataset.buttonOrder).toBe("primary-first");
+    });
+
+    it("styles buttons from their role and runs their action", () => {
+      const log: string[] = [];
+      r = render(Dialog, { title: "Unsaved", children: body, actions: actions(log) });
+      const save = r.target.querySelector<HTMLButtonElement>('[data-testid="save"]')!;
+      expect(save.dataset.variant).toBe("primary");
+      expect(r.target.querySelector<HTMLElement>('[data-testid="discard"]')!.dataset.variant).toBe("ghost");
+      expect(r.target.querySelector<HTMLElement>('[data-testid="cancel"]')!.dataset.variant).toBe("secondary");
+      save.click();
+      expect(log).toEqual(["save"]);
+    });
   });
 });

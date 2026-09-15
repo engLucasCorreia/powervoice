@@ -1,6 +1,6 @@
 <script lang="ts">
   import { t } from "../i18n";
-  import { Button, Dialog } from "../ui";
+  import { Dialog } from "../ui";
   import { recentFilesState, resolveRecentMissingPrompt } from "./recentFiles.svelte";
 
   /**
@@ -22,6 +22,11 @@
 
 {#if recent.missingPrompt}
   <Dialog
+    actions={[
+      { label: t("dialog.recent_missing.remove"), role: "destructive", testid: "recent-missing-remove", onclick: () => resolveRecentMissingPrompt("remove") },
+      { label: t("dialog.recent_missing.cancel"), role: "cancel", testid: "recent-missing-cancel", onclick: () => resolveRecentMissingPrompt("cancel") },
+      { label: t("dialog.recent_missing.locate"), role: "primary", testid: "recent-missing-locate", onclick: () => resolveRecentMissingPrompt("locate") },
+    ]}
     role="alertdialog"
     title={t("dialog.recent_missing.title")}
     titleId="recent-missing-title"
@@ -29,17 +34,5 @@
     onkeydown={onKeydown}
   >
     <p>{t("dialog.recent_missing.message", { name: recent.missingPrompt.name })}</p>
-    {#snippet footer()}
-      <Button variant="ghost" testid="recent-missing-remove" onclick={() => resolveRecentMissingPrompt("remove")}>
-        {t("dialog.recent_missing.remove")}
-      </Button>
-      <span class="spacer"></span>
-      <Button testid="recent-missing-cancel" onclick={() => resolveRecentMissingPrompt("cancel")}>
-        {t("dialog.recent_missing.cancel")}
-      </Button>
-      <Button variant="primary" testid="recent-missing-locate" onclick={() => resolveRecentMissingPrompt("locate")}>
-        {t("dialog.recent_missing.locate")}
-      </Button>
-    {/snippet}
   </Dialog>
 {/if}

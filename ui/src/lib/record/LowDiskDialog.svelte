@@ -1,7 +1,7 @@
 <script lang="ts">
   import { t } from "../i18n";
   import { recordState, resolveLowDiskPrompt } from "../state/record.svelte";
-  import { Button, Dialog } from "../ui";
+  import { Dialog } from "../ui";
 
   /**
    * "Only N min of disk space left. Record anyway?" confirm prompt (H-11, SPEC-002 §2.5), shown
@@ -20,6 +20,10 @@
 
 {#if rec.lowDiskPrompt}
   <Dialog
+    actions={[
+      { label: t("dialog.low_disk.cancel"), role: "cancel", testid: "low-disk-cancel", onclick: () => resolveLowDiskPrompt(false) },
+      { label: t("dialog.low_disk.confirm"), role: "primary", icon: "record", testid: "low-disk-confirm", onclick: () => resolveLowDiskPrompt(true) },
+    ]}
     role="alertdialog"
     size="sm"
     title={t("dialog.low_disk.title")}
@@ -28,13 +32,5 @@
     onkeydown={onKeydown}
   >
     <p>{t("dialog.low_disk.message", { minutes: String(rec.lowDiskPrompt.minutes) })}</p>
-    {#snippet footer()}
-      <Button testid="low-disk-cancel" onclick={() => resolveLowDiskPrompt(false)}>
-        {t("dialog.low_disk.cancel")}
-      </Button>
-      <Button variant="primary" icon="record" testid="low-disk-confirm" onclick={() => resolveLowDiskPrompt(true)}>
-        {t("dialog.low_disk.confirm")}
-      </Button>
-    {/snippet}
   </Dialog>
 {/if}

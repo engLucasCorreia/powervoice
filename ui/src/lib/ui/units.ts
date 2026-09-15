@@ -52,7 +52,7 @@ export function formatWithUnit(
 const UNIT_SUFFIX = /\s*(dbfs|dbtp|db|lufs|lu|ms|s|khz|hz|smp|samples|%)$/i;
 
 /**
- * Parses user input into a number: accepts `-`/`−`/`+`, a decimal point or comma, surrounding
+ * Parses user input into a number: accepts an ASCII `-`, the U+2212 minus `formatNumber` writes, `+`, a decimal point or comma, surrounding
  * spaces and a trailing unit. `kHz` is scaled to Hz when `baseUnit` is `"Hz"`. Returns `null` for
  * anything that isn't exactly one number.
  */
@@ -66,7 +66,9 @@ export function parseNumber(input: string, baseUnit = ""): number | null {
     }
     text = text.slice(0, unit.index).trim();
   }
-  text = text.replace(MINUS, "-").replace(",", ".");
+  // U+2212 minus (what `formatNumber` writes), en/figure dashes and the full-width hyphen all
+  // read as a sign, so a value copied from a readout parses back.
+  text = text.replace(/^[\u2212\u2012\u2013\uFE63\uFF0D]/, "-").replace(",", ".");
   if (!/^[+-]?(\d+\.?\d*|\.\d+)$/.test(text)) {
     return null;
   }

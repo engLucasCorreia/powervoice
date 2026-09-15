@@ -4,6 +4,8 @@
  * `AnalyzerPanel.svelte` so it's testable under jsdom, which has no canvas (MEMORY.md).
  */
 
+import { formatNumber } from "../ui/units";
+
 /** SPEC-007 §2.9 / §3 `an_floor_db`: the floor can be one of these five values. */
 export const ANALYZER_FLOOR_OPTIONS_DB = [-150, -120, -100, -80, -60] as const;
 /** SPEC-007 §2.9 / §3 `an_ceil_db`: the ceiling is 0 or +6. */
@@ -71,7 +73,7 @@ export function dbAxisTicks(
   const ticks: DbTick[] = [];
   const first = Math.ceil(floorDb / step) * step;
   for (let db = first; db <= ceilDb + 1e-9; db += step) {
-    ticks.push({ y: yForAnalyzerDb(db, floorDb, ceilDb, heightPx), label: String(Math.round(db)), db });
+    ticks.push({ y: yForAnalyzerDb(db, floorDb, ceilDb, heightPx), label: formatNumber(Math.round(db), 0), db });
   }
   return ticks;
 }

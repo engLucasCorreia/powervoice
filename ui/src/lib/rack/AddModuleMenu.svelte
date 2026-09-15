@@ -1,12 +1,14 @@
 <script lang="ts">
   import { t, tDynamic } from "../i18n";
-  import { Button } from "../ui";
+  import { Button, Menu } from "../ui";
+  import type { MenuEntry } from "../ui/menuModel";
   import type { ModuleDescriptorDto } from "../ipc/bindings";
   import { localized } from "./localized";
 
   /** The Add-module menu (SPEC-012 §2.1): the registry's modules grouped by feature (EQ,
    * dynamics, restoration, utility, …); installed CLAP effects (`clap:*`, T-803) in their own
-   * "Plugins (CLAP)" group after the built-in categories. */
+   * "Plugins (CLAP)" group after the built-in categories. H-26: on the shared menu (group
+   * headings, keyboard, typeahead, viewport clamping), as wide as its button. */
   let {
     modules,
     disabled,
@@ -18,6 +20,7 @@
   } = $props();
 
   let open = $state(false);
+  let trigger: HTMLButtonElement | undefined = $state();
 
   const CATEGORY_ORDER = [
     "eq",
@@ -64,25 +67,23 @@
     return ALL_CATEGORIES.filter((cat) => byCat.has(cat)).map((cat) => [cat, byCat.get(cat)!] as const);
   });
 
-  function toggle(): void {
-    if (!disabled) {
-      open = !open;
-    }
-  }
-
-  function pick(id: string): void {
-    open = false;
-    onselect(id);
-  }
-
-  function onWindowClick(event: MouseEvent): void {
-    if (open && !(event.target as HTMLElement).closest(".add-module")) {
-      open = false;
-    }
-  }
+  const items = $derived.by((): MenuEntry[] =>
+    groups.flatMap(([cat, mods], i): MenuEntry[] => [
+      ...(i > 0 ? [{ kind: "separator" as const, id: `sep-${cat}` }] : []),
+      { kind: "heading", id: `heading-${cat}`, label: tDynamic(`rack.category.${cat}`) },
+      ...mods.map(
+        (m): MenuEntry => ({
+          kind: "item",
+          id: m.id,
+          label: localized(m.name),
+          testid: "rack-add-item",
+          attrs: { "data-module-id": m.id },
+          onselect: () => onselect(m.id),
+        }),
+      ),
+    ]),
+  );
 </script>
-
-<svelte:window onclick={onWindowClick} />
 
 <div class="add-module">
   <Button
@@ -93,38 +94,25 @@
     title={disabled ? t("rack.max_slots") : ""}
     aria-haspopup="menu"
     aria-expanded={open}
-    onclick={toggle}
+    bind:element={trigger}
+    onclick={() => {
+      if (!disabled) open = !open;
+    }}
   >
     {t("rack.add")}
   </Button>
-  {#if open}
-    <div class="menu" role="menu" data-testid="rack-add-menu">
-      {#each groups as [cat, mods] (cat)}
-        <div class="group">
-          <div class="group-title">{tDynamic(`rack.category.${cat}`)}</div>
-          {#each mods as m (m.id)}
-            <button
-              type="button"
-              role="menuitem"
-              class="item"
-              data-testid="rack-add-item"
-              data-module-id={m.id}
-              onclick={() => pick(m.id)}
-            >
-              {localized(m.name)}
-            </button>
-          {/each}
-        </div>
-      {/each}
-    </div>
-  {/if}
+  <Menu
+    {open}
+    anchor={trigger}
+    {items}
+    label={t("rack.add")}
+    testid="rack-add-menu"
+    minWidth="anchor"
+    onclose={() => (open = false)}
+  />
 </div>
 
 <style>
-  .add-module {
-    position: relative;
-  }
-
   .add-module > :global(.pv-button) {
     width: 100%;
     justify-content: flex-start;
@@ -133,55 +121,5 @@
   .add-module > :global(.pv-button .label) {
     flex: 1;
     text-align: left;
-  }
-
-  .menu {
-    position: absolute;
-    top: calc(100% + var(--pv-space-1));
-    left: 0;
-    right: 0;
-    z-index: var(--pv-z-dropdown);
-    max-height: 22rem;
-    padding: var(--pv-space-1);
-    overflow-y: auto;
-    border: var(--pv-border-width) solid var(--pv-border);
-    border-radius: var(--pv-radius-md);
-    background: var(--pv-bg-overlay);
-    box-shadow: var(--pv-shadow-2);
-  }
-
-  .group + .group {
-    margin-top: var(--pv-space-1);
-    padding-top: var(--pv-space-1);
-    border-top: var(--pv-border-width) solid var(--pv-border-subtle);
-  }
-
-  .group-title {
-    padding: var(--pv-space-1) var(--pv-space-2);
-    color: var(--pv-text-tertiary);
-    font-size: var(--pv-text-xs);
-    font-weight: var(--pv-weight-semibold);
-  }
-
-  .item {
-    display: flex;
-    align-items: center;
-    width: 100%;
-    height: var(--pv-control-h-sm);
-    padding: 0 var(--pv-space-2);
-    border: none;
-    border-radius: var(--pv-radius-sm);
-    background: transparent;
-    color: var(--pv-text-primary);
-    font-family: var(--pv-font-sans);
-    font-size: var(--pv-text-md);
-    text-align: left;
-    cursor: default;
-  }
-
-  .item:hover,
-  .item:focus-visible {
-    background: var(--pv-control-bg-active);
-    outline: none;
   }
 </style>

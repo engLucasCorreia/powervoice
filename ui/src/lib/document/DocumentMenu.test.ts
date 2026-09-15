@@ -198,7 +198,9 @@ describe("DocumentMenu / File menu (H-19)", () => {
       openMenu(target);
       target.querySelector<HTMLButtonElement>('[data-testid="menu-open-recent"]')!.click();
       flushSync();
-      expect(target.querySelector(".empty")).not.toBeNull();
+      // H-26: the shared menu's quiet note row, with a message that says what's missing.
+      const note = target.querySelector('[role="menu"] [role="menu"] .note');
+      expect(note?.textContent).toBe("No recent files");
       unmount(app);
       target.remove();
     });

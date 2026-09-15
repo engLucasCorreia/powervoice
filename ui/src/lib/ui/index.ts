@@ -9,8 +9,10 @@ export { default as EmptyState } from "./EmptyState.svelte";
 export { default as Icon } from "./Icon.svelte";
 export { default as IconButton } from "./IconButton.svelte";
 export { default as Kbd } from "./Kbd.svelte";
+export { default as Menu } from "./Menu.svelte";
 export { default as NumberField } from "./NumberField.svelte";
 export { default as PanelHeader } from "./PanelHeader.svelte";
+export { default as Popover } from "./Popover.svelte";
 export { default as Readout } from "./Readout.svelte";
 export { default as SegmentedControl } from "./SegmentedControl.svelte";
 export { default as Select } from "./Select.svelte";
@@ -22,5 +24,15 @@ export { default as Toggle } from "./Toggle.svelte";
 export { default as ToggleButton } from "./ToggleButton.svelte";
 export { default as Tooltip } from "./Tooltip.svelte";
 export { ICON_NAMES, type IconName, type IconSize } from "./icons";
-export type { SegmentOption, SelectOption, TabItem, TooltipTriggerProps } from "./types";
+export type {
+  DialogAction,
+  PopoverAnchor,
+  SegmentOption,
+  SelectOption,
+  TabItem,
+  TooltipTriggerProps,
+} from "./types";
+export type { DialogActionRole } from "./dialogActions";
+export type { MenuCloseReason, MenuEntry } from "./menuModel";
+export { currentPlatform, type Platform } from "./platform";
 export { formatNumber, formatWithUnit, MINUS, parseNumber } from "./units";

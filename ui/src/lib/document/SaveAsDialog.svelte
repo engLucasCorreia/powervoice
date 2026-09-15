@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { BitDepth, SaveContainerDto, SaveDitherPref } from "../ipc/bindings";
   import { t } from "../i18n";
-  import { Button, Dialog } from "../ui";
+  import { Dialog } from "../ui";
   import { cancelSaveAsPrompt, confirmSaveAsPrompt, documentState } from "./document.svelte";
 
   /**
@@ -61,7 +61,18 @@
 </script>
 
 {#if doc.saveAsPrompt}
-  <Dialog title={t("dialog.save_as.title")} titleId="save-as-title" testid="save-as-dialog" onkeydown={onKeydown}>
+  <Dialog
+    actions={[
+      { label: t("dialog.save_as.cancel"), role: "cancel", testid: "save-as-cancel", onclick: cancelSaveAsPrompt },
+      {
+        label: t("dialog.save_as.choose_location"),
+        role: "primary",
+        icon: "save",
+        testid: "save-as-choose",
+        loading: busy,
+        onclick: () => void confirm(),
+      },
+    ]} title={t("dialog.save_as.title")} titleId="save-as-title" testid="save-as-dialog" onkeydown={onKeydown}>
     <fieldset>
       <legend>{t("dialog.save_as.format")}</legend>
       <div class="options">
@@ -115,13 +126,5 @@
         </div>
       </fieldset>
     {/if}
-    {#snippet footer()}
-      <Button testid="save-as-cancel" onclick={cancelSaveAsPrompt}>
-        {t("dialog.save_as.cancel")}
-      </Button>
-      <Button variant="primary" icon="save" testid="save-as-choose" loading={busy} onclick={() => void confirm()}>
-        {t("dialog.save_as.choose_location")}
-      </Button>
-    {/snippet}
   </Dialog>
 {/if}

@@ -74,4 +74,14 @@ describe("amplitudeTicksDbfs (H-24 item 7, SPEC-006 §2.4/§4.2)", () => {
     expect(amplitudeTicksDbfs(0, 1, 10)).toEqual([]);
     expect(amplitudeTicksDbfs(-10, 1, 10)).toEqual([]);
   });
+
+  it("never puts two labels closer than the minimum gap, even across the centerline (H-26)", () => {
+    for (const height of [120, 200, 283, 370, 480, 800]) {
+      const ticks = amplitudeTicksDbfs(height, 1, 16);
+      for (let i = 1; i < ticks.length; i++) {
+        expect(ticks[i]!.y - ticks[i - 1]!.y, `${height}px: ${ticks[i - 1]!.label} / ${ticks[i]!.label}`).toBeGreaterThanOrEqual(16);
+      }
+      expect(ticks.every((t) => !t.label.includes("-")), "true minus").toBe(true);
+    }
+  });
 });

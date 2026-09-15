@@ -24,10 +24,18 @@ async function bootstrap(root: HTMLElement): Promise<void> {
   // build, so the gallery chunk is never shipped.
   const params = new URLSearchParams(window.location.search);
   // H-25: the real App against mocked IPC, development builds only (`?preview`, `&theme=light`).
+  // H-26: `&scene=`, `&dialog=` and `&menu=` open fixture content (see `dev/previewIpc.ts`).
   if (import.meta.env.DEV && params.has("preview")) {
     const { installPreviewIpc } = await import("./dev/previewIpc");
-    installPreviewIpc(params.get("theme") === "light" ? "light" : "dark");
+    const { runPreviewScene } = await import("./dev/previewScenes");
+    const options = {
+      theme: params.get("theme") === "light" ? ("light" as const) : ("dark" as const),
+      scenes: (params.get("scene") ?? "").split(",").filter((s) => s !== ""),
+      dialog: params.get("dialog"),
+    };
+    installPreviewIpc(options);
     mount(App, { target: root });
+    void runPreviewScene(options, params.get("menu"));
     return;
   }
   if (import.meta.env.DEV && params.has("gallery")) {

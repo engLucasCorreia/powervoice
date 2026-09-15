@@ -6,7 +6,7 @@
   import { devicesList, devicesSelect } from "../ipc/commands";
   import { noticeFromIpcError } from "../notices/fromIpcError";
   import { pushNotice } from "../state/notices.svelte";
-  import { Button, Dialog } from "../ui";
+  import { Dialog } from "../ui";
 
   /**
    * Settings → Audio Devices (SPEC-001 §2.1, minimal S1-01 form): host, output, input, sample
@@ -115,7 +115,8 @@
   });
 </script>
 
-<Dialog title={t("devices.title")} titleId="audio-devices-title" testid="audio-devices" onkeydown={onKeydown}>
+<Dialog
+    actions={[{ label: t("devices.close"), role: "primary", testid: "devices-close", onclick: () => onclose() }]} title={t("devices.title")} titleId="audio-devices-title" testid="audio-devices" onkeydown={onKeydown}>
   {#if view}
     <div class="form-grid">
       <label for="devices-host-select">{t("devices.host")}</label>
@@ -207,9 +208,6 @@
   {:else}
     <p>{t("devices.loading")}</p>
   {/if}
-  {#snippet footer()}
-    <Button variant="primary" testid="devices-close" onclick={onclose}>{t("devices.close")}</Button>
-  {/snippet}
 </Dialog>
 
 <style>

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { t } from "../i18n";
-  import { Button, Dialog } from "../ui";
+  import { Dialog, formatNumber } from "../ui";
   import { documentState, resolveClipPrompt } from "./document.svelte";
 
   /**
@@ -11,8 +11,7 @@
   const doc = documentState();
 
   function peakLabel(peakDbfs: number): string {
-    const sign = peakDbfs >= 0 ? "+" : "";
-    return `${sign}${peakDbfs.toFixed(1)}`;
+    return formatNumber(peakDbfs, 1, { signed: true });
   }
 
   function onKeydown(event: KeyboardEvent): void {
@@ -25,6 +24,11 @@
 
 {#if doc.clipPrompt}
   <Dialog
+    actions={[
+      { label: t("dialog.overs.cancel"), role: "cancel", testid: "clip-prompt-cancel", onclick: () => resolveClipPrompt("cancel") },
+      { label: t("dialog.overs.float"), role: "alternate", testid: "clip-prompt-float", onclick: () => resolveClipPrompt("float") },
+      { label: t("dialog.overs.clip"), role: "primary", testid: "clip-prompt-clip", onclick: () => resolveClipPrompt("clip") },
+    ]}
     role="alertdialog"
     title={t("dialog.overs.title")}
     titleId="clip-prompt-title"
@@ -37,16 +41,5 @@
         peak: peakLabel(doc.clipPrompt.peakDbfs),
       })}
     </p>
-    {#snippet footer()}
-      <Button testid="clip-prompt-cancel" onclick={() => resolveClipPrompt("cancel")}>
-        {t("dialog.overs.cancel")}
-      </Button>
-      <Button testid="clip-prompt-float" onclick={() => resolveClipPrompt("float")}>
-        {t("dialog.overs.float")}
-      </Button>
-      <Button variant="primary" testid="clip-prompt-clip" onclick={() => resolveClipPrompt("clip")}>
-        {t("dialog.overs.clip")}
-      </Button>
-    {/snippet}
   </Dialog>
 {/if}

@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { Button, Icon, IconButton } from "../ui";
+  import { Button, Icon, IconButton, Menu } from "../ui";
+  import type { MenuEntry } from "../ui/menuModel";
   import EqGraph from "../eq/EqGraph.svelte";
   import { t } from "../i18n";
   import type { ParamInfoDto, PresetEntryDto, RackSlotDto } from "../ipc/bindings";
@@ -48,6 +49,7 @@
 
   let collapsed = $state(false);
   let menuOpen = $state(false);
+  let menuTrigger: HTMLButtonElement | undefined = $state();
 
   // T-802: a sandboxed plugin's status (Running / Restarting / Plugin failed), or "Not installed"
   // for a slot whose module isn't registered. In-process modules show no badge while active.
@@ -72,7 +74,6 @@
   const canRetry = $derived(slot.status.kind === "failed");
 
   // --- Presets (T-406, SPEC-012 §2.7) -----------------------------------------------------
-  let presetsOpen = $state(false);
   let presetEntries = $state<PresetEntryDto[] | null>(null);
   let savingPreset = $state(false);
   let presetName = $state("");
@@ -80,12 +81,10 @@
 
   function closeMenu(): void {
     menuOpen = false;
-    presetsOpen = false;
     savingPreset = false;
   }
 
   async function openPresetsSubmenu(): Promise<void> {
-    presetsOpen = true;
     savingPreset = false;
     if (slot.module_id) {
       presetEntries = await listModulePresets(slot.module_id);
@@ -121,7 +120,6 @@
     if (!slot.module_id) {
       return;
     }
-    closeMenu();
     await loadModulePreset(
       index,
       slot.module_id,
@@ -129,8 +127,7 @@
     );
   }
 
-  async function deletePreset(entry: PresetEntryDto, event: MouseEvent): Promise<void> {
-    event.stopPropagation();
+  async function deletePreset(entry: PresetEntryDto): Promise<void> {
     if (!slot.module_id) {
       return;
     }
@@ -138,6 +135,91 @@
       await refreshPresets();
     }
   }
+
+  // H-26: the slot menu and its Presets submenu on the shared menu; the preset-name form is
+  // inline content of the submenu.
+  const presetItems = $derived.by((): MenuEntry[] => {
+    const list: MenuEntry[] = [];
+    if (presetEntries === null) {
+      list.push({ kind: "note", id: "loading", label: "…" });
+    } else if (presetEntries.length === 0 && !savingPreset) {
+      list.push({ kind: "note", id: "none", label: t("rack.slot.preset.none") });
+    } else {
+      for (const entry of presetEntries) {
+        list.push({
+          kind: "item",
+          id: `${entry.is_factory}:${entry.key}`,
+          label: localized(entry.name),
+          testid: `rack-slot-preset-${entry.key}`,
+          onselect: () => void pickPreset(entry),
+          trailing: entry.is_factory
+            ? undefined
+            : {
+                icon: "delete",
+                label: t("rack.slot.preset.delete"),
+                testid: `rack-slot-preset-delete-${entry.key}`,
+                onselect: () => void deletePreset(entry),
+              },
+        });
+      }
+    }
+    list.push({ kind: "separator", id: "sep-save" });
+    list.push(
+      savingPreset
+        ? { kind: "custom", id: "save-form", content: savePresetForm }
+        : {
+            kind: "item",
+            id: "save-as",
+            label: t("rack.slot.preset.save_as"),
+            testid: "rack-slot-preset-save",
+            keepOpen: true,
+            onselect: startSavePreset,
+          },
+    );
+    return list;
+  });
+
+  const menuItems = $derived.by((): MenuEntry[] => {
+    const list: MenuEntry[] = [
+      {
+        kind: "item",
+        id: "restart",
+        label: t("rack.slot.menu.restart"),
+        testid: "rack-slot-restart",
+        onselect: () => void restartSlot(index),
+      },
+      {
+        kind: "item",
+        id: "remove",
+        label: t("rack.slot.menu.remove"),
+        testid: "rack-slot-remove",
+        onselect: () => void removeSlot(index),
+      },
+    ];
+    if (slot.module_id) {
+      list.push(
+        { kind: "separator", id: "sep-presets" },
+        {
+          kind: "submenu",
+          id: "presets",
+          label: t("rack.slot.menu.presets"),
+          testid: "rack-slot-presets",
+          menuTestid: "rack-slot-presets-submenu",
+          minWidth: 208,
+          onopen: () => void openPresetsSubmenu(),
+          items: presetItems,
+        },
+        {
+          kind: "item",
+          id: "reset",
+          label: t("rack.slot.menu.reset_default"),
+          testid: "rack-slot-reset-default",
+          onselect: () => void resetSlotToDefault(index),
+        },
+      );
+    }
+    return list;
+  });
 
   const latencyLabel = $derived(
     slot.latency_samples > 0
@@ -180,6 +262,34 @@
   );
   const meterValues = $derived(slotTelemetry(slot.uid));
 </script>
+
+{#snippet savePresetForm()}
+  <input
+    type="text"
+    placeholder={t("rack.slot.preset.name_placeholder")}
+    aria-label={t("rack.slot.preset.name_placeholder")}
+    data-testid="rack-slot-preset-name"
+    bind:value={presetName}
+    onkeydown={(e) => {
+      if (e.key === "Enter") void confirmSavePreset();
+    }}
+    {@attach (node) => node.focus()}
+  />
+  {#if slot.noise_profile !== null}
+    <label>
+      <input type="checkbox" bind:checked={includeNoisePrint} />
+      {t("rack.slot.preset.include_noise_print")}
+    </label>
+  {/if}
+  <div class="actions">
+    <Button size="sm" onclick={() => (savingPreset = false)}>
+      {t("rack.slot.preset.cancel_button")}
+    </Button>
+    <Button size="sm" variant="primary" testid="rack-slot-preset-save-confirm" onclick={() => void confirmSavePreset()}>
+      {t("rack.slot.preset.save_button")}
+    </Button>
+  </div>
+{/snippet}
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <section
@@ -236,148 +346,25 @@
         />
       {/each}
     {/if}
-    <div class="menu-wrap">
-      <IconButton
-        icon="more"
-        label={t("rack.slot.menu")}
-        size="sm"
-        testid="rack-slot-menu"
-        aria-expanded={menuOpen}
-        onclick={() => {
-          menuOpen = !menuOpen;
-          if (!menuOpen) {
-            closeMenu();
-          }
-        }}
-      />
-      {#if menuOpen}
-        <div class="menu" role="menu">
-          <button
-            type="button"
-            role="menuitem"
-            data-testid="rack-slot-restart"
-            onclick={() => {
-              closeMenu();
-              void restartSlot(index);
-            }}
-          >
-            {t("rack.slot.menu.restart")}
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            data-testid="rack-slot-remove"
-            onclick={() => {
-              closeMenu();
-              void removeSlot(index);
-            }}
-          >
-            {t("rack.slot.menu.remove")}
-          </button>
-          {#if slot.module_id}
-            <hr />
-            <button
-              type="button"
-              role="menuitem"
-              data-testid="rack-slot-presets"
-              aria-expanded={presetsOpen}
-              onclick={() => (presetsOpen ? (presetsOpen = false) : void openPresetsSubmenu())}
-            >
-              <span class="grow">{t("rack.slot.menu.presets")}</span>
-              <Icon name={presetsOpen ? "chevronDown" : "chevronRight"} size="sm" />
-            </button>
-            {#if presetsOpen}
-              <div class="submenu" data-testid="rack-slot-presets-submenu">
-                {#if presetEntries === null}
-                  <span class="preset-empty">…</span>
-                {:else if presetEntries.length === 0 && !savingPreset}
-                  <span class="preset-empty">{t("rack.slot.preset.none")}</span>
-                {:else}
-                  {#each presetEntries as entry (entry.is_factory + ":" + entry.key)}
-                    <div class="preset-row">
-                      <button
-                        type="button"
-                        role="menuitem"
-                        class="preset-name"
-                        data-testid="rack-slot-preset-{entry.key}"
-                        onclick={() => void pickPreset(entry)}
-                      >
-                        {localized(entry.name)}
-                      </button>
-                      {#if !entry.is_factory}
-                        <button
-                          type="button"
-                          class="preset-delete"
-                          title={t("rack.slot.preset.delete")}
-                          data-testid="rack-slot-preset-delete-{entry.key}"
-                          onclick={(e) => void deletePreset(entry, e)}
-                          aria-label={t("rack.slot.preset.delete")}
-                        >
-                          <Icon name="close" size="sm" />
-                        </button>
-                      {/if}
-                    </div>
-                  {/each}
-                {/if}
-                <hr />
-                {#if savingPreset}
-                  <div class="save-form">
-                    <input
-                      type="text"
-                      placeholder={t("rack.slot.preset.name_placeholder")}
-                      data-testid="rack-slot-preset-name"
-                      bind:value={presetName}
-                      onkeydown={(e) => {
-                        if (e.key === "Enter") void confirmSavePreset();
-                      }}
-                    />
-                    {#if slot.noise_profile !== null}
-                      <label class="checkbox-row">
-                        <input type="checkbox" bind:checked={includeNoisePrint} />
-                        {t("rack.slot.preset.include_noise_print")}
-                      </label>
-                    {/if}
-                    <div class="save-actions">
-                      <Button size="sm" onclick={() => (savingPreset = false)}>
-                        {t("rack.slot.preset.cancel_button")}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="primary"
-                        testid="rack-slot-preset-save-confirm"
-                        onclick={() => void confirmSavePreset()}
-                      >
-                        {t("rack.slot.preset.save_button")}
-                      </Button>
-                    </div>
-                  </div>
-                {:else}
-                  <button
-                    type="button"
-                    role="menuitem"
-                    data-testid="rack-slot-preset-save"
-                    onclick={startSavePreset}
-                  >
-                    {t("rack.slot.preset.save_as")}
-                  </button>
-                {/if}
-              </div>
-            {/if}
-            <button
-              type="button"
-              role="menuitem"
-              data-testid="rack-slot-reset-default"
-              onclick={() => {
-                closeMenu();
-                void resetSlotToDefault(index);
-              }}
-            >
-              {t("rack.slot.menu.reset_default")}
-            </button>
-          {/if}
-        </div>
-      {/if}
-    </div>
+    <IconButton
+      icon="more"
+      label={t("rack.slot.menu")}
+      size="sm"
+      testid="rack-slot-menu"
+      aria-haspopup="menu"
+      aria-expanded={menuOpen}
+      bind:element={menuTrigger}
+      onclick={() => (menuOpen ? closeMenu() : (menuOpen = true))}
+    />
+    <Menu
+      open={menuOpen}
+      anchor={menuTrigger}
+      items={menuItems}
+      label={t("rack.slot.menu")}
+      testid="rack-slot-menu-popup"
+      placement="bottom-end"
+      onclose={closeMenu}
+    />
   </header>
   {#if slot.status.kind !== "active" && slot.status.kind !== "loading"}
     <div class="status-row">
@@ -499,140 +486,6 @@
   .status-badge.not_installed {
     background: var(--pv-danger-soft);
     color: var(--pv-danger-text);
-  }
-
-  .menu-wrap {
-    position: relative;
-    display: inline-flex;
-  }
-
-  .menu {
-    position: absolute;
-    top: calc(100% + var(--pv-space-1));
-    right: 0;
-    z-index: var(--pv-z-dropdown);
-    display: flex;
-    flex-direction: column;
-    min-width: 12rem;
-    padding: var(--pv-space-1);
-    border: var(--pv-border-width) solid var(--pv-border);
-    border-radius: var(--pv-radius-md);
-    background: var(--pv-bg-overlay);
-    box-shadow: var(--pv-shadow-2);
-  }
-
-  .menu button[role="menuitem"],
-  .preset-name {
-    display: flex;
-    align-items: center;
-    gap: var(--pv-space-2);
-    height: var(--pv-control-h-sm);
-    padding: 0 var(--pv-space-2);
-    border: none;
-    border-radius: var(--pv-radius-sm);
-    background: transparent;
-    color: var(--pv-text-primary);
-    font-family: inherit;
-    font-size: var(--pv-text-md);
-    text-align: left;
-    white-space: nowrap;
-    cursor: default;
-  }
-
-  .menu button[role="menuitem"]:hover,
-  .menu button[role="menuitem"]:focus-visible,
-  .preset-name:hover {
-    background: var(--pv-control-bg-active);
-    outline: none;
-  }
-
-  .grow {
-    flex: 1;
-  }
-
-  .menu hr {
-    width: 100%;
-    margin: var(--pv-space-1) 0;
-    border: none;
-    border-top: var(--pv-border-width) solid var(--pv-border-subtle);
-  }
-
-  .submenu {
-    display: flex;
-    flex-direction: column;
-    margin: var(--pv-space-half) 0 var(--pv-space-half) var(--pv-space-3);
-    padding-left: var(--pv-space-1);
-    border-left: var(--pv-border-width) solid var(--pv-border);
-  }
-
-  .preset-empty {
-    padding: var(--pv-space-1) var(--pv-space-2);
-    color: var(--pv-text-tertiary);
-    font-size: var(--pv-text-sm);
-  }
-
-  .preset-row {
-    display: flex;
-    align-items: center;
-  }
-
-  .preset-name {
-    flex: 1;
-  }
-
-  .preset-delete {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: var(--pv-control-h-sm);
-    height: var(--pv-control-h-sm);
-    padding: 0;
-    border: none;
-    border-radius: var(--pv-radius-sm);
-    background: transparent;
-    color: var(--pv-text-tertiary);
-    cursor: default;
-  }
-
-  .preset-delete:hover {
-    background: var(--pv-danger-soft);
-    color: var(--pv-danger-text);
-  }
-
-  .save-form {
-    display: flex;
-    flex-direction: column;
-    gap: var(--pv-space-2);
-    padding: var(--pv-space-2);
-  }
-
-  .save-form input[type="text"] {
-    height: var(--pv-control-h-sm);
-    padding: 0 var(--pv-space-2);
-    border: var(--pv-border-width) solid var(--pv-border-control);
-    border-radius: var(--pv-radius-sm);
-    background: var(--pv-field-bg);
-    color: var(--pv-text-primary);
-    font-family: inherit;
-    font-size: var(--pv-text-sm);
-  }
-
-  .checkbox-row {
-    display: flex;
-    align-items: center;
-    gap: var(--pv-space-2);
-    color: var(--pv-text-secondary);
-    font-size: var(--pv-text-sm);
-  }
-
-  .checkbox-row input {
-    accent-color: var(--pv-accent);
-  }
-
-  .save-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--pv-space-2);
   }
 
   .status-row {

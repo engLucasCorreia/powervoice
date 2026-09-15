@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { BitDepth, DefaultFormatDto } from "../ipc/bindings";
   import { t } from "../i18n";
-  import { Button, Dialog } from "../ui";
+  import { Dialog } from "../ui";
   import { cancelNewRecordingPrompt, confirmNewRecordingPrompt, recordState } from "../state/record.svelte";
   import { saveSettings } from "../state/settings.svelte";
 
@@ -48,6 +48,17 @@
 
 {#if rec.newRecordingPrompt}
   <Dialog
+    actions={[
+      { label: t("dialog.new_recording.cancel"), role: "cancel", testid: "new-recording-cancel", onclick: cancelNewRecordingPrompt },
+      {
+        label: t("dialog.new_recording.record"),
+        role: "primary",
+        icon: "record",
+        testid: "new-recording-confirm",
+        loading: busy,
+        onclick: () => void confirm(),
+      },
+    ]}
     title={t("dialog.new_recording.title")}
     titleId="new-recording-title"
     testid="new-recording-dialog"
@@ -87,13 +98,5 @@
         {/each}
       </div>
     </fieldset>
-    {#snippet footer()}
-      <Button testid="new-recording-cancel" onclick={cancelNewRecordingPrompt}>
-        {t("dialog.new_recording.cancel")}
-      </Button>
-      <Button variant="primary" icon="record" testid="new-recording-confirm" loading={busy} onclick={() => void confirm()}>
-        {t("dialog.new_recording.record")}
-      </Button>
-    {/snippet}
   </Dialog>
 {/if}

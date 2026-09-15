@@ -3,11 +3,8 @@
   import type { PresetEntryDto, PresetRefDto } from "../ipc/bindings";
   import { dispatchAction } from "../keymap";
   import { shortcutLabelForAction } from "../keymap/shortcutLabel";
-  import { closeAllMenus, menubarState, moveToAdjacentMenu, toggleMenu } from "../menu/menubar.svelte";
-  import { focusFirstItem, handleMenuKeydown } from "../menu/menuKeyboard";
-  import MenuItemRow from "../menu/MenuItemRow.svelte";
-  import MenuSeparatorRow from "../menu/MenuSeparatorRow.svelte";
-  import { splitMnemonic } from "../menu/mnemonic";
+  import MenuBarMenu from "../menu/MenuBarMenu.svelte";
+  import { closeAllMenus, focusMenuTrigger, MENU_MNEMONICS } from "../menu/menubar.svelte";
   import {
     canNormalize,
     FAVORITE_TARGETS_DB,
@@ -20,6 +17,8 @@
     normalizeLufsFavorite,
     openNormalizeLufsDialog,
   } from "../state/normalizeLufs.svelte";
+  import { Button, formatWithUnit } from "../ui";
+  import type { MenuEntry } from "../ui/menuModel";
   import { localized } from "./localized";
   import { canCapture } from "./nrCapture.svelte";
   import {
@@ -31,100 +30,14 @@
   } from "./rack.svelte";
 
   /**
-   * Effects menu (H-19): Normalize…, Normalize (LUFS)…, Capture Noise Print, then Favorites ▸ (the
-   * six one-click presets, S2-02/S4-01's old flat `FavoritesMenu` row folded in here as a
-   * submenu — its "Normalize…"/"Normalize (LUFS)…" entries are dropped as duplicates of the two
-   * items right above). The toolbar keeps its own compact favorite buttons
-   * (`NormalizeToolbarButtons`, ticket: "keep the toolbar for ... the favorite normalize
-   * buttons") — this is the menu-bar path to the same actions, plus the full dialogs.
+   * Effects menu (H-19): Normalize…, Normalize (LUFS)…, Capture Noise Print, Favorites ▸ (the six
+   * one-click normalize presets) and Rack Presets ▸ (T-406: load, save the live rack, delete user
+   * presets, confirm before replacing a non-empty rack). H-26: on the shared menu; the preset
+   * name field and the replace confirmation are inline content of the submenu.
    */
-  const MENU_ID = "effects" as const;
-  const bar = menubarState();
-  const open = $derived(bar.openMenuId === MENU_ID);
-  const mnemonic = $derived(splitMnemonic(t("menu.effects"), "c"));
-
   const captureEnabled = $derived(canCapture());
   const normalizeEnabled = $derived(canNormalize());
   const normalizeLufsEnabled = $derived(canNormalizeLufs());
-
-  let buttonEl: HTMLButtonElement | undefined = $state();
-  let popupEl: HTMLDivElement | undefined = $state();
-  let favoritesOpen = $state(false);
-  let favoritesPopupEl: HTMLDivElement | undefined = $state();
-
-  function select(action: () => void): void {
-    action();
-    closeAllMenus();
-  }
-
-  function onTriggerClick(event: MouseEvent): void {
-    event.stopPropagation();
-    toggleMenu(MENU_ID);
-  }
-
-  function onTriggerKeydown(event: KeyboardEvent): void {
-    if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      toggleMenu(MENU_ID);
-      queueMicrotask(() => focusFirstItem(popupEl));
-    } else if (event.key === "ArrowRight") {
-      event.preventDefault();
-      moveToAdjacentMenu(MENU_ID, 1);
-    } else if (event.key === "ArrowLeft") {
-      event.preventDefault();
-      moveToAdjacentMenu(MENU_ID, -1);
-    }
-  }
-
-  function closeSelf(): void {
-    closeAllMenus();
-    buttonEl?.focus();
-  }
-
-  function openFavoritesSubmenu(): void {
-    favoritesOpen = true;
-    queueMicrotask(() => focusFirstItem(favoritesPopupEl));
-  }
-
-  function closeFavoritesSubmenu(focusTrigger: boolean): void {
-    favoritesOpen = false;
-    if (focusTrigger) {
-      queueMicrotask(() => {
-        popupEl?.querySelector<HTMLElement>('[data-testid="menu-favorites"]')?.focus();
-      });
-    }
-  }
-
-  function onPopupKeydown(event: KeyboardEvent): void {
-    const current = document.activeElement as HTMLElement | null;
-    if (event.key === "ArrowRight" && current?.getAttribute("data-testid") === "menu-favorites") {
-      event.preventDefault();
-      event.stopPropagation();
-      openFavoritesSubmenu();
-      return;
-    }
-    if (
-      event.key === "ArrowRight" &&
-      current?.getAttribute("data-testid") === "menu-rack-presets"
-    ) {
-      event.preventDefault();
-      event.stopPropagation();
-      openRackPresetsSubmenu();
-      return;
-    }
-    handleMenuKeydown(popupEl!, event, {
-      onEscape: closeSelf,
-      onArrowLeft: () => moveToAdjacentMenu(MENU_ID, -1),
-      onArrowRight: () => moveToAdjacentMenu(MENU_ID, 1),
-    });
-  }
-
-  function onFavoritesPopupKeydown(event: KeyboardEvent): void {
-    handleMenuKeydown(favoritesPopupEl!, event, {
-      onCloseSubmenu: () => closeFavoritesSubmenu(true),
-      onEscape: () => closeFavoritesSubmenu(true),
-    });
-  }
 
   function favoritesDbTestId(targetDb: number): string {
     return `menu-favorites-normalize-${Math.abs(targetDb).toFixed(1).replace(".", "-")}db`;
@@ -135,34 +48,23 @@
   }
 
   // --- Rack Presets (T-406, SPEC-012 "the rack-preset menu") ------------------------------
-  let rackPresetsOpen = $state(false);
-  let rackPresetsPopupEl: HTMLDivElement | undefined = $state();
   let rackPresetEntries = $state<PresetEntryDto[] | null>(null);
   let savingRackPreset = $state(false);
   let rackPresetName = $state("");
   let confirmingRackPreset = $state<PresetRefDto | null>(null);
 
+  function refOf(entry: PresetEntryDto): PresetRefDto {
+    return entry.is_factory ? { kind: "factory", key: entry.key } : { kind: "user", name: entry.key };
+  }
+
   function refToKey(ref: PresetRefDto): string {
     return ref.kind === "factory" ? `factory:${ref.key}` : `user:${ref.name}`;
   }
 
-  function openRackPresetsSubmenu(): void {
-    rackPresetsOpen = true;
+  function onRackPresetsOpen(): void {
     savingRackPreset = false;
     confirmingRackPreset = null;
-    queueMicrotask(() => focusFirstItem(rackPresetsPopupEl));
     void refreshRackPresets();
-  }
-
-  function closeRackPresetsSubmenu(focusTrigger: boolean): void {
-    rackPresetsOpen = false;
-    savingRackPreset = false;
-    confirmingRackPreset = null;
-    if (focusTrigger) {
-      queueMicrotask(() => {
-        popupEl?.querySelector<HTMLElement>('[data-testid="menu-rack-presets"]')?.focus();
-      });
-    }
   }
 
   async function refreshRackPresets(): Promise<void> {
@@ -189,14 +91,13 @@
 
   async function applyRackPreset(ref: PresetRefDto): Promise<void> {
     confirmingRackPreset = null;
-    closeSelf();
+    closeAllMenus();
+    focusMenuTrigger("effects");
     await loadRackPreset(ref);
   }
 
   function pickRackPreset(entry: PresetEntryDto): void {
-    const ref: PresetRefDto = entry.is_factory
-      ? { kind: "factory", key: entry.key }
-      : { kind: "user", name: entry.key };
+    const ref = refOf(entry);
     if (rackState().state.slots.length > 0) {
       confirmingRackPreset = ref;
     } else {
@@ -204,330 +105,176 @@
     }
   }
 
-  async function deleteRackPresetEntry(entry: PresetEntryDto, event: MouseEvent): Promise<void> {
-    event.stopPropagation();
+  async function deleteRackPresetEntry(entry: PresetEntryDto): Promise<void> {
     if (await deleteRackPreset(entry.key)) {
       await refreshRackPresets();
     }
   }
 
-  function onRackPresetsPopupKeydown(event: KeyboardEvent): void {
-    handleMenuKeydown(rackPresetsPopupEl!, event, {
-      onCloseSubmenu: () => closeRackPresetsSubmenu(true),
-      onEscape: () => closeRackPresetsSubmenu(true),
-    });
-  }
+  const rackPresetItems = $derived.by((): MenuEntry[] => {
+    if (confirmingRackPreset) {
+      return [{ kind: "custom", id: "confirm-replace", content: confirmReplace }];
+    }
+    const list: MenuEntry[] = [];
+    if (rackPresetEntries === null) {
+      list.push({ kind: "note", id: "loading", label: "…" });
+    } else if (rackPresetEntries.length === 0 && !savingRackPreset) {
+      list.push({ kind: "note", id: "none", label: t("rack_preset.none") });
+    } else {
+      for (const entry of rackPresetEntries) {
+        list.push({
+          kind: "item",
+          id: refToKey(refOf(entry)),
+          label: localized(entry.name),
+          testid: `rack-preset-${entry.key}`,
+          // Loading may first ask to replace the rack (inline) — the submenu stays open.
+          keepOpen: true,
+          onselect: () => pickRackPreset(entry),
+          trailing: entry.is_factory
+            ? undefined
+            : {
+                icon: "delete",
+                label: t("rack_preset.delete"),
+                testid: `rack-preset-delete-${entry.key}`,
+                onselect: () => void deleteRackPresetEntry(entry),
+              },
+        });
+      }
+    }
+    list.push({ kind: "separator", id: "sep-save" });
+    list.push(
+      savingRackPreset
+        ? { kind: "custom", id: "save-form", content: saveForm }
+        : {
+            kind: "item",
+            id: "save-as",
+            label: t("rack_preset.save_as"),
+            testid: "rack-preset-save",
+            keepOpen: true,
+            onselect: startSaveRackPreset,
+          },
+    );
+    return list;
+  });
+
+  const items = $derived<MenuEntry[]>([
+    {
+      kind: "item",
+      id: "normalize",
+      label: t("effects.normalize_dialog"),
+      disabled: !normalizeEnabled,
+      testid: "menu-normalize-dialog",
+      onselect: openNormalizeDialog,
+    },
+    {
+      kind: "item",
+      id: "normalize-lufs",
+      label: t("effects.normalize_lufs_dialog"),
+      disabled: !normalizeLufsEnabled,
+      testid: "menu-normalize-lufs-dialog",
+      onselect: openNormalizeLufsDialog,
+    },
+    {
+      kind: "item",
+      id: "capture",
+      label: t("module.noise_reduction.capture"),
+      shortcut: shortcutLabelForAction("nr.capture_noise_print"),
+      disabled: !captureEnabled,
+      testid: "menu-capture-noise-print",
+      onselect: () => dispatchAction("nr.capture_noise_print"),
+    },
+    { kind: "separator", id: "sep-favorites" },
+    {
+      kind: "submenu",
+      id: "favorites",
+      label: t("favorites.menu"),
+      testid: "menu-favorites",
+      minWidth: 224,
+      items: [
+        { kind: "heading", id: "peak", label: t("toolbar.normalize.peak_heading") },
+        ...FAVORITE_TARGETS_DB.map(
+          (targetDb): MenuEntry => ({
+            kind: "item",
+            id: `db-${targetDb}`,
+            label: t("favorites.normalize_peak", { target: formatWithUnit(targetDb, "", 1) }),
+            disabled: !normalizeEnabled,
+            testid: favoritesDbTestId(targetDb),
+            onselect: () => void normalizeFavorite(targetDb),
+          }),
+        ),
+        { kind: "separator", id: "sep-lufs" },
+        { kind: "heading", id: "lufs", label: t("toolbar.normalize.lufs_heading") },
+        ...FAVORITE_TARGETS_LUFS.map(
+          (targetLufs): MenuEntry => ({
+            kind: "item",
+            id: `lufs-${targetLufs}`,
+            label: t("favorites.normalize_lufs", { target: formatWithUnit(targetLufs, "", 1) }),
+            disabled: !normalizeLufsEnabled,
+            testid: favoritesLufsTestId(targetLufs),
+            onselect: () => void normalizeLufsFavorite(targetLufs),
+          }),
+        ),
+      ],
+    },
+    { kind: "separator", id: "sep-presets" },
+    {
+      kind: "submenu",
+      id: "rack-presets",
+      label: t("rack_preset.menu"),
+      testid: "menu-rack-presets",
+      menuTestid: "rack-presets-submenu",
+      minWidth: 208,
+      onopen: onRackPresetsOpen,
+      items: rackPresetItems,
+    },
+  ]);
 </script>
 
-<div class="menu">
-  <button
-    bind:this={buttonEl}
-    type="button"
-    role="menuitem"
-    aria-haspopup="menu"
-    aria-expanded={open}
-    data-menu-trigger={MENU_ID}
-    data-testid="menu-trigger-effects"
-    onclick={onTriggerClick}
-    onkeydown={onTriggerKeydown}
-  >
-    {mnemonic.before}<u>{mnemonic.letter}</u>{mnemonic.after}
-  </button>
-  {#if open}
-    <div
-      bind:this={popupEl}
-      role="menu"
-      tabindex="-1"
-      aria-label={t("menu.effects")}
-      class="menu-popup"
-      data-menu-popup={MENU_ID}
-      data-testid="effects-menu"
-      onkeydown={onPopupKeydown}
-      onclick={(e) => e.stopPropagation()}
+{#snippet confirmReplace()}
+  <p>{t("rack_preset.confirm_replace")}</p>
+  <div class="actions">
+    <Button size="sm" onclick={() => (confirmingRackPreset = null)}>
+      {t("rack_preset.confirm_replace_cancel")}
+    </Button>
+    <Button
+      size="sm"
+      variant="primary"
+      testid="rack-preset-confirm-replace"
+      onclick={() => void applyRackPreset(confirmingRackPreset!)}
     >
-      <MenuItemRow
-        label={t("effects.normalize_dialog")}
-        disabled={!normalizeEnabled}
-        testid="menu-normalize-dialog"
-        onSelect={() => select(openNormalizeDialog)}
-      />
-      <MenuItemRow
-        label={t("effects.normalize_lufs_dialog")}
-        disabled={!normalizeLufsEnabled}
-        testid="menu-normalize-lufs-dialog"
-        onSelect={() => select(openNormalizeLufsDialog)}
-      />
-      <MenuItemRow
-        label={t("module.noise_reduction.capture")}
-        shortcut={shortcutLabelForAction("nr.capture_noise_print")}
-        disabled={!captureEnabled}
-        testid="menu-capture-noise-print"
-        onSelect={() => select(() => dispatchAction("nr.capture_noise_print"))}
-      />
-      <MenuSeparatorRow />
-      <MenuItemRow
-        label={t("favorites.menu")}
-        testid="menu-favorites"
-        isSubmenuTrigger
-        expanded={favoritesOpen}
-        onSelect={() => (favoritesOpen ? closeFavoritesSubmenu(false) : openFavoritesSubmenu())}
-      />
-      {#if favoritesOpen}
-        <div
-          bind:this={favoritesPopupEl}
-          role="menu"
-          tabindex="-1"
-          aria-label={t("favorites.menu")}
-          class="menu-popup submenu-popup"
-          onkeydown={onFavoritesPopupKeydown}
-        >
-          {#each FAVORITE_TARGETS_DB as targetDb (targetDb)}
-            <MenuItemRow
-              label={t("favorites.normalize_peak", { target: targetDb.toFixed(1) })}
-              disabled={!normalizeEnabled}
-              testid={favoritesDbTestId(targetDb)}
-              onSelect={() => select(() => void normalizeFavorite(targetDb))}
-            />
-          {/each}
-          <MenuSeparatorRow />
-          {#each FAVORITE_TARGETS_LUFS as targetLufs (targetLufs)}
-            <MenuItemRow
-              label={t("favorites.normalize_lufs", { target: targetLufs.toFixed(1) })}
-              disabled={!normalizeLufsEnabled}
-              testid={favoritesLufsTestId(targetLufs)}
-              onSelect={() => select(() => void normalizeLufsFavorite(targetLufs))}
-            />
-          {/each}
-        </div>
-      {/if}
-      <MenuSeparatorRow />
-      <MenuItemRow
-        label={t("rack_preset.menu")}
-        testid="menu-rack-presets"
-        isSubmenuTrigger
-        expanded={rackPresetsOpen}
-        onSelect={() => (rackPresetsOpen ? closeRackPresetsSubmenu(false) : openRackPresetsSubmenu())}
-      />
-      {#if rackPresetsOpen}
-        <div
-          bind:this={rackPresetsPopupEl}
-          role="menu"
-          tabindex="-1"
-          aria-label={t("rack_preset.menu")}
-          class="menu-popup submenu-popup"
-          data-testid="rack-presets-submenu"
-          onkeydown={onRackPresetsPopupKeydown}
-        >
-          {#if confirmingRackPreset}
-            <div class="confirm-replace">
-              <p>{t("rack_preset.confirm_replace")}</p>
-              <div class="confirm-actions">
-                <button type="button" onclick={() => (confirmingRackPreset = null)}>
-                  {t("rack_preset.confirm_replace_cancel")}
-                </button>
-                <button
-                  type="button"
-                  class="primary"
-                  data-testid="rack-preset-confirm-replace"
-                  onclick={() => void applyRackPreset(confirmingRackPreset!)}
-                >
-                  {t("rack_preset.confirm_replace_confirm")}
-                </button>
-              </div>
-            </div>
-          {:else if rackPresetEntries === null}
-            <span class="preset-empty">…</span>
-          {:else if rackPresetEntries.length === 0 && !savingRackPreset}
-            <span class="preset-empty">{t("rack_preset.none")}</span>
-          {:else}
-            {#each rackPresetEntries as entry (refToKey(entry.is_factory ? { kind: "factory", key: entry.key } : { kind: "user", name: entry.key }))}
-              <div class="preset-row">
-                <button
-                  type="button"
-                  role="menuitem"
-                  class="preset-name"
-                  data-testid="rack-preset-{entry.key}"
-                  onclick={() => pickRackPreset(entry)}
-                >
-                  {localized(entry.name)}
-                </button>
-                {#if !entry.is_factory}
-                  <button
-                    type="button"
-                    class="preset-delete"
-                    title={t("rack_preset.delete")}
-                    data-testid="rack-preset-delete-{entry.key}"
-                    onclick={(e) => void deleteRackPresetEntry(entry, e)}
-                  >
-                    ×
-                  </button>
-                {/if}
-              </div>
-            {/each}
-          {/if}
-          {#if !confirmingRackPreset}
-            <MenuSeparatorRow />
-            {#if savingRackPreset}
-              <div class="save-form">
-                <input
-                  type="text"
-                  placeholder={t("rack_preset.name_placeholder")}
-                  data-testid="rack-preset-name"
-                  bind:value={rackPresetName}
-                  onkeydown={(e) => {
-                    if (e.key === "Enter") void confirmSaveRackPreset();
-                  }}
-                />
-                <div class="save-actions">
-                  <button
-                    type="button"
-                    data-testid="rack-preset-save-confirm"
-                    onclick={() => void confirmSaveRackPreset()}
-                  >
-                    {t("rack_preset.save_button")}
-                  </button>
-                  <button type="button" onclick={() => (savingRackPreset = false)}>
-                    {t("rack_preset.cancel_button")}
-                  </button>
-                </div>
-              </div>
-            {:else}
-              <MenuItemRow
-                label={t("rack_preset.save_as")}
-                testid="rack-preset-save"
-                onSelect={startSaveRackPreset}
-              />
-            {/if}
-          {/if}
-        </div>
-      {/if}
-    </div>
-  {/if}
-</div>
+      {t("rack_preset.confirm_replace_confirm")}
+    </Button>
+  </div>
+{/snippet}
 
-<style>
-  .menu {
-    position: relative;
-  }
+{#snippet saveForm()}
+  <input
+    type="text"
+    placeholder={t("rack_preset.name_placeholder")}
+    aria-label={t("rack_preset.name_placeholder")}
+    data-testid="rack-preset-name"
+    bind:value={rackPresetName}
+    onkeydown={(e) => {
+      if (e.key === "Enter") void confirmSaveRackPreset();
+    }}
+    {@attach (node) => node.focus()}
+  />
+  <div class="actions">
+    <Button size="sm" onclick={() => (savingRackPreset = false)}>
+      {t("rack_preset.cancel_button")}
+    </Button>
+    <Button size="sm" variant="primary" testid="rack-preset-save-confirm" onclick={() => void confirmSaveRackPreset()}>
+      {t("rack_preset.save_button")}
+    </Button>
+  </div>
+{/snippet}
 
-  button[data-menu-trigger] {
-    height: var(--pv-control-h-sm);
-    padding: 0 var(--pv-space-2);
-    border: none;
-    border-radius: var(--pv-radius-sm);
-    background: none;
-    color: var(--pv-text-primary);
-    font-family: var(--pv-font-sans);
-    font-size: var(--pv-text-md);
-    cursor: default;
-  }
-
-  button[data-menu-trigger]:hover,
-  button[data-menu-trigger][aria-expanded="true"] {
-    background: var(--pv-control-bg-active);
-  }
-
-  u {
-    text-decoration: underline;
-  }
-
-  .menu-popup {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    z-index: var(--pv-z-dropdown);
-    display: flex;
-    flex-direction: column;
-    min-width: 15rem;
-    margin-top: var(--pv-space-half);
-    padding: var(--pv-space-1);
-    border: var(--pv-border-width) solid var(--pv-border);
-    border-radius: var(--pv-radius-md);
-    background: var(--pv-bg-overlay);
-    box-shadow: var(--pv-shadow-2);
-  }
-
-  .submenu-popup {
-    top: 0;
-    left: 100%;
-    margin-top: 0;
-    margin-left: 0.15rem;
-    min-width: 12rem;
-  }
-
-  .preset-empty {
-    color: var(--text-secondary);
-    font-size: 0.8rem;
-    padding: 0.3rem 0.6rem;
-  }
-
-  .preset-row {
-    display: flex;
-    align-items: center;
-  }
-
-  .preset-name {
-    flex: 1;
-    text-align: left;
-    background: transparent;
-    border: none;
-    color: var(--text-primary);
-    padding: 0.3rem 0.6rem;
-  }
-
-  .preset-name:hover {
-    background: var(--surface-panel-raised);
-  }
-
-  .preset-delete {
-    background: transparent;
-    border: none;
-    color: var(--text-secondary);
-    padding: 0 0.4rem;
-  }
-
-  .preset-delete:hover {
-    color: var(--meter-yellow);
-  }
-
-  .save-form {
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-    padding: 0.3rem 0.6rem;
-  }
-
-  .save-form input[type="text"] {
-    background: var(--surface-inset);
-    border: 1px solid var(--surface-border);
-    color: var(--text-primary);
-    border-radius: 3px;
-    padding: 0.2rem 0.4rem;
-  }
-
-  .save-actions,
-  .confirm-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 0.4rem;
-  }
-
-  .confirm-replace {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-    padding: 0.4rem 0.6rem;
-    max-width: 14rem;
-  }
-
-  .confirm-replace p {
-    margin: 0;
-    color: var(--text-secondary);
-    font-size: 0.8rem;
-  }
-
-  .confirm-replace button.primary {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-</style>
+<MenuBarMenu
+  id="effects"
+  label={t("menu.effects")}
+  mnemonic={MENU_MNEMONICS.effects}
+  {items}
+  triggerTestid="menu-trigger-effects"
+  menuTestid="effects-menu"
+  minWidth={240}
+/>

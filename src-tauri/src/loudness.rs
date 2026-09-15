@@ -281,15 +281,21 @@ fn run_job(
         Err(err) if err.code == IpcErrorCode::Cancelled => (JobState::Cancelled, 0.0),
         Err(_) => (JobState::Failed, 0.0),
     };
+    // H-30: the error notice goes out before the terminal `Failed` progress event (bake.rs's
+    // `fail_job` convention), so anything that sees `Failed` already has the reason. A
+    // cancellation posts no notice (the user asked for it) — this used to post one regardless of
+    // `state`, which meant a plain cancel wrongly toasted `error.cancelled`.
+    if let (JobState::Failed, Err(err)) = (state, &result) {
+        (inner.emit)(LoudnessEvent::Notice(notice_from_error(err)));
+    }
     (inner.emit)(LoudnessEvent::Progress(JobProgressDto {
         job_id,
         kind: JobKind::LoudnessAnalyze,
         state,
         fraction,
     }));
-    match result {
-        Ok(report) => (inner.emit)(LoudnessEvent::Report { job_id, report }),
-        Err(err) => (inner.emit)(LoudnessEvent::Notice(notice_from_error(&err))),
+    if let Ok(report) = result {
+        (inner.emit)(LoudnessEvent::Report { job_id, report });
     }
 }
 
@@ -658,5 +664,143 @@ mod tests {
             (delta_db - 6.0).abs() <= 0.1,
             "expected a 6.0 +/- 0.1 dB drop, got {delta_db:.4}"
         );
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum TestEvent {
+        Progress(JobState),
+        Notice(String),
+    }
+
+    fn wait_for_finish(events: &Mutex<Vec<TestEvent>>) -> JobState {
+        for _ in 0..500 {
+            if let Some(state) = events.lock().unwrap().iter().find_map(|e| match e {
+                TestEvent::Progress(state) if *state != JobState::Running => Some(*state),
+                _ => None,
+            }) {
+                return state;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the loudness job never reported a terminal state within 5s");
+    }
+
+    /// A live engine (fake backend, real output device) whose OWN registry knows
+    /// `vox_module_api::test_util::TestNaN` — [`Inner::registry`] below deliberately doesn't, so
+    /// `analyze_processed`'s `build_chain` fails deterministically with a missing-module error
+    /// (mirrors `bake.rs`'s `a_failing_slot_aborts_the_bake...` test), no timing race needed.
+    fn live_engine_with_unknown_module() -> (
+        vox_engine::Engine,
+        vox_engine::EngineHandle,
+        vox_engine::backend::fake::FakeDriver,
+    ) {
+        use vox_engine::backend::fake::{FakeBackend, FakeDevice, FakeDirection};
+        use vox_engine::{HostId, RackCommand};
+        use vox_module_api::Module as _;
+        use vox_module_api::test_util::TestNaN;
+
+        let fake = FakeBackend::new(1);
+        fake.plug(
+            HostId::Alsa,
+            FakeDevice::new("DAC").with_output(
+                FakeDirection::new(2, &[48_000], 48_000)
+                    .default_buffer(256)
+                    .record_output(),
+            ),
+        );
+        let driver = fake.spawn_driver(std::time::Duration::from_millis(1));
+        let mut factories = vox_modules::builtin_factories();
+        struct NanFactory(vox_module_api::ModuleDescriptor);
+        impl vox_module_api::ModuleFactory for NanFactory {
+            fn descriptor(&self) -> &vox_module_api::ModuleDescriptor {
+                &self.0
+            }
+            fn create(
+                &self,
+            ) -> Result<Box<dyn vox_module_api::Module>, vox_module_api::ModuleError> {
+                Ok(Box::new(TestNaN::new(0)))
+            }
+        }
+        factories.push(Arc::new(NanFactory(TestNaN::new(0).descriptor().clone())));
+        let engine_registry = Arc::new(Registry::with_factories(factories).unwrap());
+        let engine = vox_engine::Engine::start(vox_engine::EngineConfig::new(
+            Arc::new(fake),
+            engine_registry,
+        ))
+        .unwrap();
+        let handle = engine.handle();
+        let mut opened = false;
+        for _ in 0..500 {
+            if handle
+                .rack_command(RackCommand::Add {
+                    module_id: TestNaN::ID.into(),
+                    index: 0,
+                })
+                .is_ok()
+            {
+                opened = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(opened, "the fake output device never opened a live rack");
+        (engine, handle, driver)
+    }
+
+    /// H-30: a failed job's error notice is already posted by the time `wait_for_finish` sees the
+    /// terminal `Failed` state — no extra polling for the notice itself.
+    #[test]
+    fn a_failed_job_posts_the_notice_before_the_terminal_failed_progress_event() {
+        let dir = crate::test_util::tmp_dir("loudness-failed-order");
+        let (_engine, handle, _driver) = live_engine_with_unknown_module();
+        let documents = DocumentService::new(dir.join("sessions"), handle.clone());
+        let samples = vox_testkit::signal::sine(440.0, -12.0, 0.2, 48_000).unwrap();
+        let path = dir.join("in.wav");
+        vox_testkit::wav::write_wav_file(
+            &path,
+            &samples,
+            1,
+            48_000,
+            vox_testkit::wav::BitDepth::Float32,
+        )
+        .unwrap();
+        documents.open(&path, false).unwrap();
+
+        let events: Arc<Mutex<Vec<TestEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        let emit: LoudnessEmitter = Arc::new(move |event| {
+            let e = match event {
+                LoudnessEvent::Progress(dto) => TestEvent::Progress(dto.state),
+                LoudnessEvent::Notice(n) => TestEvent::Notice(n.key),
+                LoudnessEvent::Report { .. } => return,
+            };
+            sink.lock().unwrap().push(e);
+        });
+        let inner = Arc::new(Inner {
+            documents,
+            engine: handle,
+            registry: Arc::new(registry()),
+            emit,
+            next_id: AtomicU32::new(1),
+            jobs: Mutex::new(HashMap::new()),
+        });
+        let service = LoudnessService(inner);
+
+        service
+            .start_job(LoudnessRequest {
+                range: None,
+                source: LoudnessSource::Processed,
+            })
+            .unwrap();
+        assert_eq!(wait_for_finish(&events), JobState::Failed);
+
+        let got = events.lock().unwrap().clone();
+        assert!(
+            got.iter()
+                .any(|e| matches!(e, TestEvent::Notice(key) if key == "error.loudness.rack")),
+            "the notice must already be present once `Failed` is observed: {got:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

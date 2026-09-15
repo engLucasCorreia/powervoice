@@ -527,6 +527,7 @@
   "error.bake.slot_failed": "Effect \"{slot}\" failed — the bake was stopped and the audio is unchanged.",
   "error.bake.missing_modules": "The rack uses effects that aren't installed ({modules}) — nothing was baked.",
   "error.bake.rack": "Baking the rack failed: {message}",
+  "error.bake.busy": "The rack can't be changed while it's being baked.",
   "dialog.bake.noise_only_confirm.title": "Output noise only",
   "dialog.bake.noise_only_confirm.message": "Noise Reduction is set to Output noise only — the result will contain only the removed noise. Continue?",
   "dialog.bake.noise_only_confirm.continue": "Bake anyway",

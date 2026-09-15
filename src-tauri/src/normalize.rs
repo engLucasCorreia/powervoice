@@ -314,22 +314,24 @@ fn run_lufs_job(
 /// Common tail for a cancelled or failed job (either pass 1/2's own `ProjectError::Cancelled`, or
 /// a conflict `DocumentService::finish_normalize_peak`/`finish_normalize_lufs` detected):
 /// `job_progress` reports `Cancelled`/`Failed`, and a cancellation posts no notice (the user asked
-/// for it) while a real failure does.
+/// for it) while a real failure does. H-30: the notice goes out before the terminal progress
+/// event (bake.rs's `fail_job` convention), so anything that sees `Failed` — the UI's job store,
+/// tests — already has the reason.
 fn fail_job(inner: &Inner, job_id: u32, kind: JobKind, err: IpcError) {
     let state = if err.code == IpcErrorCode::Cancelled {
         JobState::Cancelled
     } else {
         JobState::Failed
     };
+    if state == JobState::Failed {
+        (inner.emit)(NormalizeEvent::Notice(notice_from_error(&err)));
+    }
     (inner.emit)(NormalizeEvent::Progress(JobProgressDto {
         job_id,
         kind,
         state,
         fraction: 0.0,
     }));
-    if state == JobState::Failed {
-        (inner.emit)(NormalizeEvent::Notice(notice_from_error(&err)));
-    }
 }
 
 #[cfg(test)]
@@ -614,6 +616,68 @@ mod tests {
         service.cancel_job(job_id);
         assert_eq!(wait_for_finish(&events), JobState::Cancelled);
         assert!(!documents.is_normalize_busy());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// H-30: a failed job's error notice is already posted by the time `wait_for_finish` sees the
+    /// terminal `Failed` state — checked without any extra polling for the notice itself (the
+    /// point of the ordering fix). Replacing the document deterministically fails the job with
+    /// `error.document_busy` (`finish_normalize_peak` sees a session mismatch): the swap happens
+    /// from inside the job's own first progress callback (`plan_normalize_peak`'s `on_progress
+    /// (0.0)`, called before any scanning) — the same "hook a callback instead of racing wall
+    /// clock time" trick `plan_normalize_peak_cancel_mid_write_returns_cancelled` uses for
+    /// cancellation, so this needs no timing margin at all.
+    #[test]
+    fn a_failed_job_posts_the_notice_before_the_terminal_failed_progress_event() {
+        let samples = vox_testkit::signal::sine(440.0, -12.0, 0.2, 48_000).unwrap();
+        let len = samples.len() as u64;
+        let dir = tmp_dir("replaced");
+        let engine = test_engine();
+        let documents = DocumentService::new(dir.join("sessions"), engine.handle());
+        open_test_doc(&documents, &dir, &samples);
+
+        let other_path = dir.join("other.wav");
+        vox_testkit::wav::write_wav_file(
+            &other_path,
+            &vox_testkit::signal::sine(220.0, -12.0, 0.05, 48_000).unwrap(),
+            1,
+            48_000,
+            vox_testkit::wav::BitDepth::Float32,
+        )
+        .unwrap();
+
+        let events: Arc<Mutex<Vec<TestEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_for_emit = Arc::clone(&events);
+        let documents_for_emit = documents.clone();
+        let swapped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let emit: NormalizeEmitter = Arc::new(move |event| {
+            if let NormalizeEvent::Progress(dto) = &event
+                && dto.state == JobState::Running
+                && !swapped.swap(true, Ordering::SeqCst)
+            {
+                documents_for_emit.open(&other_path, false).unwrap();
+            }
+            events_for_emit.lock().unwrap().push(TestEvent::from(event));
+        });
+        let inner = Arc::new(Inner {
+            documents: documents.clone(),
+            emit,
+            next_id: AtomicU32::new(1),
+            jobs: Mutex::new(HashMap::new()),
+        });
+        let service = NormalizeService(inner);
+
+        service.start_peak_job(0, len, Some(-1.0), None).unwrap();
+        assert_eq!(wait_for_finish(&events), JobState::Failed);
+        assert!(!documents.is_normalize_busy());
+
+        let got = events.lock().unwrap().clone();
+        assert!(
+            got.iter()
+                .any(|e| matches!(e, TestEvent::Notice(key) if key == "error.document_busy")),
+            "the notice must already be present once `Failed` is observed: {got:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

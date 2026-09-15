@@ -69,6 +69,15 @@ pub fn run() {
                 documents.clone(),
                 &settings,
             );
+            // T-204: the spectrogram tile service (its own worker threads + content-keyed tile
+            // cache; ADR-001 §4, SPEC-007 §4.1). Shared as an `Arc` so commands can hand it to
+            // `spawn_blocking`. Built before export/bake/documents' own wiring below (H-30) so
+            // each can hold `begin_background_job()` for its own job/save.
+            let spectro = std::sync::Arc::new(vox_engine::spectro::SpectroService::new(
+                vox_engine::spectro::SpectroConfig::default(),
+            ));
+            // H-30 (SPEC-007 §4.1): "save" is the third job the spec lists alongside export/bake.
+            documents.set_spectro(std::sync::Arc::clone(&spectro));
             // S4-04/H-08: the export job service (its own registry instance — modules are
             // stateless per-instance, so sharing the engine's would only save one small
             // allocation) renders the live rack via `EngineHandle::rack_model()`.
@@ -76,6 +85,7 @@ pub fn run() {
                 app.handle().clone(),
                 documents.clone(),
                 engine.handle().clone(),
+                std::sync::Arc::clone(&spectro),
             )?;
             // S3-06: the Capture Noise Print job service.
             let nr_capture = nr_capture::start(
@@ -93,12 +103,6 @@ pub fn run() {
             // H-09: the normalize job service (peak + LUFS) — no engine handle needed, unlike
             // export/nr_capture/loudness (SPEC-010 never touches the rack).
             let normalize = normalize::start(app.handle().clone(), documents.clone())?;
-            // T-204: the spectrogram tile service (its own worker threads + content-keyed tile
-            // cache; ADR-001 §4, SPEC-007 §4.1). Shared as an `Arc` so commands can hand it to
-            // `spawn_blocking`.
-            let spectro = std::sync::Arc::new(vox_engine::spectro::SpectroService::new(
-                vox_engine::spectro::SpectroConfig::default(),
-            ));
             // T-602: the Bake rack job service (renders the live rack like export; halves the
             // spectrogram's tile workers while it runs, SPEC-007 §4.1).
             let bake = bake::start(

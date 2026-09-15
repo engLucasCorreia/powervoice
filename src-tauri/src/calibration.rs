@@ -14,7 +14,7 @@ use vox_engine::record::{CalibrationError, CalibrationStatus};
 
 use crate::ipc::{
     CalibrationResultDto, EventName, IpcError, IpcErrorCode, JobKind, JobProgressDto, JobState,
-    emit_job_progress,
+    Notice, NoticeLevel, emit_job_progress, emit_notice,
 };
 
 /// How often the worker polls the engine (and so the `job_progress` rate).
@@ -24,6 +24,10 @@ const POLL: Duration = Duration::from_millis(100);
 pub enum CalibrationEvent {
     Progress(JobProgressDto),
     Result(CalibrationResultDto),
+    /// H-30: a failed run's reason, posted before the terminal `Failed` progress event (every
+    /// other job service's `fail_job` convention) — the calibration wizard's own "failed" stage
+    /// (`record.svelte.ts::onJobProgress`) used to show no reason at all.
+    Notice(Notice),
 }
 
 /// Emits [`CalibrationEvent`]s (built by [`start`] from the app handle).
@@ -49,6 +53,7 @@ pub fn start<R: Runtime>(app: &AppHandle<R>, engine: EngineHandle) -> Calibratio
             let result = match event {
                 CalibrationEvent::Progress(p) => emit_job_progress(&app, p),
                 CalibrationEvent::Result(r) => app.emit(EventName::calibration_result.as_str(), r),
+                CalibrationEvent::Notice(n) => emit_notice(&app, n),
             };
             if let Err(e) = result {
                 tracing::warn!(error = %e, "emitting a calibration event failed");
@@ -82,6 +87,15 @@ pub(crate) fn calibration_error(e: CalibrationError) -> IpcError {
         }
         CalibrationError::Cancelled => IpcError::new(IpcErrorCode::Cancelled, "error.cancelled"),
     }
+}
+
+/// H-30: mirrors every other job service's `notice_from_error` (export.rs, loudness.rs, ...).
+fn notice_from_error(err: &IpcError) -> Notice {
+    let mut notice = Notice::toast(NoticeLevel::Error, err.key.clone());
+    for (name, value) in &err.params {
+        notice = notice.with_param(name.clone(), value.clone());
+    }
+    notice
 }
 
 impl CalibrationService {
@@ -137,6 +151,16 @@ impl Inner {
         }));
     }
 
+    /// H-30: reports a failed run — the error notice goes out before the terminal `Failed`
+    /// progress event (every other job service's `fail_job` convention), so the UI's job store
+    /// and tests see the reason as soon as they see `Failed`.
+    fn fail(&self, job_id: u32, error: CalibrationError) {
+        (self.emit)(CalibrationEvent::Notice(notice_from_error(
+            &calibration_error(error),
+        )));
+        self.progress(job_id, JobState::Failed, 0.0);
+    }
+
     /// The job's worker: polls the engine, analyses the finished capture, reports.
     fn watch(&self, job_id: u32, verify: bool) {
         self.progress(job_id, JobState::Running, 0.0);
@@ -175,11 +199,15 @@ impl Inner {
                 }
                 CalibrationStatus::Done(Err(error)) => {
                     tracing::warn!(%error, "latency calibration failed");
-                    self.progress(job_id, JobState::Failed, 0.0);
+                    self.fail(job_id, error);
                     break;
                 }
                 CalibrationStatus::Idle => {
-                    self.progress(job_id, JobState::Failed, 0.0);
+                    // Defensive: the run's own state vanished without a `Done` (should never
+                    // happen — `run` just started it). Reported as `Interrupted` so the wizard's
+                    // failed stage still gets a reason instead of none at all.
+                    tracing::warn!("latency calibration polled Idle while a job was running");
+                    self.fail(job_id, CalibrationError::Interrupted);
                     break;
                 }
             }
@@ -190,6 +218,12 @@ impl Inner {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex as StdMutex;
+
+    use vox_engine::backend::fake::FakeBackend;
+    use vox_engine::{Engine, EngineConfig};
+    use vox_rack::Registry;
+
     use super::*;
 
     /// Refusals map to their i18n keys (SPEC-022 §2.14, AC-12).
@@ -208,5 +242,64 @@ mod tests {
             output_hz: 48_000,
         });
         assert_eq!(e.params.get("input").map(String::as_str), Some("44100"));
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum TestEvent {
+        Progress { state: JobState, fraction: f32 },
+        Notice(String),
+    }
+
+    /// An `Inner::fail` needs an `EngineHandle` field to exist but never calls it — a stopped,
+    /// device-free fake engine is enough (mirrors `nr_capture.rs`'s `stopped_engine`).
+    fn stopped_engine() -> (Engine, EngineHandle) {
+        let fake = FakeBackend::new(1);
+        let registry =
+            Arc::new(Registry::with_factories(vox_modules::builtin_factories()).unwrap());
+        let engine = Engine::start(EngineConfig::new(Arc::new(fake), registry)).unwrap();
+        let handle = engine.handle();
+        (engine, handle)
+    }
+
+    /// H-30: a failed run posts the error notice before the terminal `Failed` progress event
+    /// (every other job service's convention) — checked directly against `Inner::fail`, since
+    /// `watch`'s own loop needs a real hardware-backed calibration run to reach it.
+    #[test]
+    fn a_failed_run_posts_the_notice_before_the_terminal_failed_progress_event() {
+        let (_engine, handle) = stopped_engine();
+        let events: Arc<StdMutex<Vec<TestEvent>>> = Arc::new(StdMutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        let emit: CalibrationEmitter = Arc::new(move |event| {
+            let e = match event {
+                CalibrationEvent::Progress(dto) => TestEvent::Progress {
+                    state: dto.state,
+                    fraction: dto.fraction,
+                },
+                CalibrationEvent::Notice(n) => TestEvent::Notice(n.key),
+                CalibrationEvent::Result(_) => return,
+            };
+            sink.lock().unwrap().push(e);
+        });
+        let service = CalibrationService::new(handle, emit);
+
+        service.0.fail(
+            7,
+            CalibrationError::RateMismatch {
+                input_hz: 44_100,
+                output_hz: 48_000,
+            },
+        );
+
+        let got = events.lock().unwrap().clone();
+        assert_eq!(
+            got,
+            vec![
+                TestEvent::Notice("error.calibration.rate_mismatch".to_string()),
+                TestEvent::Progress {
+                    state: JobState::Failed,
+                    fraction: 0.0
+                },
+            ]
+        );
     }
 }

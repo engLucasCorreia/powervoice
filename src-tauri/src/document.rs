@@ -7,11 +7,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use vox_engine::bake::BakeAttachment;
 use vox_engine::record::DropoutMark;
+use vox_engine::spectro::SpectroService;
 use vox_engine::{EngineHandle, PlaybackDoc, TransportCommand};
 use vox_project::{
     CancelToken, DocumentIdentity, Edit, EditTarget, FinishedTake, ImportProbe,
@@ -451,6 +452,17 @@ struct Inner {
     /// concurrent edit can't race the job's eventual commit (which re-checks the snapshot anyway,
     /// [`DocumentService::finish_normalize_peak`]/[`Self::finish_normalize_lufs`]).
     normalize_busy: Mutex<bool>,
+    /// H-30: `true` specifically while a bake job is running — separate from `normalize_busy`
+    /// (shared with peak/LUFS normalize too), because only a bake's `finish_bake` loads a
+    /// post-job rack into the engine: a rack edit made mid-bake would otherwise be silently
+    /// clobbered by that load. `ipc::rack_commands` refuses rack edits while this is set
+    /// (`error.bake.busy`); a plain normalize job never touches the rack, so it doesn't set it.
+    bake_running: Mutex<bool>,
+    /// H-30 (SPEC-007 §4.1): the spectrogram tile service, wired once by the composition root
+    /// (`set_spectro`) so a full save/save-as can hold `SpectroService::begin_background_job()`
+    /// while it writes — the same guard export/bake hold. `OnceLock` rather than a constructor
+    /// argument: many tests build a `DocumentService` that never touches this.
+    spectro: OnceLock<Arc<SpectroService>>,
     /// T-306/H-20: the last open/save's sidecar/format notices (mismatch/corrupt/too_new/
     /// unreadable/items_dropped/save-failed/format_mapped/metadata_dropped/markers_not_in_flac),
     /// if any — [`DocumentService::take_sidecar_notices`] drains them. A side channel rather than
@@ -1057,6 +1069,8 @@ impl DocumentService {
             open: Mutex::new(None),
             clipboard: Mutex::new(None),
             normalize_busy: Mutex::new(false),
+            bake_running: Mutex::new(false),
+            spectro: OnceLock::new(),
             pending_sidecar_notice: Mutex::new(Vec::new()),
             memory_budget_bytes: AtomicU64::new(StoreOptions::default().memory_budget_bytes),
             session_dirs: Mutex::new(()),
@@ -1717,7 +1731,12 @@ impl DocumentService {
         if !confirm_multichannel && doc.source_channels > 1 && !doc.multichannel_warned {
             return Err(multichannel_confirmation_error(&path));
         }
-        for notice in save_to(doc, &self.0.engine, &path, container, bits, dither)? {
+        // SPEC-007 §4.1 (H-30): tiles use at most half of the workers while a save writes, like
+        // export/bake.
+        let background = self.0.spectro.get().map(|s| s.begin_background_job());
+        let notices = save_to(doc, &self.0.engine, &path, container, bits, dither);
+        drop(background);
+        for notice in notices? {
             self.push_sidecar_notice(notice);
         }
         doc.multichannel_warned = true;
@@ -1755,7 +1774,12 @@ impl DocumentService {
         // write. Bumping the recorded audio_rev back one guarantees `save_to`'s "audio changed"
         // check fires even when Save As targets the very same content just saved in place.
         doc.sidecar.last_saved_audio_rev = doc.sidecar.last_saved_audio_rev.wrapping_sub(1);
-        for notice in save_to(doc, &self.0.engine, path, container, bits, dither)? {
+        // SPEC-007 §4.1 (H-30): tiles use at most half of the workers while a save writes, like
+        // export/bake.
+        let background = self.0.spectro.get().map(|s| s.begin_background_job());
+        let notices = save_to(doc, &self.0.engine, path, container, bits, dither);
+        drop(background);
+        for notice in notices? {
             self.push_sidecar_notice(notice);
         }
         doc.path = Some(path.to_path_buf());
@@ -1828,6 +1852,22 @@ impl DocumentService {
     /// runs" — `error.document_busy`).
     pub fn is_normalize_busy(&self) -> bool {
         *self.0.normalize_busy.lock().unwrap()
+    }
+
+    /// H-30: `true` specifically while a bake job is running (`begin_bake_job`..
+    /// `finish_bake`/`abandon_bake_job`) — `ipc::rack_commands` refuses rack edits then
+    /// (`error.bake.busy`) instead of letting the bake's post-job rack load silently clobber
+    /// them.
+    pub fn is_bake_running(&self) -> bool {
+        *self.0.bake_running.lock().unwrap()
+    }
+
+    /// H-30 (SPEC-007 §4.1): wires the spectrogram tile service so `save`/`save_as` can hold
+    /// `SpectroService::begin_background_job()` while they write, alongside export/bake. Called
+    /// once by the composition root, right after both are constructed; a `DocumentService` that
+    /// never gets this (most tests) simply never holds the guard.
+    pub fn set_spectro(&self, spectro: Arc<SpectroService>) {
+        let _ = self.0.spectro.set(spectro);
     }
 
     /// S1-04: prepares a new recording at `rate_hz` (the input stream's rate, SPEC-002 §2.2). An
@@ -2542,12 +2582,17 @@ impl DocumentService {
     /// [`Self::finish_bake`]/[`Self::abandon_bake_job`]). Returns the read-only source the job
     /// renders from.
     pub fn begin_bake_job(&self, start: u64, end: u64) -> Result<NormalizeJobSource, IpcError> {
-        self.begin_normalize_job(start, end)
+        let source = self.begin_normalize_job(start, end)?;
+        // H-30: set only once every other check passed, mirroring `normalize_busy` above —
+        // `ipc::rack_commands` starts refusing rack edits from this point on.
+        *self.0.bake_running.lock().unwrap() = true;
+        Ok(source)
     }
 
     /// Releases the busy flag of a bake that produced no edit (cancelled or failed): nothing was
     /// committed, so the document and the rack are exactly as before.
     pub fn abandon_bake_job(&self) {
+        *self.0.bake_running.lock().unwrap() = false;
         self.abandon_normalize_job();
     }
 
@@ -2577,6 +2622,9 @@ impl DocumentService {
         if result.is_ok() {
             self.load_rack(after);
         }
+        // H-30: cleared after `load_rack`, so a rack edit stays refused until the bake's own
+        // post-job rack is the one live (nothing to race against it).
+        *self.0.bake_running.lock().unwrap() = false;
         *self.0.normalize_busy.lock().unwrap() = false;
         result
     }
@@ -3015,8 +3063,11 @@ fn save_to(
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::time::Instant;
 
     use vox_engine::backend::fake::{FakeBackend, FakeDevice, FakeDirection};
+    use vox_engine::spectro::{SpectroConfig, SpectroService};
     use vox_engine::{Engine, EngineConfig};
     use vox_rack::Registry;
 
@@ -3358,6 +3409,81 @@ mod tests {
         // still round-trips — proves `doc.save_container` was actually rebound, not just the
         // one Save As call.
         service.save(false, false, false).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// H-30 (SPEC-007 §4.1): "while a save, export or bake job runs, tile work uses at most half
+    /// of the workers" — checked directly through `SpectroService::worker_cap_now` (a
+    /// synchronous witness of the guard) rather than racing real tile computation: a large
+    /// buffer written as FLAC (real encoder work, `vox_io::write_flac`) keeps `save_as` busy long
+    /// enough for the polling loop below to observe the halved cap without any fixed sleep to
+    /// race against.
+    #[test]
+    fn save_as_holds_the_spectro_guard_while_it_writes() {
+        let (service, _engine, dir) = service("save-spectro-guard");
+        let wav_path = dir.join("in.wav");
+        let samples = vox_testkit::signal::pink_noise(11, -20.0, 60.0, 48_000).unwrap();
+        write_fixture_wav(
+            &wav_path,
+            &samples,
+            vox_testkit::wav::BitDepth::Int24,
+            48_000,
+        );
+        service.open(&wav_path, false).unwrap();
+
+        let spectro = Arc::new(SpectroService::new(SpectroConfig {
+            workers: 4,
+            cache_cap_bytes: None,
+        }));
+        service.set_spectro(Arc::clone(&spectro));
+
+        let flac_path = dir.join("out.flac");
+        let done = Arc::new(AtomicBool::new(false));
+        let done_for_job = Arc::clone(&done);
+        let job_service = service.clone();
+        std::thread::Builder::new()
+            .name("save-guard-test-job".into())
+            .spawn(move || {
+                job_service
+                    .save_as(
+                        &flac_path,
+                        SaveContainer::Flac,
+                        BitDepth::Bit16,
+                        SaveDitherPref::Tpdf,
+                        true,
+                        true,
+                    )
+                    .unwrap();
+                done_for_job.store(true, Ordering::SeqCst);
+            })
+            .unwrap();
+
+        let mut saw_halved = false;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done.load(Ordering::SeqCst) {
+            if spectro.worker_cap_now() == 2 {
+                saw_halved = true;
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the save_as job never finished within 10s"
+            );
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        while !done.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            saw_halved,
+            "never observed the halved tile-worker cap while save_as wrote the file"
+        );
+        assert_eq!(
+            spectro.worker_cap_now(),
+            4,
+            "the cap is restored once save_as finishes"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

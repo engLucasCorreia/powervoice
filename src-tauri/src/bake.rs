@@ -507,6 +507,10 @@ mod tests {
             !h.documents.is_normalize_busy(),
             "the busy flag is released"
         );
+        assert!(
+            !h.documents.is_bake_running(),
+            "H-30: the rack-edit guard is released once the bake commits"
+        );
 
         // The baked audio is the export render (latency trimmed, tail included), bit for bit.
         let baked = samples_of(&h.documents);
@@ -620,6 +624,10 @@ mod tests {
         h.service.start_job(0, len).unwrap();
         assert_eq!(wait_for_finish(&h.events), JobState::Failed);
         assert!(!h.documents.is_normalize_busy());
+        assert!(
+            !h.documents.is_bake_running(),
+            "H-30: also released on failure"
+        );
         assert_eq!(h.documents.info().audio_rev, rev);
         assert!(!h.documents.history_state().can_undo);
         assert_eq!(h.handle.rack_model().unwrap(), rack_before);
@@ -661,8 +669,10 @@ mod tests {
             "error.no_selection"
         );
 
-        // While a bake runs: a second bake, edits, undo/redo and normalize are refused.
+        // While a bake runs: a second bake, edits, undo/redo and normalize are refused, and
+        // (H-30) `is_bake_running` is set so `ipc::rack_commands` refuses rack edits too.
         let job = h.service.start_job(0, len).unwrap();
+        assert!(h.documents.is_bake_running());
         assert_eq!(
             h.service.start_job(0, len).unwrap_err().code,
             IpcErrorCode::Busy
@@ -682,6 +692,10 @@ mod tests {
         h.service.cancel_job(job);
         assert_eq!(wait_for_finish(&h.events), JobState::Cancelled);
         assert!(!h.documents.is_normalize_busy());
+        assert!(
+            !h.documents.is_bake_running(),
+            "H-30: a cancelled bake also releases the rack-edit guard"
+        );
     }
 
     #[test]

@@ -27,6 +27,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Runtime};
 use vox_engine::EngineHandle;
 use vox_engine::bake::{DocumentRange, RangeRenderError, render_document_range_to_vec};
+use vox_engine::spectro::SpectroService;
 use vox_project::CancelToken;
 use vox_rack::{RackModel, Registry};
 
@@ -72,6 +73,9 @@ struct Inner {
     /// `start_job` — the render never talks to the audio thread.
     engine: EngineHandle,
     registry: Arc<Registry>,
+    /// SPEC-007 §4.1 (H-30): halves tile work while an export runs (`None` in tests that don't
+    /// need it, mirroring `bake.rs`'s `Inner::spectro`).
+    spectro: Option<Arc<SpectroService>>,
     emit: ExportEmitter,
     next_id: AtomicU32,
     jobs: Mutex<std::collections::HashMap<u32, JobHandle>>,
@@ -87,6 +91,7 @@ pub fn start<R: Runtime>(
     app: AppHandle<R>,
     documents: DocumentService,
     engine: EngineHandle,
+    spectro: Arc<SpectroService>,
 ) -> anyhow::Result<ExportService> {
     let registry = crate::plugins::registry()?;
     let emit: ExportEmitter = Arc::new(move |event| forward(&app, event));
@@ -94,6 +99,7 @@ pub fn start<R: Runtime>(
         documents,
         engine,
         registry,
+        spectro: Some(spectro),
         emit,
         next_id: AtomicU32::new(1),
         jobs: Mutex::new(std::collections::HashMap::new()),
@@ -236,6 +242,9 @@ fn run_job(
     target_rate_hz: u32,
     cancel: CancelToken,
 ) {
+    // SPEC-007 §4.1 (H-30): tiles use at most half of the workers while the export runs (mirrors
+    // bake.rs's own guard).
+    let background = inner.spectro.as_ref().map(|s| s.begin_background_job());
     let emit = Arc::clone(&inner.emit);
     let result = run_pipeline(
         &inner.registry,
@@ -256,6 +265,7 @@ fn run_job(
             }));
         },
     );
+    drop(background);
     inner.jobs.lock().unwrap().remove(&job_id);
 
     let (state, fraction) = match &result {
@@ -263,26 +273,26 @@ fn run_job(
         Err(err) if err.code == IpcErrorCode::Cancelled => (JobState::Cancelled, 0.0),
         Err(_) => (JobState::Failed, 0.0),
     };
+    // The error notice goes out before the terminal `Failed` progress event, so anything that
+    // sees `Failed` (the UI's job store, tests) already has the reason (bake.rs's `fail_job`
+    // convention; H-30 made every job service follow it).
+    if let (JobState::Failed, Err(err)) = (state, &result) {
+        (inner.emit)(ExportEvent::Notice(notice_from_error(err)));
+    }
     (inner.emit)(ExportEvent::Progress(JobProgressDto {
         job_id,
         kind: JobKind::Export,
         state,
         fraction,
     }));
-    match (state, result) {
-        (JobState::Done, _) => {
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            (inner.emit)(ExportEvent::Notice(
-                Notice::toast(NoticeLevel::Info, "notice.export.done").with_param("name", name),
-            ));
-        }
-        (JobState::Failed, Err(err)) => {
-            (inner.emit)(ExportEvent::Notice(notice_from_error(&err)));
-        }
-        _ => {}
+    if state == JobState::Done {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        (inner.emit)(ExportEvent::Notice(
+            Notice::toast(NoticeLevel::Info, "notice.export.done").with_param("name", name),
+        ));
     }
 }
 
@@ -853,6 +863,7 @@ mod tests {
             documents,
             engine: handle.clone(),
             registry: Arc::new(registry()),
+            spectro: None,
             emit,
             next_id: AtomicU32::new(1),
             jobs: Mutex::new(std::collections::HashMap::new()),
@@ -891,6 +902,94 @@ mod tests {
         assert!(
             (peak - (-26.0)).abs() <= 0.01,
             "peak {peak} dBFS, expected -26.00 +/- 0.01 (empty-rack peak would be -20.00)"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// H-30 (SPEC-007 §4.1): "while a save, export or bake job runs, tile work uses at most half
+    /// of the workers" — checked directly through `SpectroService::worker_cap_now` (a
+    /// synchronous witness of the guard, not a race against real tile computation like
+    /// `crates/engine/tests/spectro.rs`'s own test of the underlying mechanism): a large buffer
+    /// resampled to a different rate keeps `run_job` busy long enough for the polling loop below
+    /// to observe the halved cap without any fixed sleep to race against.
+    #[test]
+    fn export_holds_the_spectro_guard_for_the_whole_render() {
+        let dir = tmp_dir("spectro-guard");
+        let fake = FakeBackend::new(1);
+        let engine_registry =
+            Arc::new(Registry::with_factories(vox_modules::builtin_factories()).unwrap());
+        let engine = Engine::start(EngineConfig::new(Arc::new(fake), engine_registry)).unwrap();
+        let documents = DocumentService::new(dir.join("sessions"), engine.handle());
+
+        let samples = vox_testkit::signal::pink_noise(8, -20.0, 60.0, 48_000).unwrap();
+        let len = samples.len() as u64;
+        let source = source_from(&dir, &samples, 48_000);
+        let spectro = Arc::new(vox_engine::spectro::SpectroService::new(
+            vox_engine::spectro::SpectroConfig {
+                workers: 4,
+                cache_cap_bytes: None,
+            },
+        ));
+        let inner = Arc::new(Inner {
+            documents,
+            engine: engine.handle(),
+            registry: Arc::new(registry()),
+            spectro: Some(Arc::clone(&spectro)),
+            emit: Arc::new(|_| {}),
+            next_id: AtomicU32::new(1),
+            jobs: Mutex::new(std::collections::HashMap::new()),
+        });
+
+        let out_path = dir.join("out.wav");
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done_for_job = Arc::clone(&done);
+        std::thread::Builder::new()
+            .name("export-guard-test-job".into())
+            .spawn(move || {
+                run_job(
+                    inner,
+                    1,
+                    source,
+                    gain_model(-6.0),
+                    0,
+                    len,
+                    out_path,
+                    ExportFormat::Wav(vox_io::BitDepth::Int16),
+                    // A real resample (44.1 kHz) is real DSP work on the whole buffer, on top of
+                    // the render — comfortably slower than a bit-identical WAV copy.
+                    44_100,
+                    CancelToken::new(),
+                );
+                done_for_job.store(true, std::sync::atomic::Ordering::SeqCst);
+            })
+            .unwrap();
+
+        let mut saw_halved = false;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !done.load(std::sync::atomic::Ordering::SeqCst) {
+            if spectro.worker_cap_now() == 2 {
+                saw_halved = true;
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the export job never finished within 10s"
+            );
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        // Let the job finish either way, then confirm the guard released the cap.
+        while !done.load(std::sync::atomic::Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            saw_halved,
+            "never observed the halved tile-worker cap while the export ran"
+        );
+        assert_eq!(
+            spectro.worker_cap_now(),
+            4,
+            "the cap is restored once the export finishes"
         );
 
         std::fs::remove_dir_all(&dir).unwrap();

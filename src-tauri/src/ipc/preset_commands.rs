@@ -8,6 +8,7 @@ use vox_engine::RackCommand;
 use vox_rack::ModuleState;
 
 use crate::audio::AudioEngine;
+use crate::document::DocumentService;
 use crate::ipc::error::{IpcError, IpcErrorCode};
 use crate::ipc::preset_dto::{PresetEntryDto, PresetRefDto, preset_ipc_error};
 use crate::ipc::rack_commands::apply;
@@ -118,6 +119,7 @@ fn save_module_preset(
 #[tauri::command]
 pub async fn module_preset_load(
     engine: State<'_, AudioEngine>,
+    documents: State<'_, DocumentService>,
     presets: State<'_, PresetStores>,
     slot: usize,
     module_id: String,
@@ -132,6 +134,7 @@ pub async fn module_preset_load(
     .map_err(join_blocking_err)??;
     apply(
         &engine,
+        &documents,
         RackCommand::ApplyModulePreset { index: slot, state },
     )
     .await
@@ -164,9 +167,15 @@ fn no_such_preset(key: &str) -> IpcError {
 #[tauri::command]
 pub async fn module_reset_default(
     engine: State<'_, AudioEngine>,
+    documents: State<'_, DocumentService>,
     slot: usize,
 ) -> Result<RackStateDto, IpcError> {
-    apply(&engine, RackCommand::ResetToDefault { index: slot }).await
+    apply(
+        &engine,
+        &documents,
+        RackCommand::ResetToDefault { index: slot },
+    )
+    .await
 }
 
 /// Renames a user module preset.
@@ -266,9 +275,13 @@ pub async fn rack_preset_save(
 #[tauri::command]
 pub async fn rack_preset_load(
     engine: State<'_, AudioEngine>,
+    documents: State<'_, DocumentService>,
     presets: State<'_, PresetStores>,
     preset: PresetRefDto,
 ) -> Result<RackStateDto, IpcError> {
+    if documents.is_bake_running() {
+        return Err(crate::ipc::rack_commands::bake_busy());
+    }
     let store = presets.racks.clone();
     let model = tauri::async_runtime::spawn_blocking(move || match preset {
         PresetRefDto::Factory { key } => vox_presets::factory_rack_presets()

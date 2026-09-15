@@ -241,25 +241,26 @@ fn run_job(
         Err(err) if err.code == IpcErrorCode::Cancelled => (JobState::Cancelled, 0.0),
         Err(_) => (JobState::Failed, 0.0),
     };
+    // H-30: the error notice goes out before the terminal `Failed` progress event (bake.rs's
+    // `fail_job` convention), so anything that sees `Failed` already has the reason. Cancelled
+    // still posts nothing (the previous print, if any, is untouched) and a success's warnings
+    // still follow the `Done` progress event — neither of those orderings is load-bearing.
+    if let (JobState::Failed, Err(err)) = (state, &result) {
+        (inner.emit)(NrCaptureEvent::Notice(notice_from_error(err)));
+    }
     (inner.emit)(NrCaptureEvent::Progress(JobProgressDto {
         job_id,
         kind: JobKind::NrCapture,
         state,
         fraction,
     }));
-    match result {
-        Ok(warnings) => {
-            for key in warnings {
-                (inner.emit)(NrCaptureEvent::Notice(Notice::toast(
-                    NoticeLevel::Warning,
-                    key,
-                )));
-            }
+    if let Ok(warnings) = result {
+        for key in warnings {
+            (inner.emit)(NrCaptureEvent::Notice(Notice::toast(
+                NoticeLevel::Warning,
+                key,
+            )));
         }
-        Err(err) if err.code != IpcErrorCode::Cancelled => {
-            (inner.emit)(NrCaptureEvent::Notice(notice_from_error(&err)));
-        }
-        Err(_) => {} // cancelled: no notice, the previous print (if any) is untouched
     }
 }
 
@@ -731,5 +732,85 @@ mod tests {
 
         let warnings = retry_run_pipeline(&inner, &source, &prep, 0, samples.len() as u64).unwrap();
         assert!(warnings.contains(&"notice.nr_capture.capped_60s"));
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum TestEvent {
+        Progress(JobState),
+        Notice(String),
+    }
+
+    fn wait_for_finish(events: &Mutex<Vec<TestEvent>>) -> JobState {
+        for _ in 0..500 {
+            if let Some(state) = events.lock().unwrap().iter().find_map(|e| match e {
+                TestEvent::Progress(state) if *state != JobState::Running => Some(*state),
+                _ => None,
+            }) {
+                return state;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("the nr_capture job never reported a terminal state within 5s");
+    }
+
+    /// H-30: a failed job's error notice is already posted by the time `wait_for_finish` sees the
+    /// terminal `Failed` state — no extra polling for the notice itself (the point of the
+    /// ordering fix). A selection shorter than `min_capture_samples` deterministically fails
+    /// inside `run_pipeline`, before any audio is even read — no timing race needed.
+    #[test]
+    fn a_failed_job_posts_the_notice_before_the_terminal_failed_progress_event() {
+        let dir = tmp_dir("failed-order");
+        let (_engine, handle, _driver) = live_engine_with_nr_slot();
+        let documents = doc_service_for(&dir, handle.clone());
+        let samples = white_noise(9, 0.1, 48_000);
+        let path = dir.join("in.wav");
+        vox_testkit::wav::write_wav_file(
+            &path,
+            &samples,
+            1,
+            48_000,
+            vox_testkit::wav::BitDepth::Float32,
+        )
+        .unwrap();
+        documents.open(&path, false).unwrap();
+
+        let events: Arc<Mutex<Vec<TestEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        let emit: NrCaptureEmitter = Arc::new(move |event| {
+            let e = match event {
+                NrCaptureEvent::Progress(dto) => TestEvent::Progress(dto.state),
+                NrCaptureEvent::Notice(n) => TestEvent::Notice(n.key),
+            };
+            sink.lock().unwrap().push(e);
+        });
+        let inner = Arc::new(Inner {
+            documents,
+            engine: handle,
+            registry: Arc::new(registry()),
+            emit,
+            next_id: AtomicU32::new(1),
+            jobs: Mutex::new(std::collections::HashMap::new()),
+        });
+        let service = NrCaptureService(inner);
+
+        // Far short of the NoiseReduction extension's minimum (0.5 s / 24000 samples at 48 kHz).
+        service
+            .start_job(NrCaptureRequest {
+                hint_slot: None,
+                start: 0,
+                end: 5_000,
+            })
+            .unwrap();
+        assert_eq!(wait_for_finish(&events), JobState::Failed);
+
+        let got = events.lock().unwrap().clone();
+        assert!(
+            got.iter().any(
+                |e| matches!(e, TestEvent::Notice(key) if key == "error.nr_capture.too_short")
+            ),
+            "the notice must already be present once `Failed` is observed: {got:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

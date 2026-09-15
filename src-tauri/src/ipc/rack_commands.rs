@@ -8,16 +8,38 @@ use vox_engine::{ModuleTelemetryFrame, RackCommand};
 use vox_rack::{ModuleDescriptor, ParamId};
 
 use crate::audio::AudioEngine;
-use crate::ipc::error::IpcError;
+use crate::document::DocumentService;
+use crate::ipc::error::{IpcError, IpcErrorCode};
 use crate::ipc::rack_dto::{ModuleDescriptorDto, RackStateDto, ResponseCurveDto, rack_ipc_error};
 use crate::settings::SettingsStore;
+
+/// H-30: a bake reloads the live rack when it commits (`DocumentService::finish_bake`'s post-job
+/// reset) — a rack edit made while the bake runs would otherwise be silently clobbered by that
+/// load. The UI already blocks these behind a modal; this is the backend guard for whatever
+/// reaches here anyway. `pub(crate)` so `preset_commands::rack_preset_load` (a whole-rack load
+/// outside `apply`'s single choke point) reuses the same error.
+pub(crate) fn bake_busy() -> IpcError {
+    IpcError::new(IpcErrorCode::Busy, "error.bake.busy")
+}
+
+/// [`apply`]'s guard, split out so it's unit-testable without a real (cpal-backed) [`AudioEngine`]
+/// — `DocumentService::is_bake_running` alone needs only a fake-backend `EngineHandle` (same
+/// pattern as `commands::telemetry_rate_change`/`rack_list_modules::visible_modules`).
+fn check_not_baking(documents: &DocumentService) -> Result<(), IpcError> {
+    if documents.is_bake_running() {
+        return Err(bake_busy());
+    }
+    Ok(())
+}
 
 /// Runs `cmd` on the engine's control thread and maps the result to a [`RackStateDto`]. `pub(crate)`
 /// so `preset_commands` (T-406) reuses it for `ApplyModulePreset`/`ResetToDefault`.
 pub(crate) async fn apply(
     engine: &AudioEngine,
+    documents: &DocumentService,
     cmd: RackCommand,
 ) -> Result<RackStateDto, IpcError> {
+    check_not_baking(documents)?;
     let handle = engine.handle().clone();
     let result = tauri::async_runtime::spawn_blocking(move || handle.rack_command(cmd))
         .await
@@ -69,54 +91,68 @@ pub async fn rack_get(engine: State<'_, AudioEngine>) -> Result<RackStateDto, Ip
 #[tauri::command]
 pub async fn rack_add(
     engine: State<'_, AudioEngine>,
+    documents: State<'_, DocumentService>,
     module_id: String,
     index: usize,
 ) -> Result<RackStateDto, IpcError> {
-    apply(&engine, RackCommand::Add { module_id, index }).await
+    apply(&engine, &documents, RackCommand::Add { module_id, index }).await
 }
 
 /// Removes the slot at `slot` (index), live.
 #[tauri::command]
 pub async fn rack_remove(
     engine: State<'_, AudioEngine>,
+    documents: State<'_, DocumentService>,
     slot: usize,
 ) -> Result<RackStateDto, IpcError> {
-    apply(&engine, RackCommand::Remove { index: slot }).await
+    apply(&engine, &documents, RackCommand::Remove { index: slot }).await
 }
 
 /// Moves the slot at `from` to `to` (drag-reorder), live.
 #[tauri::command]
 pub async fn rack_move(
     engine: State<'_, AudioEngine>,
+    documents: State<'_, DocumentService>,
     from: usize,
     to: usize,
 ) -> Result<RackStateDto, IpcError> {
-    apply(&engine, RackCommand::Move { from, to }).await
+    apply(&engine, &documents, RackCommand::Move { from, to }).await
 }
 
 /// Per-slot bypass toggle (15 ms crossfade, SPEC-012 §2.3).
 #[tauri::command]
 pub async fn rack_bypass(
     engine: State<'_, AudioEngine>,
+    documents: State<'_, DocumentService>,
     slot: usize,
     on: bool,
 ) -> Result<RackStateDto, IpcError> {
-    apply(&engine, RackCommand::SetBypass { index: slot, on }).await
+    apply(
+        &engine,
+        &documents,
+        RackCommand::SetBypass { index: slot, on },
+    )
+    .await
 }
 
 /// Whole-rack A/B (listening only, SPEC-012 §2.3).
 #[tauri::command]
-pub async fn rack_ab(engine: State<'_, AudioEngine>, on: bool) -> Result<RackStateDto, IpcError> {
-    apply(&engine, RackCommand::SetAb { on }).await
+pub async fn rack_ab(
+    engine: State<'_, AudioEngine>,
+    documents: State<'_, DocumentService>,
+    on: bool,
+) -> Result<RackStateDto, IpcError> {
+    apply(&engine, &documents, RackCommand::SetAb { on }).await
 }
 
 /// Restarts a slot's instance from its committed state (Restart of a failed slot, ADR-005 §12).
 #[tauri::command]
 pub async fn rack_restart(
     engine: State<'_, AudioEngine>,
+    documents: State<'_, DocumentService>,
     slot: usize,
 ) -> Result<RackStateDto, IpcError> {
-    apply(&engine, RackCommand::Restart { index: slot }).await
+    apply(&engine, &documents, RackCommand::Restart { index: slot }).await
 }
 
 /// Sets a parameter from a normalized `[0, 1]` slider position (SPEC-012 §2.4, §2.6). The UI is
@@ -124,12 +160,14 @@ pub async fn rack_restart(
 #[tauri::command]
 pub async fn param_set_normalized(
     engine: State<'_, AudioEngine>,
+    documents: State<'_, DocumentService>,
     slot: usize,
     id: u32,
     value: f64,
 ) -> Result<RackStateDto, IpcError> {
     apply(
         &engine,
+        &documents,
         RackCommand::SetParamNormalized {
             index: slot,
             id: ParamId(id),
@@ -144,12 +182,14 @@ pub async fn param_set_normalized(
 #[tauri::command]
 pub async fn param_set_text(
     engine: State<'_, AudioEngine>,
+    documents: State<'_, DocumentService>,
     slot: usize,
     id: u32,
     text: String,
 ) -> Result<RackStateDto, IpcError> {
     apply(
         &engine,
+        &documents,
         RackCommand::SetParamText {
             index: slot,
             id: ParamId(id),
@@ -167,12 +207,14 @@ pub async fn param_set_text(
 #[tauri::command]
 pub async fn param_set_plain(
     engine: State<'_, AudioEngine>,
+    documents: State<'_, DocumentService>,
     slot: usize,
     id: u32,
     value: f64,
 ) -> Result<RackStateDto, IpcError> {
     apply(
         &engine,
+        &documents,
         RackCommand::SetParamPlain {
             index: slot,
             id: ParamId(id),
@@ -222,8 +264,14 @@ pub async fn module_telemetry_subscribe(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::Arc;
+
+    use vox_engine::backend::fake::FakeBackend;
+    use vox_engine::{Engine, EngineConfig};
     use vox_module_api::{LocalizedText, MODULE_API_VERSION, Version};
+    use vox_rack::Registry;
+
+    use super::*;
 
     fn descriptor(id: &str) -> ModuleDescriptor {
         ModuleDescriptor {
@@ -255,5 +303,55 @@ mod tests {
     fn nothing_disabled_shows_everything() {
         let descriptors = [descriptor("org.powervoice.gain")];
         assert_eq!(visible_modules(&descriptors, &[]).len(), 1);
+    }
+
+    fn fake_engine_handle() -> (Engine, vox_engine::EngineHandle) {
+        let fake = FakeBackend::new(1);
+        let registry =
+            Arc::new(Registry::with_factories(vox_modules::builtin_factories()).unwrap());
+        let engine = Engine::start(EngineConfig::new(Arc::new(fake), registry)).unwrap();
+        let handle = engine.handle();
+        (engine, handle)
+    }
+
+    /// H-30 (`apply`'s guard): a rack edit is refused with `error.bake.busy` while
+    /// `DocumentService::is_bake_running` is set (`begin_bake_job` .. `abandon_bake_job`/
+    /// `finish_bake`), and allowed again once it clears — the same lifecycle `bake.rs`'s own
+    /// `busy_rules`/`ac16_...` tests exercise through a real bake job, checked here directly
+    /// against `apply`'s own guard (which can't otherwise be unit-tested: it also needs a real,
+    /// cpal-backed `AudioEngine`).
+    #[test]
+    fn rack_edits_are_refused_while_a_bake_runs() {
+        let dir = crate::test_util::tmp_dir("rack-commands-bake-busy");
+        let (_engine, handle) = fake_engine_handle();
+        let documents = DocumentService::new(dir.join("sessions"), handle);
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.2, 48_000).unwrap();
+        let path = dir.join("in.wav");
+        vox_testkit::wav::write_wav_file(
+            &path,
+            &samples,
+            1,
+            48_000,
+            vox_testkit::wav::BitDepth::Float32,
+        )
+        .unwrap();
+        documents.open(&path, false).unwrap();
+        let len = samples.len() as u64;
+
+        assert!(check_not_baking(&documents).is_ok());
+
+        let _source = documents.begin_bake_job(0, len).unwrap();
+        assert!(documents.is_bake_running());
+        let err = check_not_baking(&documents).unwrap_err();
+        assert_eq!(err.code, IpcErrorCode::Busy);
+        assert_eq!(err.key, "error.bake.busy");
+
+        // Released (bake.rs's own tests cover this same lifecycle end to end through a real
+        // job: `busy_rules` for a cancelled/abandoned bake, `ac16_...` for a committed one).
+        documents.abandon_bake_job();
+        assert!(!documents.is_bake_running());
+        assert!(check_not_baking(&documents).is_ok());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

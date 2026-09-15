@@ -476,6 +476,15 @@ impl SpectroService {
     pub fn clear_cache(&self) {
         lock(&self.shared.state).cache.clear();
     }
+
+    /// The concurrent-tile cap in effect right now: `workers`, or half of them while a
+    /// [`BackgroundJob`] is held (SPEC-007 §4.1). A synchronous witness that a save/export/bake
+    /// job is holding the guard — cheaper and non-flaky for a job service's own tests (H-30) than
+    /// racing real tile computation against the job to observe [`SpectroStats::peak_running`].
+    pub fn worker_cap_now(&self) -> usize {
+        let state = lock(&self.shared.state);
+        worker_cap(self.shared.workers, state.background_jobs)
+    }
 }
 
 impl Drop for SpectroService {

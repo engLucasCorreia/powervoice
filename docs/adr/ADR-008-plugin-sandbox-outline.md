@@ -997,3 +997,218 @@ Three follow-ups after T-806, no new crates or dependencies.
    path once, only when the new path doesn't exist yet (never overwrites real data); `src-tauri`'s
    `plugins::catalog()` calls it before constructing `CatalogPaths`, so an upgrade doesn't force a
    full rescan.
+
+## Amendment 8 — T-807 LV2 backend, as implemented (2026-09-15)
+
+New crates `vox-lv2-abi` (hand-written LV2 bindings) and `vox-test-lv2` (test plugin, never
+shipped). No new third-party crate. lilv is loaded at run time (ADR-007 amendment).
+
+### 1. Library: lilv through a runtime-loaded function table (refines §8)
+The ticket's three candidates:
+- **`livi`** (Rust host on the `lilv` crate): `lilv-sys` links `liblilv-0` at build time. Every
+  build would need lilv's development files (the Windows cross-check included), and a machine
+  without lilv couldn't even start `powervoice-sandbox` — the dynamic loader fails before
+  `main`, taking CLAP and VST3 down with it. Rejected.
+- **Hand-rolled Turtle and manifest parsing** with `dlopen` of `lv2_descriptor`: full Turtle plus
+  LV2's data model (`rdfs:seeAlso`, plugin classes, scale points, port groups, default states)
+  is a large surface, and real plugins' data exercises all of it. lilv is the reference
+  implementation every LV2 host uses. Rejected.
+- **Chosen: lilv through a hand-written function table** (`crates/sandbox/src/lv2/lilv.rs`,
+  about 60 functions of the lilv 0.24+ C API), resolved with `libloading` from `liblilv-0.so.0`.
+  - On macOS the table resolves `liblilv-0.0.dylib`, including the Homebrew paths.
+  - `POWERVOICE_LILV=<path>` overrides the library's location.
+  - Only the sandbox loads it, lazily, the first time an LV2 bundle is scanned or loaded. The
+    editor never loads it.
+  - When it's missing, every LV2 scan or load fails with "LV2 support needs the lilv library
+    (liblilv-0), which isn't installed". Nothing else changes.
+  - lilv's `lilv_instance_*` functions are `static inline`, so the backend calls the plugin's
+    `LV2_Descriptor` directly through `LilvInstanceImpl`, the struct lilv documents for that.
+  - Tested with lilv 0.28.0.
+
+### 2. The backend (`crates/sandbox/src/lv2/`, unix only)
+**Identity.** The plugin reference is `Lv2PluginRef`, the JSON `{path, uri}`: the bundle
+directory and the plugin URI. The module id is `lv2:<uri>`; `ModuleRef` splits at the last `@`,
+so a URI may contain one. The version is `lv2:minorVersion.microVersion`.
+
+**Load** (main thread):
+1. Each instance has its own lilv world, which loads **only its bundle**
+   (`lilv_world_load_bundle`, never `load_all`).
+2. `lilv_plugin_verify` checks the plugin's data.
+3. The ports, classes, required features and required options are read (`describe`).
+4. The plugin is refused when:
+   - a port is not audio, control, CV or atom and isn't `lv2:connectionOptional` (optional ones
+     are connected to null);
+   - it requires a feature or an option PowerVoice doesn't provide;
+   - it has no main audio input or output (effects only).
+
+**Features given to `instantiate`:**
+- `urid:map`/`unmap` and the deprecated `uri-map`;
+- `options:options`: `bufsz:maxBlockLength`, `minBlockLength` = 1 (blocks are split at events),
+  `nominalBlockLength`, `sequenceSize` and `param:sampleRate`;
+- `bufsz:boundedBlockLength`, `worker:schedule` and `state:loadDefaultState` (the default state
+  is applied through lilv when the plugin lists the feature).
+
+Save and restore get `state:mapPath` (paths kept absolute) and `state:freePath`. `lv2:isLive`,
+`lv2:inPlaceBroken` (buffers are never shared), `lv2:hardRTCapable` and `state:threadSafeRestore`
+are honoured without data.
+
+**Not provided:**
+- `log:log`: its functions are C variadics, which stable Rust can't define;
+- fixed, power-of-two or coarse block lengths;
+- `state:makePath`;
+- the UI-only features.
+
+**One instance per rate.** An LV2 instance is bound to a sample rate. The first one is made at
+load (48 kHz, 4096 frames), so the schema, state and text work before activation. An activation
+at another rate, or with a bigger block, re-instantiates; the control values and the
+`state:interface` properties carry over.
+
+**Ports and the mono shim:**
+- Every main audio input (not `lv2:isSideChain`) gets the mono input; the output is the mean of
+  the main outputs. This is CLAP's shim (Amendment 3 §2).
+- Side-chain and CV inputs get silence.
+- Before every `run`, atom inputs hold an empty `atom:Sequence`, and atom outputs get an
+  `atom:Chunk` of the buffer's capacity (8 KiB, or `rsz:minimumSize`).
+- The control ports share one buffer, connected at instantiation. An atomic mirror lets the main
+  thread read the values while the plugin runs.
+
+**Sample-accurate control:**
+- A chunk is `run` in segments split at its `PARAM_VALUE` offsets, because a control port has
+  one value per `run`.
+- Before each segment, the audio ports are re-connected at the segment's offset
+  (`connect_port` is real-time safe).
+- No allocation, no lock beyond the audio state's uncontended mutex (as in CLAP).
+
+**Latency.**
+- The `lv2:latency` output port (or `lv2:reportsLatency`) is only valid after a `run`.
+  Activation therefore runs 256 silent frames, reads the port, then calls `deactivate` and
+  `activate` again, so the stream starts fresh.
+- A later change puts `RESTART_REQUEST` on the event ring once per activation, as for CLAP and
+  VST3.
+- LV2 has no tail report: the tail is 0.
+- A `lv2:freeWheeling` port is hidden and set to 1 for offline activations.
+- `RESET` events are ignored: LV2 has no equivalent.
+
+**Worker.** Two preallocated byte rings (`rtrb`) carry framed requests and responses.
+- *Realtime:* a worker thread calls `work`. The audio thread delivers the responses after
+  `run`, then calls `end_run`.
+- *Offline, and the latency probe:* the thread running the plugin services the requests itself,
+  right after `run`. This is synchronous and deterministic.
+
+**Threads.** Instantiation-class calls (instantiate, activate, deactivate, restore) happen on
+the main thread. `run` and `connect_port` happen on the audio thread, `work` on the worker
+thread. `save` may run while the plugin runs, which LV2 state allows.
+
+### 3. Parameters (refines ADR-005 §14)
+- **Which ports:** every control input is a parameter. Control outputs (meters) are read-only
+  parameters, updated by output events; the latency port is excluded.
+- **Identity:** `ParamId` = the port index. `key` = the port symbol lower-cased; a clash, or
+  nothing usable, falls back to `p<index>`. Symbols are LV2's stable identifiers, so a sidecar
+  keeps working across plugin versions that renumber ports.
+- **Ranges:** plain `minimum`/`maximum`/`default`; `lv2:sampleRate` ports are scaled by the
+  instantiation rate.
+- **Discrete ports:**
+  - `lv2:toggled` → `BOOL`;
+  - `lv2:integer` → step 1;
+  - `lv2:enumeration` whose scale points are exactly `0..n` → enum labels.
+- **Tapers and units:**
+  - `pprops:logarithmic` with `min > 0` → `Log`;
+  - `units:db` → the `Db` unit and taper;
+  - `hz`, `ms`, `s`, `pc`, `frame` → the module API's units; a few more become custom labels.
+- **Flags:** `pprops:notAutomatic` → not automatable. `pprops:notOnGUI`, the plugin's own
+  `lv2:enabled` (the rack has host bypass) and `lv2:freeWheeling` → `HIDDEN`.
+- **Groups:** `pg:group` → a group named by its `lv2:name`/`rdfs:label`.
+- **Degenerate ranges** → hidden read-only parameters, like CLAP's.
+- **Text:** scale-point labels are the plugin's own text (the `ParamText` extension), and typed
+  labels parse back. Other values use the module API's rules.
+
+### 4. State
+The plugin bytes are `PVL2`, `u32` version 1, then:
+- the control input values **by port symbol**;
+- the `state:interface` properties, each as its key URI, type URI, flags and bytes. URIs, not
+  URIDs: URIDs only mean something inside one instance.
+
+Non-POD properties are refused (`LV2_STATE_ERR_BAD_FLAGS`): they're meaningless in another
+process. A plugin without `state:interface` saves its control values only. A restore that
+returns an error is logged, not fatal. The proxy wraps the bytes with the identity (Amendment 2
+§7).
+
+### 5. Enumeration (refines §6 and Amendments 4–6)
+**Paths.** `$LV2_PATH` first, then lilv's defaults:
+- Linux: `~/.lv2`, `/usr/local/lib/lv2`, `/usr/lib/lv2`, and the `lib64` variants;
+- macOS: `~/Library/Audio/Plug-Ins/LV2`, `~/.lv2`, `/usr/local/lib/lv2`,
+  `/Library/Audio/Plug-Ins/LV2`;
+- Windows: none. The sandbox hosts LV2 on unix only and answers "not supported on this
+  platform".
+
+LV2 has its own H-29 tiers; the per-user install folder is `~/.lv2`, or
+`~/Library/Audio/Plug-Ins/LV2` on macOS.
+
+**Bundles.**
+- A bundle is a `.lv2` directory (never searched inside) whose `manifest.ttl` mentions `Plugin`.
+  Every plugin is declared there with `a lv2:Plugin`, so specification and preset-only bundles
+  never cost a sandbox. This machine's `/usr/lib/lv2` holds 25 specification bundles and no
+  plugin.
+- The cache stamp is the bundle's total file size and newest mtime (two levels deep), so a
+  rebuilt binary or edited `.ttl` counts as a change. The blocklist's content hash is
+  `manifest.ttl`'s.
+
+**Sandboxed scan.** `powervoice-sandbox --scan <bundle> --format lv2` lists every plugin with
+names, vendor, URL, features and port counts from its data:
+- Features come from the plugin classes (`lv2:EQPlugin` → `equalizer`, `lv2:CompressorPlugin` →
+  `compressor`, …) and the input count (`mono`/`stereo`). `lv2:InstrumentPlugin` (or a generator
+  without audio input) → `instrument`.
+- Each audio effect is also instantiated (never activated) with the real features, which loads
+  its binary.
+- One that can't be hosted is listed **without** `audio-effect`, with the reason on the
+  sandbox's stderr, so it never reaches Add Module. Examples: a missing required feature, a
+  binary that doesn't load.
+- A crash or hang blocklists the bundle, as for the other formats.
+
+**Install / Uninstall.** "Install module…" accepts an `.lv2` bundle directory on unix; picking
+its `manifest.ttl` (or any file inside it) stands for the bundle, via `install::plugin_root`.
+Staging, collisions, rollback, blocklisting and "Uninstall…" are the other formats'.
+`PluginFoldersDto.install_folders` gains the LV2 folder.
+
+### 6. UI
+- Add Module lists `lv2:*` modules under "Plugins (LV2)", after "Plugins (VST3)".
+- The install picker's filter takes `clap`, `vst3`, `lv2` and `ttl`. `ttl` lets the picker show
+  an LV2 bundle's `manifest.ttl`.
+- The Linux picker strings and the manager's Linux hint (Amendment 7 §2) now name `.lv2` folders
+  too.
+
+### 7. Test plugin
+`vox-test-lv2` is a `cdylib` + `rlib`. `write_bundle` writes `manifest.ttl`, `plugins.ttl` and a
+copy of the library into a temporary `.lv2` bundle, so tests go through real lilv discovery.
+Three plugins, all running the built-in Gain (bit-exact) behind a 64-sample delay:
+- **Mono gain.**
+  - Requires `urid:map`, `options:options` (it refuses to instantiate without `maxBlockLength`
+    and a matching `param:sampleRate`) and `bufsz:boundedBlockLength`.
+  - Has atom ports (silence unless the host's input sequence is valid).
+  - Has enumeration, toggled and logarithmic ports, and a `level` output.
+  - Implements `state:interface`: a restore counter and a note.
+- **Stereo-only gain.** No features and no state interface.
+- **Latency gain.**
+  - Requires `worker:schedule`.
+  - A change of its `latency` port is only *reported* after a real worker round trip, so the
+    host's restart comes from the worker path.
+  - Its `latency` port is in an "Advanced" `pg:group`.
+
+A bundle whose path contains `crash-on-scan` aborts in `instantiate` (core dumps off first);
+`hang-on-scan` never returns from it.
+
+### 8. Known limits (for T-808, T-901)
+- **Formats.** Effects only: no MIDI or instruments. Atom outputs are ignored.
+- **Parameters.** Parameters set through atom messages (`patch:writable`, e.g. a plugin's file
+  paths) aren't exposed.
+- **Not implemented:** LV2 presets (`pset:`), `log:log`, block-length constraints and
+  `state:makePath`. Plugins requiring those are listed without `audio-effect`.
+- **State paths** stay absolute: files a plugin references by path aren't copied into the
+  project.
+- **`lv2:sampleRate` ranges** are scaled at 48 kHz in the schema.
+- **Old `ev:EventPort` ports** are hostable only when optional.
+- **GUIs (T-901).** Not implemented.
+- **Platforms.** No LV2 on Windows. macOS compiles but hasn't been run.
+- **Runtime dependency.** lilv must be installed (see ADR-007's amendment for packaging).
+- **Real plugins.** No real LV2 plugin is installed on the development machine: the opt-in smoke
+  test `POWERVOICE_TEST_REAL_LV2=<bundle or folder>` exists but hasn't run against one.

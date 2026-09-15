@@ -148,6 +148,28 @@ describe("RackPanel", () => {
     teardown();
   });
 
+  it("lists installed LV2 effects under Plugins (LV2), after Plugins (VST3)", async () => {
+    const modules = [
+      moduleFixture("lv2:http://lsp-plug.in/plugins/lv2/compressor_mono", ["audio-effect", "compressor"]),
+      moduleFixture("vst3:84E8DE5F92554F5396FAE4133C935A18", ["audio-effect", "compressor"]),
+      moduleFixture("org.powervoice.gain", ["utility"]),
+    ];
+    const { target, el, teardown } = await setup(rackFixture([]), modules);
+    el("rack-add")?.click();
+    flushSync();
+    const groupTitles = [...target.querySelectorAll('[data-testid="rack-add-menu"] .heading')].map((g) => g.textContent);
+    expect(groupTitles).toEqual(["Utility", "Plugins (VST3)", "Plugins (LV2)"]);
+    const items = [...target.querySelectorAll('[data-testid="rack-add-item"]')].map((i) =>
+      i.getAttribute("data-module-id"),
+    );
+    expect(items).toEqual([
+      "org.powervoice.gain",
+      "vst3:84E8DE5F92554F5396FAE4133C935A18",
+      "lv2:http://lsp-plug.in/plugins/lv2/compressor_mono",
+    ]);
+    teardown();
+  });
+
   it("adding a module appends it at the end of the chain", async () => {
     const { target, el, teardown } = await setup(rackFixture([slotFixture(1)]), [
       moduleFixture("org.powervoice.gain", ["utility"]),

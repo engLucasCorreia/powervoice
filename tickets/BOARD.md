@@ -188,7 +188,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-804 | Scanner orchestration, cache, blocklist | W3 | S | T-802 | done |
 | T-805 | Our modules as CLAP packages (clack-plugin) | W4 | O | T-803 | todo |
 | T-806 | VST3 adapter (coupler vst3 + moduleinfo scan) | W4 | O | T-803, T-804 | done |
-| T-807 | LV2 adapter (livi) | W4 | O | T-803, T-804 | in progress |
+| T-807 | LV2 adapter (livi) | W4 | O | T-803, T-804 | done |
 | T-808 | JSFX adapter (ysfx, sandbox-only) | W4 | O | T-803, T-804 | todo |
 | T-809 | Plugin manager UI + "Install module…" | W5 | S | T-804 | done |
 | T-810 | Plugin state in presets/sidecar | W5 | S | T-803 | todo |

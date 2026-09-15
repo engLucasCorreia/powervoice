@@ -17,6 +17,8 @@ members = [
     "crates/clap-abi",
     "crates/test-clap",
     "crates/test-vst3",
+    "crates/lv2-abi",
+    "crates/test-lv2",
     "src-tauri",
 ]
 

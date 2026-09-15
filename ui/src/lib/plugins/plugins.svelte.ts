@@ -62,11 +62,12 @@ export type InstallState =
     };
 
 /**
- * What "Install module…" accepts: the backends that exist (T-803 CLAP, T-806 VST3). A VST3 bundle
- * is a folder on Linux and Windows: picking any file inside it installs the whole bundle.
- * T-807–T-808 add their extensions here when their backends land.
+ * What "Install module…" accepts: the backends that exist (T-803 CLAP, T-806 VST3, T-807 LV2). A
+ * VST3 or LV2 bundle is a folder on Linux and Windows: picking any file inside it installs the
+ * whole bundle — `ttl` lets the picker show an LV2 bundle's `manifest.ttl`. T-808 adds its
+ * extension here when its backend lands.
  */
-export const INSTALL_EXTENSIONS: readonly string[] = ["clap", "vst3"];
+export const INSTALL_EXTENSIONS: readonly string[] = ["clap", "vst3", "lv2", "ttl"];
 
 let open = $state(false);
 let tab = $state<ManagerTab>("plugins");

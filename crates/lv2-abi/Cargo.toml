@@ -1,0 +1,16 @@
+[package]
+name = "vox-lv2-abi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# T-807 (ADR-008 Amendment 8): hand-written `#[repr(C)]` bindings for the subset of the LV2 C API
+# PowerVoice uses — the sandbox's LV2 host and the in-repo test plugin. Transcribed from the LV2
+# headers (ISC, see LICENSE-LV2); no third-party crate. lilv itself is not bound here: the sandbox
+# loads it at runtime (`crates/sandbox/src/lv2/lilv.rs`).
+
+[dependencies]
+
+[lints]
+workspace = true

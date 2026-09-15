@@ -20,8 +20,19 @@
 //! A bundle with `Contents/Resources/moduleinfo.json` (and a binary for this platform) is
 //! **indexed from that file without loading any code** (ADR-008 §6); any other bundle is scanned
 //! in its own `powervoice-sandbox --scan <bundle> --format vst3`. Every scan function here takes
-//! files of either format (the format follows the extension); cache entries and blocklist
-//! entries carry it.
+//! files of any format (the format follows the extension); cache entries and blocklist entries
+//! carry it.
+//!
+//! **LV2** (T-807, ADR-008 Amendment 8): `.lv2` bundle directories (never searched inside) whose
+//! `manifest.ttl` declares a plugin — LV2's specification bundles are skipped without a sandbox —
+//! in `$LV2_PATH` then lilv's standard paths:
+//! - Linux/BSD: `~/.lv2`, `/usr/local/lib/lv2`, `/usr/lib/lv2` (and the `lib64` variants);
+//! - macOS: `~/Library/Audio/Plug-Ins/LV2`, `~/.lv2`, `/usr/local/lib/lv2`,
+//!   `/Library/Audio/Plug-Ins/LV2`;
+//! - Windows: none (the sandbox hosts LV2 on unix only).
+//!
+//! Each bundle is scanned in its own `powervoice-sandbox --scan <bundle> --format lv2`; a
+//! bundle's stamp covers every file in it.
 
 use std::collections::HashSet;
 use std::io::Read;
@@ -40,7 +51,8 @@ use vox_sandbox_ipc::vst3::{AUDIO_MODULE_CLASS, binary_path, moduleinfo_path};
 
 use crate::blocklist::{BlockReason, Blocklist};
 use crate::factory::{
-    CLAP_FORMAT, SandboxFactory, SandboxOptions, SandboxSpec, VST3_FORMAT, clap_spec, vst3_spec,
+    CLAP_FORMAT, LV2_FORMAT, SandboxFactory, SandboxOptions, SandboxSpec, VST3_FORMAT, clap_spec,
+    lv2_spec, vst3_spec,
 };
 
 /// ADR-008 §4: a scan may take 30 s.
@@ -190,6 +202,8 @@ pub enum PluginFormat {
     Clap,
     /// `.vst3` bundles (Windows: also legacy single files).
     Vst3,
+    /// `.lv2` bundle directories (T-807).
+    Lv2,
 }
 
 impl PluginFormat {
@@ -198,6 +212,7 @@ impl PluginFormat {
         match self {
             Self::Clap => CLAP_FORMAT,
             Self::Vst3 => VST3_FORMAT,
+            Self::Lv2 => LV2_FORMAT,
         }
     }
 
@@ -208,6 +223,8 @@ impl PluginFormat {
             Some(Self::Clap)
         } else if ext.eq_ignore_ascii_case("vst3") {
             Some(Self::Vst3)
+        } else if ext.eq_ignore_ascii_case("lv2") {
+            Some(Self::Lv2)
         } else {
             None
         }
@@ -277,6 +294,57 @@ pub fn vst3_search_paths() -> Vec<PathBuf> {
     dirs
 }
 
+/// The LV2 search paths for this OS (lilv's defaults), `$LV2_PATH` first, without duplicates
+/// (T-807). Empty on Windows: the sandbox hosts LV2 on unix only.
+pub fn lv2_search_paths() -> Vec<PathBuf> {
+    if cfg!(windows) {
+        return Vec::new();
+    }
+    let mut dirs: Vec<PathBuf> = std::env::var_os("LV2_PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    #[cfg(target_os = "macos")]
+    {
+        dirs.extend(
+            home.as_ref()
+                .map(|h| h.join("Library").join("Audio").join("Plug-Ins").join("LV2")),
+        );
+        dirs.extend(home.as_ref().map(|h| h.join(".lv2")));
+        dirs.push(PathBuf::from("/usr/local/lib/lv2"));
+        dirs.push(PathBuf::from("/Library/Audio/Plug-Ins/LV2"));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        dirs.extend(home.as_ref().map(|h| h.join(".lv2")));
+        for d in [
+            "/usr/local/lib/lv2",
+            "/usr/lib/lv2",
+            "/usr/local/lib64/lv2",
+            "/usr/lib64/lv2",
+        ] {
+            dirs.push(PathBuf::from(d));
+        }
+    }
+    let mut seen = HashSet::new();
+    dirs.retain(|d| !d.as_os_str().is_empty() && seen.insert(d.clone()));
+    dirs
+}
+
+/// Whether `path` is an LV2 bundle that declares a plugin: a `.lv2` directory whose
+/// `manifest.ttl` mentions `Plugin` (every plugin is declared there with `a lv2:Plugin`; LV2's
+/// specification and preset-only bundles aren't, so they never cost a sandbox).
+pub fn is_lv2_plugin_bundle(path: &Path) -> bool {
+    PluginFormat::of_path(path) == Some(PluginFormat::Lv2)
+        && path.is_dir()
+        && std::fs::read_to_string(path.join("manifest.ttl")).is_ok_and(|t| t.contains("Plugin"))
+}
+
+/// Whether `path` names an LV2 bundle (`.lv2`, any case) directory.
+pub(crate) fn is_lv2_dir(path: &Path) -> bool {
+    PluginFormat::of_path(path) == Some(PluginFormat::Lv2) && path.is_dir()
+}
+
 /// Whether `path` names a VST3 plugin (`.vst3`, any case).
 pub(crate) fn is_vst3(path: &Path) -> bool {
     PluginFormat::of_path(path) == Some(PluginFormat::Vst3)
@@ -298,6 +366,8 @@ fn walk(dir: &Path, depth: usize, format: PluginFormat, out: &mut Vec<PathBuf>) 
                 PluginFormat::Clap => meta.is_file() || cfg!(target_os = "macos"),
                 // A bundle directory (never searched inside), or a legacy single file.
                 PluginFormat::Vst3 => true,
+                // A bundle directory that declares a plugin (never searched inside).
+                PluginFormat::Lv2 => is_lv2_plugin_bundle(&path),
             };
             if keep {
                 out.push(path);
@@ -330,6 +400,12 @@ pub fn find_vst3_files(dirs: &[PathBuf]) -> Vec<PathBuf> {
     find_files(PluginFormat::Vst3, dirs)
 }
 
+/// Every LV2 plugin bundle below `dirs` (recursively, never inside a bundle), sorted, without
+/// duplicates (T-807).
+pub fn find_lv2_files(dirs: &[PathBuf]) -> Vec<PathBuf> {
+    find_files(PluginFormat::Lv2, dirs)
+}
+
 /// [`find_clap_files`], applied to a list of priority **tiers** instead of one flat directory
 /// list (H-29, ADR-008 Amendment 5's duplicate-id policy): every file below one tier's
 /// directories is found and sorted (by path) before moving on to the next tier, so the returned
@@ -349,6 +425,11 @@ pub fn find_clap_files_ranked(tiers: &[Vec<PathBuf>]) -> Vec<PathBuf> {
 /// policy).
 pub fn find_vst3_files_ranked(tiers: &[Vec<PathBuf>]) -> Vec<PathBuf> {
     find_files_ranked(PluginFormat::Vst3, tiers)
+}
+
+/// [`find_clap_files_ranked`] for LV2 bundles (T-807: the same H-29 tiers and duplicate policy).
+pub fn find_lv2_files_ranked(tiers: &[Vec<PathBuf>]) -> Vec<PathBuf> {
+    find_files_ranked(PluginFormat::Lv2, tiers)
 }
 
 fn find_files_ranked(format: PluginFormat, tiers: &[Vec<PathBuf>]) -> Vec<PathBuf> {
@@ -381,6 +462,10 @@ pub(crate) struct Stamp {
 /// or for a VST3 bundle directory its binary for this platform — else its `moduleinfo.json` —
 /// since a directory's own mtime doesn't change when the binary inside it is replaced (T-806).
 pub(crate) fn key_file(path: &Path) -> PathBuf {
+    if is_lv2_dir(path) {
+        // T-807: the manifest (the blocklist's content hash); the stamp covers every file.
+        return path.join("manifest.ttl");
+    }
     if is_vst3(path) && path.is_dir() {
         if let Some(binary) = binary_path(path) {
             return binary;
@@ -393,7 +478,47 @@ pub(crate) fn key_file(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// An LV2 bundle's stamp (T-807): the total size and the newest mtime of the files in it (two
+/// levels deep), so replacing its binary or any `.ttl` counts as a change.
+fn bundle_stamp(dir: &Path) -> Option<Stamp> {
+    fn visit(dir: &Path, depth: usize, size: &mut u64, newest: &mut Duration, count: &mut usize) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(meta) = std::fs::metadata(entry.path()) else {
+                continue;
+            };
+            if meta.is_dir() {
+                if depth < 2 {
+                    visit(&entry.path(), depth + 1, size, newest, count);
+                }
+                continue;
+            }
+            *size += meta.len();
+            *count += 1;
+            if let Some(t) = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            {
+                *newest = (*newest).max(t);
+            }
+        }
+    }
+    let (mut size, mut newest, mut count) = (0u64, Duration::ZERO, 0usize);
+    visit(dir, 0, &mut size, &mut newest, &mut count);
+    (count > 0).then_some(Stamp {
+        size,
+        mtime_s: newest.as_secs(),
+        mtime_ns: newest.subsec_nanos(),
+    })
+}
+
 pub(crate) fn stamp(path: &Path) -> Option<Stamp> {
+    if is_lv2_dir(path) {
+        return bundle_stamp(path);
+    }
     let meta = std::fs::metadata(key_file(path)).ok()?;
     let t = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
     Some(Stamp {
@@ -1023,6 +1148,7 @@ pub fn effect_specs_with_shadows(outcome: &ScanOutcome) -> (Vec<SandboxSpec>, Ve
 pub fn spec_for(path: &Path, plugin: &ScannedPlugin) -> SandboxSpec {
     match PluginFormat::of_path(path) {
         Some(PluginFormat::Vst3) => vst3_spec(path, plugin),
+        Some(PluginFormat::Lv2) => lv2_spec(path, plugin),
         _ => clap_spec(path, plugin),
     }
 }
@@ -1394,6 +1520,90 @@ pub(crate) mod tests {
         std::fs::write(&cache, serde_json::to_vec(&old).unwrap()).unwrap();
         assert_eq!(formats(&read_cache(&cache)), ["clap"]);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- T-807: LV2 ------------------------------------------------------------------------
+
+    /// An LV2 bundle `<dir>/<name>.lv2` whose manifest declares a plugin (or, `plugin: false`,
+    /// only a specification).
+    pub(crate) fn lv2_bundle(dir: &Path, name: &str, plugin: bool) -> PathBuf {
+        let bundle = dir.join(format!("{name}.lv2"));
+        std::fs::create_dir_all(&bundle).unwrap();
+        let manifest = if plugin {
+            "@prefix lv2: <http://lv2plug.in/ns/lv2core#> .\n<urn:acme:eq> a lv2:Plugin ; lv2:binary <eq.so> .\n"
+        } else {
+            "@prefix lv2: <http://lv2plug.in/ns/lv2core#> .\n<urn:acme:ns> a lv2:Specification .\n"
+        };
+        std::fs::write(bundle.join("manifest.ttl"), manifest).unwrap();
+        std::fs::write(bundle.join("eq.so"), b"binary").unwrap();
+        bundle
+    }
+
+    #[test]
+    fn lv2_plugin_bundles_are_found_but_never_searched_inside() {
+        let dir = temp_dir("lv2-find");
+        let a = lv2_bundle(&dir.join("vendor"), "Alpha", true);
+        lv2_bundle(&a, "Inner", true);
+        lv2_bundle(&dir, "spec", false);
+        std::fs::create_dir_all(dir.join("empty.lv2")).unwrap();
+        std::fs::write(dir.join("file.lv2"), b"not a bundle").unwrap();
+        assert_eq!(
+            find_lv2_files(std::slice::from_ref(&dir)),
+            vec![a.clone()],
+            "specification bundles, folders without a manifest and files are skipped"
+        );
+        assert_eq!(PluginFormat::of_path(&a), Some(PluginFormat::Lv2));
+        assert_eq!(format_of_path(&a), Some("lv2"));
+        let spec = spec_for(&a, &plugin("urn:acme:eq", &["audio-effect"]));
+        assert_eq!(
+            (spec.descriptor.id.as_str(), spec.format.as_str()),
+            ("lv2:urn:acme:eq", "lv2")
+        );
+        assert_eq!(spec.path(), Some(a.clone()));
+        // H-29 tiers: the install folder's copy comes first.
+        let install = dir.join("home").join(".lv2");
+        let installed = lv2_bundle(&install, "Alpha", true);
+        let ranked = find_lv2_files_ranked(&[vec![install.clone()], vec![dir.join("vendor")]]);
+        assert_eq!(ranked, vec![installed, a]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_lv2_bundles_stamp_covers_its_files_and_its_key_is_the_manifest() {
+        let dir = temp_dir("lv2-stamp");
+        let bundle = lv2_bundle(&dir, "Stamped", true);
+        assert_eq!(key_file(&bundle), bundle.join("manifest.ttl"));
+        let before = stamp(&bundle).unwrap();
+        std::fs::write(bundle.join("eq.so"), b"a longer, rebuilt binary").unwrap();
+        let rebuilt = stamp(&bundle).unwrap();
+        assert_ne!(rebuilt, before, "a rebuilt binary is a changed plugin");
+        std::fs::create_dir_all(bundle.join("presets")).unwrap();
+        std::fs::write(bundle.join("presets").join("p.ttl"), b"x").unwrap();
+        assert_ne!(
+            stamp(&bundle).unwrap(),
+            rebuilt,
+            "a file one level down counts"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn search_paths_include_the_standard_lv2_folders() {
+        let dirs = lv2_search_paths();
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            assert!(dirs.contains(&PathBuf::from("/usr/lib/lv2")));
+            assert!(dirs.contains(&PathBuf::from("/usr/local/lib/lv2")));
+            if let Some(home) = std::env::var_os("HOME") {
+                assert!(dirs.contains(&PathBuf::from(home).join(".lv2")));
+            }
+        }
+        #[cfg(windows)]
+        assert!(dirs.is_empty());
+        let mut unique = dirs.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), dirs.len(), "no duplicates");
     }
 
     #[test]

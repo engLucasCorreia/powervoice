@@ -4,7 +4,7 @@
 //! into every [`Registry`] that [`observe`](PluginCatalog::observe)s this catalog, so the
 //! Add-module list updates without a restart (ADR-008 §6, T-804 item 1).
 //!
-//! Formats (T-806): CLAP and VST3. Each format has its own H-29 search tiers (its per-user
+//! Formats (T-806, T-807): CLAP, VST3 and LV2. Each format has its own H-29 search tiers (its per-user
 //! install folder, its standard paths, then the shared custom folders); both formats' files go
 //! through one scan (the format follows the extension), one cache and one blocklist. Module ids
 //! are format-prefixed (`clap:`, `vst3:`), so the duplicate-id policy applies within a format.
@@ -158,7 +158,7 @@ impl PluginCatalog {
     /// [`Self::search_tiers`], which keeps them apart.
     pub fn search_dirs(&self) -> Vec<PathBuf> {
         let mut seen = std::collections::HashSet::new();
-        [PluginFormat::Clap, PluginFormat::Vst3]
+        [PluginFormat::Clap, PluginFormat::Vst3, PluginFormat::Lv2]
             .into_iter()
             .flat_map(|f| self.search_tiers(f))
             .flatten()
@@ -171,6 +171,9 @@ impl PluginCatalog {
         let mut files = scan::find_clap_files_ranked(&self.search_tiers(PluginFormat::Clap));
         files.extend(scan::find_vst3_files_ranked(
             &self.search_tiers(PluginFormat::Vst3),
+        ));
+        files.extend(scan::find_lv2_files_ranked(
+            &self.search_tiers(PluginFormat::Lv2),
         ));
         files
     }
@@ -185,6 +188,7 @@ impl PluginCatalog {
         let (install_dir, standard) = match format {
             PluginFormat::Clap => (install::user_clap_dir(), scan::clap_search_paths()),
             PluginFormat::Vst3 => (install::user_vst3_dir(), scan::vst3_search_paths()),
+            PluginFormat::Lv2 => (install::user_lv2_dir(), scan::lv2_search_paths()),
         };
         if let Some(install_dir) = install_dir {
             tiers.push(vec![install_dir]);
@@ -782,6 +786,7 @@ mod tests {
         {
             assert!(dirs.contains(&PathBuf::from("/usr/lib/clap")));
             assert!(dirs.contains(&PathBuf::from("/usr/lib/vst3")));
+            assert!(dirs.contains(&PathBuf::from("/usr/lib/lv2")));
         }
         let mut unique = dirs.clone();
         unique.sort();

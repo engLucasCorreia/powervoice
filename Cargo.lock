@@ -3071,9 +3071,11 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "libloading 0.9.0",
+ "rtrb",
  "serde_json",
  "vox-clap-abi",
  "vox-engine",
+ "vox-lv2-abi",
  "vox-module-api",
  "vox-modules",
  "vox-plugin-host",
@@ -3082,6 +3084,7 @@ dependencies = [
  "vox-rack",
  "vox-sandbox-ipc",
  "vox-test-clap",
+ "vox-test-lv2",
  "vox-test-vst3",
  "vst3",
 ]
@@ -5064,6 +5067,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "vox-lv2-abi"
+version = "0.1.0"
+
+[[package]]
 name = "vox-module-api"
 version = "0.1.0"
 dependencies = [
@@ -5157,6 +5164,16 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "vox-clap-abi",
+ "vox-module-api",
+ "vox-modules",
+]
+
+[[package]]
+name = "vox-test-lv2"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "vox-lv2-abi",
  "vox-module-api",
  "vox-modules",
 ]

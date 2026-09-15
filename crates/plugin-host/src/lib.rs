@@ -43,12 +43,12 @@ pub mod watchdog;
 
 pub use catalog::{CatalogPaths, InstallReport, PluginCatalog, PluginDetails, ScanSummary};
 pub use factory::{
-    CLAP_FORMAT, SandboxFactory, SandboxInstance, SandboxOptions, SandboxSpec, TEST_FORMAT,
-    VST3_FORMAT, clap_spec, test_factories, test_spec, vst3_spec,
+    CLAP_FORMAT, LV2_FORMAT, SandboxFactory, SandboxInstance, SandboxOptions, SandboxSpec,
+    TEST_FORMAT, VST3_FORMAT, clap_spec, lv2_spec, test_factories, test_spec, vst3_spec,
 };
 pub use proxy::{MAX_TRANSPORT_BLOCK, ProxyModule};
 pub use sandbox::SandboxFault;
 // Re-exported so `src-tauri` (the plugin manager DTOs, T-804) can read a CLAP `SandboxSpec`'s
 // path without adding its own dependency on `vox-sandbox-ipc` (ADR-001 §3: format/protocol
 // crates stay behind `vox-plugin-host`, not linked directly by the editor's command layer).
-pub use vox_sandbox_ipc::protocol::{ClapPluginRef, Vst3PluginRef};
+pub use vox_sandbox_ipc::protocol::{ClapPluginRef, Lv2PluginRef, Vst3PluginRef};

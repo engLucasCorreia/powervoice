@@ -10,7 +10,7 @@ use vox_module_api::{
     Version, features,
 };
 use vox_sandbox_ipc::WaitBudget;
-use vox_sandbox_ipc::protocol::{ClapPluginRef, ScannedPlugin, Vst3PluginRef};
+use vox_sandbox_ipc::protocol::{ClapPluginRef, Lv2PluginRef, ScannedPlugin, Vst3PluginRef};
 
 use crate::health::HealthStore;
 use crate::proxy::ProxyModule;
@@ -23,6 +23,9 @@ pub const CLAP_FORMAT: &str = "clap";
 /// The VST3 backend's format name (T-806); module ids are `vst3:<class id>` (the processor's
 /// 32 hex digits, ADR-005 §2).
 pub const VST3_FORMAT: &str = "vst3";
+/// The LV2 backend's format name (T-807); module ids are `lv2:<plugin URI>` (ADR-005 §2:
+/// `ModuleRef` splits at the last `@`, so a URI may contain one).
+pub const LV2_FORMAT: &str = "lv2";
 
 /// What a sandboxed module is: its registry descriptor and how the sandbox loads it.
 #[derive(Clone, Debug)]
@@ -44,6 +47,9 @@ impl SandboxSpec {
                 .ok()
                 .map(|r| PathBuf::from(r.path)),
             VST3_FORMAT => Vst3PluginRef::parse(&self.plugin)
+                .ok()
+                .map(|r| PathBuf::from(r.path)),
+            LV2_FORMAT => Lv2PluginRef::parse(&self.plugin)
                 .ok()
                 .map(|r| PathBuf::from(r.path)),
             _ => None,
@@ -222,6 +228,31 @@ pub fn vst3_spec(path: &Path, plugin: &ScannedPlugin) -> SandboxSpec {
         plugin: Vst3PluginRef {
             path: path.to_string_lossy().into_owned(),
             cid: plugin.id.clone(),
+        }
+        .to_reference(),
+    }
+}
+
+/// An LV2 plugin's spec (T-807): module id `lv2:<plugin URI>`, the plugin's name, author,
+/// comment, homepage, version (`lv2:minorVersion.microVersion`, parsed leniently) and features
+/// (from its classes); loaded from the bundle directory `path`.
+pub fn lv2_spec(path: &Path, plugin: &ScannedPlugin) -> SandboxSpec {
+    SandboxSpec {
+        descriptor: ModuleDescriptor {
+            id: format!("{LV2_FORMAT}:{}", plugin.id),
+            version: Version::parse_lenient(&plugin.version),
+            name: LocalizedText::plain(&plugin.name),
+            vendor: plugin.vendor.clone(),
+            description: LocalizedText::plain(&plugin.description),
+            url: plugin.url.clone(),
+            features: plugin.features.clone(),
+            state_format_version: 1,
+            api_version: MODULE_API_VERSION,
+        },
+        format: LV2_FORMAT.into(),
+        plugin: Lv2PluginRef {
+            path: path.to_string_lossy().into_owned(),
+            uri: plugin.id.clone(),
         }
         .to_reference(),
     }

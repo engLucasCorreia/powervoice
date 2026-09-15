@@ -197,7 +197,7 @@ describe("plugins store (T-809)", () => {
       const open = calls.find((c) => c.cmd === "plugin:dialog|open")!;
       const options = open.args.options as { directory: boolean; filters: { extensions: string[] }[] };
       expect(options.directory).toBe(false);
-      expect(options.filters[0]!.extensions).toEqual(["clap", "vst3"]);
+      expect(options.filters[0]!.extensions).toEqual(["clap", "vst3", "lv2", "ttl"]);
       expect(calls.find((c) => c.cmd === "plugins_install")?.args).toEqual({
         path: "/home/u/Downloads/acme.clap",
         replace: false,
@@ -279,7 +279,7 @@ describe("plugins store (T-809)", () => {
       let options = open.args.options as { title: string; filters: { name: string; extensions: string[] }[] };
       expect(options.title).toContain(".vst3");
       expect(options.filters[0]!.name).toContain(".vst3");
-      expect(options.filters[0]!.extensions).toEqual(["clap", "vst3"]);
+      expect(options.filters[0]!.extensions).toEqual(["clap", "vst3", "lv2", "ttl"]);
 
       setPlatformForTest("mac");
       calls = mock({ "plugin:dialog|open": () => null });

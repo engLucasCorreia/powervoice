@@ -1,0 +1,28 @@
+[package]
+name = "vox-test-lv2"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# T-807: the in-repo **test LV2 plugin** — a `cdylib` exporting `lv2_descriptor`, plus
+# `write_bundle`, which writes the `.ttl` files next to a copy of the library into a temporary
+# `.lv2` bundle, so the sandbox's LV2 backend is tested through real lilv discovery and a real
+# dlopen without depending on installed plugins. It hosts the built-in Gain (bit-exact with the
+# in-process module) behind a fixed latency. Never shipped. `rlib` too: test crates dev-depend on
+# it, which makes cargo build the `.so` next to them and lets them use its constants.
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+vox-lv2-abi = { path = "../lv2-abi" }
+vox-module-api = { path = "../module-api" }
+vox-modules = { path = "../modules" }
+
+# The deliberate crash-on-scan abort disables core dumps first (setrlimit / prctl).
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[lints]
+workspace = true

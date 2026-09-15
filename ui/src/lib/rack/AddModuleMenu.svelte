@@ -6,9 +6,9 @@
   import { localized } from "./localized";
 
   /** The Add-module menu (SPEC-012 §2.1): the registry's modules grouped by feature (EQ,
-   * dynamics, restoration, utility, …); installed CLAP effects (`clap:*`, T-803) and VST3 effects
-   * (`vst3:*`, T-806) in their own "Plugins (CLAP)" / "Plugins (VST3)" groups after the built-in
-   * categories. H-26: on the shared menu (group
+   * dynamics, restoration, utility, …); installed CLAP effects (`clap:*`, T-803), VST3 effects
+   * (`vst3:*`, T-806) and LV2 effects (`lv2:*`, T-807) in their own "Plugins (CLAP)" /
+   * "Plugins (VST3)" / "Plugins (LV2)" groups after the built-in categories. H-26: on the shared menu (group
    * headings, keyboard, typeahead, viewport clamping), as wide as its button. */
   let {
     modules,
@@ -31,7 +31,7 @@
     "utility",
     "analyzer",
   ] as const;
-  type Category = (typeof CATEGORY_ORDER)[number] | "other" | "plugins_clap" | "plugins_vst3";
+  type Category = (typeof CATEGORY_ORDER)[number] | "other" | "plugins_clap" | "plugins_vst3" | "plugins_lv2";
   const CATEGORY_FEATURES: Record<(typeof CATEGORY_ORDER)[number], string[]> = {
     eq: ["equalizer", "filter"],
     restoration: ["restoration"],
@@ -48,6 +48,9 @@
     if (m.id.startsWith("vst3:")) {
       return "plugins_vst3";
     }
+    if (m.id.startsWith("lv2:")) {
+      return "plugins_lv2";
+    }
     for (const cat of CATEGORY_ORDER) {
       if (CATEGORY_FEATURES[cat].some((f) => m.features.includes(f))) {
         return cat;
@@ -58,7 +61,13 @@
 
   // A fixed category order (EQ, restoration, dynamics, ...), not registry order — the menu's
   // layout doesn't depend on which module happens to be registered first.
-  const ALL_CATEGORIES: readonly Category[] = [...CATEGORY_ORDER, "other", "plugins_clap", "plugins_vst3"];
+  const ALL_CATEGORIES: readonly Category[] = [
+    ...CATEGORY_ORDER,
+    "other",
+    "plugins_clap",
+    "plugins_vst3",
+    "plugins_lv2",
+  ];
 
   const groups = $derived.by(() => {
     const byCat = new Map<Category, ModuleDescriptorDto[]>();

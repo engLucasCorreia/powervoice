@@ -4,6 +4,9 @@
 //! the per-user VST3 folder the same way — [`user_install_dir_for`] picks the folder by format:
 //! `~/.vst3`, `~/Library/Audio/Plug-Ins/VST3` or `%LOCALAPPDATA%\Programs\Common\VST3`. A
 //! path picked *inside* a bundle (a file dialog can't select a directory) stands for the bundle.
+//! T-807: an `.lv2` bundle directory (unix) goes into the per-user LV2 folder — `~/.lv2`, or
+//! `~/Library/Audio/Plug-Ins/LV2` on macOS — the same way; picking its `manifest.ttl` (or any
+//! file inside it) stands for the bundle too.
 //!
 //! Where it goes — the standard per-user CLAP path (CLAP `entry.h`), already one of the folders
 //! [`crate::scan::clap_search_paths`] searches, so a later rescan (and other CLAP hosts) find it:
@@ -97,20 +100,43 @@ pub fn user_vst3_dir_from(home: Option<&OsStr>, local_app_data: Option<&OsStr>) 
     }
 }
 
+/// The per-user LV2 folder for this OS (T-807; `None` on Windows, where LV2 isn't hosted), from
+/// the environment like [`user_clap_dir`].
+pub fn user_lv2_dir() -> Option<PathBuf> {
+    user_lv2_dir_from(std::env::var_os("HOME").as_deref())
+}
+
+/// [`user_lv2_dir`] for an explicit `HOME` (tests use a temporary home).
+pub fn user_lv2_dir_from(home: Option<&OsStr>) -> Option<PathBuf> {
+    if cfg!(windows) {
+        None
+    } else if cfg!(target_os = "macos") {
+        absolute(home).map(|h| h.join("Library").join("Audio").join("Plug-Ins").join("LV2"))
+    } else {
+        absolute(home).map(|h| h.join(".lv2"))
+    }
+}
+
 /// The per-user folder a plugin of `path`'s format installs into (`None`: not a plugin path,
 /// or no per-user folder in this environment).
 pub fn user_install_dir_for(path: &Path) -> Option<PathBuf> {
     match PluginFormat::of_path(&plugin_root(path))? {
         PluginFormat::Clap => user_clap_dir(),
         PluginFormat::Vst3 => user_vst3_dir(),
+        PluginFormat::Lv2 => user_lv2_dir(),
     }
 }
 
-/// `path`, or the `.vst3` bundle directory it lies inside (a file dialog can only pick a file of
-/// a Linux/Windows bundle, e.g. its binary or `moduleinfo.json`).
+/// `path`, or the `.vst3` / `.lv2` bundle directory it lies inside (a file dialog can only pick a
+/// file of a Linux/Windows bundle, e.g. its binary, `moduleinfo.json` or `manifest.ttl`).
 pub fn plugin_root(path: &Path) -> PathBuf {
     path.ancestors()
-        .find(|a| PluginFormat::of_path(a) == Some(PluginFormat::Vst3) && a.is_dir())
+        .find(|a| {
+            matches!(
+                PluginFormat::of_path(a),
+                Some(PluginFormat::Vst3 | PluginFormat::Lv2)
+            ) && a.is_dir()
+        })
         .unwrap_or(path)
         .to_path_buf()
 }
@@ -121,8 +147,9 @@ pub enum InstallError {
     /// The picked file doesn't exist (or can't be read).
     #[error("the file doesn't exist")]
     NotFound,
-    /// Not a `.clap` file (or, outside macOS, a directory), nor a `.vst3` bundle.
-    #[error("not a CLAP or VST3 plugin")]
+    /// Not a `.clap` file (or, outside macOS, a directory), nor a `.vst3` bundle, nor (unix) an
+    /// `.lv2` bundle.
+    #[error("not a CLAP, VST3 or LV2 plugin")]
     NotAPlugin,
     /// The picked file already *is* the installed copy.
     #[error("this plugin is already installed here")]
@@ -262,6 +289,8 @@ pub fn install_file(
         Some(PluginFormat::Clap) => !is_dir || cfg!(target_os = "macos"),
         // A `.vst3` is a bundle directory everywhere; Windows also has legacy single files.
         Some(PluginFormat::Vst3) => is_dir || cfg!(windows),
+        // An `.lv2` is a bundle directory; the sandbox hosts LV2 on unix only.
+        Some(PluginFormat::Lv2) => is_dir && cfg!(unix),
         None => false,
     };
     if !supported {
@@ -732,6 +761,65 @@ pub(crate) mod tests {
         let mut f = fixture("vst3-single", b"x");
         let single = f.source.with_file_name("legacy.vst3");
         std::fs::write(&single, b"dll").unwrap();
+        assert_eq!(
+            install_file(&single, &f.dest, false, &mut f.blocklist, |_| panic!(
+                "no scan"
+            )),
+            Err(InstallError::NotAPlugin)
+        );
+    }
+
+    // --- T-807: LV2 bundles -----------------------------------------------------------------
+
+    #[test]
+    fn the_lv2_install_folder_is_per_user() {
+        let home = TempDir::new("lv2-home");
+        let dir = user_lv2_dir_from(Some(home.0.as_os_str()));
+        #[cfg(all(unix, not(target_os = "macos")))]
+        assert_eq!(dir, Some(home.0.join(".lv2")));
+        #[cfg(target_os = "macos")]
+        assert!(dir.unwrap().ends_with("Library/Audio/Plug-Ins/LV2"));
+        #[cfg(windows)]
+        assert_eq!(dir, None);
+        assert_eq!(user_lv2_dir_from(None), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installs_and_uninstalls_an_lv2_bundle_picked_by_its_manifest() {
+        let root = TempDir::new("lv2-install");
+        let bundle = crate::scan::tests::lv2_bundle(&root.0.join("Downloads"), "Acme EQ", true);
+        let home = root.0.join("home");
+        let dest = user_lv2_dir_from(Some(home.as_os_str())).unwrap();
+        let mut blocklist = Blocklist::load(Some(root.0.join("blocklist.json")));
+        // A file dialog can't pick a folder: the manifest inside stands for the bundle.
+        let manifest = bundle.join("manifest.ttl");
+        assert_eq!(plugin_root(&manifest), bundle);
+        let scanned = RefCell::new(Vec::new());
+        let out = install_file(&manifest, &dest, false, &mut blocklist, |p| {
+            scanned.borrow_mut().push(p.to_path_buf());
+            Ok(vec![effect("urn:acme:eq")])
+        })
+        .unwrap();
+        let target = dest.join("Acme EQ.lv2");
+        assert_eq!(out.target, target);
+        assert_eq!(*scanned.borrow(), vec![target.clone()]);
+        assert!(target.join("manifest.ttl").is_file() && target.join("eq.so").is_file());
+        assert_eq!(
+            visible_files(&dest),
+            vec!["Acme EQ.lv2"],
+            "no staging left behind"
+        );
+        assert_eq!(uninstall_file(&target, &dest), Ok(()));
+        assert!(!target.exists());
+        assert!(bundle.exists(), "the picked bundle is untouched");
+    }
+
+    #[test]
+    fn a_single_file_named_lv2_is_refused() {
+        let mut f = fixture("lv2-single", b"x");
+        let single = f.source.with_file_name("fake.lv2");
+        std::fs::write(&single, b"not a bundle").unwrap();
         assert_eq!(
             install_file(&single, &f.dest, false, &mut f.blocklist, |_| panic!(
                 "no scan"

@@ -29,6 +29,11 @@ serde_json.workspace = true
 # T-806 (ADR-007 §6, ADR-008 Amendment 6): the VST3 backend — coupler-rs bindings generated from
 # the MIT VST 3 SDK 3.8.0 headers (never `vst3-sys`, GPL).
 vst3.workspace = true
+# T-807 (ADR-007 amendment, ADR-008 Amendment 8): the LV2 backend — hand-written LV2 header
+# bindings; lilv itself is loaded at run time (libloading), never linked. `rtrb` (already a
+# workspace dependency) carries the LV2 worker's request/response frames without locks.
+vox-lv2-abi = { path = "../lv2-abi" }
+rtrb.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
@@ -47,6 +52,9 @@ vox-project = { path = "../project" }
 vox-test-clap = { path = "../test-clap" }
 # T-806: the test VST3 plugin (`cdylib`, `target/<profile>/deps/libvox_test_vst3.so`).
 vox-test-vst3 = { path = "../test-vst3" }
+# T-807: the test LV2 plugin (`cdylib`, `target/<profile>/deps/libvox_test_lv2.so`; its `rlib`
+# writes the bundle's `.ttl` files).
+vox-test-lv2 = { path = "../test-lv2" }
 serde_json.workspace = true
 
 [lints]

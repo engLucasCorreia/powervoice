@@ -67,6 +67,13 @@ Flagged components (ADR-007)
   Only the separate `powervoice-sandbox` process links them (ADR-008); third-party VST3 plugins
   are loaded at runtime there only. VST is a trademark of Steinberg Media Technologies GmbH;
   PowerVoice hosts VST3 plugins and uses no VST logo.
+- **LV2 headers, ISC** (Copyright 2006-2012 Steve Harris, David Robillard; Copyright 2000-2002
+  Richard W.E. Furse, Paul Barton-Davis, Stefan Westerfeld). The crate `vox-lv2-abi` transcribes
+  the LV2 type definitions from https://lv2plug.in; the full license text is in
+  `crates/lv2-abi/LICENSE-LV2`. **lilv** (ISC / 0BSD, David Robillard, https://drobilla.net/software/lilv)
+  is neither bundled nor linked: the separate `powervoice-sandbox` process loads the system's
+  `liblilv-0` at runtime via `libloading` (ISC). Without it, LV2 plugins are unavailable and every
+  other feature works. Third-party LV2 plugins are loaded at runtime, inside the sandbox only.
 - **System libraries** (dynamically linked, provided by the OS, never bundled except where noted):
   WebKitGTK / GTK3 (Linux), ALSA `libasound.so.2` (Linux, LGPL-2.1-or-later), PipeWire / JACK
   client libraries (Linux, MIT / LGPL respectively), WebView2 (Windows, Microsoft), CoreAudio /

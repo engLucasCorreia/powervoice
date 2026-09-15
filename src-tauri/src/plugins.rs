@@ -1,5 +1,5 @@
 //! Module registry composition (T-802, T-803, T-804, T-806): the built-in modules, the
-//! **installed CLAP and VST3 effects** — found in the standard CLAP/VST3 paths plus any configured
+//! **installed CLAP, VST3 and LV2 effects** — found in the standard CLAP/VST3/LV2 paths plus any configured
 //! custom folders (VST3 bundles with `moduleinfo.json` indexed without loading code)
 //! (ADR-008 §6), scanned in sandbox processes and cached by path + size + mtime, blocklisted on
 //! a crash/timeout (ADR-008 §5) — and, behind the developer flag [`DEV_PLUGINS_ENV`]`=1`, the
@@ -197,11 +197,13 @@ pub fn install_dir() -> Option<PathBuf> {
 }
 
 /// Every per-user folder "Install module…" copies into, one per format (T-806: the CLAP folder
-/// and `~/.vst3`, `~/Library/Audio/Plug-Ins/VST3` or `%LOCALAPPDATA%\Programs\Common\VST3`).
+/// and `~/.vst3`, `~/Library/Audio/Plug-Ins/VST3` or `%LOCALAPPDATA%\Programs\Common\VST3`;
+/// T-807: `~/.lv2` or `~/Library/Audio/Plug-Ins/LV2`, none on Windows).
 pub fn install_dirs() -> Vec<PathBuf> {
     [
         vox_plugin_host::install::user_clap_dir(),
         vox_plugin_host::install::user_vst3_dir(),
+        vox_plugin_host::install::user_lv2_dir(),
     ]
     .into_iter()
     .flatten()
@@ -209,10 +211,13 @@ pub fn install_dirs() -> Vec<PathBuf> {
 }
 
 /// The standard per-format folders every scan searches (`$CLAP_PATH`, then the CLAP folders;
-/// `$VST3_PATH`, then the VST3 folders).
+/// `$VST3_PATH`, then the VST3 folders; `$LV2_PATH`, then the LV2 folders — T-807).
 pub fn standard_folders() -> Vec<PathBuf> {
     let mut dirs = vox_plugin_host::scan::clap_search_paths();
-    for d in vox_plugin_host::scan::vst3_search_paths() {
+    let others = vox_plugin_host::scan::vst3_search_paths()
+        .into_iter()
+        .chain(vox_plugin_host::scan::lv2_search_paths());
+    for d in others {
         if !dirs.contains(&d) {
             dirs.push(d);
         }
@@ -365,11 +370,13 @@ mod tests {
         {
             assert!(standard.contains(&PathBuf::from("/usr/lib/clap")));
             assert!(standard.contains(&PathBuf::from("/usr/lib/vst3")));
+            assert!(standard.contains(&PathBuf::from("/usr/lib/lv2")));
         }
         if std::env::var_os("HOME").is_some() && cfg!(all(unix, not(target_os = "macos"))) {
             let dirs = install_dirs();
             assert!(dirs.iter().any(|d| d.ends_with(".clap")));
             assert!(dirs.iter().any(|d| d.ends_with(".vst3")));
+            assert!(dirs.iter().any(|d| d.ends_with(".lv2")));
         }
         assert!(matches!(
             install(std::path::Path::new("/tmp/readme.txt"), false),

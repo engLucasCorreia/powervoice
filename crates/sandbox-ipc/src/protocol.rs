@@ -220,6 +220,29 @@ impl Vst3PluginRef {
     }
 }
 
+/// What the LV2 backend loads (T-807, ADR-008 Amendment 8): the `.lv2` bundle directory and the
+/// plugin's URI inside it. Travels as the `Load { plugin }` reference, JSON-encoded like
+/// [`ClapPluginRef`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lv2PluginRef {
+    /// Path of the `.lv2` bundle directory.
+    pub path: String,
+    /// The plugin's URI.
+    pub uri: String,
+}
+
+impl Lv2PluginRef {
+    /// The `Load { plugin }` string.
+    pub fn to_reference(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// Parses a `Load { plugin }` string.
+    pub fn parse(reference: &str) -> Result<Self, String> {
+        serde_json::from_str(reference).map_err(|e| format!("bad LV2 plugin reference: {e}"))
+    }
+}
+
 /// One plugin a scanned file offers (`powervoice-sandbox --scan`, ADR-008 §6; T-803, richer
 /// fields T-804 Amendment 4).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -447,6 +470,12 @@ mod tests {
         };
         assert_eq!(Vst3PluginRef::parse(&v.to_reference()).unwrap(), v);
         assert!(Vst3PluginRef::parse(&r.to_reference()).is_err());
+        let l = Lv2PluginRef {
+            path: "/usr/lib/lv2/acme.lv2".into(),
+            uri: "http://acme.example/plugins/eq".into(),
+        };
+        assert_eq!(Lv2PluginRef::parse(&l.to_reference()).unwrap(), l);
+        assert!(Lv2PluginRef::parse(&r.to_reference()).is_err());
         let report = ScanReport {
             path: "/x.clap".into(),
             plugins: vec![ScannedPlugin {

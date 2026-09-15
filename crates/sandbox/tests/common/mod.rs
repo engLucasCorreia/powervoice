@@ -311,3 +311,69 @@ pub fn vst3_gain_state(gain_db: f64) -> ModuleState {
         blob: None,
     }
 }
+
+// --- T-807: the test LV2 plugin --------------------------------------------------------------
+
+/// Whether lilv loads here (the LV2 tests pass with a note when it doesn't: nothing to host
+/// through).
+pub fn lv2_available() -> bool {
+    match powervoice_sandbox::lv2::available() {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("LV2 test skipped: {e}");
+            false
+        }
+    }
+}
+
+/// The test LV2 plugin's library (`vox-test-lv2`'s `cdylib`, built next to the tests).
+pub fn test_lv2_library() -> std::path::PathBuf {
+    let dir = Path::new(SANDBOX)
+        .parent()
+        .expect("sandbox binary directory");
+    let name = format!(
+        "{}vox_test_lv2{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    );
+    [dir.join("deps").join(&name), dir.join(&name)]
+        .into_iter()
+        .find(|p| p.exists())
+        .unwrap_or_else(|| panic!("{name} not found next to {SANDBOX}"))
+}
+
+/// A real bundle `<dir>/<name>.lv2` (TTL + a copy of the test plugin).
+pub fn make_lv2_bundle(dir: &Path, name: &str) -> std::path::PathBuf {
+    vox_test_lv2::write_bundle(dir, name, &test_lv2_library()).unwrap()
+}
+
+/// A scanned-plugin record for test LV2 plugin `uri`.
+pub fn test_lv2_plugin(uri: &str) -> vox_plugin_host::scan::ScannedPlugin {
+    vox_plugin_host::scan::ScannedPlugin {
+        id: uri.to_owned(),
+        name: format!("Test {uri}"),
+        vendor: "PowerVoice".into(),
+        version: "2.3".into(),
+        description: String::new(),
+        url: None,
+        features: vec!["audio-effect".into(), "utility".into()],
+        ..vox_plugin_host::scan::ScannedPlugin::default()
+    }
+}
+
+/// A factory for test LV2 plugin `uri` in `bundle` (module id `lv2:<uri>`).
+pub fn lv2_factory(bundle: &Path, uri: &str, options: SandboxOptions) -> Arc<SandboxFactory> {
+    Arc::new(SandboxFactory::new(
+        vox_plugin_host::lv2_spec(bundle, &test_lv2_plugin(uri)),
+        options,
+    ))
+}
+
+/// A state setting the LV2 gain port (key `gain`, dB).
+pub fn lv2_gain_state(gain_db: f64) -> ModuleState {
+    ModuleState {
+        format_version: 1,
+        params: std::collections::BTreeMap::from([("gain".to_owned(), gain_db)]),
+        blob: None,
+    }
+}

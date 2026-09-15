@@ -244,3 +244,21 @@ The `vst3` crate 0.3.0's bindings are generated from the **VST SDK 3.8.0** `plug
 was needed. §6's pin of 3.8.1 is met in spirit: nothing in the interfaces PowerVoice uses changed
 in 3.8.1. Move to 3.8.1 bindings when the crate publishes them. The MIT notice is in
 `crates/sandbox/LICENSE-VST3-SDK` and THIRD_PARTY_NOTICES (ADR-008 Amendment 6 §1).
+
+## Amendment — T-807 LV2: headers transcribed, lilv loaded at run time (2026-09-15)
+Resolves the ⚠ on the "LV2 spec, lilv / livi" row of §2.
+- **LV2 headers** (lv2 1.18.10, ISC; Copyright 2006-2012 Steve Harris, David Robillard;
+  Copyright 2000-2002 Richard W.E. Furse, Paul Barton-Davis, Stefan Westerfeld): the crate
+  `vox-lv2-abi` transcribes the type definitions it needs (descriptor, features, `urid`,
+  `uri-map`, `options`, `worker`, `state`, atom headers). The full license text is in
+  `crates/lv2-abi/LICENSE-LV2`, and the flagged section of THIRD_PARTY_NOTICES names it.
+- **lilv** (ISC; 0.28 is "0BSD OR ISC") is **not linked**. `powervoice-sandbox` loads the
+  system's `liblilv-0` at run time through `libloading` (ISC, already a dependency), the first
+  time an LV2 bundle is scanned or loaded. It is treated like the other system libraries of §1:
+  never bundled by us; a Linux package should `Recommends:` it (deb `liblilv-0-0`, Arch `lilv` —
+  a T-705 follow-up). Without it, LV2 plugins are unavailable and nothing else is affected.
+- **Not used:** `livi` 0.7.5 (MIT) and the `lilv` / `lilv-sys` crates. `lilv-sys` links lilv at
+  build time, so every build (including the Windows cross-check) would need lilv's development
+  files, and a machine without lilv couldn't start the sandbox at all.
+- No new third-party crate (`rtrb`, used for the LV2 worker's rings, was already a workspace
+  dependency). ADR-008 Amendment 8 records the design.

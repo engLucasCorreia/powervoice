@@ -28,6 +28,11 @@
 //! until the new one has scanned, and restored if it doesn't. A scan that **crashes or times
 //! out** blocklists the *picked* file (ADR-008 §5), so installing it again is refused until it
 //! changes or the user unblocks it — the plugin manager lists it with the reason.
+//!
+//! **Module packages** (T-805, ADR-006 §6–§7): a `.voxmod` goes through [`install_voxmod`]
+//! instead — validated statically (nothing from it runs), its binary for this platform extracted
+//! into `<modules>/.staging/<unique>/`, synced, renamed to `<modules>/<id>/<version>/`, and only
+//! that `.clap` scanned. One version per id; [`uninstall_module`] removes `<modules>/<id>/`.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -35,6 +40,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::blocklist::{BlockReason, Blocklist};
 use crate::scan::{FailureKind, PluginFormat, ScanFailure, ScannedPlugin, is_effect};
+use crate::voxmod::{self, PackageHost, VoxmodError};
 
 /// The per-user CLAP folder for this OS, from the environment (`HOME`, or `LOCALAPPDATA` on
 /// Windows). `None` when that variable is unset, empty or not absolute.
@@ -218,6 +224,24 @@ pub enum InstallError {
     /// Copying or renaming failed.
     #[error("{0}")]
     Io(String),
+    /// T-805: the `.voxmod` package was refused before anything from it ran or was written.
+    #[error("{0}")]
+    Package(VoxmodError),
+    /// T-805: a version of this module is installed; ask, then call again with `replace` (a
+    /// lower `new` is a downgrade, which needs an explicit confirmation too).
+    #[error("version {installed} of this module is already installed")]
+    VersionCollision {
+        /// The installed version's directory.
+        target: PathBuf,
+        /// The installed version.
+        installed: String,
+        /// The package's version.
+        new: String,
+    },
+    /// T-805: the package's plugin isn't the module its manifest describes (another id or
+    /// version, or no valid `module-info`); everything was rolled back.
+    #[error("{0}")]
+    ModuleMismatch(String),
 }
 
 fn io(e: std::io::Error) -> InstallError {
@@ -491,6 +515,204 @@ pub fn install_file(
             })
         }
     }
+}
+
+/// The hidden folder inside the modules folder where packages are extracted before the atomic
+/// rename (never scanned: [`crate::scan`] skips it).
+pub const STAGING_DIR: &str = ".staging";
+
+/// Whether `path` names a `.voxmod` package (by extension).
+pub fn is_voxmod(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case(voxmod::EXTENSION))
+}
+
+/// A fresh, unused name inside `dir`.
+fn unique(dir: &Path, tag: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static N: AtomicU32 = AtomicU32::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    dir.join(format!(
+        "{tag}-{}-{nanos}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+/// Syncs a directory entry (the rename of what's inside it), where the OS supports it.
+fn sync_dir(dir: &Path) {
+    #[cfg(unix)]
+    let _ = std::fs::File::open(dir).and_then(|f| f.sync_all());
+    #[cfg(not(unix))]
+    let _ = dir;
+}
+
+/// The installed versions of a module (the non-hidden subdirectories of `<modules>/<id>`),
+/// sorted.
+pub fn installed_versions(id_dir: &Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(id_dir)
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| !n.starts_with('.'))
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+/// "Install module…" for a **`.voxmod`** (T-805, ADR-006 §6–§7; see the module docs):
+/// 1. `source` must be a `.voxmod` file, not blocklisted; [`voxmod::open`] validates it against
+///    `host` — nothing from it runs, nothing is written on failure;
+/// 2. an installed version of the same id is a [`InstallError::VersionCollision`] until the
+///    caller confirms (`replace`); it's moved aside and restored if the new version fails;
+/// 3. this platform's binary, the manifest and the data folders are extracted into
+///    `<modules>/.staging/<unique>/`, synced, and renamed to `<modules>/<id>/<version>/`;
+/// 4. `scan` runs **once**, on the extracted `.clap`: it must offer the manifest's id at the
+///    manifest's version as an audio effect with valid `module-info`, else everything rolls back
+///    ([`InstallError::ModuleMismatch`]); a scan that crashes or times out also blocklists
+///    `source` (ADR-008 §5).
+pub fn install_voxmod(
+    source: &Path,
+    modules_dir: &Path,
+    replace: bool,
+    host: &PackageHost,
+    blocklist: &mut Blocklist,
+    scan: impl FnOnce(&Path) -> Result<Vec<ScannedPlugin>, ScanFailure>,
+) -> Result<Installed, InstallError> {
+    let meta = std::fs::metadata(source).map_err(|_| InstallError::NotFound)?;
+    if !meta.is_file() || !is_voxmod(source) {
+        return Err(InstallError::NotAPlugin);
+    }
+    if let Some(info) = blocklist.check(source) {
+        return Err(InstallError::Blocklisted(info.reason));
+    }
+    let package = voxmod::open(source, host).map_err(InstallError::Package)?;
+    let id = package.manifest.id.clone();
+    let version = package.manifest.version.clone();
+    let id_dir = modules_dir.join(&id);
+    let previous = installed_versions(&id_dir);
+    if let Some(installed) = previous.last()
+        && !replace
+    {
+        return Err(InstallError::VersionCollision {
+            target: id_dir.join(installed),
+            installed: installed.clone(),
+            new: version,
+        });
+    }
+
+    let staging_root = modules_dir.join(STAGING_DIR);
+    std::fs::create_dir_all(&staging_root).map_err(io)?;
+    let mut staging = Cleanup(Some(unique(&staging_root, "new")));
+    let staged = staging.0.clone().unwrap_or_default();
+    package.extract(&staged).map_err(InstallError::Package)?;
+    sync_dir(&staging_root);
+
+    // The previous version(s) move aside as a whole; restored on any failure below.
+    let backup = if id_dir.exists() {
+        let b = unique(&staging_root, "previous");
+        std::fs::rename(&id_dir, &b).map_err(io)?;
+        Some(b)
+    } else {
+        None
+    };
+    let restore = || {
+        let _ = remove_any(&id_dir);
+        if let Some(b) = &backup {
+            let _ = std::fs::rename(b, &id_dir);
+        }
+    };
+    let version_dir = id_dir.join(&version);
+    if let Err(e) =
+        std::fs::create_dir_all(&id_dir).and_then(|()| std::fs::rename(&staged, &version_dir))
+    {
+        restore();
+        return Err(io(e));
+    }
+    staging.0 = None;
+    sync_dir(&id_dir);
+    sync_dir(modules_dir);
+
+    let target = version_dir.join(package.binary_name());
+    match scan(&target) {
+        Ok(plugins) => {
+            let problem = match plugins.iter().find(|p| p.id == id) {
+                None => Some(format!("its plugin doesn't offer the module `{id}`")),
+                Some(p) if !is_effect(p) => Some(format!("`{id}` isn't an audio effect")),
+                Some(p) if p.module_info.is_none() => Some(format!(
+                    "`{id}` isn't a PowerVoice module (no valid module info)"
+                )),
+                Some(p) if p.version != version => Some(format!(
+                    "`{id}` reports version {} but the manifest says {version}",
+                    p.version
+                )),
+                Some(_) => None,
+            };
+            if let Some(message) = problem {
+                restore();
+                return Err(InstallError::ModuleMismatch(message));
+            }
+            if let Some(b) = &backup {
+                let _ = remove_any(b);
+            }
+            Ok(Installed {
+                target,
+                plugins,
+                replaced: !previous.is_empty(),
+            })
+        }
+        Err(failure) => {
+            restore();
+            let reason = match failure.kind {
+                FailureKind::Crashed => Some(BlockReason::Crashed),
+                FailureKind::TimedOut => Some(BlockReason::TimedOut),
+                FailureKind::Other => None,
+            };
+            if let Some(reason) = reason {
+                blocklist.block(source, reason);
+            }
+            Err(InstallError::ScanFailed {
+                message: failure.message,
+                kind: failure.kind,
+                blocklisted: reason.is_some(),
+            })
+        }
+    }
+}
+
+/// The `<modules>/<id>` directory an installed module's file lies in (canonicalized; `target`
+/// must be inside `<modules>/<id>/<version>/`, never in the staging folder).
+pub fn module_dir_of(target: &Path, modules_dir: &Path) -> Result<PathBuf, UninstallError> {
+    use std::path::Component;
+    let canon_target = std::fs::canonicalize(target).map_err(|_| UninstallError::NotFound)?;
+    let canon_dir =
+        std::fs::canonicalize(modules_dir).map_err(|_| UninstallError::OutsideInstallFolder)?;
+    let rel = canon_target
+        .strip_prefix(&canon_dir)
+        .map_err(|_| UninstallError::OutsideInstallFolder)?;
+    let mut parts = rel.components();
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(Component::Normal(id)), Some(Component::Normal(_)), Some(_))
+            if !id.to_string_lossy().starts_with('.') =>
+        {
+            Ok(canon_dir.join(id))
+        }
+        _ => Err(UninstallError::OutsideInstallFolder),
+    }
+}
+
+/// "Uninstall…" of a module installed from a `.voxmod` (T-805, ADR-006 §7 step 6): `target` is
+/// its `.clap` (anything inside `<modules>/<id>/<version>/`); the whole `<modules>/<id>/` goes.
+/// Anything else is refused ([`UninstallError::OutsideInstallFolder`]).
+pub fn uninstall_module(target: &Path, modules_dir: &Path) -> Result<(), UninstallError> {
+    let dir = module_dir_of(target, modules_dir)?;
+    remove_any(&dir).map_err(io_uninstall)
 }
 
 /// Why "Uninstall…" (H-29) didn't remove a file. Every variant leaves the file as it was.
@@ -1040,6 +1262,320 @@ pub(crate) mod tests {
                 "no scan"
             )),
             Err(InstallError::NotAPlugin)
+        );
+    }
+
+    // --- T-805: `.voxmod` packages -----------------------------------------------------------
+
+    use crate::voxmod::tests::{ExpectErr, manifest, package_with, raw_zip, valid_package};
+    use crate::voxmod::{MANIFEST_NAME, host_platform};
+
+    const MODULE: &str = "com.acme.deesser";
+
+    /// What the sandbox scan reports for a good package: the manifest's module, with module info.
+    fn module_plugin(id: &str, version: &str) -> ScannedPlugin {
+        ScannedPlugin {
+            version: version.into(),
+            module_info: Some("{}".into()),
+            ..effect(id)
+        }
+    }
+
+    fn host() -> PackageHost {
+        PackageHost {
+            reserved_ids: vec!["org.powervoice.gain".into()],
+            ..PackageHost::default()
+        }
+    }
+
+    /// Visible entries of `<modules>`, and whether the staging folder is empty.
+    fn modules_state(modules: &Path) -> (Vec<String>, bool) {
+        let staging_empty = std::fs::read_dir(modules.join(STAGING_DIR))
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(true);
+        let visible = visible_files(modules)
+            .into_iter()
+            .filter(|n| !n.starts_with('.'))
+            .collect();
+        (visible, staging_empty)
+    }
+
+    fn never(_: &Path) -> Result<Vec<ScannedPlugin>, ScanFailure> {
+        panic!("a refused package never runs")
+    }
+
+    #[test]
+    fn a_voxmod_installs_into_modules_id_version_and_only_its_binary_is_scanned() {
+        let root = TempDir::new("voxmod-install");
+        let pkg = valid_package(&root.0, MODULE, b"binary v1");
+        let modules = root.0.join("data").join("modules");
+        let mut blocklist = Blocklist::load(Some(root.0.join("blocklist.json")));
+        let scanned = RefCell::new(Vec::new());
+        let out = install_voxmod(&pkg, &modules, false, &host(), &mut blocklist, |p| {
+            scanned.borrow_mut().push(p.to_path_buf());
+            Ok(vec![module_plugin(MODULE, "1.2.0")])
+        })
+        .unwrap();
+        let version_dir = modules.join(MODULE).join("1.2.0");
+        let target = version_dir.join(format!("{MODULE}.clap"));
+        assert_eq!(out.target, target);
+        assert!(!out.replaced);
+        assert_eq!(
+            *scanned.borrow(),
+            vec![target.clone()],
+            "one scan, of the binary"
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"binary v1");
+        assert!(version_dir.join(MANIFEST_NAME).is_file());
+        assert!(version_dir.join("licenses").join("LICENSE").is_file());
+        assert_eq!(modules_state(&modules), (vec![MODULE.to_owned()], true));
+        assert!(pkg.exists(), "the package itself is untouched");
+    }
+
+    #[test]
+    fn refused_packages_run_nothing_and_write_nothing() {
+        let root = TempDir::new("voxmod-refused");
+        let modules = root.0.join("modules");
+        let mut blocklist = Blocklist::load(None);
+        let bin = format!("bin/{}/x.clap", host_platform());
+        let hostile = |name: &str, entries: &[(&str, &[u8])]| {
+            let p = root.0.join(format!("{name}.voxmod"));
+            raw_zip(&p, entries);
+            p
+        };
+        let good_manifest = |sum_of: &[u8]| {
+            let mut m = manifest(MODULE);
+            m.binaries.insert(host_platform(), bin.clone());
+            m.sha256
+                .insert(bin.clone(), crate::sha256::sha256_hex(sum_of));
+            serde_json::to_vec(&m).unwrap()
+        };
+        let foreign = {
+            let mut m = manifest(MODULE);
+            m.binaries
+                .insert("plan9-mips".into(), "bin/plan9-mips/x.clap".into());
+            m.sha256.insert(
+                "bin/plan9-mips/x.clap".into(),
+                crate::sha256::sha256_hex(b"x"),
+            );
+            serde_json::to_vec(&m).unwrap()
+        };
+        let cases: Vec<(PathBuf, ExpectErr)> = vec![
+            (
+                hostile(
+                    "bad-manifest",
+                    &[(MANIFEST_NAME, b"{\"id\": 3}"), (&bin, b"x")],
+                ),
+                |e| matches!(e, VoxmodError::BadManifest(_)),
+            ),
+            (
+                hostile(
+                    "checksum",
+                    &[
+                        (MANIFEST_NAME, &good_manifest(b"original")),
+                        (&bin, b"tampered"),
+                    ],
+                ),
+                |e| matches!(e, VoxmodError::ChecksumMismatch(_)),
+            ),
+            (
+                hostile(
+                    "platform",
+                    &[(MANIFEST_NAME, &foreign), ("bin/plan9-mips/x.clap", b"x")],
+                ),
+                |e| matches!(e, VoxmodError::WrongPlatform { .. }),
+            ),
+            (
+                hostile(
+                    "traversal",
+                    &[
+                        (MANIFEST_NAME, &good_manifest(b"x")),
+                        ("../../evil.clap", b"x"),
+                    ],
+                ),
+                |e| matches!(e, VoxmodError::UnsafePath(_)),
+            ),
+            (
+                hostile(
+                    "traversal-in-data",
+                    &[
+                        (MANIFEST_NAME, &good_manifest(b"x")),
+                        (&bin, b"x"),
+                        ("licenses/../../../evil", b"x"),
+                    ],
+                ),
+                |e| matches!(e, VoxmodError::UnsafePath(_)),
+            ),
+        ];
+        for (pkg, expected) in cases {
+            let err =
+                install_voxmod(&pkg, &modules, false, &host(), &mut blocklist, never).unwrap_err();
+            assert!(
+                matches!(&err, InstallError::Package(e) if expected(e)),
+                "{}: {err:?}",
+                pkg.display()
+            );
+            assert_eq!(
+                modules_state(&modules),
+                (Vec::new(), true),
+                "nothing written"
+            );
+        }
+        // A built-in id is a hard error, before anything else.
+        let mut m = manifest("org.powervoice.gain");
+        m.version = "9.9.9".into();
+        let builtin = package_with(&root.0, &m, b"x");
+        assert!(matches!(
+            install_voxmod(&builtin, &modules, true, &host(), &mut blocklist, never),
+            Err(InstallError::Package(VoxmodError::BuiltinId(_)))
+        ));
+        // Not a package at all.
+        let txt = root.0.join("notes.txt");
+        std::fs::write(&txt, b"x").unwrap();
+        assert_eq!(
+            install_voxmod(&txt, &modules, false, &host(), &mut blocklist, never).unwrap_err(),
+            InstallError::NotAPlugin
+        );
+    }
+
+    #[test]
+    fn another_version_needs_confirmation_and_a_failed_replacement_restores_it() {
+        let root = TempDir::new("voxmod-versions");
+        let modules = root.0.join("modules");
+        let mut blocklist = Blocklist::load(None);
+        let v1 = valid_package(&root.0, MODULE, b"v1.2.0");
+        install_voxmod(&v1, &modules, false, &host(), &mut blocklist, |_| {
+            Ok(vec![module_plugin(MODULE, "1.2.0")])
+        })
+        .unwrap();
+        let mut m = manifest(MODULE);
+        m.version = "1.3.0".into();
+        let dir2 = root.0.join("v2");
+        std::fs::create_dir_all(&dir2).unwrap();
+        let v2 = package_with(&dir2, &m, b"v1.3.0");
+
+        // Asked first; nothing changes.
+        assert_eq!(
+            install_voxmod(&v2, &modules, false, &host(), &mut blocklist, never).unwrap_err(),
+            InstallError::VersionCollision {
+                target: modules.join(MODULE).join("1.2.0"),
+                installed: "1.2.0".into(),
+                new: "1.3.0".into(),
+            }
+        );
+        // Confirmed, but the new version doesn't scan: the old one is back, untouched.
+        let err = install_voxmod(&v2, &modules, true, &host(), &mut blocklist, |_| {
+            Err(failure(FailureKind::Other))
+        })
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            InstallError::ScanFailed {
+                blocklisted: false,
+                ..
+            }
+        ));
+        let old = modules
+            .join(MODULE)
+            .join("1.2.0")
+            .join(format!("{MODULE}.clap"));
+        assert_eq!(std::fs::read(&old).unwrap(), b"v1.2.0");
+        assert_eq!(installed_versions(&modules.join(MODULE)), vec!["1.2.0"]);
+        assert_eq!(modules_state(&modules), (vec![MODULE.to_owned()], true));
+        // Confirmed and good: only the new version is left (one version per id).
+        let out = install_voxmod(&v2, &modules, true, &host(), &mut blocklist, |_| {
+            Ok(vec![module_plugin(MODULE, "1.3.0")])
+        })
+        .unwrap();
+        assert!(out.replaced);
+        assert_eq!(installed_versions(&modules.join(MODULE)), vec!["1.3.0"]);
+        assert_eq!(std::fs::read(&out.target).unwrap(), b"v1.3.0");
+        assert_eq!(modules_state(&modules), (vec![MODULE.to_owned()], true));
+    }
+
+    #[test]
+    fn a_plugin_that_is_not_the_manifests_module_is_rolled_back() {
+        let root = TempDir::new("voxmod-mismatch");
+        let modules = root.0.join("modules");
+        let mut blocklist = Blocklist::load(Some(root.0.join("blocklist.json")));
+        let pkg = valid_package(&root.0, MODULE, b"x");
+        for reported in [
+            vec![module_plugin("com.acme.other", "1.2.0")],
+            vec![module_plugin(MODULE, "1.2.1")],
+            vec![effect(MODULE)],
+            Vec::new(),
+        ] {
+            let err = install_voxmod(&pkg, &modules, false, &host(), &mut blocklist, |_| {
+                let mut r = reported.clone();
+                for p in &mut r {
+                    if p.module_info.is_none() {
+                        p.version = "1.2.0".into();
+                    }
+                }
+                Ok(r)
+            })
+            .unwrap_err();
+            assert!(matches!(err, InstallError::ModuleMismatch(_)), "{err:?}");
+            assert_eq!(modules_state(&modules), (Vec::new(), true));
+            assert!(blocklist.check(&pkg).is_none(), "a mismatch isn't a crash");
+        }
+    }
+
+    #[test]
+    fn a_crashing_package_is_rolled_back_and_blocklisted() {
+        let root = TempDir::new("voxmod-crash");
+        let modules = root.0.join("modules");
+        let mut blocklist = Blocklist::load(Some(root.0.join("blocklist.json")));
+        let pkg = valid_package(&root.0, MODULE, b"crashes");
+        let err = install_voxmod(&pkg, &modules, false, &host(), &mut blocklist, |_| {
+            Err(failure(FailureKind::Crashed))
+        })
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            InstallError::ScanFailed {
+                blocklisted: true,
+                ..
+            }
+        ));
+        assert_eq!(modules_state(&modules), (Vec::new(), true));
+        assert_eq!(
+            install_voxmod(&pkg, &modules, false, &host(), &mut blocklist, never).unwrap_err(),
+            InstallError::Blocklisted(BlockReason::Crashed)
+        );
+    }
+
+    #[test]
+    fn uninstalling_a_module_removes_its_folder_and_nothing_else() {
+        let root = TempDir::new("voxmod-uninstall");
+        let modules = root.0.join("modules");
+        let mut blocklist = Blocklist::load(None);
+        let pkg = valid_package(&root.0, MODULE, b"x");
+        let out = install_voxmod(&pkg, &modules, false, &host(), &mut blocklist, |_| {
+            Ok(vec![module_plugin(MODULE, "1.2.0")])
+        })
+        .unwrap();
+        // Refused: outside, directly in the modules folder, inside the staging folder.
+        let loose = modules.join("loose.clap");
+        std::fs::write(&loose, b"x").unwrap();
+        let staged = modules.join(STAGING_DIR).join("a").join("b.clap");
+        std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        std::fs::write(&staged, b"x").unwrap();
+        for p in [&pkg, &loose, &staged, &modules.join(MODULE)] {
+            assert_eq!(
+                uninstall_module(p, &modules),
+                Err(UninstallError::OutsideInstallFolder),
+                "{}",
+                p.display()
+            );
+        }
+        assert!(out.target.exists());
+        assert_eq!(uninstall_module(&out.target, &modules), Ok(()));
+        assert!(!modules.join(MODULE).exists());
+        assert!(loose.exists() && staged.exists() && pkg.exists());
+        assert_eq!(
+            uninstall_module(&out.target, &modules),
+            Err(UninstallError::NotFound)
         );
     }
 

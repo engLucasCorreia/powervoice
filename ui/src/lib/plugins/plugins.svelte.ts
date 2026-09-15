@@ -50,7 +50,14 @@ export interface ScanProgress {
 export type InstallState =
   | { phase: "idle" }
   | { phase: "installing"; source: string }
-  | { phase: "collision"; source: string; target: string }
+  | {
+      phase: "collision";
+      source: string;
+      target: string;
+      /** T-805: a module package's installed version and the package's (else `null`). */
+      installedVersion: string | null;
+      newVersion: string | null;
+    }
   | { phase: "installed"; source: string; target: string; replaced: boolean; effects: InstalledEffectDto[] }
   | {
       phase: "failed";
@@ -66,9 +73,10 @@ export type InstallState =
  * T-808 JSFX). A VST3 or LV2 bundle is a folder on Linux and Windows: picking any file inside it
  * installs the whole bundle — `ttl` lets the picker show an LV2 bundle's `manifest.ttl`. A JSFX
  * script is a `.jsfx` file (its relative imports come along); REAPER's extensionless scripts are
- * found by scanning their folder instead (Preferences → Plugins → folders).
+ * found by scanning their folder instead (Preferences → Plugins → folders). T-805: a PowerVoice
+ * module package (`voxmod`).
  */
-export const INSTALL_EXTENSIONS: readonly string[] = ["clap", "vst3", "lv2", "ttl", "jsfx"];
+export const INSTALL_EXTENSIONS: readonly string[] = ["clap", "vst3", "lv2", "ttl", "jsfx", "voxmod"];
 
 let open = $state(false);
 let tab = $state<ManagerTab>("plugins");
@@ -425,7 +433,13 @@ export async function installFrom(source: string, replace: boolean): Promise<voi
         };
         break;
       case "collision":
-        install = { phase: "collision", source, target: result.path };
+        install = {
+          phase: "collision",
+          source,
+          target: result.path,
+          installedVersion: result.installed_version,
+          newVersion: result.new_version,
+        };
         return;
       case "failed":
         install = {

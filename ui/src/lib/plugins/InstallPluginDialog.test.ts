@@ -74,7 +74,7 @@ describe("Install module dialog (T-809)", () => {
               { id: "clap:b", name: "De-esser (stereo)" },
             ],
           }
-        : { kind: "collision", path: "/home/u/.clap/acme-deesser.clap" },
+        : { kind: "collision", path: "/home/u/.clap/acme-deesser.clap", installed_version: null, new_version: null },
     );
     const root = mountDialog();
     await installFrom(SOURCE, false);
@@ -106,7 +106,7 @@ describe("Install module dialog (T-809)", () => {
   });
 
   it("Escape cancels the collision prompt", async () => {
-    mockInstall(() => ({ kind: "collision", path: "/home/u/.clap/acme-deesser.clap" }));
+    mockInstall(() => ({ kind: "collision", path: "/home/u/.clap/acme-deesser.clap", installed_version: null, new_version: null }));
     const root = mountDialog();
     await installFrom(SOURCE, false);
     flushSync();
@@ -137,6 +137,53 @@ describe("Install module dialog (T-809)", () => {
     flushSync();
     expect(pluginsState().open).toBe(true);
     expect(pluginsState().focusKey).toBe(`path:${SOURCE}`);
+  });
+
+  it("names both versions when a module package is already installed, and flags a downgrade (T-805)", async () => {
+    setPlatformForTest("linux");
+    const collision = (installed: string, version: string): PluginInstallResultDto => ({
+      kind: "collision",
+      path: `/data/modules/com.acme.deesser/${installed}`,
+      installed_version: installed,
+      new_version: version,
+    });
+    mockInstall(() => collision("1.2.0", "1.3.0"));
+    let root = mountDialog();
+    await installFrom("/home/u/Downloads/com.acme.deesser-1.3.0.voxmod", false);
+    flushSync();
+    expect(text(q(root, "plugin-install-message"))).toBe(
+      "Version 1.2.0 of this module is installed. Replace it with version 1.3.0? If the new version can't be used, version 1.2.0 is kept.",
+    );
+    expect(text(q(root, "plugin-install-replace"))).toBe("Replace");
+    cleanup?.();
+    resetPluginsForTest();
+
+    mockInstall(() => collision("1.10.0", "1.9.0"));
+    root = mountDialog();
+    await installFrom("/home/u/Downloads/com.acme.deesser-1.9.0.voxmod", false);
+    flushSync();
+    expect(text(q(root, "plugin-install-message"))).toContain("which is newer than 1.9.0");
+    expect(text(q(root, "plugin-install-replace"))).toBe("Install older version");
+  });
+
+  it("says why a module package was refused, with the detail (T-805)", async () => {
+    mockInstall(() => ({
+      kind: "failed",
+      code: "package_checksum",
+      detail: "bin/linux-x86_64/com.acme.deesser.clap doesn't match its checksum",
+      blocklisted: false,
+      cause: null,
+    }));
+    const root = mountDialog();
+    await installFrom("/home/u/Downloads/com.acme.deesser-1.3.0.voxmod", false);
+    flushSync();
+    expect(text(q(root, "plugin-install-reason"))).toBe(
+      "A file in the package doesn't match its checksum, so the download may be damaged. Nothing from it was run.",
+    );
+    expect(text(q(root, "plugin-install-detail"))).toBe(
+      "Details: bin/linux-x86_64/com.acme.deesser.clap doesn't match its checksum",
+    );
+    expect(q(root, "plugin-install-blocklisted")).toBeNull();
   });
 
   it("words a refusal of a blocklisted file with its cause, without a detail line", async () => {

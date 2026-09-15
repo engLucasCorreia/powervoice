@@ -77,6 +77,9 @@ pub struct ClapInstance {
     version: String,
     params: Vec<ParamInfo>,
     groups: Vec<ParamGroup>,
+    /// A PowerVoice module's checked `org.powervoice.module-info/1` JSON (T-805; `None`: an
+    /// ordinary CLAP plugin). Its schema replaces the generic CLAP mapping.
+    module_info: Option<String>,
     /// `(id, cookie)` sorted by id, for the events `process` builds.
     cookies: Vec<(u32, usize)>,
     ports: Ports,
@@ -225,6 +228,7 @@ impl ClapInstance {
             version,
             params: Vec::new(),
             groups: Vec::new(),
+            module_info: None,
             cookies: Vec::new(),
             ports: Ports::default(),
             active: Mutex::new(false),
@@ -246,10 +250,46 @@ impl ClapInstance {
         };
         me.ports = me.read_ports()?;
         let raw = me.read_params();
-        let (params, groups) = params::map(&raw, |id, v| me.value_text(id, v));
+        let (params, groups) = match me.read_module_info(id, &raw)? {
+            // A PowerVoice module (ADR-006 §2): its own schema — keys, units, tapers, i18n keys.
+            Some((info, json)) => {
+                me.module_info = Some(json);
+                (info.params, info.groups)
+            }
+            None => params::map(&raw, |id, v| me.value_text(id, v)),
+        };
         me.params = params;
         me.groups = groups;
         Ok(me)
+    }
+
+    /// The plugin's `org.powervoice.module-info/1` (T-805), checked against its CLAP parameters
+    /// `raw`: `Ok(None)` for an ordinary plugin; an error (the plugin is refused) when it has the
+    /// extension but the JSON is invalid or disagrees with `params`.
+    fn read_module_info(
+        &self,
+        id: &str,
+        raw: &[RawParam],
+    ) -> Result<Option<(vox_module_api::ModuleInfo, String)>, String> {
+        let ext = self.extension(POWERVOICE_EXT_MODULE_INFO) as *const clap_plugin_module_info;
+        // SAFETY: null or the plugin's vtable for this id, valid while the plugin lives.
+        let Some(ext) = (unsafe { ext.as_ref() }) else {
+            return Ok(None);
+        };
+        let refuse =
+            |why: String| format!("{} has invalid PowerVoice module info: {why}", self.name);
+        let get = ext.get_info.ok_or_else(|| refuse("no get_info".into()))?;
+        // SAFETY: main thread; the stream lives for the call.
+        let json = stream::save(|s| unsafe { get(self.plugin, s) })
+            .ok_or_else(|| refuse("get_info failed".into()))?;
+        let info = super::module_info::check(&json, id, raw).map_err(refuse)?;
+        let normalized = serde_json::to_string(&info).map_err(|e| refuse(e.to_string()))?;
+        Ok(Some((info, normalized)))
+    }
+
+    /// The checked module info JSON of a PowerVoice module (T-805), `None` for a plain plugin.
+    pub(crate) fn module_info(&self) -> Option<&str> {
+        self.module_info.as_deref()
     }
 
     fn p(&self) -> &clap_plugin {
@@ -493,7 +533,10 @@ impl PluginInstance for ClapInstance {
             params: self.params.clone(),
             groups: self.groups.clone(),
             values: self.current_values(),
-            param_text: self.params_ext().is_some_and(|e| e.value_to_text.is_some()),
+            // A PowerVoice module's text follows the module API's own rules (units, `-inf dB`),
+            // which the host applies itself — no control round trip per value.
+            param_text: self.module_info.is_none()
+                && self.params_ext().is_some_and(|e| e.value_to_text.is_some()),
         }
     }
 

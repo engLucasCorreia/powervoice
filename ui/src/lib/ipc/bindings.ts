@@ -302,7 +302,7 @@ len_samples: number | null, };
  * Why "Install module…" didn't install (T-809). The UI words each one; `detail` carries the
  * underlying (English, OS- or plugin-provided) text for `scan_failed`/`io`.
  */
-export type InstallFailureDto = "not_found" | "not_a_plugin" | "already_installed" | "blocklisted" | "no_effects" | "scan_crashed" | "scan_timed_out" | "scan_failed" | "no_install_dir" | "io";
+export type InstallFailureDto = "not_found" | "not_a_plugin" | "already_installed" | "blocklisted" | "no_effects" | "scan_crashed" | "scan_timed_out" | "scan_failed" | "no_install_dir" | "io" | "package_invalid" | "package_unsafe" | "package_too_large" | "package_checksum" | "package_platform" | "package_too_new" | "package_builtin_id" | "module_mismatch";
 
 /**
  * One effect an install added (T-809).
@@ -588,12 +588,17 @@ standard: Array<string>,
 /**
  * `Settings.plugins.custom_folders`.
  */
-custom: Array<string>, };
+custom: Array<string>, 
+/**
+ * T-805: the per-user modules folder `.voxmod` packages extract into
+ * (`<modules>/<id>/<version>/`); a plugin inside it offers "Uninstall…" (the whole module).
+ */
+modules: string | null, };
 
 /**
  * `plugins_install`'s answer (T-809).
  */
-export type PluginInstallResultDto = { "kind": "installed", path: string, replaced: boolean, effects: Array<InstalledEffectDto>, } | { "kind": "collision", path: string, } | { "kind": "failed", code: InstallFailureDto, detail: string, blocklisted: boolean, cause: BlockCauseDto | null, };
+export type PluginInstallResultDto = { "kind": "installed", path: string, replaced: boolean, effects: Array<InstalledEffectDto>, } | { "kind": "collision", path: string, installed_version: string | null, new_version: string | null, } | { "kind": "failed", code: InstallFailureDto, detail: string, blocklisted: boolean, cause: BlockCauseDto | null, };
 
 /**
  * One audio port side's channel count (T-804 item 3, ADR-008 §6).

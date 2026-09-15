@@ -26,6 +26,10 @@
 //!   its own sandbox like a CLAP file. Cache, blocklist and plugin manager rows carry the format.
 //! - **LV2 and JSFX enumeration** (T-807, T-808, same module): `.lv2` bundles and JSFX scripts
 //!   (`.jsfx` or extensionless with a `desc:` line), each scanned in its own sandbox.
+//! - **Module packages** ([`voxmod`], T-805, ADR-006 §3/§7): `.voxmod` zip archives validated
+//!   without running code, installed per user into `<app local data>/modules/<id>/<version>/`
+//!   ([`install::install_voxmod`]); their `.clap` is a PowerVoice module registered under its
+//!   bare id ([`packaged_module_info`]).
 //! - Instances are created off the rack's control thread (`ModuleFactory::loads_async`).
 //! - The **watchdog** thread (one per process, [`watchdog`]) spawns the sandboxes, polls every
 //!   channel's `Monitor` (crash, hang, clean exit), kills hung processes and reaps retired ones:
@@ -40,14 +44,16 @@ mod proxy;
 mod rpc;
 mod sandbox;
 pub mod scan;
+pub mod sha256;
 pub mod state;
+pub mod voxmod;
 pub mod watchdog;
 
 pub use catalog::{CatalogPaths, InstallReport, PluginCatalog, PluginDetails, ScanSummary};
 pub use factory::{
     CLAP_FORMAT, JSFX_FORMAT, LV2_FORMAT, SandboxFactory, SandboxInstance, SandboxOptions,
-    SandboxSpec, TEST_FORMAT, VST3_FORMAT, clap_spec, jsfx_spec, lv2_spec, test_factories,
-    test_spec, vst3_spec,
+    SandboxSpec, TEST_FORMAT, VST3_FORMAT, clap_spec, jsfx_spec, lv2_spec, packaged_module_info,
+    test_factories, test_spec, vst3_spec,
 };
 pub use proxy::{MAX_TRANSPORT_BLOCK, ProxyModule};
 pub use sandbox::SandboxFault;

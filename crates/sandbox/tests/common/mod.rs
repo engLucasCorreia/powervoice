@@ -236,6 +236,25 @@ impl Drop for TempDir {
     }
 }
 
+// --- T-805: the packaged Gain (a PowerVoice module as a CLAP plugin) -------------------------
+
+/// The packaged Gain's library (`vox-voxmod-gain`'s `cdylib`, built next to the tests because
+/// this crate dev-depends on it, like the test CLAP plugin).
+pub fn voxmod_gain_library() -> std::path::PathBuf {
+    let dir = Path::new(SANDBOX)
+        .parent()
+        .expect("sandbox binary directory");
+    let name = format!(
+        "{}vox_voxmod_gain{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    );
+    [dir.join("deps").join(&name), dir.join(&name)]
+        .into_iter()
+        .find(|p| p.exists())
+        .unwrap_or_else(|| panic!("{name} not found next to {SANDBOX}"))
+}
+
 // --- T-806: the test VST3 plugin -------------------------------------------------------------
 
 /// The test VST3 plugin's library (`vox-test-vst3`'s `cdylib`, built next to the tests like the

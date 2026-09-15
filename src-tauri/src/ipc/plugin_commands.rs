@@ -171,11 +171,13 @@ pub async fn plugins_folders(
             .map(text)
             .collect(),
         custom: settings.get().plugins.custom_folders,
+        modules: crate::plugins::modules_dir().map(text),
     })
 }
 
-/// "Install module…" (T-809, T-806): copies the picked `.clap` file or `.vst3` bundle (or a file
-/// inside one) into the per-user folder of its format, scans
+/// "Install module…" (T-809, T-806, T-805): copies the picked `.clap` file or `.vst3` bundle (or a
+/// file inside one) into the per-user folder of its format — or validates a `.voxmod` package
+/// without running it and extracts it into the modules folder — scans
 /// only that file (up to the 30 s scan timeout, off the async runtime) and registers it. A name
 /// collision comes back as `collision` without changing anything, until `replace` is set.
 #[tauri::command]

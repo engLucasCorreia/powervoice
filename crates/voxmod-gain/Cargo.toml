@@ -1,0 +1,27 @@
+[package]
+name = "vox-voxmod-gain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# T-805 (ADR-006 §4): the example module package — the built-in Gain, wrapped by
+# `vox-module-clap` as a standalone CLAP plugin with the id `org.powervoice.gain.packaged` (so it
+# never collides with the built-in). `just voxmod voxmod-gain` builds the `.clap` and zips it with
+# `voxmod.json` into a `.voxmod`. `rlib` too: test crates dev-depend on it, which makes cargo
+# build the `.so` next to them (`target/<profile>/deps/libvox_voxmod_gain.so`), like
+# `vox-test-clap`. Never shipped inside the app.
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+vox-module-api = { path = "../module-api" }
+vox-modules = { path = "../modules" }
+vox-module-clap = { path = "../module-clap" }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

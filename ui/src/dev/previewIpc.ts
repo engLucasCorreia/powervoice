@@ -459,11 +459,12 @@ const PLUGIN_FOLDERS: PluginFoldersDto = {
   install_folders: [`${HOME}/.clap`, `${HOME}/.vst3`],
   standard: [`${HOME}/.clap`, "/usr/lib/clap", `${HOME}/.vst3`, "/usr/lib/vst3"],
   custom: ["/media/plugins/voice-tools"],
+  modules: `${HOME}/.local/share/app.powervoice.editor/modules`,
 };
 
 function installResult(dialog: string | null, replace: boolean): PluginInstallResultDto {
   if (dialog === "plugin-collision" && !replace) {
-    return { kind: "collision", path: `${HOME}/.clap/acme-deesser.clap` };
+    return { kind: "collision", path: `${HOME}/.clap/acme-deesser.clap`, installed_version: null, new_version: null };
   }
   if (dialog === "plugin-failed") {
     return {

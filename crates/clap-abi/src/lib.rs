@@ -522,6 +522,20 @@ pub struct clap_plugin_tail {
     pub get: Option<unsafe extern "C" fn(plugin: *const clap_plugin) -> u32>,
 }
 
+/// PowerVoice's vendor extension (ADR-006 §2, T-805): a packaged module's
+/// `vox_module_api::ModuleInfo` as JSON. Same id as `vox_module_api::MODULE_INFO_EXTENSION_ID`.
+pub const POWERVOICE_EXT_MODULE_INFO: &CStr = c"org.powervoice.module-info/1";
+
+/// The `org.powervoice.module-info/1` vtable (not part of CLAP; PowerVoice-defined, frozen for
+/// `/1`).
+#[repr(C)]
+pub struct clap_plugin_module_info {
+    /// \[main\] Writes the module info (UTF-8 JSON) to `stream`; `false` on failure.
+    pub get_info: Option<
+        unsafe extern "C" fn(plugin: *const clap_plugin, stream: *const clap_ostream) -> bool,
+    >,
+}
+
 /// `clap_host_tail_t`.
 #[repr(C)]
 pub struct clap_host_tail {
@@ -699,6 +713,7 @@ mod tests {
         assert_eq!(size_of::<clap_audio_port_info>(), 288);
         assert_eq!(offset_of!(clap_audio_port_info, port_type), 272);
         assert_eq!(size_of::<clap_plugin_params>(), 48);
+        assert_eq!(size_of::<clap_plugin_module_info>(), 8);
     }
 
     #[test]

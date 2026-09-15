@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use vox_module_api::{
     LocalizedText, MODULE_API_VERSION, Module, ModuleDescriptor, ModuleError, ModuleFactory,
-    Version, features,
+    ModuleInfo, Version, features,
 };
 use vox_sandbox_ipc::WaitBudget;
 use vox_sandbox_ipc::protocol::{
@@ -193,9 +193,34 @@ impl ModuleFactory for SandboxFactory {
     }
 }
 
+/// The module info of a **PowerVoice module** packaged as CLAP (ADR-006 §2, T-805): the scan's
+/// checked `org.powervoice.module-info/1` JSON, if `plugin` has one that still parses, validates
+/// and names `plugin.id`. `None` for an ordinary CLAP plugin.
+pub fn packaged_module_info(plugin: &ScannedPlugin) -> Option<ModuleInfo> {
+    let info: ModuleInfo = serde_json::from_str(plugin.module_info.as_deref()?).ok()?;
+    (info.validate().is_ok() && info.descriptor.id == plugin.id).then_some(info)
+}
+
 /// A CLAP plugin's spec (T-803): module id `clap:<plugin id>`, the plugin's name, vendor,
 /// description, URL and CLAP features, version parsed leniently; loaded from `path`.
+///
+/// T-805: a PowerVoice module ([`packaged_module_info`]) is registered under its **bare** id
+/// (`com.acme.deesser`, no `clap:`) with its own descriptor — i18n keys, strict version,
+/// `state_format_version` — so its state is key-based and migratable (ADR-006 §2). It still
+/// runs in the sandbox's CLAP backend.
 pub fn clap_spec(path: &Path, plugin: &ScannedPlugin) -> SandboxSpec {
+    let reference = ClapPluginRef {
+        path: path.to_string_lossy().into_owned(),
+        id: plugin.id.clone(),
+    }
+    .to_reference();
+    if let Some(info) = packaged_module_info(plugin) {
+        return SandboxSpec {
+            descriptor: info.descriptor,
+            format: CLAP_FORMAT.into(),
+            plugin: reference,
+        };
+    }
     SandboxSpec {
         descriptor: ModuleDescriptor {
             id: format!("{CLAP_FORMAT}:{}", plugin.id),
@@ -209,11 +234,7 @@ pub fn clap_spec(path: &Path, plugin: &ScannedPlugin) -> SandboxSpec {
             api_version: MODULE_API_VERSION,
         },
         format: CLAP_FORMAT.into(),
-        plugin: ClapPluginRef {
-            path: path.to_string_lossy().into_owned(),
-            id: plugin.id.clone(),
-        }
-        .to_reference(),
+        plugin: reference,
     }
 }
 

@@ -1,0 +1,11 @@
+{
+  "manifest_version": 1,
+  "id": "org.powervoice.gain.packaged",
+  "version": "1.0.0",
+  "module_api": 1,
+  "min_host_version": "0.1.0",
+  "name": "Gain (packaged)",
+  "vendor": "PowerVoice",
+  "license": "MIT OR Apache-2.0",
+  "url": "https://powervoice.app"
+}

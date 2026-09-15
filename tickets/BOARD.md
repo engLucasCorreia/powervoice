@@ -81,6 +81,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-41 | Output level meter (owner req.): vertical, fixed-size (no analyzer resize), standard peak/RMS ballistics + peak hold, readable throttled numerals, clip latch — keep the lively jump | S | in progress |
 | H-42 | Analyzer diagnostics (owner req.): peak frequency labels (Hz + note), voice statistics panel (F0, sibilance → de-esser suggestion, mud/presence, hum, rumble, noise floor), LTAS over selection/document, compare/freeze snapshots, optional Spectrum Inspector window, "add EQ band here" | O | in progress |
 | H-43 | Idle CPU (owner report): web view main thread ~1 core while idle — draw-on-demand frame scheduler instead of perpetual rAF loops, idle telemetry throttling, meters/analyzer stop at rest; target ≤ 2 % idle (release) with a regression guard | O | todo (after H-41, H-42, T-704) |
+| H-44 | `.voxmod` locales + presets (T-805, ADR-006 §7 step 5): merge a package's `locales/` into i18n at load and index its `presets/` as factory presets for that module; remove both on uninstall | S | todo |
 | H-18 | Shared test factories for DTOs (`ui/src/lib/test/fixtures.ts` + Rust builders) so a new DTO field touches one helper, not 20 test literals (merge-friction fix) | H | done |
 | H-17 | Recovery follow-ups (T-301): dialog stays open for remaining sessions (A-015), AC-3/AC-11 timing on a real disk (test-big), compaction off the document lock, markers during an interrupted take, Memory-for-audio UI, `/tmp/vox-project-*` sweep | S | done |
 | H-15 | Sidecar follow-ups (T-306): recent-file-missing dialog, read-only folder matrix (AC-13), SIGKILL-during-sidecar-save test (AC-6), per-slot leniency for a malformed rack slot, perf budget (AC-18) | S | done |
@@ -194,7 +195,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-802 | Sandbox process, watchdog, proxy module | W2 | O | T-801 | done |
 | T-803 | CLAP adapter (+ enumerate) | W3 | O | T-802 | done |
 | T-804 | Scanner orchestration, cache, blocklist | W3 | S | T-802 | done |
-| T-805 | Our modules as CLAP packages (clack-plugin) | W4 | O | T-803 | in progress |
+| T-805 | Our modules as CLAP packages (clack-plugin) | W4 | O | T-803 | done |
 | T-806 | VST3 adapter (coupler vst3 + moduleinfo scan) | W4 | O | T-803, T-804 | done |
 | T-807 | LV2 adapter (livi) | W4 | O | T-803, T-804 | done |
 | T-808 | JSFX adapter (ysfx, sandbox-only) | W4 | O | T-803, T-804 | done |
@@ -205,4 +206,4 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 ## M9 — Native plugin editors
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
-| T-901 | Plugin GUI as floating window owned by sandbox (HWND/NSView/X11-XWayland) | W1 | O | M8 | todo |
+| T-901 | Plugin GUI as floating window owned by sandbox (HWND/NSView/X11-XWayland) | W1 | O | M8 | in progress |

@@ -13,6 +13,8 @@
 //! - Lifecycle and processing: [`ActivateConfig`], [`ProcessContext`], [`ProcessMode`], [`Tail`]
 //!   (§5–§6).
 //! - State: [`ModuleState`], [`prepare_state`] (§10).
+//! - Packaged modules (ADR-006 §2): [`ModuleInfo`], the JSON a CLAP-packaged module publishes
+//!   through [`MODULE_INFO_EXTENSION_ID`]; [`is_valid_module_id`].
 //! - Extensions: [`ExtensionId`], [`Extension`], [`Telemetry`], [`ResponseCurve`],
 //!   [`NoiseProfile`], [`AdapterHealth`], [`ParamText`] (§11; the last two are host-internal,
 //!   T-802/T-803).
@@ -27,6 +29,7 @@
 mod descriptor;
 mod event;
 mod extension;
+mod info;
 mod module;
 mod param;
 mod process;
@@ -38,7 +41,7 @@ pub mod test_util;
 
 pub use descriptor::{
     LocalizedText, MODULE_API_VERSION, ModuleDescriptor, ModuleFactory, ModulePreset, ModuleRef,
-    ParseModuleRefError, ParseVersionError, Version, features,
+    ParseModuleRefError, ParseVersionError, Version, features, is_valid_module_id,
 };
 pub use event::{
     DEFAULT_EVENT_CAPACITY, EventList, EventListError, OutputEvents, ParamEvent, Segment, segments,
@@ -48,6 +51,7 @@ pub use extension::{
     ResponseCurve, Telemetry, TelemetryCells, TelemetryInfo, TelemetryKind, adapter_health,
     noise_profile, param_text, response_curve, telemetry,
 };
+pub use info::{MODULE_INFO_EXTENSION_ID, ModuleInfo, ModuleInfoError};
 pub use module::{Module, ModuleError};
 pub use param::{
     GroupId, ParamFlags, ParamGroup, ParamId, ParamInfo, SchemaError, Taper, Unit, validate_schema,

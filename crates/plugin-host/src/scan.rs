@@ -438,7 +438,11 @@ fn walk(dir: &Path, depth: usize, format: PluginFormat, out: &mut Vec<PathBuf>) 
             if keep {
                 out.push(path);
             }
-        } else if meta.is_dir() && depth < MAX_DEPTH {
+        } else if meta.is_dir()
+            && depth < MAX_DEPTH
+            && entry.file_name() != crate::install::STAGING_DIR
+        {
+            // T-805: a module package's staging folder (`<modules>/.staging`) is never scanned.
             walk(&path, depth + 1, format, out);
         }
     }

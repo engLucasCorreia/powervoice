@@ -19,6 +19,8 @@ members = [
     "crates/test-vst3",
     "crates/lv2-abi",
     "crates/test-lv2",
+    "crates/module-clap",
+    "crates/voxmod-gain",
     "crates/ysfx-sys",
     "src-tauri",
 ]
@@ -93,3 +95,33 @@ cc = "1.4"
 # report binaries stay the source of truth for target/summary.md; divan gives the detailed
 # statistical `cargo bench` console output.
 divan = "0.1.21"
+# T-805 (ADR-006 §1, ADR-007 amendment): the plugin side of packaged modules — `vox-module-clap`
+# wraps any ADR-005 `Module` as a CLAP 1.2 plugin with clack (MIT OR Apache-2.0). Pinned exactly:
+# clack's API isn't frozen (ADR-006 consequences). Only `vox-module-clap` links it.
+clack-plugin = "=0.2.0"
+clack-extensions = { version = "=0.2.0", features = [
+    "clack-plugin",
+    "audio-ports",
+    "latency",
+    "params",
+    "render",
+    "state",
+    "tail",
+] }
+# T-805 (ADR-006 §3, ADR-007 amendment): `.voxmod` packages are zip archives — `zip` (MIT) with only
+# the deflate codec, through `flate2`'s pure-Rust `miniz_oxide` backend (`flate2`/`miniz_oxide` are
+# already in the tree via tauri; `flate2` is named only to select that backend). Only
+# `vox-plugin-host` links them.
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2"] }
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+
+# T-805: the zip/deflate/CRC hot loops `.voxmod` tests run over a real 40 MB debug `.clap` — ~5×
+# faster test builds for a few small third-party crates (release builds are unaffected).
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+
+[profile.dev.package.crc32fast]
+opt-level = 3
+
+[profile.dev.package.adler2]
+opt-level = 3

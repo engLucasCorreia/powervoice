@@ -294,6 +294,12 @@ pub struct ScannedPlugin {
     /// [`main_input_channels`](Self::main_input_channels).
     #[serde(default)]
     pub main_output_channels: u32,
+    /// A **PowerVoice module** packaged as CLAP (ADR-006 §2, T-805): the plugin's
+    /// `org.powervoice.module-info/1` JSON (a `vox_module_api::ModuleInfo`), already checked by
+    /// the scan against its CLAP parameters. `None` for an ordinary plugin (or one that wasn't
+    /// instantiated). The editor registers such a plugin under its bare id with this schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module_info: Option<String>,
 }
 
 /// What `powervoice-sandbox --scan <file> --format <format>` prints on its protocol output
@@ -510,6 +516,7 @@ mod tests {
                 param_count: 3,
                 main_input_channels: 2,
                 main_output_channels: 2,
+                module_info: None,
             }],
         };
         let json = serde_json::to_string(&ScanReply::Ok(report.clone())).unwrap();

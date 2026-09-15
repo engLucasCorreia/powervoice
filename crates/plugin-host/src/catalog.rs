@@ -8,6 +8,12 @@
 //! install folder, its standard paths, then the shared custom folders); both formats' files go
 //! through one scan (the format follows the extension), one cache and one blocklist. Module ids
 //! are format-prefixed (`clap:`, `vst3:`), so the duplicate-id policy applies within a format.
+//!
+//! **Module packages** (T-805, ADR-006 §6): the per-user modules folder
+//! ([`PluginCatalog::set_modules_dir`], `<app local data>/modules`) is the first CLAP tier; its
+//! `.clap`s are PowerVoice modules registered under their bare ids. Built-in ids
+//! ([`PluginCatalog::set_reserved_ids`]) are never registered from a plugin: built-ins are never
+//! loaded from CLAP (ADR-006 §4), and a package can't take a built-in's place.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -19,11 +25,12 @@ use vox_rack::Registry;
 use crate::blocklist::{BlockReason, Blocklist};
 use crate::factory::{SandboxFactory, SandboxOptions, SandboxSpec};
 use crate::health::HealthStore;
-use crate::install::{self, InstallError, UninstallError};
+use crate::install::{self, InstallError, Installed, UninstallError};
 use crate::scan::{
-    self, FoundPlugin, PluginFormat, ScanFailure, ScanOptions, ScanOutcome, ScannedPlugin,
-    ShadowedPlugin,
+    self, FailureKind, FoundPlugin, PluginFormat, ScanFailure, ScanOptions, ScanOutcome,
+    ScannedPlugin, ShadowedPlugin,
 };
+use crate::voxmod::PackageHost;
 
 /// Where the catalog persists its state.
 #[derive(Clone, Debug)]
@@ -121,6 +128,11 @@ pub struct PluginCatalog {
     /// Held for a whole rescan or install (T-809): they read and rewrite the same cache file and
     /// spec snapshot, so one never overwrites the other's result.
     scan_lock: Mutex<()>,
+    /// T-805: the per-user modules folder `.voxmod` packages install into (`None`: packages
+    /// can't be installed).
+    modules_dir: Mutex<Option<PathBuf>>,
+    /// T-805: built-in module ids — never registered from a plugin, never claimable by a package.
+    reserved_ids: RwLock<Vec<String>>,
 }
 
 impl PluginCatalog {
@@ -136,6 +148,56 @@ impl PluginCatalog {
             shadowed: RwLock::new(Vec::new()),
             observers: Mutex::new(Vec::new()),
             scan_lock: Mutex::new(()),
+            modules_dir: Mutex::new(None),
+            reserved_ids: RwLock::new(Vec::new()),
+        }
+    }
+
+    /// Sets the per-user modules folder (T-805, ADR-006 §6: `<app local data dir>/modules`,
+    /// passed in by `src-tauri`). It becomes the first CLAP search tier at the next scan.
+    pub fn set_modules_dir(&self, dir: Option<PathBuf>) {
+        *self
+            .modules_dir
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = dir;
+    }
+
+    /// The per-user modules folder, if one is set.
+    pub fn modules_dir(&self) -> Option<PathBuf> {
+        self.modules_dir
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Sets the built-in module ids (T-805): a plugin claiming one is never registered, and a
+    /// package with one is refused.
+    pub fn set_reserved_ids(&self, ids: Vec<String>) {
+        *self
+            .reserved_ids
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = ids;
+    }
+
+    fn reserved_ids(&self) -> Vec<String> {
+        self.reserved_ids
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// `specs` without any whose id is a built-in's (T-805).
+    fn admit(&self, mut specs: Vec<SandboxSpec>) -> Vec<SandboxSpec> {
+        let reserved = self.reserved_ids();
+        specs.retain(|s| !reserved.contains(&s.descriptor.id));
+        specs
+    }
+
+    /// What `.voxmod` packages are checked against: this build, this platform, the built-ins.
+    pub fn package_host(&self) -> PackageHost {
+        PackageHost {
+            reserved_ids: self.reserved_ids(),
+            ..PackageHost::default()
         }
     }
 
@@ -199,6 +261,12 @@ impl PluginCatalog {
             PluginFormat::Lv2 => (install::user_lv2_dir(), scan::lv2_search_paths()),
             PluginFormat::Jsfx => (install::user_jsfx_dir(), scan::jsfx_search_paths()),
         };
+        // T-805: installed module packages come first (they're `.clap`s).
+        if format == PluginFormat::Clap
+            && let Some(modules) = self.modules_dir()
+        {
+            tiers.push(vec![modules]);
+        }
         if let Some(install_dir) = install_dir {
             tiers.push(vec![install_dir]);
         }
@@ -266,6 +334,7 @@ impl PluginCatalog {
             self.paths.blocklist.as_deref(),
         );
         let (specs, shadowed) = scan::effect_specs_with_shadows(&outcome);
+        let specs = self.admit(specs);
         *self.specs.write().unwrap_or_else(PoisonError::into_inner) = specs;
         *self.details.write().unwrap_or_else(PoisonError::into_inner) = details_of(&outcome);
         *self
@@ -298,6 +367,7 @@ impl PluginCatalog {
         let options = self.scan_options(force);
         let outcome: ScanOutcome = scan::scan_plugin_files_with(&files, &options, on_progress);
         let (new_specs, shadowed) = scan::effect_specs_with_shadows(&outcome);
+        let new_specs = self.admit(new_specs);
 
         let previous_ids: std::collections::HashSet<String> =
             self.specs().into_iter().map(|s| s.descriptor.id).collect();
@@ -410,8 +480,87 @@ impl PluginCatalog {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let mut blocklist = Blocklist::load(self.paths.blocklist.clone());
+        // T-805: a bare `.clap` that is a PowerVoice module may not claim a built-in's id.
+        let reserved = self.reserved_ids();
+        let scan_file = move |path: &Path| {
+            let plugins = scan_file(path)?;
+            match plugins
+                .iter()
+                .find(|p| p.module_info.is_some() && reserved.contains(&p.id))
+            {
+                Some(p) => Err(ScanFailure {
+                    path: path.to_path_buf(),
+                    message: format!("it claims the id of the built-in module `{}`", p.id),
+                    kind: FailureKind::Other,
+                }),
+                None => Ok(plugins),
+            }
+        };
         let installed =
             install::install_file(source, dest_dir, replace, &mut blocklist, scan_file)?;
+        Ok(self.register(installed))
+    }
+
+    /// "Install module…" of a **`.voxmod`** (T-805, ADR-006 §7): validated without running any
+    /// code, extracted into the modules folder ([`Self::set_modules_dir`]), and only its `.clap`
+    /// scanned in a sandbox; see [`install::install_voxmod`]. On success it's registered like
+    /// [`Self::install`] (cache, snapshot, hot-add into every observed registry).
+    pub fn install_module(
+        &self,
+        source: &Path,
+        replace: bool,
+    ) -> Result<InstallReport, InstallError> {
+        let modules = self.modules_dir().ok_or(InstallError::NoInstallDir)?;
+        let binary = self.sandbox_options.binary.clone();
+        self.install_module_with(source, &modules, replace, |path| {
+            scan::scan_one(&binary, path, scan::SCAN_TIMEOUT)
+        })
+    }
+
+    /// [`Self::install_module`] into `modules_dir` with the single-file scanner supplied (tests).
+    pub fn install_module_with(
+        &self,
+        source: &Path,
+        modules_dir: &Path,
+        replace: bool,
+        scan_file: impl FnOnce(&Path) -> Result<Vec<ScannedPlugin>, ScanFailure>,
+    ) -> Result<InstallReport, InstallError> {
+        let _scanning = self
+            .scan_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut blocklist = Blocklist::load(self.paths.blocklist.clone());
+        let installed = install::install_voxmod(
+            source,
+            modules_dir,
+            replace,
+            &self.package_host(),
+            &mut blocklist,
+            scan_file,
+        )?;
+        // A replaced version's `.clap` (another `<version>` directory) is gone: forget it.
+        if installed.replaced {
+            let id_dir = installed
+                .target
+                .parent()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf);
+            let stale: Vec<PathBuf> = self
+                .specs()
+                .iter()
+                .filter_map(spec_path)
+                .filter(|p| id_dir.as_deref().is_some_and(|d| p.starts_with(d)) && !p.exists())
+                .collect();
+            for path in stale {
+                self.forget(&path);
+            }
+        }
+        Ok(self.register(installed))
+    }
+
+    /// Records a successful install: the scan cache, the snapshot (the newest install wins an
+    /// id), and a hot-add into every observed registry. Caller holds the scan lock.
+    fn register(&self, installed: Installed) -> InstallReport {
         if let Some(cache) = &self.paths.cache {
             scan::cache_upsert(cache, &installed.target, &installed.plugins);
         }
@@ -426,7 +575,7 @@ impl PluginCatalog {
                 .collect(),
             ..ScanOutcome::default()
         };
-        let effects = scan::effect_specs(&outcome);
+        let effects = self.admit(scan::effect_specs(&outcome));
         {
             // The snapshot drops what this file offered before (a replaced version) and any
             // other file's effect with an id this one now provides (the newest install wins).
@@ -454,11 +603,11 @@ impl PluginCatalog {
                 }
             }
         }
-        Ok(InstallReport {
+        InstallReport {
             target: installed.target,
             effects,
             replaced: installed.replaced,
-        })
+        }
     }
 
     /// "Uninstall…" (H-29): removes `path` from `install_dir` (the per-user plugin folder —
@@ -476,7 +625,27 @@ impl PluginCatalog {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         install::uninstall_file(path, install_dir)?;
+        self.forget(path);
+        Ok(())
+    }
 
+    /// "Uninstall…" of a module installed from a `.voxmod` (T-805): `path` is its `.clap` inside
+    /// `modules_dir/<id>/<version>/`; the whole `modules_dir/<id>/` is removed
+    /// ([`install::uninstall_module`]), then it's forgotten like [`Self::uninstall`] (snapshot,
+    /// cache, every observed registry; open documents keep a Missing slot with their state).
+    pub fn uninstall_module(&self, path: &Path, modules_dir: &Path) -> Result<(), UninstallError> {
+        let _scanning = self
+            .scan_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        install::uninstall_module(path, modules_dir)?;
+        self.forget(path);
+        Ok(())
+    }
+
+    /// Drops whatever `path` provided from the snapshot, the details, the scan cache and every
+    /// observed registry. Caller holds the scan lock.
+    fn forget(&self, path: &Path) {
         let removed_ids: Vec<String> = {
             let mut specs = self.specs.write().unwrap_or_else(PoisonError::into_inner);
             let (kept, removed): (Vec<_>, Vec<_>) = std::mem::take(&mut *specs)
@@ -506,7 +675,6 @@ impl PluginCatalog {
                 }
             }
         }
-        Ok(())
     }
 
     /// Clears `module_id`'s runtime crash flag (the plugin manager's "Clear crash warning").

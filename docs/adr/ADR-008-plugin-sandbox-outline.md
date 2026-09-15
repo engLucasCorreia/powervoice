@@ -1482,3 +1482,21 @@ ramp, and each sample's gain rounded to `f32` in EEL2. EEL2's `^` is libm `pow`,
 - **Real scripts:** REAPER isn't installed on the development machine. The opt-in smoke test
   `POWERVOICE_TEST_REAL_JSFX=<script or folder>` exists but hasn't run against REAPER's stock
   effects.
+
+## Amendment 12 — T-805 PowerVoice modules in the CLAP backend (2026-09-15)
+- `ClapInstance::load` asks every plugin for `org.powervoice.module-info/1` (ADR-006 §2). If the
+  plugin has it, the JSON must be valid and agree with the `params` extension (ids,
+  bit-identical ranges and defaults, flags); otherwise the plugin is refused. A PowerVoice
+  module's `PluginInfo` carries the module's own schema instead of the generic mapping of
+  Amendment 3 §4 (keys, units, tapers, i18n keys, smoothing) and `param_text: false` (the host
+  formats with the module API's rules).
+- The scan records the checked JSON in `ScannedPlugin.module_info` (a new optional field; old
+  caches read as `None`). `clap_spec` then registers the plugin under its **bare id** with the
+  module-info descriptor (`packaged_module_info`); a JSON that no longer parses, or that names
+  another id, falls back to the plain `clap:<id>` spec.
+- The catalog's CLAP tiers start with the per-user modules folder (ADR-006 Amendment 2), whose
+  `.staging` folder is never walked. Built-in ids (`PluginCatalog::set_reserved_ids`) are never
+  registered from a scan or an install.
+- `.voxmod` packages install through `PluginCatalog::install_module` (one sandboxed scan of the
+  extracted `.clap`) and uninstall through `PluginCatalog::uninstall_module`. A registry hot-add
+  lets Missing document slots recover live (Amendment 10).

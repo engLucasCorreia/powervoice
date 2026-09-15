@@ -215,6 +215,37 @@ export function isInInstallFolder(path: string, installDir: string | null): bool
   return file.startsWith(`${dir}/`) && !file.slice(dir.length + 1).includes("/");
 }
 
+/** Whether `path` lies in an installed module package's folder, `<modulesDir>/<id>/<version>/…`
+ * (T-805): "Uninstall…" then removes the whole module. Path-separator agnostic; a hidden folder
+ * (the package staging area) never counts. */
+export function isInModulesFolder(path: string, modulesDir: string | null): boolean {
+  if (!modulesDir) {
+    return false;
+  }
+  const slashes = (p: string) => p.replace(/\\/g, "/");
+  const dir = slashes(modulesDir).replace(/\/+$/, "");
+  const file = slashes(path);
+  if (!file.startsWith(`${dir}/`)) {
+    return false;
+  }
+  const parts = file.slice(dir.length + 1).split("/");
+  return parts.length >= 3 && parts.every((p) => p !== "") && !(parts[0] ?? "").startsWith(".");
+}
+
+/** Compares `MAJOR.MINOR.PATCH` versions numerically (`-1`, `0`, `1`; missing parts are 0) — a
+ * module package with a lower version than the installed one is a downgrade (T-805). */
+export function compareVersions(a: string, b: string): number {
+  const parts = (v: string) => v.split(".").map((n) => Number.parseInt(n, 10) || 0);
+  const [pa, pb] = [parts(a), parts(b)];
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d !== 0) {
+      return Math.sign(d);
+    }
+  }
+  return 0;
+}
+
 /** Whether `path` is a direct child of any per-format install folder (T-806: the CLAP and the
  * VST3 one) — see {@link isInInstallFolder}. */
 export function isInAnyInstallFolder(path: string, installDirs: readonly string[]): boolean {

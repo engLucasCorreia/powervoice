@@ -337,6 +337,7 @@ export function folderFixture(overrides: Partial<PluginFoldersDto> = {}): Plugin
     install_folders: ["/home/u/.clap", "/home/u/.vst3"],
     standard: ["/home/u/.clap", "/usr/lib/clap", "/home/u/.vst3", "/usr/lib/vst3"],
     custom: ["/media/plugins"],
+    modules: "/home/u/.local/share/app.powervoice.editor/modules",
     ...overrides,
   };
 }

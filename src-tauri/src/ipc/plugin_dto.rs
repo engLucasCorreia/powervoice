@@ -8,6 +8,7 @@ use vox_plugin_host::blocklist::{BlockInfo, BlockReason};
 use vox_plugin_host::health::CrashFlag;
 use vox_plugin_host::install::InstallError;
 use vox_plugin_host::scan::{FailureKind, ShadowedPlugin, format_of_path};
+use vox_plugin_host::voxmod::VoxmodError;
 use vox_plugin_host::{InstallReport, PluginDetails, SandboxSpec};
 
 /// Why a file is blocklisted (T-809: the UI words it through i18n; `reason` stays the log text).
@@ -256,6 +257,23 @@ pub enum InstallFailureDto {
     ScanFailed,
     NoInstallDir,
     Io,
+    /// T-805: a `.voxmod` that isn't a valid package (damaged zip, no or invalid manifest, a
+    /// missing file, an invalid id, an encrypted or duplicate entry). Nothing ran.
+    PackageInvalid,
+    /// T-805: a `.voxmod` with an unsafe path (absolute, `..`, a drive letter) or a symlink.
+    PackageUnsafe,
+    /// T-805: a `.voxmod` over 256 MB.
+    PackageTooLarge,
+    /// T-805: a file in the `.voxmod` doesn't match its checksum.
+    PackageChecksum,
+    /// T-805: the `.voxmod` has no binary for this platform.
+    PackagePlatform,
+    /// T-805: the module needs a newer PowerVoice (Module API or `min_host_version`).
+    PackageTooNew,
+    /// T-805: the package claims a built-in module's id.
+    PackageBuiltinId,
+    /// T-805: the package's plugin isn't the module its manifest describes (rolled back).
+    ModuleMismatch,
 }
 
 /// `plugins_install`'s answer (T-809).
@@ -270,8 +288,13 @@ pub enum PluginInstallResultDto {
         effects: Vec<InstalledEffectDto>,
     },
     /// A plugin with the same file name is installed at `path`; nothing changed. Ask, then call
-    /// again with `replace: true`.
-    Collision { path: String },
+    /// again with `replace: true`. T-805: for a `.voxmod`, `path` is the installed version's
+    /// folder and both versions are given (a lower `new_version` is a downgrade).
+    Collision {
+        path: String,
+        installed_version: Option<String>,
+        new_version: Option<String>,
+    },
     /// Nothing was installed (a replaced file is restored). `blocklisted`: the picked file was
     /// blocklisted (the scan crashed or timed out); `cause` says why it is/was blocklisted.
     Failed {
@@ -280,6 +303,28 @@ pub enum PluginInstallResultDto {
         blocklisted: bool,
         cause: Option<BlockCauseDto>,
     },
+}
+
+/// The UI's wording for a refused `.voxmod` (T-805); the English detail travels in `detail`.
+fn package_failure(e: &VoxmodError) -> InstallFailureDto {
+    match e {
+        VoxmodError::TooLarge => InstallFailureDto::PackageTooLarge,
+        VoxmodError::UnsafePath(_) | VoxmodError::Symlink(_) => InstallFailureDto::PackageUnsafe,
+        VoxmodError::ChecksumMismatch(_) => InstallFailureDto::PackageChecksum,
+        VoxmodError::WrongPlatform { .. } => InstallFailureDto::PackagePlatform,
+        VoxmodError::ModuleApiTooNew { .. } | VoxmodError::HostTooOld { .. } => {
+            InstallFailureDto::PackageTooNew
+        }
+        VoxmodError::BuiltinId(_) => InstallFailureDto::PackageBuiltinId,
+        VoxmodError::Io(_) => InstallFailureDto::Io,
+        VoxmodError::NotAZip(_)
+        | VoxmodError::Encrypted(_)
+        | VoxmodError::DuplicateEntry(_)
+        | VoxmodError::MissingManifest
+        | VoxmodError::BadManifest(_)
+        | VoxmodError::InvalidId(_)
+        | VoxmodError::MissingFile(_) => InstallFailureDto::PackageInvalid,
+    }
 }
 
 impl From<Result<InstallReport, InstallError>> for PluginInstallResultDto {
@@ -302,6 +347,19 @@ impl From<Result<InstallReport, InstallError>> for PluginInstallResultDto {
             Err(InstallError::Collision { target }) => {
                 return Self::Collision {
                     path: target.to_string_lossy().into_owned(),
+                    installed_version: None,
+                    new_version: None,
+                };
+            }
+            Err(InstallError::VersionCollision {
+                target,
+                installed,
+                new,
+            }) => {
+                return Self::Collision {
+                    path: target.to_string_lossy().into_owned(),
+                    installed_version: Some(installed),
+                    new_version: Some(new),
                 };
             }
             Err(e) => e,
@@ -331,9 +389,11 @@ impl From<Result<InstallReport, InstallError>> for PluginInstallResultDto {
                 FailureKind::Other => (InstallFailureDto::ScanFailed, false, None),
             },
             InstallError::NoInstallDir => (InstallFailureDto::NoInstallDir, false, None),
-            InstallError::Io(_) | InstallError::Collision { .. } => {
-                (InstallFailureDto::Io, false, None)
-            }
+            InstallError::Io(_)
+            | InstallError::Collision { .. }
+            | InstallError::VersionCollision { .. } => (InstallFailureDto::Io, false, None),
+            InstallError::Package(e) => (package_failure(&e), false, None),
+            InstallError::ModuleMismatch(_) => (InstallFailureDto::ModuleMismatch, false, None),
         };
         Self::Failed {
             code,
@@ -358,6 +418,9 @@ pub struct PluginFoldersDto {
     pub standard: Vec<String>,
     /// `Settings.plugins.custom_folders`.
     pub custom: Vec<String>,
+    /// T-805: the per-user modules folder `.voxmod` packages extract into
+    /// (`<modules>/<id>/<version>/`); a plugin inside it offers "Uninstall…" (the whole module).
+    pub modules: Option<String>,
 }
 
 #[cfg(test)]
@@ -608,9 +671,85 @@ mod tests {
         assert_eq!(
             collision,
             PluginInstallResultDto::Collision {
-                path: "/home/u/.clap/a.clap".into()
+                path: "/home/u/.clap/a.clap".into(),
+                installed_version: None,
+                new_version: None,
             }
         );
+        // T-805: a module version collision carries both versions.
+        let versions: PluginInstallResultDto = Err(InstallError::VersionCollision {
+            target: PathBuf::from("/data/modules/com.acme.x/1.0.0"),
+            installed: "1.0.0".into(),
+            new: "0.9.0".into(),
+        })
+        .into();
+        assert_eq!(
+            versions,
+            PluginInstallResultDto::Collision {
+                path: "/data/modules/com.acme.x/1.0.0".into(),
+                installed_version: Some("1.0.0".into()),
+                new_version: Some("0.9.0".into()),
+            }
+        );
+        // T-805: refused packages map to their own codes, with the English detail.
+        for (err, code) in [
+            (
+                VoxmodError::UnsafePath("../x".into()),
+                InstallFailureDto::PackageUnsafe,
+            ),
+            (
+                VoxmodError::Symlink("l".into()),
+                InstallFailureDto::PackageUnsafe,
+            ),
+            (
+                VoxmodError::ChecksumMismatch("bin/x".into()),
+                InstallFailureDto::PackageChecksum,
+            ),
+            (
+                VoxmodError::WrongPlatform {
+                    platform: "linux-x86_64".into(),
+                    available: vec!["windows-x86_64".into()],
+                },
+                InstallFailureDto::PackagePlatform,
+            ),
+            (
+                VoxmodError::BadManifest("no".into()),
+                InstallFailureDto::PackageInvalid,
+            ),
+            (VoxmodError::TooLarge, InstallFailureDto::PackageTooLarge),
+            (
+                VoxmodError::BuiltinId("org.powervoice.gain".into()),
+                InstallFailureDto::PackageBuiltinId,
+            ),
+            (
+                VoxmodError::ModuleApiTooNew {
+                    required: 9,
+                    supported: 1,
+                },
+                InstallFailureDto::PackageTooNew,
+            ),
+        ] {
+            let detail = err.to_string();
+            let dto: PluginInstallResultDto = Err(InstallError::Package(err)).into();
+            assert_eq!(
+                dto,
+                PluginInstallResultDto::Failed {
+                    code,
+                    detail,
+                    blocklisted: false,
+                    cause: None,
+                }
+            );
+        }
+        let mismatch: PluginInstallResultDto =
+            Err(InstallError::ModuleMismatch("other id".into())).into();
+        assert!(matches!(
+            mismatch,
+            PluginInstallResultDto::Failed {
+                code: InstallFailureDto::ModuleMismatch,
+                ..
+            }
+        ));
         let crashed: PluginInstallResultDto = Err(InstallError::ScanFailed {
             message: "crashed while being scanned (signal 11)".into(),
             kind: FailureKind::Crashed,

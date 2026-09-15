@@ -7,6 +7,9 @@
 //! - [`instance`]: one plugin as a [`PluginInstance`] — params, state, latency, tail, audio
 //!   ports with the mono shim, sample-accurate parameter events per chunk.
 //! - [`scan`]: `powervoice-sandbox --scan <file> --format clap` (descriptors only).
+//! - `module_info`: PowerVoice modules packaged as CLAP (T-805, ADR-006 §2) — the
+//!   `org.powervoice.module-info/1` JSON, checked against the `params` extension, replaces the
+//!   generic parameter mapping.
 //!
 //! Threads follow CLAP's contract: every `[main-thread]` call happens on the sandbox's main
 //! thread (the control loop that also loads the plugin), every `[audio-thread]` call on the
@@ -15,6 +18,7 @@
 mod host;
 mod instance;
 mod library;
+mod module_info;
 mod params;
 pub mod scan;
 mod stream;

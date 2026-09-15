@@ -11,6 +11,27 @@ use crate::state::ModuleState;
 /// Version of this Module API. Modules record it in [`ModuleDescriptor::api_version`].
 pub const MODULE_API_VERSION: u32 = 1;
 
+/// Whether `id` is a valid built-in / packaged module id (ADR-005 §2, ADR-006 §2): reverse-DNS,
+/// `[a-z0-9.-]`, at least two dot-separated labels, each non-empty, starting with a letter or
+/// digit and not ending with `-`, the first starting with a letter; at most 128 bytes.
+/// Adapter ids (`clap:…`) are not module ids.
+pub fn is_valid_module_id(id: &str) -> bool {
+    if id.is_empty() || id.len() > 128 || !id.starts_with(|c: char| c.is_ascii_lowercase()) {
+        return false;
+    }
+    let mut labels = 0;
+    for label in id.split('.') {
+        labels += 1;
+        let ok_chars = label
+            .bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'));
+        if label.is_empty() || !ok_chars || label.starts_with('-') || label.ends_with('-') {
+            return false;
+        }
+    }
+    labels >= 2
+}
+
 /// Semantic version. `Display`/`FromStr` use `"MAJOR.MINOR.PATCH"` (no pre-release or build
 /// tags in v1). Serialized as that string, e.g. `"1.2.0"`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -285,6 +306,36 @@ pub struct ModulePreset {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn module_ids_are_reverse_dns() {
+        for ok in [
+            "org.powervoice.gain",
+            "org.powervoice.gain.packaged",
+            "com.acme.de-esser2",
+            "a.b",
+        ] {
+            assert!(is_valid_module_id(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "gain",
+            "clap:com.acme.x",
+            "Com.acme.x",
+            "com..acme",
+            ".com.acme",
+            "com.acme.",
+            "com.-acme",
+            "com.acme-",
+            "1com.acme",
+            "com/acme",
+            "com.acme x",
+            "com.ac\u{e9}me",
+        ] {
+            assert!(!is_valid_module_id(bad), "{bad}");
+        }
+        assert!(!is_valid_module_id(&format!("a.{}", "b".repeat(127))));
+    }
 
     #[test]
     fn version_strict_parse_and_display() {

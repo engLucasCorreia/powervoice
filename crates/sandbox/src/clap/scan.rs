@@ -83,6 +83,7 @@ pub fn scan(path: &Path) -> Result<ScanReport, String> {
             param_count: 0,
             main_input_channels: 0,
             main_output_channels: 0,
+            module_info: None,
         };
         // Richer data (T-804, ADR-008 §6): only audio effects have the ports the rack needs, and
         // only instantiating (not just the descriptor) reveals the channel counts and parameter
@@ -90,6 +91,8 @@ pub fn scan(path: &Path) -> Result<ScanReport, String> {
         if is_effect && let Ok(inst) = ClapInstance::load(path, &plugin.id) {
             plugin.param_count = inst.param_count();
             (plugin.main_input_channels, plugin.main_output_channels) = inst.main_ports();
+            // T-805: a PowerVoice module's checked `module-info` JSON (ADR-006 §7 step 4).
+            plugin.module_info = inst.module_info().map(str::to_owned);
         }
         plugins.push(plugin);
     }

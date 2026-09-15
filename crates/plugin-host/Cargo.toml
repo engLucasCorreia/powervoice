@@ -21,6 +21,9 @@ thiserror.workspace = true
 # T-804: the plugin blocklist's content-hash key (ADR-008 §5) — already a workspace dependency
 # (vox-project's sidecar/journal CRCs), no new third-party crate.
 crc32fast.workspace = true
+# T-805 (ADR-006 §3, ADR-007 amendment): `.voxmod` packages (zip + deflate, pure Rust).
+zip.workspace = true
+flate2.workspace = true
 
 [dev-dependencies]
 vox-module-api = { path = "../module-api", features = ["test-util"] }

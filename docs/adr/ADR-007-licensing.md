@@ -303,3 +303,24 @@ Resolves the ⚠ on the "ysfx (JoepVanlier fork) + WDL/EEL2, dr_libs, stb, json"
   `scripts/notices/generate.py` now also fails when a `third_party/<name>` folder isn't named in
   the notices.
 - ADR-008 Amendment 11 records the backend's design.
+
+## Amendment — T-805: clack on the plugin side, `zip` for `.voxmod` (2026-09-15)
+- **clack-plugin / clack-extensions 0.2.0** (MIT OR Apache-2.0), with their dependencies
+  clack-common 0.2.0 (MIT OR Apache-2.0) and clap-sys 0.5.0 (MIT/Apache-2.0), are used **only on
+  the plugin side**: `vox-module-clap` and the module packages built with it
+  (`vox-voxmod-gain`). Pinned `=0.2.0` (API not frozen). The editor and the sandbox still host
+  CLAP through the hand-written `vox-clap-abi` (amendment above).
+- **zip 8.6.0** (MIT) reads and writes `.voxmod` packages, with `default-features = false` and
+  only `deflate-flate2`. It adds **typed-path 0.12.3** (MIT OR Apache-2.0); its other
+  dependencies (crc32fast, indexmap, memchr) were already in the tree. **flate2** (MIT OR
+  Apache-2.0, already in the tree via tauri) is named directly only to select its pure-Rust
+  `miniz_oxide` backend (MIT OR Zlib OR Apache-2.0, already present). Linked by
+  `vox-plugin-host` (and the `voxmod` packer in `powervoice-cli`).
+- **sha2 is not used**: package checksums use a hand-written SHA-256
+  (`vox_plugin_host::sha256`, tested with the FIPS 180-4 vectors), so the §2 row's "zip / sha2"
+  request resolves to zip only.
+- A module package statically links clack and the Rust standard library. `just voxmod` puts
+  `LICENSE-MIT`, `LICENSE-APACHE` and `THIRD_PARTY_NOTICES` in the package's `licenses/`.
+- Development builds compile miniz_oxide, crc32fast and adler2 at `opt-level = 3`
+  (`[profile.dev.package.*]`): the `.voxmod` tests pack a real 40 MB debug `.clap`. Release
+  builds are unaffected.

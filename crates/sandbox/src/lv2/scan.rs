@@ -105,6 +105,7 @@ pub fn scan(path: &Path) -> Result<ScanReport, String> {
             param_count: 0,
             main_input_channels: 0,
             main_output_channels: 0,
+            module_info: None,
         };
         if looks_like_effect(&features) {
             match Lv2Instance::load(path, &d.uri) {

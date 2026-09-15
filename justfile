@@ -127,6 +127,30 @@ spike:
     export POWERVOICE_SPIKE="${POWERVOICE_SPIKE:-1}"
     npm --prefix ui run tauri dev -- --features spike
 
+# T-805 (ADR-006 §3): build a module package crate — e.g. `just voxmod voxmod-gain` — as a release
+# `.clap` and zip it with the crate's `voxmod.json`, the licenses and checksums into
+# target/voxmod/<id>-<version>.voxmod ("Install module…" accepts it). Linux and Windows binaries;
+# macOS `.clap` bundles aren't assembled by this recipe yet.
+voxmod crate:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pkg="$(sed -n 's/^name = "\(.*\)"$/\1/p' crates/{{crate}}/Cargo.toml | head -n1)"
+    if [ -z "$pkg" ] || [ ! -f crates/{{crate}}/voxmod.json ]; then
+        echo "crates/{{crate}} isn't a module package crate (needs Cargo.toml and voxmod.json)" >&2
+        exit 1
+    fi
+    cargo build --release -p "$pkg"
+    case "$(uname -s)" in
+        Linux*) lib="lib${pkg//-/_}.so" ;;
+        Darwin*) echo "macOS .clap bundles aren't built by this recipe yet" >&2; exit 1 ;;
+        *) lib="${pkg//-/_}.dll" ;;
+    esac
+    cargo run --release -q -p powervoice-cli --bin voxmod -- \
+        --manifest crates/{{crate}}/voxmod.json \
+        --binary "target/release/$lib" \
+        --license LICENSE-MIT --license LICENSE-APACHE --license THIRD_PARTY_NOTICES \
+        --out target/voxmod
+
 # Check for Windows cross-compilation
 check-cross:
     cargo check -p vox-module-api --target x86_64-pc-windows-gnu
@@ -147,6 +171,8 @@ check-cross:
     cargo check -p vox-lv2-abi --target x86_64-pc-windows-gnu
     cargo check -p vox-test-lv2 --target x86_64-pc-windows-gnu
     cargo check -p vox-ysfx-sys --target x86_64-pc-windows-gnu
+    cargo check -p vox-module-clap --target x86_64-pc-windows-gnu
+    cargo check -p vox-voxmod-gain --target x86_64-pc-windows-gnu
 
 # Build the roadmap dashboard (target/roadmap/index.html) from the board, git log and agent transcripts
 roadmap:

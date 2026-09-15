@@ -45,6 +45,7 @@ pub fn scan(path: &Path) -> Result<ScanReport, String> {
             param_count: 0,
             main_input_channels: 0,
             main_output_channels: 0,
+            module_info: None,
         };
         if looks_like_effect(&plugin.features)
             && let Ok(inst) = Vst3Instance::load_in(module.clone(), &plugin.id)

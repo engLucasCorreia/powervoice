@@ -239,3 +239,86 @@ dependency request.
 
 **Trust (§7):** the install dialog says that plugins are native code with the user's permissions,
 and that the sandbox contains crashes, not malicious code.
+
+## Amendment 2 — T-805 packaged modules, as implemented (2026-09-15)
+
+**§1 binary.** `crates/module-clap` (`vox-module-clap`, clack-plugin/clack-extensions pinned
+`=0.2.0`) provides `ClapModule<F: ModuleFactory + Default>` and `export_module!(F)`. It
+implements `audio-ports` (one mono port per direction, in-place capable; no stereo: the host's
+shim handles stereo-only plugins, not mono modules), `params` (plain values; the group path as
+`module`; AUTOMATABLE/STEPPED/BOOL/enum/READ_ONLY/HIDDEN/BYPASS mapped; `value_to_text` /
+`text_to_value` are the module API's own text rules), `state`, `latency` and `tail` (read at
+activation), `render` (the mode applies at the next activation; a change while active asks for a
+restart) and the vendor `module-info` extension. The live-instance rule is kept as written: the
+module lives on the main thread while inactive and moves into the audio processor at
+activation; main-thread calls while active are answered from an atomic parameter mirror plus the
+blob last loaded (ADR-005 rule S1). A state loaded while active reaches the audio thread as
+offset-0 events; a blob in it is loaded at the next activation (the wrapper requests a restart).
+`process` is RT-safe: a preallocated event list (512); a block with more events renders in
+sub-blocks, so none are dropped. Not implemented: the `telemetry`, `response-curve` and
+`noise-profile` vendor extensions (Gain has none; `module-info` lists `extensions: []`) — a
+follow-up for the first packaged module that needs them.
+
+**§2 metadata.** The `module-info` JSON is `vox_module_api::ModuleInfo { descriptor, params,
+groups, extensions }` (serde of the ADR-005 types; `ModuleInfo::validate` checks the id, the API
+version and the schema). The C vtable is `{ get_info(plugin, clap_ostream*) -> bool }`
+(`vox_clap_abi::clap_plugin_module_info`). The sandbox's CLAP backend checks it against the
+`params` extension (the same ids; min/max/default bit-identical; the six flags agree); invalid
+JSON or a disagreement refuses the plugin. A recognised module is registered under its **bare id**
+with the module-info descriptor (i18n keys, strict version, `state_format_version`), its own
+parameter schema (keys such as `gain_db`), and host-side parameter text. Its state is the proxy's
+usual one — parameter values under the module's keys plus the plugin's JSON `ModuleState`
+wrapped with its identity (ADR-008 Amendment 2 §7) — so a built-in's state loads into the package
+and back. Known limit: the host's `prepare_state` runs the proxy's default (additive) migration
+before the plugin sees an older state; a module with non-additive migrations needs the proxy to
+delegate `migrate_state` to the plugin (follow-up).
+
+**§3 container.** As specified, with these details (`vox_plugin_host::voxmod`):
+- manifest fields: `manifest_version` (1), `id`, `version` (strict `MAJOR.MINOR.PATCH`, equal
+  to the plugin's descriptor version), `module_api`, optional `min_host_version`, `name`,
+  `vendor`, `license`, `url`, `binaries` (platform → archive path), `sha256` (archive path →
+  lowercase hex). Platform keys are `<os>-<arch>` from Rust's constants (`linux-x86_64`,
+  `windows-x86_64`, `linux-aarch64`, …) and `macos-universal`; `pack` stores a binary as
+  `bin/<platform>/<id>.clap`.
+- validation (no code runs, nothing is written): ≤ 256 MB on disk and uncompressed; zip
+  integrity (declared sizes and CRCs are checked while reading); every entry name relative and
+  clean — no absolute path, drive letter, `\`, `.`/`..` or empty component, control character,
+  case-insensitive duplicate, symlink or encrypted entry; the manifest schema and fields; a
+  binary for this platform whose every file has a checksum; every checksum present and matching;
+  the id not a built-in's. Extraction re-checks every checksum while writing.
+- the zip reader is the `zip` crate (ADR-007 amendment); SHA-256 is hand-written
+  (`vox_plugin_host::sha256`, FIPS 180-4 vectors), not `sha2`.
+- `just voxmod <crate>` packs a module package crate (its `voxmod.json` template, the release
+  `.clap`, `LICENSE-MIT`, `LICENSE-APACHE` and `THIRD_PARTY_NOTICES` under `licenses/`).
+  Linux/Windows only; assembling macOS `.clap` bundles is a follow-up.
+
+**§4 proof.** `crates/voxmod-gain` packages the built-in Gain as `org.powervoice.gain.packaged`
+("Gain (packaged)"). Tested through the real sandbox (`crates/sandbox/tests/voxmod.rs`,
+`voxmod_install.rs`): bare-id registration; `module-info` round-trips to the built-in's
+`ParamInfo`s; params/state/latency/tail; bit-exact with the in-process Gain after the reported
+latency, with sample-accurate automation, realtime and offline; states move both ways (and a
+state saved while active follows automation); the `ModuleTestHost` suite passes through the
+adapter; install → a Missing document slot recovers live (H-40) and sounds like the built-in →
+uninstall. `clap-validator` is an opt-in check (on `PATH` or `CLAP_VALIDATOR`); it wasn't
+installed on the development machine, so it has not been run yet.
+
+**§6–§7 install, as implemented.**
+- The modules folder is `<Tauri app_local_data_dir()>/modules`
+  (`~/.local/share/app.powervoice.editor/modules` on Linux), set by `src-tauri` at start-up. It
+  is the **first CLAP scan tier**, so installed modules are found at every start (from the cache).
+- A package is extracted into `<modules>/.staging/<unique>/` (never scanned), synced, and renamed
+  to `<modules>/<id>/<version>/` (the binary flattened out of `bin/<platform>/`, plus the manifest
+  and `licenses/`, `presets/`, `locales/`); then only that `.clap` is scanned. The scan must offer
+  the manifest's id, at the manifest's version, as an audio effect with valid `module-info`;
+  otherwise everything is rolled back. A crash or timeout also blocklists the package file.
+- One version per id: an installed version is a collision the UI confirms, showing both versions
+  (a lower one is worded as a downgrade, "Install older version"). Confirmed, the old `<id>`
+  folder is moved aside and restored if the new version fails.
+- Built-in ids are reserved: a package with one is refused before anything else, a bare `.clap`
+  PowerVoice module claiming one is refused at install, and the catalog never registers one from
+  a scan.
+- Uninstall (plugin manager, for a plugin inside `<modules>/<id>/<version>/`) removes the whole
+  `<modules>/<id>/`.
+- **Not done (follow-ups):** merging `locales/` under `modules.<id>.*` and indexing `presets/`
+  (§7 step 5) — the files are extracted but not used yet; package signing (v1: unsigned, the
+  dialog states the trust model).

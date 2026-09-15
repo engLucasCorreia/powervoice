@@ -5,8 +5,10 @@ import {
   fileName,
   filterPlugins,
   formatLabel,
+  compareVersions,
   isInAnyInstallFolder,
   isInInstallFolder,
+  isInModulesFolder,
   portsKey,
   rowKey,
   sortPlugins,
@@ -63,6 +65,25 @@ describe("plugin list logic (T-809)", () => {
     expect(isInAnyInstallFolder("/home/u/.clap/acme.clap", dirs)).toBe(true);
     expect(isInAnyInstallFolder("/usr/lib/vst3/Acme.vst3", dirs)).toBe(false);
     expect(isInAnyInstallFolder("/home/u/.vst3/Acme.vst3", [])).toBe(false);
+  });
+
+  it("treats anything inside an installed module's <id>/<version> folder as installed (T-805)", () => {
+    const dir = "/home/u/.local/share/app.powervoice.editor/modules";
+    expect(isInModulesFolder(`${dir}/com.acme.x/1.0.0/com.acme.x.clap`, dir)).toBe(true);
+    expect(isInModulesFolder(`${dir}/com.acme.x/1.0.0/com.acme.x.clap`, `${dir}/`)).toBe(true);
+    expect(isInModulesFolder("C:\\Data\\modules\\com.acme.x\\1.0.0\\x.clap", "C:\\Data\\modules")).toBe(true);
+    expect(isInModulesFolder(`${dir}/loose.clap`, dir)).toBe(false);
+    expect(isInModulesFolder(`${dir}/com.acme.x/x.clap`, dir)).toBe(false);
+    expect(isInModulesFolder(`${dir}/.staging/new-1/x.clap`, dir)).toBe(false);
+    expect(isInModulesFolder(`${dir}-extra/com.acme.x/1.0.0/x.clap`, dir)).toBe(false);
+    expect(isInModulesFolder(`${dir}/com.acme.x/1.0.0/x.clap`, null)).toBe(false);
+  });
+
+  it("compares module versions numerically", () => {
+    expect(compareVersions("1.10.0", "1.9.0")).toBe(1);
+    expect(compareVersions("1.2.0", "1.2.0")).toBe(0);
+    expect(compareVersions("1.2", "1.2.1")).toBe(-1);
+    expect(compareVersions("0.9.9", "1.0.0")).toBe(-1);
   });
 
   it("spells every backend's format badge and upper-cases unknown ones", () => {

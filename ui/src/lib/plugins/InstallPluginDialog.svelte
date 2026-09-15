@@ -2,7 +2,7 @@
   import { t, type MessageKey } from "../i18n";
   import type { BlockCauseDto, InstallFailureDto } from "../ipc/bindings";
   import { Dialog, Icon, type DialogAction } from "../ui";
-  import { fileName } from "./pluginList";
+  import { compareVersions, fileName } from "./pluginList";
   import { closeInstall, confirmReplace, pluginsState, showInstallInManager } from "./plugins.svelte";
 
   /**
@@ -10,6 +10,8 @@
    * + sandboxed scan of just that file, up to 30 s), a name collision to confirm (Replace is
    * destructive; the installed file is kept if the new one can't be used), the result: the
    * effects it added (in Add module at once), or why it failed and whether it was blocklisted.
+   * T-805: a `.voxmod` module package — a collision names both versions (a downgrade says so),
+   * and a refused package says why (nothing from it ran).
    * States the trust model (ADR-006 §7): plugins are native code with the user's permissions.
    */
   const ps = pluginsState();
@@ -26,6 +28,14 @@
     scan_failed: "plugins.install.failure.scan_failed",
     no_install_dir: "plugins.install.failure.no_install_dir",
     io: "plugins.install.failure.io",
+    package_invalid: "plugins.install.failure.package_invalid",
+    package_unsafe: "plugins.install.failure.package_unsafe",
+    package_too_large: "plugins.install.failure.package_too_large",
+    package_checksum: "plugins.install.failure.package_checksum",
+    package_platform: "plugins.install.failure.package_platform",
+    package_too_new: "plugins.install.failure.package_too_new",
+    package_builtin_id: "plugins.install.failure.package_builtin_id",
+    module_mismatch: "plugins.install.failure.module_mismatch",
   };
   const CAUSE: Record<BlockCauseDto, MessageKey> = {
     crashed: "plugins.cause.crashed",
@@ -33,7 +43,18 @@
     manual: "plugins.cause.manual",
   };
   /** Codes whose underlying (OS/plugin) text helps: shown as a quiet detail line. */
-  const WITH_DETAIL: readonly InstallFailureDto[] = ["scan_crashed", "scan_timed_out", "scan_failed", "io"];
+  const WITH_DETAIL: readonly InstallFailureDto[] = [
+    "scan_crashed",
+    "scan_timed_out",
+    "scan_failed",
+    "io",
+    "package_invalid",
+    "package_unsafe",
+    "package_checksum",
+    "package_platform",
+    "package_too_new",
+    "module_mismatch",
+  ];
 
   function folderOf(path: string): string {
     const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
@@ -41,6 +62,13 @@
   }
 
   const file = $derived(st.phase === "idle" ? "" : fileName(st.source));
+  /** T-805: installing an older version of a module package than the installed one. */
+  const downgrade = $derived(
+    st.phase === "collision" &&
+      st.installedVersion !== null &&
+      st.newVersion !== null &&
+      compareVersions(st.newVersion, st.installedVersion) < 0,
+  );
 
   const actions = $derived.by((): DialogAction[] => {
     switch (st.phase) {
@@ -48,7 +76,7 @@
         return [
           { label: t("plugins.install.cancel"), role: "cancel", testid: "plugin-install-cancel", onclick: closeInstall },
           {
-            label: t("plugins.install.replace"),
+            label: t(downgrade ? "plugins.install.downgrade" : "plugins.install.replace"),
             role: "primary",
             variant: "danger",
             testid: "plugin-install-replace",
@@ -114,7 +142,16 @@
     onkeydown={onKeydown}
     {actions}
   >
-    <p data-testid="plugin-install-message">{t("plugins.install.collision_body", { folder: folderOf(st.target) })}</p>
+    <p data-testid="plugin-install-message">
+      {#if st.installedVersion !== null && st.newVersion !== null}
+        {t(downgrade ? "plugins.install.collision_downgrade_body" : "plugins.install.collision_module_body", {
+          installed: st.installedVersion,
+          version: st.newVersion,
+        })}
+      {:else}
+        {t("plugins.install.collision_body", { folder: folderOf(st.target) })}
+      {/if}
+    </p>
   </Dialog>
 {:else if st.phase === "installed"}
   <Dialog

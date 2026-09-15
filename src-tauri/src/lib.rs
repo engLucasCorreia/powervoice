@@ -43,6 +43,14 @@ pub fn run() {
             let sessions_dir = document::default_sessions_dir();
             // T-804 (ADR-008 §6, item 1): the instant, sandbox-free cached-plugins load, before
             // any composition root builds its registry — start-up never blocks on a sandbox.
+            // T-805 (ADR-006 §6): `.voxmod` packages install into `<app local data>/modules`,
+            // the first CLAP scan tier — set before the cached load below.
+            plugins::set_modules_dir(
+                app.path()
+                    .app_local_data_dir()
+                    .ok()
+                    .map(|d| d.join("modules")),
+            );
             plugins::configure(&settings.plugins.custom_folders);
             // H-11 (SPEC-002 §2.5): the engine polls this volume's free space for the recording
             // disk floor and the record panel's remaining-time display.

@@ -1,0 +1,20 @@
+[package]
+name = "vox-module-clap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# T-805 (ADR-006 §1–§2): the generic clack wrapper `ClapModule<F>` that exposes any ADR-005
+# `Module` (built by a `ModuleFactory`) as a standard CLAP 1.2 mono audio-effect plugin, plus the
+# PowerVoice `org.powervoice.module-info/1` vendor extension, and `export_module!` for a module
+# package crate (`cdylib`). clack is pinned exactly in the workspace (API not frozen).
+
+[dependencies]
+vox-module-api = { path = "../module-api" }
+clack-plugin.workspace = true
+clack-extensions.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

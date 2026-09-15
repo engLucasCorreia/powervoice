@@ -18,6 +18,9 @@ vox-modules = { path = "../modules" }
 # S4-02: `convert` reads/writes through the production encoders and offline resampler.
 vox-io = { path = "../io" }
 vox-dsp = { path = "../dsp" }
+# T-805: the `voxmod` packer (`just voxmod <crate>`) writes `.voxmod` packages with the same code
+# "Install module…" reads them with.
+vox-plugin-host = { path = "../plugin-host" }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

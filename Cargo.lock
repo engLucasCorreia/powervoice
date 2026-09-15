@@ -493,6 +493,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "clack-common"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ca905d78f46117492bce49e64a765f8b3f5c71794486a1369242721860e2640"
+dependencies = [
+ "bitflags 2.13.2",
+ "clap-sys",
+]
+
+[[package]]
+name = "clack-extensions"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "733d43b7ebd76a65931e8de2aa077200add4902514f4bda941c99326c14937dd"
+dependencies = [
+ "bitflags 2.13.2",
+ "clack-common",
+ "clack-plugin",
+ "clap-sys",
+]
+
+[[package]]
+name = "clack-plugin"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d36954ed91d485b42f8329b12618e6ec398cc806a8e1f5ae8a50ccaba1d9b94f"
+dependencies = [
+ "clack-common",
+ "clap-sys",
+]
+
+[[package]]
 name = "clang-sys"
 version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -512,6 +544,12 @@ dependencies = [
  "clap_builder",
  "clap_derive",
 ]
+
+[[package]]
+name = "clap-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a76abbdb2907f6fd97fb6bc0b7be96b77d328f2dd9669d1075cc03369ed22154"
 
 [[package]]
 name = "clap_builder"
@@ -3093,6 +3131,7 @@ dependencies = [
  "vox-dsp",
  "vox-io",
  "vox-modules",
+ "vox-plugin-host",
  "vox-rack",
  "vox-testkit",
 ]
@@ -3119,6 +3158,7 @@ dependencies = [
  "vox-test-lv2",
  "vox-test-vst3",
  "vox-testkit",
+ "vox-voxmod-gain",
  "vox-ysfx-sys",
  "vst3",
 ]
@@ -4917,6 +4957,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "typed-path"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
+
+[[package]]
 name = "typeid"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5128,6 +5174,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "vox-module-clap"
+version = "0.1.0"
+dependencies = [
+ "clack-extensions",
+ "clack-plugin",
+ "serde_json",
+ "vox-module-api",
+]
+
+[[package]]
 name = "vox-modules"
 version = "0.1.0"
 dependencies = [
@@ -5143,12 +5199,14 @@ name = "vox-plugin-host"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
+ "flate2",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
  "vox-module-api",
  "vox-rack",
  "vox-sandbox-ipc",
+ "zip",
 ]
 
 [[package]]
@@ -5244,6 +5302,16 @@ dependencies = [
  "ebur128",
  "hound",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "vox-voxmod-gain"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "vox-module-api",
+ "vox-module-clap",
+ "vox-modules",
 ]
 
 [[package]]
@@ -6157,6 +6225,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.5",
+]
+
+[[package]]
+name = "zip"
+version = "8.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "indexmap 2.14.2",
+ "memchr",
+ "typed-path",
 ]
 
 [[package]]

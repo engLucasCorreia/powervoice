@@ -197,7 +197,7 @@ describe("plugins store (T-809)", () => {
       const open = calls.find((c) => c.cmd === "plugin:dialog|open")!;
       const options = open.args.options as { directory: boolean; filters: { extensions: string[] }[] };
       expect(options.directory).toBe(false);
-      expect(options.filters[0]!.extensions).toEqual(["clap", "vst3", "lv2", "ttl", "jsfx"]);
+      expect(options.filters[0]!.extensions).toEqual(["clap", "vst3", "lv2", "ttl", "jsfx", "voxmod"]);
       expect(calls.find((c) => c.cmd === "plugins_install")?.args).toEqual({
         path: "/home/u/Downloads/acme.clap",
         replace: false,
@@ -216,13 +216,15 @@ describe("plugins store (T-809)", () => {
       const calls = mock({
         "plugin:dialog|open": () => "/home/u/Downloads/acme.clap",
         plugins_install: (a) =>
-          a.replace ? { ...installed, replaced: true } : { kind: "collision", path: "/home/u/.clap/acme.clap" },
+          a.replace ? { ...installed, replaced: true } : { kind: "collision", path: "/home/u/.clap/acme.clap", installed_version: null, new_version: null },
       });
       await startInstall();
       expect(pluginsState().install).toEqual({
         phase: "collision",
         source: "/home/u/Downloads/acme.clap",
         target: "/home/u/.clap/acme.clap",
+        installedVersion: null,
+        newVersion: null,
       });
       await confirmReplace();
       expect(calls.filter((c) => c.cmd === "plugins_install").map((c) => c.args.replace)).toEqual([false, true]);
@@ -232,7 +234,7 @@ describe("plugins store (T-809)", () => {
     it("cancelling the collision prompt installs nothing", async () => {
       const calls = mock({
         "plugin:dialog|open": () => "/home/u/Downloads/acme.clap",
-        plugins_install: () => ({ kind: "collision", path: "/home/u/.clap/acme.clap" }),
+        plugins_install: () => ({ kind: "collision", path: "/home/u/.clap/acme.clap", installed_version: null, new_version: null }),
       });
       await startInstall();
       closeInstall();
@@ -279,7 +281,7 @@ describe("plugins store (T-809)", () => {
       let options = open.args.options as { title: string; filters: { name: string; extensions: string[] }[] };
       expect(options.title).toContain(".vst3");
       expect(options.filters[0]!.name).toContain(".vst3");
-      expect(options.filters[0]!.extensions).toEqual(["clap", "vst3", "lv2", "ttl", "jsfx"]);
+      expect(options.filters[0]!.extensions).toEqual(["clap", "vst3", "lv2", "ttl", "jsfx", "voxmod"]);
 
       setPlatformForTest("mac");
       calls = mock({ "plugin:dialog|open": () => null });

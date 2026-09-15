@@ -86,14 +86,35 @@ fn catalog() -> &'static Arc<PluginCatalog> {
         if let Some(cache) = &cache {
             vox_plugin_host::scan::migrate_cache_file_name(cache);
         }
-        Arc::new(PluginCatalog::new(
+        let catalog = PluginCatalog::new(
             sandbox_options,
             CatalogPaths {
                 cache,
                 blocklist: blocklist_path(),
             },
-        ))
+        );
+        // T-805 (ADR-006 §4): built-ins are never loaded from CLAP, and no package can claim a
+        // built-in's id.
+        catalog.set_reserved_ids(
+            vox_modules::builtin_factories()
+                .iter()
+                .map(|f| f.descriptor().id.clone())
+                .collect(),
+        );
+        Arc::new(catalog)
     })
+}
+
+/// T-805 (ADR-006 §6): the per-user modules folder `.voxmod` packages install into —
+/// `<app local data dir>/modules` (Tauri's `app_local_data_dir()`, passed in by the setup hook).
+/// Call before [`configure`], so the cached load already sees installed modules.
+pub fn set_modules_dir(dir: Option<PathBuf>) {
+    catalog().set_modules_dir(dir);
+}
+
+/// The per-user modules folder, if the app has one (T-805).
+pub fn modules_dir() -> Option<PathBuf> {
+    catalog().modules_dir()
 }
 
 /// The runtime crash-flag store (T-804 item 4; for `plugins_list`).
@@ -199,13 +220,15 @@ pub fn install_dir() -> Option<PathBuf> {
 /// Every per-user folder "Install module…" copies into, one per format (T-806: the CLAP folder
 /// and `~/.vst3`, `~/Library/Audio/Plug-Ins/VST3` or `%LOCALAPPDATA%\Programs\Common\VST3`;
 /// T-807: `~/.lv2` or `~/Library/Audio/Plug-Ins/LV2`, none on Windows; T-808: PowerVoice's JSFX
-/// folder, `<data dir>/Effects`, none on Windows).
+/// folder, `<data dir>/Effects`, none on Windows; T-805: the modules folder `.voxmod` packages
+/// extract into).
 pub fn install_dirs() -> Vec<PathBuf> {
     [
         vox_plugin_host::install::user_clap_dir(),
         vox_plugin_host::install::user_vst3_dir(),
         vox_plugin_host::install::user_lv2_dir(),
         vox_plugin_host::install::user_jsfx_dir(),
+        modules_dir(),
     ]
     .into_iter()
     .flatten()
@@ -231,7 +254,12 @@ pub fn standard_folders() -> Vec<PathBuf> {
 
 /// "Install module…" (T-809, T-806): copies `source` into the per-user folder of its format —
 /// never a system folder — and scans only that file (`vox_plugin_host::PluginCatalog::install`).
+/// T-805: a `.voxmod` package is validated without running code and extracted into the modules
+/// folder instead (`PluginCatalog::install_module`).
 pub fn install(source: &std::path::Path, replace: bool) -> Result<InstallReport, InstallError> {
+    if vox_plugin_host::install::is_voxmod(source) {
+        return catalog().install_module(source, replace);
+    }
     let root = vox_plugin_host::install::plugin_root(source);
     if vox_plugin_host::scan::format_of_path(&root).is_none() {
         return Err(InstallError::NotAPlugin);
@@ -245,6 +273,12 @@ pub fn install(source: &std::path::Path, replace: bool) -> Result<InstallReport,
 /// system folder — and drops it from the registry and the scan cache
 /// (`vox_plugin_host::PluginCatalog::uninstall`).
 pub fn uninstall(path: &std::path::Path) -> Result<(), UninstallError> {
+    // T-805: a module installed from a package lives in `<modules>/<id>/<version>/`.
+    if let Some(modules) = modules_dir()
+        && vox_plugin_host::install::module_dir_of(path, &modules).is_ok()
+    {
+        return catalog().uninstall_module(path, &modules);
+    }
     if vox_plugin_host::scan::format_of_path(path).is_none() {
         return Err(UninstallError::OutsideInstallFolder);
     }

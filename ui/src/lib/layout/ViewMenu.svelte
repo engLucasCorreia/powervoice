@@ -12,6 +12,7 @@
   import { saveSettings, settingsState } from "../state/settings.svelte";
   import { spectralState } from "../state/spectral.svelte";
   import { setTimeRulerFormat, timeRulerFormatState } from "../state/waveformView.svelte";
+  import { transportState } from "../state/transport.svelte";
   import { chooseTheme } from "../theme/chooseTheme";
   import { themeState, THEMES } from "../theme/theme.svelte";
   import type { MenuEntry } from "../ui/menuModel";
@@ -40,9 +41,11 @@
   const theme = themeState();
   const timeFormat = timeRulerFormatState();
   const doc = documentState();
+  const transport = transportState();
   const isOpen = $derived(hasDocument(doc.current));
   const playheadFollow = $derived(settingsState().current?.playhead_follow ?? true);
   const snapToZeroCrossing = $derived(settingsState().current?.snap_to_zero_crossing ?? false);
+  const loopEnabled = $derived(transport.state.loop_enabled ?? false);
 
   function togglePlayheadFollow(): void {
     void saveSettings({ playhead_follow: !playheadFollow });
@@ -104,6 +107,16 @@
       checked: snapToZeroCrossing,
       testid: "menu-view-snap-to-zero-crossing",
       onselect: toggleSnapToZeroCrossing,
+    },
+    {
+      kind: "checkbox",
+      id: "loop",
+      label: t("menu.view.loop"),
+      checked: loopEnabled,
+      disabled: !isOpen,
+      shortcut: shortcutLabelForAction("transport.toggle_loop"),
+      testid: "menu-view-loop",
+      onselect: () => dispatchAction("transport.toggle_loop"),
     },
     { kind: "separator", id: "sep-zoom" },
     {

@@ -59,6 +59,7 @@
   "menu.view.time_format_samples": "Samples",
   "menu.view.time_format_seconds": "Seconds",
   "menu.view.snap_to_zero_crossing": "Snap to Zero Crossing",
+  "menu.view.loop": "Loop Playback",
 
   "rack.ab": "A/B",
   "rack.ab_badge": "Listening only — exports always render the rack",
@@ -1152,7 +1153,7 @@
   "tour.welcome.record.body": "Click Input to arm and check your level, then click Record — or press {shortcut} — and read a line. Takes are crash-safe while you record.",
   "tour.welcome.record.wait": "Click Record to continue, or choose Next to skip this step.",
   "tour.welcome.time.title": "Keep an eye on the time",
-  "tour.welcome.time.body": "This is the playhead position. While you record, the take's time beside Record counts up in red. Press {shortcut} again to stop.",
+  "tour.welcome.time.body": "This is the playhead position. While you record, the take's time beside Record counts up in red. Press {shortcut} again to stop. You can loop a selection with the Loop button or {loop_shortcut} to refine a phrase.",
   "tour.welcome.editor.title": "Find your way around the take",
   "tour.welcome.editor.body": "Scroll with the mouse wheel, zoom with Ctrl + wheel or the {zoom_in} and {zoom_out} keys, and drag to select. {spectral} opens the spectral view, where hum, clicks and breaths stand out.",
   "tour.welcome.markers.title": "Mark the moments",

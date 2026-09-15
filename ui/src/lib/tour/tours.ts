@@ -98,7 +98,7 @@ const WELCOME: TourDef = {
       target: ["time"],
       titleKey: "tour.welcome.time.title",
       bodyKey: "tour.welcome.time.body",
-      params: () => ({ shortcut: key("record.toggle") }),
+      params: () => ({ shortcut: key("record.toggle"), loop_shortcut: key("transport.toggle_loop") }),
     },
     {
       id: "editor",

@@ -15,6 +15,7 @@ import {
   setTimeRulerFormat,
   timeRulerFormatState,
 } from "../state/waveformView.svelte";
+import { resetTransportForTest } from "../state/transport.svelte";
 import { applyThemePref, resetThemeForTest, themeState } from "../theme/theme.svelte";
 import { docDto, settingsFixture as makeSettings } from "../test/fixtures";
 import ViewMenu from "./ViewMenu.svelte";
@@ -31,6 +32,7 @@ afterEach(() => {
   resetWaveformViewForTest();
   resetDocumentStateForTest();
   resetSelectionForTest();
+  resetTransportForTest();
 });
 
 async function openFixtureDocument(): Promise<void> {
@@ -190,6 +192,78 @@ describe("ViewMenu (H-19)", () => {
 
     expect(lastSaved?.snap_to_zero_crossing).toBe(true);
     expect(settingsState().current?.snap_to_zero_crossing).toBe(true);
+
+    unmount(app);
+    target.remove();
+  });
+
+  // H-39 item 1: Loop Playback is a menuitemcheckbox reflecting transport state, with the registry's
+  // Ctrl/⌘+L shortcut label, and is disabled without a document.
+  it("Loop Playback is a menuitemcheckbox bound to transport state", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "document_open") {
+        return docDto();
+      }
+      if (cmd === "settings_get") {
+        return makeSettings();
+      }
+      return null;
+    });
+    await openDocument("/home/user/take.wav");
+    clearMocks();
+    mockIPC(() => null);
+
+    const { target, app } = mountMenu();
+    openMenu(target);
+
+    const checkbox = target.querySelector('[data-testid="menu-view-loop"]');
+    expect(checkbox?.getAttribute("role")).toBe("menuitemcheckbox");
+    expect(checkbox?.getAttribute("aria-checked")).toBe("false");
+    expect(checkbox?.getAttribute("aria-disabled")).not.toBe("true");
+    expect(target.querySelector('[data-testid="menu-view-loop"] .shortcut')?.textContent).toBe(
+      "Ctrl+L",
+    );
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Loop Playback is disabled without a document", () => {
+    mockIPC(() => null);
+    const { target, app } = mountMenu();
+    openMenu(target);
+
+    const checkbox = target.querySelector<HTMLButtonElement>('[data-testid="menu-view-loop"]');
+    expect(checkbox?.disabled).toBe(true);
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Loop Playback dispatches the transport.toggle_loop action", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "document_open") {
+        return docDto();
+      }
+      if (cmd === "settings_get") {
+        return makeSettings();
+      }
+      return null;
+    });
+    await openDocument("/home/user/take.wav");
+    clearMocks();
+
+    const handler = vi.fn();
+    registerAction("transport.toggle_loop", handler);
+    mockIPC(() => null);
+
+    const { target, app } = mountMenu();
+    openMenu(target);
+
+    target.querySelector<HTMLButtonElement>('[data-testid="menu-view-loop"]')!.click();
+    expect(handler).toHaveBeenCalledOnce();
+    flushSync();
+    expect(target.querySelector('[data-testid="view-menu"]')).toBeNull();
 
     unmount(app);
     target.remove();

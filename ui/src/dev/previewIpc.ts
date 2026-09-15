@@ -7,9 +7,13 @@
  *
  * H-26 adds fixture content, driven by `previewScenes.ts` after the App mounts:
  *   &scene=document | spectral | recording | rack | loudness   (combine: scene=rack,loudness)
+ *          | plugins | plugins-scanning | plugins-folders   (T-809: the plugin manager, every
+ *            status; with `rack`, a flagged CLAP slot) | plugin-flag   (with `rack`: the flagged
+ *            slot, manager closed)
  *   &dialog=about | preferences | export | new-recording | calibration | normalize |
  *           normalize-lufs | recovery | recovery-storage | save-as | unsaved | recent-missing |
- *           audio-devices | confirm | channel-choice | clip | low-disk
+ *           audio-devices | confirm | channel-choice | clip | low-disk |
+ *           plugin-install | plugin-collision | plugin-failed   (T-809 "Install module…")
  *   &menu=file | edit | view | effects | help | normalize | add-module | rack-slot
  * The audio is synthetic (a narrator's phrases with breaths), generated here as the same binary
  * frames the backend sends (VXPK peaks, VXST spectrogram tiles, VXTM telemetry).
@@ -27,6 +31,9 @@ import type {
   ModuleDescriptorDto,
   ParamInfoDto,
   ParamValueDto,
+  PluginEntryDto,
+  PluginFoldersDto,
+  PluginInstallResultDto,
   RackSlotDto,
   RackStateDto,
   RecordOffsetDto,
@@ -336,7 +343,7 @@ const GR = (max = 0, min = -24) => ({
 
 const EQ_BANDS = { hp: 80, b1f: 250, b1g: -3, b1q: 1.2, b2f: 3200, b2g: 2.5, b2q: 1, hsf: 10_000, hsg: 1.5 };
 
-function rackFixture(): RackStateDto {
+function rackFixture(withPlugin: boolean): RackStateDto {
   const hz = { kind: "hz" } as UnitDto;
   const db = { kind: "db" } as UnitDto;
   const ms = { kind: "ms" } as UnitDto;
@@ -381,7 +388,86 @@ function rackFixture(): RackStateDto {
     param(0, "ceiling_dbtp", "Ceiling", { kind: "dbtp" }, -12, 0, -3, 1),
     param(1, "release_ms", "Release", ms, 1, 500, 50, 0, true),
   ], { telemetry: [GR()], latency_samples: 64 });
-  return rackStateDto([eq, gate, comp, limiter], false, 64);
+  // T-809: with the plugins scene, a sandboxed CLAP effect that has crashed before (flagged).
+  const breath = slot(5, PREVIEW_FLAGGED_PLUGIN, "Breath Control", [
+    param(0, "p0", "Reduction", db, -30, 0, -12, 1),
+    param(1, "p1", "Sensitivity", none, 0, 100, 60, 0),
+  ], { sandboxed: true, latency_samples: 256 });
+  const slots = withPlugin ? [eq, gate, comp, limiter, breath] : [eq, gate, comp, limiter];
+  return rackStateDto(slots, false, withPlugin ? 320 : 64);
+}
+
+// --- Plugins (T-809) ---------------------------------------------------------------------------
+
+const HOME = "/home/narrator";
+export const PREVIEW_FLAGGED_PLUGIN = "clap:com.vocalift.breath-control";
+export const PREVIEW_INSTALL_SOURCE = `${HOME}/Downloads/acme-deesser.clap`;
+
+function plugin(
+  id: string,
+  name: string,
+  vendor: string,
+  version: string,
+  format: string,
+  path: string,
+  status: PluginEntryDto["status"],
+  ports: [number, number] | null,
+  params: number,
+): PluginEntryDto {
+  return {
+    id,
+    name,
+    vendor,
+    version,
+    format,
+    path,
+    status,
+    ports: ports ? { input_channels: ports[0], output_channels: ports[1] } : null,
+    param_count: params,
+  };
+}
+
+/** One of every status (and every format badge the backends will report). */
+const PLUGINS: PluginEntryDto[] = [
+  plugin("clap:com.acme.deesser", "De-esser", "Acme Audio", "2.1.0", "clap", `${HOME}/.clap/acme-deesser.clap`, { kind: "ok" }, [1, 1], 12),
+  plugin(PREVIEW_FLAGGED_PLUGIN, "Breath Control", "Vocalift", "1.4.2", "clap", `${HOME}/.clap/vocalift/breath-control.clap`, { kind: "flagged", crash_count: 3 }, [2, 2], 8),
+  plugin("clap:org.studio.voice-eq", "Voice EQ", "Studio Tools", "0.9.0", "clap", "/usr/lib/clap/studio-tools.clap", { kind: "ok" }, null, 0),
+  plugin("vst3:northwind.tape", "Tape Saturator", "Northwind DSP", "3.0.1", "vst3", "/usr/lib/vst3/Tape Saturator.vst3", { kind: "disabled" }, [2, 2], 24),
+  plugin("lv2:urn:studio:room", "Small Room", "Studio Tools", "1.0.0", "lv2", "/usr/lib/lv2/small-room.lv2", { kind: "ok" }, [1, 2], 9),
+  plugin("jsfx:loudness-rider", "Loudness Rider", "JSFX Community", "1.2.0", "jsfx", `${HOME}/.config/powervoice/jsfx/loudness-rider.jsfx`, { kind: "ok" }, [2, 2], 6),
+  plugin("clap:com.acme.hum", "Hum Remover", "Acme Audio", "1.0.3", "clap", "/media/plugins/voice-tools/hum-remover.clap", { kind: "blocklisted", reason: "blocked by the user", cause: "manual" }, [1, 1], 5),
+  plugin("", "glitchy-comp", "", "", "clap", `${HOME}/Downloads/glitchy-comp.clap`, { kind: "blocklisted", reason: "crashed while being scanned", cause: "crashed" }, null, 0),
+  plugin("", "slow-limiter", "", "", "clap", "/media/plugins/voice-tools/slow-limiter.clap", { kind: "blocklisted", reason: "timed out while being scanned", cause: "timed_out" }, null, 0),
+];
+
+const PLUGIN_FOLDERS: PluginFoldersDto = {
+  install: `${HOME}/.clap`,
+  standard: [`${HOME}/.clap`, "/usr/lib/clap"],
+  custom: ["/media/plugins/voice-tools"],
+};
+
+function installResult(dialog: string | null, replace: boolean): PluginInstallResultDto {
+  if (dialog === "plugin-collision" && !replace) {
+    return { kind: "collision", path: `${HOME}/.clap/acme-deesser.clap` };
+  }
+  if (dialog === "plugin-failed") {
+    return {
+      kind: "failed",
+      code: "scan_crashed",
+      detail: "crashed while being scanned (signal 11)",
+      blocklisted: true,
+      cause: "crashed",
+    };
+  }
+  return {
+    kind: "installed",
+    path: `${HOME}/.clap/acme-deesser.clap`,
+    replaced: replace,
+    effects: [
+      { id: "clap:com.acme.deesser", name: "De-esser" },
+      { id: "clap:com.acme.deesser-stereo", name: "De-esser (stereo)" },
+    ],
+  };
 }
 
 const MODULES: ModuleDescriptorDto[] = [
@@ -550,7 +636,8 @@ export function installPreviewIpc(options: PreviewOptions): void {
   });
 
   const doc = documentFixture(options);
-  const rack = hasScene("rack") ? rackFixture() : rackStateDto();
+  const pluginsScene = ["plugins", "plugins-scanning", "plugins-folders", "plugin-flag"].some(hasScene);
+  const rack = hasScene("rack") ? rackFixture(pluginsScene) : rackStateDto();
   const spectro = new Map<number, Sink>();
   let documentOpens = 0;
   let seq = 0;
@@ -671,6 +758,14 @@ export function installPreviewIpc(options: PreviewOptions): void {
           return dialog === "recovery" ? [SESSION] : [];
         case "devices_list":
           return DEVICES;
+        case "plugins_list":
+          return PLUGINS;
+        case "plugins_folders":
+          return PLUGIN_FOLDERS;
+        case "plugins_install":
+          return installResult(dialog, (a.replace as boolean) ?? false);
+        case "plugins_rescan":
+          return PLUGINS.length;
         default:
           return null;
       }

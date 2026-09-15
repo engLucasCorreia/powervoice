@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { t } from "../i18n";
   import { Button, EmptyState, Icon, PanelHeader } from "../ui";
+  import { refreshPlugins } from "../plugins/plugins.svelte";
   import { transportState } from "../state/transport.svelte";
   import AddModuleMenu from "./AddModuleMenu.svelte";
   import { addModule, loadRack, moveSlot, rackState, setAb } from "./rack.svelte";
@@ -23,6 +24,20 @@
         })
       : "",
   );
+
+  // T-809 item 4: a sandboxed slot that just failed or restarted has been counted in the crash
+  // store — reload the plugin list so its flagged affordance (and the manager) show it.
+  const faultedSandboxSlots = $derived(
+    rs.state.slots
+      .filter((s) => s.sandboxed && (s.status.kind === "failed" || s.status.kind === "restarting"))
+      .map((s) => s.uid)
+      .join(","),
+  );
+  $effect(() => {
+    if (faultedSandboxSlots) {
+      void refreshPlugins();
+    }
+  });
 
   let dragIndex = $state<number | null>(null);
   let dragOverIndex = $state<number | null>(null);

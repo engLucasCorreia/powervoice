@@ -1,0 +1,576 @@
+//! "Install module…" (T-809, ADR-006 §7 as amended by T-809): copy a plugin file the user picked
+//! into the **per-user** CLAP folder, scan only that file, and roll back if it can't be used.
+//!
+//! Where it goes — the standard per-user CLAP path (CLAP `entry.h`), already one of the folders
+//! [`crate::scan::clap_search_paths`] searches, so a later rescan (and other CLAP hosts) find it:
+//! - Linux/BSD: `~/.clap`;
+//! - macOS: `~/Library/Audio/Plug-Ins/CLAP` (a `.clap` there is a bundle directory);
+//! - Windows: `%LOCALAPPDATA%\Programs\Common\CLAP`.
+//!
+//! Never a system folder (`/usr/lib/clap`, `/Library/…`, `%COMMONPROGRAMFILES%`): no admin rights,
+//! and the caller passes the destination, which `src-tauri` only ever gets from [`user_clap_dir`].
+//!
+//! The copy is staged next to the destination under a hidden name that isn't `*.clap` (so a scan
+//! running at the same time never picks it up), then renamed into place. A file with the same
+//! name is only replaced when the caller says so (the UI asks first); the old one is kept aside
+//! until the new one has scanned, and restored if it doesn't. A scan that **crashes or times
+//! out** blocklists the *picked* file (ADR-008 §5), so installing it again is refused until it
+//! changes or the user unblocks it — the plugin manager lists it with the reason.
+
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::blocklist::{BlockReason, Blocklist};
+use crate::scan::{FailureKind, ScanFailure, ScannedPlugin, is_clap, is_effect};
+
+/// The per-user CLAP folder for this OS, from the environment (`HOME`, or `LOCALAPPDATA` on
+/// Windows). `None` when that variable is unset, empty or not absolute.
+pub fn user_clap_dir() -> Option<PathBuf> {
+    user_clap_dir_from(
+        std::env::var_os("HOME").as_deref(),
+        std::env::var_os("LOCALAPPDATA").as_deref(),
+    )
+}
+
+fn absolute(value: Option<&OsStr>) -> Option<PathBuf> {
+    value.map(PathBuf::from).filter(|p| p.is_absolute())
+}
+
+/// [`user_clap_dir`] for an explicit `HOME` / `LOCALAPPDATA` (tests use a temporary home).
+#[cfg(windows)]
+pub fn user_clap_dir_from(
+    _home: Option<&OsStr>,
+    local_app_data: Option<&OsStr>,
+) -> Option<PathBuf> {
+    absolute(local_app_data).map(|d| d.join("Programs").join("Common").join("CLAP"))
+}
+
+/// [`user_clap_dir`] for an explicit `HOME` / `LOCALAPPDATA` (tests use a temporary home).
+#[cfg(target_os = "macos")]
+pub fn user_clap_dir_from(
+    home: Option<&OsStr>,
+    _local_app_data: Option<&OsStr>,
+) -> Option<PathBuf> {
+    absolute(home).map(|h| {
+        h.join("Library")
+            .join("Audio")
+            .join("Plug-Ins")
+            .join("CLAP")
+    })
+}
+
+/// [`user_clap_dir`] for an explicit `HOME` / `LOCALAPPDATA` (tests use a temporary home).
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn user_clap_dir_from(
+    home: Option<&OsStr>,
+    _local_app_data: Option<&OsStr>,
+) -> Option<PathBuf> {
+    absolute(home).map(|h| h.join(".clap"))
+}
+
+/// Why an install didn't happen. Every variant leaves the destination as it was.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum InstallError {
+    /// The picked file doesn't exist (or can't be read).
+    #[error("the file doesn't exist")]
+    NotFound,
+    /// Not a `.clap` file (or, outside macOS, a directory).
+    #[error("not a CLAP plugin file")]
+    NotAPlugin,
+    /// The picked file already *is* the installed copy.
+    #[error("this plugin is already installed here")]
+    AlreadyInstalled,
+    /// The picked file is blocklisted (a previous scan crashed or timed out, or the user blocked
+    /// it); unblock it in the plugin manager first.
+    #[error("the file is blocklisted: {}", .0.message())]
+    Blocklisted(BlockReason),
+    /// A file with the same name is already installed; ask, then call again with `replace`.
+    #[error("a plugin with this name is already installed")]
+    Collision {
+        /// The installed file that would be replaced.
+        target: PathBuf,
+    },
+    /// It scanned, but offers no audio effect the rack can host (an instrument, say).
+    #[error("it contains no audio effects PowerVoice can use")]
+    NoEffects,
+    /// The sandboxed scan failed (`kind` says how; `blocklisted`: the picked file was
+    /// blocklisted because the scan crashed or timed out).
+    #[error("{message}")]
+    ScanFailed {
+        message: String,
+        kind: FailureKind,
+        blocklisted: bool,
+    },
+    /// The environment names no per-user plugin folder (`HOME` unset…).
+    #[error("there is no per-user plugin folder")]
+    NoInstallDir,
+    /// Copying or renaming failed.
+    #[error("{0}")]
+    Io(String),
+}
+
+fn io(e: std::io::Error) -> InstallError {
+    InstallError::Io(e.to_string())
+}
+
+/// A successful install.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Installed {
+    /// Where it was copied to.
+    pub target: PathBuf,
+    /// Everything the file offers (the caller registers the audio effects among them).
+    pub plugins: Vec<ScannedPlugin>,
+    /// An older file with the same name was replaced.
+    pub replaced: bool,
+}
+
+/// A hidden sibling of `name` in `dir` that a scan never picks up (doesn't end in `.clap`).
+fn sibling(dir: &Path, name: &OsStr, tag: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    dir.join(format!(
+        ".{}.pv-{tag}-{}-{nanos}",
+        name.to_string_lossy(),
+        std::process::id()
+    ))
+}
+
+/// Removes a file, a symlink or a whole directory.
+fn remove_any(path: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.is_dir() => std::fs::remove_dir_all(path),
+        Ok(_) => std::fs::remove_file(path),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Deletes `0` when dropped, unless disarmed (a staging copy on an error path).
+struct Cleanup(Option<PathBuf>);
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        if let Some(p) = self.0.take() {
+            let _ = remove_any(&p);
+        }
+    }
+}
+
+/// Copies a directory tree (a macOS bundle); symlinks inside it stay symlinks on Unix.
+pub(crate) fn copy_dir_all(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let src = entry.path();
+        let dst = to.join(entry.file_name());
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            copy_dir_all(&src, &dst)?;
+        } else if kind.is_symlink() {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(std::fs::read_link(&src)?, &dst)?;
+            #[cfg(not(unix))]
+            std::fs::copy(&src, &dst).map(|_| ())?;
+        } else {
+            std::fs::copy(&src, &dst)?;
+        }
+    }
+    Ok(())
+}
+
+/// Copies a file (and syncs it) or a bundle directory.
+fn copy_any(from: &Path, to: &Path, is_dir: bool) -> std::io::Result<()> {
+    if is_dir {
+        return copy_dir_all(from, to);
+    }
+    std::fs::copy(from, to)?;
+    std::fs::File::open(to)?.sync_all()
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// Installs `source` into `dest_dir` (see the module docs). `scan` is called **once**, with the
+/// installed path only — the rest of the plugin folders are never rescanned for an install
+/// (production: one `powervoice-sandbox --scan` process). `blocklist` is checked for the picked
+/// file first and records a crash/timeout of the scan against it.
+pub fn install_file(
+    source: &Path,
+    dest_dir: &Path,
+    replace: bool,
+    blocklist: &mut Blocklist,
+    scan: impl FnOnce(&Path) -> Result<Vec<ScannedPlugin>, ScanFailure>,
+) -> Result<Installed, InstallError> {
+    let meta = std::fs::metadata(source).map_err(|_| InstallError::NotFound)?;
+    let is_dir = meta.is_dir();
+    // A `.clap` is a single file on Linux/Windows and a bundle directory on macOS.
+    if !is_clap(source) || (is_dir && !cfg!(target_os = "macos")) {
+        return Err(InstallError::NotAPlugin);
+    }
+    let name = source.file_name().ok_or(InstallError::NotAPlugin)?;
+    if let Some(info) = blocklist.check(source) {
+        return Err(InstallError::Blocklisted(info.reason));
+    }
+    let target = dest_dir.join(name);
+    if same_file(source, &target) {
+        return Err(InstallError::AlreadyInstalled);
+    }
+    let exists = std::fs::symlink_metadata(&target).is_ok();
+    if exists && !replace {
+        return Err(InstallError::Collision { target });
+    }
+
+    std::fs::create_dir_all(dest_dir).map_err(io)?;
+    let mut staging = Cleanup(Some(sibling(dest_dir, name, "staging")));
+    let staged = staging.0.clone().unwrap_or_default();
+    copy_any(source, &staged, is_dir).map_err(io)?;
+    let backup = if exists {
+        let b = sibling(dest_dir, name, "backup");
+        std::fs::rename(&target, &b).map_err(io)?;
+        Some(b)
+    } else {
+        None
+    };
+    if let Err(e) = std::fs::rename(&staged, &target) {
+        if let Some(b) = &backup {
+            let _ = std::fs::rename(b, &target);
+        }
+        return Err(io(e));
+    }
+    staging.0 = None;
+
+    let rollback = || {
+        let _ = remove_any(&target);
+        if let Some(b) = &backup {
+            let _ = std::fs::rename(b, &target);
+        }
+    };
+    match scan(&target) {
+        Ok(plugins) if plugins.iter().any(is_effect) => {
+            if let Some(b) = &backup {
+                let _ = remove_any(b);
+            }
+            Ok(Installed {
+                target,
+                plugins,
+                replaced: exists,
+            })
+        }
+        Ok(_) => {
+            rollback();
+            Err(InstallError::NoEffects)
+        }
+        Err(failure) => {
+            rollback();
+            let reason = match failure.kind {
+                FailureKind::Crashed => Some(BlockReason::Crashed),
+                FailureKind::TimedOut => Some(BlockReason::TimedOut),
+                FailureKind::Other => None,
+            };
+            if let Some(reason) = reason {
+                blocklist.block(source, reason);
+            }
+            Err(InstallError::ScanFailed {
+                message: failure.message,
+                kind: failure.kind,
+                blocklisted: reason.is_some(),
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    /// A temporary directory removed on drop (MEMORY: `/tmp` has a per-user quota — never leak).
+    pub(crate) struct TempDir(pub PathBuf);
+
+    impl TempDir {
+        pub(crate) fn new(label: &str) -> Self {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static N: AtomicU32 = AtomicU32::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "pv-install-test-{label}-{}-{}",
+                std::process::id(),
+                N.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    pub(crate) fn effect(id: &str) -> ScannedPlugin {
+        ScannedPlugin {
+            id: id.into(),
+            name: format!("{id} name"),
+            vendor: "Acme".into(),
+            version: "1.0".into(),
+            features: vec!["audio-effect".into()],
+            param_count: 7,
+            main_input_channels: 1,
+            main_output_channels: 2,
+            ..ScannedPlugin::default()
+        }
+    }
+
+    fn failure(kind: FailureKind) -> ScanFailure {
+        ScanFailure {
+            path: PathBuf::new(),
+            message: "boom".into(),
+            kind,
+        }
+    }
+
+    /// A temp "home" with a picked plugin in `Downloads` and the per-user CLAP folder under it.
+    struct Fixture {
+        _root: TempDir,
+        source: PathBuf,
+        dest: PathBuf,
+        blocklist: Blocklist,
+    }
+
+    fn fixture(label: &str, content: &[u8]) -> Fixture {
+        let root = TempDir::new(label);
+        let home = root.0.join("home");
+        let downloads = home.join("Downloads");
+        std::fs::create_dir_all(&downloads).unwrap();
+        let source = downloads.join("acme-deesser.clap");
+        std::fs::write(&source, content).unwrap();
+        let dest = user_clap_dir_from(Some(home.as_os_str()), Some(home.as_os_str())).unwrap();
+        let blocklist = Blocklist::load(Some(root.0.join("cache").join("blocklist.json")));
+        Fixture {
+            _root: root,
+            source,
+            dest,
+            blocklist,
+        }
+    }
+
+    fn visible_files(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn the_install_folder_is_per_user_under_the_given_home() {
+        let home = TempDir::new("home");
+        let dir = user_clap_dir_from(Some(home.0.as_os_str()), Some(home.0.as_os_str())).unwrap();
+        assert!(dir.starts_with(&home.0), "{dir:?}");
+        #[cfg(all(unix, not(target_os = "macos")))]
+        assert_eq!(dir, home.0.join(".clap"));
+        // No system folder, ever — and no relative/empty home.
+        assert!(!dir.starts_with("/usr") && !dir.starts_with("/Library"));
+        assert_eq!(user_clap_dir_from(None, None), None);
+        assert_eq!(
+            user_clap_dir_from(Some(OsStr::new("")), Some(OsStr::new(""))),
+            None
+        );
+        assert_eq!(
+            user_clap_dir_from(Some(OsStr::new("relative")), Some(OsStr::new("relative"))),
+            None
+        );
+    }
+
+    #[test]
+    fn installs_a_copy_and_scans_only_the_new_file() {
+        let mut f = fixture("copy", b"plugin v1");
+        let scanned = RefCell::new(Vec::new());
+        let out = install_file(&f.source, &f.dest, false, &mut f.blocklist, |p| {
+            scanned.borrow_mut().push(p.to_path_buf());
+            Ok(vec![effect("com.acme.deesser")])
+        })
+        .unwrap();
+        let target = f.dest.join("acme-deesser.clap");
+        assert_eq!(out.target, target);
+        assert!(!out.replaced);
+        assert_eq!(out.plugins[0].id, "com.acme.deesser");
+        assert_eq!(std::fs::read(&target).unwrap(), b"plugin v1");
+        assert!(f.source.exists(), "the picked file is copied, not moved");
+        assert_eq!(
+            *scanned.borrow(),
+            vec![target],
+            "exactly one scan, of the new file"
+        );
+        assert_eq!(
+            visible_files(&f.dest),
+            vec!["acme-deesser.clap"],
+            "no staging left behind"
+        );
+    }
+
+    #[test]
+    fn a_name_collision_needs_confirmation_then_replaces() {
+        let mut f = fixture("collision", b"plugin v2");
+        std::fs::create_dir_all(&f.dest).unwrap();
+        let target = f.dest.join("acme-deesser.clap");
+        std::fs::write(&target, b"plugin v1").unwrap();
+
+        let err = install_file(&f.source, &f.dest, false, &mut f.blocklist, |_| {
+            panic!("no scan before the user confirms")
+        })
+        .unwrap_err();
+        assert_eq!(
+            err,
+            InstallError::Collision {
+                target: target.clone()
+            }
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"plugin v1", "untouched");
+
+        let out = install_file(&f.source, &f.dest, true, &mut f.blocklist, |_| {
+            Ok(vec![effect("com.acme.deesser")])
+        })
+        .unwrap();
+        assert!(out.replaced);
+        assert_eq!(std::fs::read(&target).unwrap(), b"plugin v2");
+        assert_eq!(
+            visible_files(&f.dest),
+            vec!["acme-deesser.clap"],
+            "backup removed"
+        );
+    }
+
+    #[test]
+    fn a_failed_replacement_restores_the_previous_file() {
+        let mut f = fixture("rollback", b"plugin v2 (broken)");
+        std::fs::create_dir_all(&f.dest).unwrap();
+        let target = f.dest.join("acme-deesser.clap");
+        std::fs::write(&target, b"plugin v1").unwrap();
+        let err = install_file(&f.source, &f.dest, true, &mut f.blocklist, |_| {
+            Err(failure(FailureKind::Other))
+        })
+        .unwrap_err();
+        assert_eq!(
+            err,
+            InstallError::ScanFailed {
+                message: "boom".into(),
+                kind: FailureKind::Other,
+                blocklisted: false
+            }
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"plugin v1");
+        assert_eq!(visible_files(&f.dest), vec!["acme-deesser.clap"]);
+        assert!(
+            f.blocklist.check(&f.source).is_none(),
+            "a plain failure never blocklists"
+        );
+    }
+
+    #[test]
+    fn a_crashing_scan_rolls_back_and_blocklists_the_picked_file() {
+        for (kind, reason) in [
+            (FailureKind::Crashed, BlockReason::Crashed),
+            (FailureKind::TimedOut, BlockReason::TimedOut),
+        ] {
+            let mut f = fixture("crash", b"crashes");
+            let err = install_file(&f.source, &f.dest, false, &mut f.blocklist, |_| {
+                Err(failure(kind))
+            })
+            .unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    InstallError::ScanFailed {
+                        blocklisted: true,
+                        ..
+                    }
+                ),
+                "{err:?}"
+            );
+            assert!(visible_files(&f.dest).is_empty(), "nothing stays installed");
+            assert_eq!(f.blocklist.check(&f.source).map(|i| i.reason), Some(reason));
+            // Trying again is refused up front, without another scan.
+            let again = install_file(&f.source, &f.dest, false, &mut f.blocklist, |_| {
+                panic!("a blocklisted file is never scanned")
+            })
+            .unwrap_err();
+            assert_eq!(again, InstallError::Blocklisted(reason));
+        }
+    }
+
+    #[test]
+    fn a_file_without_audio_effects_is_rolled_back() {
+        let mut f = fixture("no-effects", b"synth");
+        let err = install_file(&f.source, &f.dest, false, &mut f.blocklist, |_| {
+            let mut synth = effect("com.acme.synth");
+            synth.features = vec!["instrument".into()];
+            Ok(vec![synth])
+        })
+        .unwrap_err();
+        assert_eq!(err, InstallError::NoEffects);
+        assert!(visible_files(&f.dest).is_empty());
+    }
+
+    #[test]
+    fn rejects_missing_files_other_extensions_and_the_installed_copy_itself() {
+        let mut f = fixture("reject", b"x");
+        let never = |_: &Path| -> Result<Vec<ScannedPlugin>, ScanFailure> { panic!("no scan") };
+        let missing = f.source.with_file_name("missing.clap");
+        assert_eq!(
+            install_file(&missing, &f.dest, false, &mut f.blocklist, never),
+            Err(InstallError::NotFound)
+        );
+        let txt = f.source.with_file_name("readme.txt");
+        std::fs::write(&txt, b"x").unwrap();
+        assert_eq!(
+            install_file(&txt, &f.dest, false, &mut f.blocklist, never),
+            Err(InstallError::NotAPlugin)
+        );
+        std::fs::create_dir_all(&f.dest).unwrap();
+        let installed = f.dest.join("acme-deesser.clap");
+        std::fs::write(&installed, b"x").unwrap();
+        assert_eq!(
+            install_file(&installed, &f.dest, true, &mut f.blocklist, never),
+            Err(InstallError::AlreadyInstalled)
+        );
+        assert_eq!(std::fs::read(&installed).unwrap(), b"x");
+    }
+
+    #[test]
+    fn bundle_directories_copy_recursively() {
+        let root = TempDir::new("bundle");
+        let bundle = root.0.join("X.clap");
+        std::fs::create_dir_all(bundle.join("Contents").join("MacOS")).unwrap();
+        std::fs::write(bundle.join("Contents").join("MacOS").join("X"), b"bin").unwrap();
+        std::fs::write(bundle.join("Contents").join("Info.plist"), b"plist").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("MacOS/X", bundle.join("Contents").join("Current")).unwrap();
+        let copy = root.0.join("copy.clap");
+        copy_dir_all(&bundle, &copy).unwrap();
+        assert_eq!(
+            std::fs::read(copy.join("Contents").join("MacOS").join("X")).unwrap(),
+            b"bin"
+        );
+        assert_eq!(
+            std::fs::read(copy.join("Contents").join("Info.plist")).unwrap(),
+            b"plist"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            std::fs::read_link(copy.join("Contents").join("Current")).unwrap(),
+            PathBuf::from("MacOS/X")
+        );
+    }
+}

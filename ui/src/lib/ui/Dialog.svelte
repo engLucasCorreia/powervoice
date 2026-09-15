@@ -23,7 +23,9 @@
    * destructive, utility) and ordered for the platform (`dialogActions.ts`: primary first on
    * Windows, last on macOS/Linux). The `footer` snippet remains for footers that aren't buttons.
    */
-  type Size = "sm" | "md" | "lg";
+  /** sm 400 · md 480 · lg 640 px; xl 880 px wide with a fixed height (min(680 px, 85 vh)) for
+   * workspace dialogs whose content filters and scrolls inside (T-809 plugin manager). */
+  type Size = "sm" | "md" | "lg" | "xl";
 
   let {
     title,
@@ -195,6 +197,15 @@
 
   .pv-dialog[data-size="lg"] {
     width: 640px;
+  }
+
+  .pv-dialog[data-size="xl"] {
+    width: 880px;
+    height: min(680px, 85vh);
+  }
+
+  .pv-dialog[data-size="xl"] .body {
+    flex: 1;
   }
 
   .title {

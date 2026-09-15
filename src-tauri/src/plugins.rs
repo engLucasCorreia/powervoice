@@ -18,7 +18,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use vox_plugin_host::health::HealthStore;
-use vox_plugin_host::{CatalogPaths, PluginCatalog, SandboxOptions, SandboxSpec, ScanSummary};
+use vox_plugin_host::install::InstallError;
+use vox_plugin_host::{
+    CatalogPaths, InstallReport, PluginCatalog, PluginDetails, SandboxOptions, SandboxSpec,
+    ScanSummary,
+};
 use vox_rack::Registry;
 
 /// `POWERVOICE_DEV_PLUGINS=1` adds the sandboxed test plugins to the Add-module menu.
@@ -154,9 +158,78 @@ pub fn start_background_scan(
     catalog().rescan_in_background(false, on_progress, on_done);
 }
 
-/// `plugins_rescan`'s synchronous, optionally-"full" rescan (T-804 item 6).
-pub fn rescan(full: bool) -> ScanSummary {
-    catalog().rescan(full, |_, _, _| {})
+/// `plugins_rescan`'s synchronous, optionally-"full" rescan (T-804 item 6), reporting progress
+/// (T-809: the plugin manager's progress bar).
+pub fn rescan_with(
+    full: bool,
+    on_progress: impl Fn(usize, usize, &std::path::Path) + Sync,
+) -> ScanSummary {
+    catalog().rescan(full, on_progress)
+}
+
+/// What the last scan learned about `module_id` (ports, parameter count; T-809).
+pub fn details(module_id: &str) -> Option<PluginDetails> {
+    catalog().details(module_id)
+}
+
+/// Clears `module_id`'s runtime crash flag (T-809).
+pub fn clear_flag(module_id: &str) {
+    catalog().clear_flag(module_id);
+}
+
+/// The per-user plugin folder "Install module…" copies into (T-809; ADR-006 Amendment 1):
+/// `~/.clap`, `~/Library/Audio/Plug-Ins/CLAP` or `%LOCALAPPDATA%\Programs\Common\CLAP`.
+pub fn install_dir() -> Option<PathBuf> {
+    vox_plugin_host::install::user_clap_dir()
+}
+
+/// The standard per-format folders every scan searches (`$CLAP_PATH` first).
+pub fn standard_folders() -> Vec<PathBuf> {
+    vox_plugin_host::scan::clap_search_paths()
+}
+
+/// "Install module…" (T-809): copies `source` into [`install_dir`] — never a system folder —
+/// and scans only that file (`vox_plugin_host::PluginCatalog::install`).
+pub fn install(source: &std::path::Path, replace: bool) -> Result<InstallReport, InstallError> {
+    let dir = install_dir().ok_or(InstallError::NoInstallDir)?;
+    catalog().install(source, &dir, replace)
+}
+
+/// The OS command that shows `path` in the file manager (T-809): macOS selects it in Finder,
+/// Windows in Explorer; elsewhere the containing folder opens (`xdg-open`; selecting a file
+/// needs a desktop-specific D-Bus call).
+pub fn reveal_command(path: &std::path::Path) -> (&'static str, Vec<OsString>) {
+    if cfg!(target_os = "macos") {
+        ("open", vec!["-R".into(), path.as_os_str().to_owned()])
+    } else if cfg!(windows) {
+        let mut arg = OsString::from("/select,");
+        arg.push(path.as_os_str());
+        ("explorer", vec![arg])
+    } else {
+        let dir = if path.is_dir() {
+            path
+        } else {
+            path.parent().unwrap_or(path)
+        };
+        ("xdg-open", vec![dir.as_os_str().to_owned()])
+    }
+}
+
+/// Shows `path` in the file manager (T-809); the child is reaped on its own thread.
+pub fn reveal(path: &std::path::Path) -> std::io::Result<()> {
+    let (program, args) = reveal_command(path);
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    std::thread::Builder::new()
+        .name("reveal-wait".into())
+        .spawn(move || {
+            let _ = child.wait();
+        })?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -180,6 +253,20 @@ mod tests {
             assert!(dev.get(id).is_some(), "{id}");
         }
         assert_eq!(dev.len(), plain.len() + 3);
+    }
+
+    #[test]
+    fn reveal_opens_the_containing_folder_or_selects_the_file() {
+        let (program, args) = reveal_command(std::path::Path::new("/home/u/.clap/acme.clap"));
+        if cfg!(target_os = "macos") {
+            assert_eq!(program, "open");
+            assert_eq!(args[0], "-R");
+        } else if cfg!(windows) {
+            assert_eq!(program, "explorer");
+        } else {
+            assert_eq!(program, "xdg-open");
+            assert_eq!(args, vec![OsString::from("/home/u/.clap")]);
+        }
     }
 
     #[test]

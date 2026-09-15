@@ -24,6 +24,9 @@ import type {
   NormalizeJobStartedDto,
   NrCaptureStartedDto,
   PeaksRequestDto,
+  PluginEntryDto,
+  PluginFoldersDto,
+  PluginInstallResultDto,
   PresetEntryDto,
   PresetRefDto,
   RackStateDto,
@@ -671,4 +674,62 @@ export async function storageInfo(): Promise<StorageInfoDto> {
 /** T-301 (SPEC-004 §2.8): closes the document for good after the quit prompt. */
 export async function documentClose(): Promise<void> {
   return invoke<void>("document_close" satisfies CommandName);
+}
+
+// --- Plugins (T-804 commands, T-809 plugin manager + "Install module…") -----------------------
+
+/** T-804/T-809: every known plugin — registered ones plus blocklisted files. */
+export async function pluginsList(): Promise<PluginEntryDto[]> {
+  return invoke<PluginEntryDto[]>("plugins_list" satisfies CommandName);
+}
+
+/** T-804: rescans (`full` ignores the cache); emits `plugin_scan_progress` as it goes. Returns
+ * the number of audio effects registered afterwards. */
+export async function pluginsRescan(full: boolean): Promise<number> {
+  return invoke<number>("plugins_rescan" satisfies CommandName, { full });
+}
+
+/** T-804: shows/hides a module in Add Module. */
+export async function pluginsSetEnabled(moduleId: string, enabled: boolean): Promise<void> {
+  return invoke<void>("plugins_set_enabled" satisfies CommandName, { moduleId, enabled });
+}
+
+/** T-804: blocks a plugin file. */
+export async function pluginsBlock(path: string): Promise<void> {
+  return invoke<void>("plugins_block" satisfies CommandName, { path });
+}
+
+/** T-804: unblocks a plugin file; `true` if it was blocked. */
+export async function pluginsUnblock(path: string): Promise<boolean> {
+  return invoke<boolean>("plugins_unblock" satisfies CommandName, { path });
+}
+
+/** T-809: clears a flagged plugin's runtime crash count. */
+export async function pluginsClearFlag(moduleId: string): Promise<void> {
+  return invoke<void>("plugins_clear_flag" satisfies CommandName, { moduleId });
+}
+
+/** T-804: adds a custom scan folder (a background rescan follows). */
+export async function pluginsAddFolder(path: string): Promise<void> {
+  return invoke<void>("plugins_add_folder" satisfies CommandName, { path });
+}
+
+/** T-804: removes a custom scan folder (a background rescan follows, T-809). */
+export async function pluginsRemoveFolder(path: string): Promise<void> {
+  return invoke<void>("plugins_remove_folder" satisfies CommandName, { path });
+}
+
+/** T-809: the install folder, the standard scan folders and the custom ones. */
+export async function pluginsFolders(): Promise<PluginFoldersDto> {
+  return invoke<PluginFoldersDto>("plugins_folders" satisfies CommandName);
+}
+
+/** T-809: "Install module…" — copies the file into the per-user plugin folder and scans it. */
+export async function pluginsInstall(path: string, replace: boolean): Promise<PluginInstallResultDto> {
+  return invoke<PluginInstallResultDto>("plugins_install" satisfies CommandName, { path, replace });
+}
+
+/** T-809: shows a plugin file in the system file manager. */
+export async function pluginsReveal(path: string): Promise<void> {
+  return invoke<void>("plugins_reveal" satisfies CommandName, { path });
 }

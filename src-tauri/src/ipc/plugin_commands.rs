@@ -1,46 +1,59 @@
-//! Plugin manager commands (T-804 item 6; thin — the business logic lives in
-//! `vox_plugin_host::catalog`. The plugin manager UI itself is T-809).
+//! Plugin manager commands (T-804 item 6, T-809; thin — the business logic lives in
+//! `vox_plugin_host::catalog`/`install`. The plugin manager UI is `ui/src/lib/plugins/`).
 
-use tauri::State;
+use tauri::{AppHandle, State};
 
-use crate::ipc::error::IpcError;
-use crate::ipc::plugin_dto::{PluginEntryDto, blocklisted_entry, clap_entry};
+use crate::ipc::error::{IpcError, IpcErrorCode};
+use crate::ipc::events::{emit_plugin_scan_progress, emit_plugin_scan_summary};
+use crate::ipc::plugin_dto::{
+    PluginEntryDto, PluginFoldersDto, PluginInstallResultDto, plugin_list,
+};
 use crate::settings::SettingsStore;
 
-/// Every known plugin (T-804 item 6): registered ones (ok / disabled / flagged) plus blocklisted
-/// files. Sorted by id, blocklisted entries (empty id) last.
+/// Rescans, reporting every step through `plugin_scan_progress` and the summary at the end
+/// (T-809: the plugin manager's progress bar follows every rescan, not only the start-up one).
+fn rescan_emitting<R: tauri::Runtime>(app: &AppHandle<R>, full: bool) -> u32 {
+    let progress_app = app.clone();
+    let summary = crate::plugins::rescan_with(full, move |done, total, path| {
+        if let Err(e) = emit_plugin_scan_progress(&progress_app, done, total, path) {
+            tracing::warn!(error = %e, "plugin_scan_progress emit failed");
+        }
+    });
+    let effects = summary.effects as u32;
+    if let Err(e) = emit_plugin_scan_summary(app, summary) {
+        tracing::warn!(error = %e, "plugin_scan_progress summary emit failed");
+    }
+    effects
+}
+
+/// Every known plugin (T-804 item 6): registered ones (ok / disabled / flagged, or blocklisted
+/// when their file has been blocked since) plus the other blocklisted files.
 #[tauri::command]
 pub async fn plugins_list(
     settings: State<'_, SettingsStore>,
 ) -> Result<Vec<PluginEntryDto>, IpcError> {
     let disabled = settings.get().plugins.disabled;
     let health = crate::plugins::health();
-    let mut list: Vec<PluginEntryDto> = crate::plugins::registry_specs()
-        .iter()
-        .map(|spec| {
-            let flag = health
-                .as_ref()
-                .map(|h| h.get(&spec.descriptor.id))
-                .unwrap_or_default();
-            clap_entry(spec, &disabled, flag)
-        })
-        .collect();
-    list.sort_by(|a, b| a.id.cmp(&b.id));
-    for (path, info) in crate::plugins::blocklist_snapshot() {
-        list.push(blocklisted_entry(&path, &info));
-    }
-    Ok(list)
+    Ok(plugin_list(
+        &crate::plugins::registry_specs(),
+        crate::plugins::details,
+        &disabled,
+        |id| health.as_ref().map(|h| h.get(id)).unwrap_or_default(),
+        &crate::plugins::blocklist_snapshot(),
+    ))
 }
 
 /// Rescans for plugins (T-804 item 6). `full`: ignores the cache — every file is scanned again,
 /// even an unchanged one (blocklisted files are still skipped; that's `plugins_unblock`'s job).
-/// Runs synchronously off the calling thread; hot-adds anything new into every live registry.
+/// Emits `plugin_scan_progress` as it goes; hot-adds anything new into every live registry.
 #[tauri::command]
-pub async fn plugins_rescan(full: bool) -> Result<u32, IpcError> {
-    let summary = tauri::async_runtime::spawn_blocking(move || crate::plugins::rescan(full))
+pub async fn plugins_rescan<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    full: bool,
+) -> Result<u32, IpcError> {
+    tauri::async_runtime::spawn_blocking(move || rescan_emitting(&app, full))
         .await
-        .map_err(|e| IpcError::internal(e.to_string()))?;
-    Ok(summary.effects as u32)
+        .map_err(|e| IpcError::internal(e.to_string()))
 }
 
 /// Shows/hides `module_id` in Add Module (T-804 item 5). It still loads for a document that
@@ -67,16 +80,25 @@ pub async fn plugins_block(path: String) -> Result<(), IpcError> {
     Ok(())
 }
 
-/// Unblocks a plugin file (T-804 item 4); `true` if it was blocked.
+/// Unblocks a plugin file (T-804 item 4); `true` if it was blocked. The UI rescans afterwards
+/// so the file is picked up again.
 #[tauri::command]
 pub async fn plugins_unblock(path: String) -> Result<bool, IpcError> {
     Ok(crate::plugins::unblock(std::path::Path::new(&path)))
 }
 
-/// Adds a custom scan folder (T-804 item 5, ADR-008 §6) and rescans so it's picked up right
-/// away.
+/// Clears a flagged plugin's runtime crash count (T-809, "Clear crash warning").
 #[tauri::command]
-pub async fn plugins_add_folder(
+pub async fn plugins_clear_flag(module_id: String) -> Result<(), IpcError> {
+    crate::plugins::clear_flag(&module_id);
+    Ok(())
+}
+
+/// Adds a custom scan folder (T-804 item 5, ADR-008 §6) and rescans in the background (with
+/// `plugin_scan_progress`) so it's picked up right away.
+#[tauri::command]
+pub async fn plugins_add_folder<R: tauri::Runtime>(
+    app: AppHandle<R>,
     settings: State<'_, SettingsStore>,
     path: String,
 ) -> Result<(), IpcError> {
@@ -86,15 +108,17 @@ pub async fn plugins_add_folder(
     }
     let saved = settings.set(next)?;
     crate::plugins::configure(&saved.plugins.custom_folders);
-    tauri::async_runtime::spawn_blocking(|| crate::plugins::rescan(false));
+    tauri::async_runtime::spawn_blocking(move || rescan_emitting(&app, false));
     Ok(())
 }
 
-/// Removes a custom scan folder (T-804 item 5). Plugins already registered from it stay
+/// Removes a custom scan folder (T-804 item 5) and rescans in the background (T-809 item 2), so
+/// its plugins leave the plugin manager's list. Plugins already registered from it stay
 /// registered until the app restarts (matches the "a plugin removed from disk isn't torn out
 /// from underneath the live rack" policy elsewhere — SPEC-012).
 #[tauri::command]
-pub async fn plugins_remove_folder(
+pub async fn plugins_remove_folder<R: tauri::Runtime>(
+    app: AppHandle<R>,
     settings: State<'_, SettingsStore>,
     path: String,
 ) -> Result<(), IpcError> {
@@ -102,5 +126,46 @@ pub async fn plugins_remove_folder(
     next.plugins.custom_folders.retain(|p| p != &path);
     let saved = settings.set(next)?;
     crate::plugins::configure(&saved.plugins.custom_folders);
+    tauri::async_runtime::spawn_blocking(move || rescan_emitting(&app, false));
     Ok(())
+}
+
+/// The install folder, the standard folders and the custom ones (T-809).
+#[tauri::command]
+pub async fn plugins_folders(
+    settings: State<'_, SettingsStore>,
+) -> Result<PluginFoldersDto, IpcError> {
+    let text = |p: std::path::PathBuf| p.to_string_lossy().into_owned();
+    Ok(PluginFoldersDto {
+        install: crate::plugins::install_dir().map(text),
+        standard: crate::plugins::standard_folders()
+            .into_iter()
+            .map(text)
+            .collect(),
+        custom: settings.get().plugins.custom_folders,
+    })
+}
+
+/// "Install module…" (T-809): copies the picked `.clap` into the per-user plugin folder, scans
+/// only that file (up to the 30 s scan timeout, off the async runtime) and registers it. A name
+/// collision comes back as `collision` without changing anything, until `replace` is set.
+#[tauri::command]
+pub async fn plugins_install(
+    path: String,
+    replace: bool,
+) -> Result<PluginInstallResultDto, IpcError> {
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        crate::plugins::install(std::path::Path::new(&path), replace)
+    })
+    .await
+    .map_err(|e| IpcError::internal(e.to_string()))?;
+    Ok(result.into())
+}
+
+/// Shows a plugin file in the system file manager (T-809).
+#[tauri::command]
+pub async fn plugins_reveal(path: String) -> Result<(), IpcError> {
+    crate::plugins::reveal(std::path::Path::new(&path)).map_err(|e| {
+        IpcError::new(IpcErrorCode::Io, "error.plugins.reveal").with_param("message", e.to_string())
+    })
 }

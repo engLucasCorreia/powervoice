@@ -52,6 +52,9 @@
   import NoticeHost from "./lib/notices/NoticeHost.svelte";
   import { initMarkers } from "./lib/markers/markers.svelte";
   import PreferencesDialog from "./lib/preferences/PreferencesDialog.svelte";
+  import InstallPluginDialog from "./lib/plugins/InstallPluginDialog.svelte";
+  import PluginManagerDialog from "./lib/plugins/PluginManagerDialog.svelte";
+  import { initPlugins } from "./lib/plugins/plugins.svelte";
   import RecoveryDialog from "./lib/recovery/RecoveryDialog.svelte";
   import { initRecovery } from "./lib/recovery/recovery.svelte";
   import CalibrationDialog from "./lib/record/CalibrationDialog.svelte";
@@ -178,6 +181,24 @@
   // H-19: Alt+letter mnemonics for the menu bar (File/Edit/View/Effects/Help), independent of the
   // per-action keymap above.
   onMount(() => attachMenuBarMnemonics());
+
+  // T-809: the plugin manager's scan progress (the start-up scan too) and the crash flags the
+  // rack's flagged-slot affordance reads.
+  onMount(() => {
+    let disposed = false;
+    let teardown: (() => void) | null = null;
+    void initPlugins().then((cleanup) => {
+      if (disposed) {
+        cleanup();
+      } else {
+        teardown = cleanup;
+      }
+    });
+    return () => {
+      disposed = true;
+      teardown?.();
+    };
+  });
 
   // H-12 (A-014): once settings load, seed the spectral pane's display settings from the app's
   // last-used defaults (a document's own sidecar `spectral_view`, applied later by
@@ -439,6 +460,8 @@
 <NoticeHost />
 <RecoveryDialog />
 <PreferencesDialog />
+<PluginManagerDialog />
+<InstallPluginDialog />
 <UnsavedChangesDialog />
 <ConfirmDialog />
 <RecentMissingDialog />

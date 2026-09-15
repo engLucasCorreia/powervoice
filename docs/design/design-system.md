@@ -467,3 +467,35 @@ priority order; `fitGutterLabels` does the same for vertical rulers with a unit 
 `?preview` takes `&scene=` (see `ui/src/dev/previewIpc.ts`) to open the real App on fixtures —
 a document in waveform or spectral view, recording, a 4-module rack with an EQ graph,
 loudness/ACX results, and each dialog — for screenshots at 1280×720 and 2126×850.
+
+## 20. Plugin manager (T-809)
+
+- **Where:** Effects → Manage Plugins… / Install Module…, Preferences → Plugins (summary, the
+  user's own folders, Manage plugins…), and a flagged rack slot's warning key (it opens the manager
+  on that plugin). Code: `ui/src/lib/plugins/`; the list logic (search, sort, status wording,
+  format badges) is pure and tested in `pluginList.ts`.
+- **Dialog `size="xl"`** (new in the kit): 880 px wide with a fixed height (`min(680px, 85vh)`), and
+  the body fills it. It's for workspace dialogs whose content filters and scrolls inside, so the
+  box doesn't jump while the user types in a search field.
+- **Layout:** full-bleed `Tabs` (Plugins | Folders) under the title. On the Plugins tab: a
+  toolbar (search field, Rescan ▾ with *new and changed* / *everything*, primary Install
+  module…), a slim progress row while scanning ("Scanning 7 of 19 · file.clap"), then the list
+  as a recessed well (`--pv-bg-panel`) with a sticky header and a count/last-scan status line.
+- **Rows** (two lines): the name, with the path under it in xs mono tertiary; the vendor, with the
+  version under it; a format chip (outlined; CLAP / VST3 / LV2 / JSFX); channels (Mono / Stereo /
+  "1 in · 2 out" / —); a params count (tabular, right-aligned); a status `Badge` with an icon and a
+  word, plus its reason under it; an Enabled switch (`Toggle hideLabel`, named "Show ‹name› in Add
+  module"), or **Unblock** for a blocklisted file; and ⋯ (clear crash warning, block this file,
+  show in the file manager, unblock). Status tones: OK success, Disabled neutral, Blocklisted
+  danger (the cause: crashed / timed out / blocked by you), Flagged warning ("Crashed 3 times
+  while running"). The row the manager was opened on gets `--pv-accent-soft` and a 2 px accent
+  inset.
+- **States:** loading (a spinner and a word), error (an `EmptyState` with Try again), empty (an
+  `EmptyState` with Install module… and Add folder…), and no search match (Clear search).
+- **Install module… dialogs** (`sm`/`md`): *Installing* (an indeterminate bar and the trust note);
+  *Replace ‹file›?* (`alertdialog`, Cancel, and Replace as a danger primary); *Module installed*
+  (the effects added, where to find them, Show in plugin manager); *Couldn't install ‹file›* (the
+  reason, a mono detail line, and the blocklist note).
+- **`Toggle hideLabel`** (new in the kit): the label is kept for assistive tech only, for a switch
+  in a table row whose column header already says what it does.
+

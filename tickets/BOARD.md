@@ -66,6 +66,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-26 | Design follow-ups (H-25): Windows dialog button order (primary first), shared menu/popover component for all menus, migrate `lucide-svelte` (deprecated) → `@lucide/svelte`, Unicode minus in analyzer dB labels, analyzer "dBFS" unit label overlapping the top tick (−20), owner-verified screens with a file open and while recording | S | done |
 | H-27 | Playback playhead follow (SPEC-003 §2.1/§3, SPEC-006 §2.8 continuous band-follow; spec'd but never implemented — found by H-23), reconciled with H-23's record-head page-flip | S | done |
 | H-28 | Post-H-26/H-27 fixes: `?preview&scene=recording` `effect_update_depth_exceeded` in WaveformView follow effects, transport store null guard when telemetry precedes `transport_get`, View-menu toggle for `Settings.playhead_follow`, Normalize target fields in true minus | S | done |
+| H-29 | Plugin follow-ups (T-809): uninstall action (remove installed file + registry, confirm, documents keep a Missing slot), deterministic duplicate-id policy across install/rescan, move plugin fixtures into `ui/src/lib/test/fixtures.ts` | S | todo |
 | H-18 | Shared test factories for DTOs (`ui/src/lib/test/fixtures.ts` + Rust builders) so a new DTO field touches one helper, not 20 test literals (merge-friction fix) | H | done |
 | H-17 | Recovery follow-ups (T-301): dialog stays open for remaining sessions (A-015), AC-3/AC-11 timing on a real disk (test-big), compaction off the document lock, markers during an interrupted take, Memory-for-audio UI, `/tmp/vox-project-*` sweep | S | done |
 | H-15 | Sidecar follow-ups (T-306): recent-file-missing dialog, read-only folder matrix (AC-13), SIGKILL-during-sidecar-save test (AC-6), per-slot leniency for a malformed rack slot, perf budget (AC-18) | S | done |
@@ -169,7 +170,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-705 | AppImage/deb, Win/mac build docs, README/user guide | W2 | S | T-701..T-704 | done (Win/mac installers documented, not built) |
 | T-706 | Complete architecture & developer docs (owner req.): docs hub, C4/crate/threading/sequence Mermaid diagrams, data/IPC/DSP/plugins/UI docs, contributing guide, ADR index, docs check script | W3 | O | T-809 | todo |
 | T-707 | Docs for everyone (owner req.): what-is / how-it-works with Mermaid, complete task-based user guide, FAQ, glossary with plain-language analogies, friendly README | W4 | S | T-706, T-708, T-709 | todo |
-| T-708 | Themes (owner req.): Light ("clear") mode at full parity incl. canvas/WebGL renderers from tokens, Match System, High Contrast, View → Theme menu, no-flash, 4-theme screenshots + raw-colour lint | W2 | O | T-809, H-28 | todo |
+| T-708 | Themes (owner req.): Light ("clear") mode at full parity incl. canvas/WebGL renderers from tokens, Match System, High Contrast, View → Theme menu, no-flash, 4-theme screenshots + raw-colour lint | W2 | O | T-809, H-28 | in progress |
 | T-709 | Guided Tour widget (owner req.): spotlight + anchored step cards, Welcome tour + contextual tours, first-run offer, Help → Take the Tour, `Settings.tours` | W3 | O | T-708 | todo |
 
 ## M8 — External plugins
@@ -183,7 +184,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-806 | VST3 adapter (coupler vst3 + moduleinfo scan) | W4 | O | T-803, T-804 | todo |
 | T-807 | LV2 adapter (livi) | W4 | O | T-803, T-804 | todo |
 | T-808 | JSFX adapter (ysfx, sandbox-only) | W4 | O | T-803, T-804 | todo |
-| T-809 | Plugin manager UI + "Install module…" | W5 | S | T-804 | in progress |
+| T-809 | Plugin manager UI + "Install module…" | W5 | S | T-804 | done |
 | T-810 | Plugin state in presets/sidecar | W5 | S | T-803 | todo |
 | T-811 | VST2 adapter (prefer Carla bridge) | W5 | O | T-803 + owner legal sign-off | gated |
 

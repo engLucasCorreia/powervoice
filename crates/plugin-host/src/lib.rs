@@ -30,6 +30,7 @@ pub mod blocklist;
 pub mod catalog;
 mod factory;
 pub mod health;
+pub mod install;
 mod proxy;
 mod rpc;
 mod sandbox;
@@ -37,7 +38,7 @@ pub mod scan;
 pub mod state;
 pub mod watchdog;
 
-pub use catalog::{CatalogPaths, PluginCatalog, ScanSummary};
+pub use catalog::{CatalogPaths, InstallReport, PluginCatalog, PluginDetails, ScanSummary};
 pub use factory::{
     CLAP_FORMAT, SandboxFactory, SandboxInstance, SandboxOptions, SandboxSpec, TEST_FORMAT,
     clap_spec, test_factories, test_spec,

@@ -9,6 +9,9 @@
   import { applyThemePref } from "../theme/theme.svelte";
   import { Button, Dialog, formatNumber, SegmentedControl, type SegmentOption } from "../ui";
   import { closePreferences, preferencesState } from "./preferences.svelte";
+  import PluginFolders from "../plugins/PluginFolders.svelte";
+  import { countPlugins } from "../plugins/pluginList";
+  import { openPluginManager, pluginsState, refreshPlugins } from "../plugins/plugins.svelte";
 
   /**
    * H-17 item 5: a small, reusable Preferences dialog — Edit → Preferences… (File → Preferences…
@@ -20,6 +23,9 @@
    * preferences as the record panel (mode, punch on selection, pre-/post-roll, pre-roll at the
    * cursor, hear original, crossfade), the current device setup's recording offset and the offsets
    * stored per device setup (each can be forgotten). Locked while recording, like the panel.
+   *
+   * T-809: the Plugins section — how many plugins are installed (and how many need attention),
+   * the user's own scan folders (add/remove, a rescan follows) and Manage plugins….
    */
   const pref = preferencesState();
   // H-25: Appearance → Theme applies at once and persists in Settings.
@@ -43,8 +49,25 @@
   $effect(() => {
     if (pref.open) {
       void refreshOffset();
+      void refreshPlugins();
     }
   });
+
+  const plugins = pluginsState();
+  const pluginSummary = $derived.by(() => {
+    if (plugins.list === null) {
+      return t("preferences.plugins.loading");
+    }
+    const counts = countPlugins(plugins.list);
+    const total = counts.total === 1 ? t("plugins.count.one") : t("plugins.count.many", { count: counts.total });
+    const attention = counts.blocklisted + counts.flagged;
+    return attention > 0 ? `${total} · ${t("preferences.plugins.attention", { count: attention })}` : total;
+  });
+
+  function managePlugins(): void {
+    closePreferences();
+    openPluginManager();
+  }
 
   function numberFrom(event: Event, max: number): number | null {
     const value = Number((event.currentTarget as HTMLInputElement).value);
@@ -302,6 +325,19 @@
         </ul>
       {/if}
     </section>
+    <section data-testid="preferences-plugins">
+      <h3>{t("preferences.section.plugins")}</h3>
+      <div class="row">
+        <span class="label">{t("preferences.plugins.installed")}</span>
+        <div class="plugins-summary">
+          <span class="value" data-testid="preferences-plugins-summary">{pluginSummary}</span>
+          <Button icon="plugin" size="sm" testid="preferences-manage-plugins" onclick={managePlugins}>
+            {t("preferences.plugins.manage")}
+          </Button>
+        </div>
+      </div>
+      <PluginFolders showStandard={false} />
+    </section>
   </Dialog>
 {/if}
 
@@ -382,6 +418,14 @@
     padding: var(--pv-space-2) var(--pv-space-3);
     border-radius: var(--pv-radius-md);
     background: var(--pv-bg-raised);
+  }
+
+  .plugins-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--pv-space-2);
   }
 
   .devices {

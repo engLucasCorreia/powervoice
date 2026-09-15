@@ -14,12 +14,13 @@ import { dispatchAction } from "../lib/keymap";
 import { runAcxCheck } from "../lib/loudness/acx.svelte";
 import { startLoudnessAnalyze } from "../lib/loudness/loudness.svelte";
 import { openMenu, type MenuId } from "../lib/menu/menubar.svelte";
+import { installFrom, openPluginManager } from "../lib/plugins/plugins.svelte";
 import { openPreferences } from "../lib/preferences/preferences.svelte";
 import { openRecoveryStorage } from "../lib/recovery/recovery.svelte";
 import { openNormalizeDialog } from "../lib/state/normalize.svelte";
 import { openNormalizeLufsDialog } from "../lib/state/normalizeLufs.svelte";
 import { openCalibration, openNewRecordingPrompt, toggleRecord } from "../lib/state/record.svelte";
-import { PREVIEW_PATH, PREVIEW_RATE_HZ, type PreviewOptions } from "./previewIpc";
+import { PREVIEW_INSTALL_SOURCE, PREVIEW_PATH, PREVIEW_RATE_HZ, type PreviewOptions } from "./previewIpc";
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -35,7 +36,9 @@ export async function runPreviewScene(options: PreviewOptions, menu: string | nu
   await sleep(400);
 
   const wantsDocument =
-    scenes.some((s) => s === "document" || s === "spectral" || s === "loudness" || s === "rack") ||
+    scenes.some((s) =>
+      ["document", "spectral", "loudness", "rack", "plugins", "plugins-scanning", "plugins-folders"].includes(s),
+    ) ||
     (dialog !== null && !["about", "preferences", "recovery", "new-recording", "audio-devices", "channel-choice"].includes(dialog));
 
   if (scenes.includes("recording")) {
@@ -120,8 +123,33 @@ export async function runPreviewScene(options: PreviewOptions, menu: string | nu
     case "low-disk":
       void toggleRecord();
       break;
+    case "plugin-install":
+    case "plugin-collision":
+    case "plugin-failed":
+      void installFrom(PREVIEW_INSTALL_SOURCE, false);
+      break;
     default:
       break;
+  }
+
+  // T-809: the plugin manager — every status; `plugins-scanning` mid-rescan.
+  if (scenes.includes("plugins") || scenes.includes("plugins-scanning") || scenes.includes("plugins-folders")) {
+    openPluginManager({ tab: scenes.includes("plugins-folders") ? "folders" : "plugins" });
+    await sleep(100);
+    if (scenes.includes("plugins-scanning")) {
+      await emit("plugin_scan_progress", {
+        done: 7,
+        total: 19,
+        current_path: "/usr/lib/clap/studio-tools.clap",
+        summary: null,
+      });
+    }
+  }
+
+  if (scenes.includes("plugin-flag")) {
+    await sleep(200);
+    const slots = document.querySelectorAll<HTMLElement>('[data-testid="rack-slot"]');
+    slots[slots.length - 1]?.scrollIntoView({ block: "center" });
   }
 
   if (menu) {

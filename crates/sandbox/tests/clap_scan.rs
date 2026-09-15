@@ -447,3 +447,76 @@ fn a_runtime_crash_flags_the_plugin_without_blocklisting_it() {
     // Never touched the blocklist (only scan-time faults do).
     assert!(!blocklist_path.exists());
 }
+
+/// T-809: "Install module…" end to end — the real test plugin is copied into a temporary
+/// per-user CLAP folder (never the real home), scanned there alone in a sandbox, and its effects
+/// hot-add into a live registry; installing it again is a name collision; a copy that crashes
+/// while being scanned is rolled back and blocklisted.
+#[test]
+fn install_module_copies_scans_and_registers_the_test_plugin() {
+    use vox_plugin_host::install::{InstallError, user_clap_dir_from};
+    use vox_plugin_host::{CatalogPaths, PluginCatalog, SandboxOptions};
+
+    let dir = TempDir::new("clap-install");
+    let downloads = dir.0.join("downloads");
+    let picked = downloads.join("vox-test.clap");
+    copy_plugin(&picked);
+    let home = dir.0.join("home");
+    let dest = user_clap_dir_from(Some(home.as_os_str()), Some(home.as_os_str())).unwrap();
+    assert!(dest.starts_with(&home));
+    let catalog = PluginCatalog::new(
+        SandboxOptions::new(SANDBOX),
+        CatalogPaths {
+            cache: Some(dir.0.join("cache").join("clap-scan.json")),
+            blocklist: Some(dir.0.join("cache").join("plugin-blocklist.json")),
+        },
+    );
+    let registry = Arc::new(Registry::new());
+    catalog.observe(&registry);
+
+    let report = catalog.install(&picked, &dest, false).unwrap();
+    assert_eq!(report.target, dest.join("vox-test.clap"));
+    assert!(!report.replaced);
+    let ids: Vec<String> = report
+        .effects
+        .iter()
+        .map(|s| s.descriptor.id.clone())
+        .collect();
+    let expected: Vec<String> = tc::IDS.iter().map(|id| format!("clap:{id}")).collect();
+    assert_eq!(ids, expected);
+    for id in &ids {
+        assert!(registry.get(id).is_some(), "{id} hot-added");
+    }
+    let details = catalog.details(&expected[0]).unwrap();
+    assert_eq!((details.input_channels, details.output_channels), (1, 1));
+
+    assert!(matches!(
+        catalog.install(&picked, &dest, false),
+        Err(InstallError::Collision { .. })
+    ));
+    assert!(catalog.install(&picked, &dest, true).unwrap().replaced);
+
+    let crash = downloads.join(format!("{}.clap", tc::CRASH_ON_SCAN_MARKER));
+    copy_plugin(&crash);
+    let err = catalog.install(&crash, &dest, false).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            InstallError::ScanFailed {
+                blocklisted: true,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert!(
+        !dest
+            .join(format!("{}.clap", tc::CRASH_ON_SCAN_MARKER))
+            .exists(),
+        "rolled back"
+    );
+    let blocked = catalog.blocklist_snapshot();
+    assert_eq!(blocked.len(), 1);
+    assert_eq!(blocked[0].0, crash);
+    assert_eq!(blocked[0].1.reason, BlockReason::Crashed);
+}

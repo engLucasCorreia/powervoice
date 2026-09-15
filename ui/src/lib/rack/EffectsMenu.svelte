@@ -17,6 +17,7 @@
     normalizeLufsFavorite,
     openNormalizeLufsDialog,
   } from "../state/normalizeLufs.svelte";
+  import { openPluginManager, startInstall } from "../plugins/plugins.svelte";
   import { Button, formatWithUnit } from "../ui";
   import type { MenuEntry } from "../ui/menuModel";
   import { localized } from "./localized";
@@ -33,7 +34,8 @@
    * Effects menu (H-19): Normalize…, Normalize (LUFS)…, Capture Noise Print, Favorites ▸ (the six
    * one-click normalize presets) and Rack Presets ▸ (T-406: load, save the live rack, delete user
    * presets, confirm before replacing a non-empty rack). H-26: on the shared menu; the preset
-   * name field and the replace confirmation are inline content of the submenu.
+   * name field and the replace confirmation are inline content of the submenu. T-809: Manage
+   * Plugins… (the plugin manager) and Install Module… (native picker → copy + scan).
    */
   const captureEnabled = $derived(canCapture());
   const normalizeEnabled = $derived(canNormalize());
@@ -226,6 +228,23 @@
       minWidth: 208,
       onopen: onRackPresetsOpen,
       items: rackPresetItems,
+    },
+    { kind: "separator", id: "sep-plugins" },
+    {
+      kind: "item",
+      id: "manage-plugins",
+      label: t("effects.manage_plugins"),
+      icon: "plugin",
+      testid: "menu-manage-plugins",
+      onselect: () => openPluginManager(),
+    },
+    {
+      kind: "item",
+      id: "install-module",
+      label: t("effects.install_module"),
+      icon: "install",
+      testid: "menu-install-module",
+      onselect: () => void startInstall(),
     },
   ]);
 </script>

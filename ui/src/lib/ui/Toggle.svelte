@@ -12,6 +12,7 @@
   let {
     checked = $bindable(false),
     label,
+    hideLabel = false,
     description,
     size = "md",
     disabled = false,
@@ -20,6 +21,9 @@
   }: {
     checked?: boolean;
     label: string;
+    /** Keep the label for assistive tech only (a switch in a table row whose column says what
+     * it does). */
+    hideLabel?: boolean;
     description?: string;
     size?: "sm" | "md";
     disabled?: boolean;
@@ -51,13 +55,22 @@
   >
     <span class="knob"></span>
   </button>
-  <span class="text">
+  <span class="text" class:visually-hidden={hideLabel}>
     <label id="{base}-label" for="{base}-control">{label}</label>
     {#if description}<span id="{base}-desc" class="description">{description}</span>{/if}
   </span>
 </div>
 
 <style>
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
   .pv-switch {
     display: inline-flex;
     align-items: flex-start;

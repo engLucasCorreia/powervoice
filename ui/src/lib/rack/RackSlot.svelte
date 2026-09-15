@@ -7,6 +7,7 @@
   import GainReductionMeter from "./GainReductionMeter.svelte";
   import { localized } from "./localized";
   import NoiseReductionSection from "./NoiseReductionSection.svelte";
+  import { openPluginManager, pluginCrashCount } from "../plugins/plugins.svelte";
   import ParamGroupSection from "./ParamGroupSection.svelte";
   import {
     deleteModulePreset,
@@ -69,6 +70,13 @@
     }
     return null;
   });
+  // T-809 item 4: a plugin that has crashed at runtime (ADR-008 §5 "flagged") gets a small
+  // warning key next to its name that opens the plugin manager on it.
+  const crashCount = $derived(pluginCrashCount(slot.module_id));
+  const flagLabel = $derived(
+    crashCount === 1 ? t("rack.slot.flagged_once") : t("rack.slot.flagged", { count: crashCount }),
+  );
+
   /** Retry = the rack's Restart of a failed slot (a sandboxed plugin is respawned with its
    * last committed state). A missing module can't be restarted (SPEC-012 §2.9). */
   const canRetry = $derived(slot.status.kind === "failed");
@@ -328,13 +336,24 @@
       onclick={() => (collapsed = !collapsed)}
     />
     <span class="name" data-testid="rack-slot-name">{slot.name}</span>
+    {#if crashCount > 0}
+      <span class="flag">
+        <IconButton
+          icon="warning"
+          label={flagLabel}
+          size="sm"
+          testid="rack-slot-flagged"
+          onclick={() => openPluginManager({ focus: slot.module_id })}
+        />
+      </span>
+    {/if}
     {#if statusBadge}
       <span class="status-badge {statusBadge.kind}" data-testid="rack-slot-badge" data-badge={statusBadge.kind}
         >{statusBadge.label}</span
       >
     {/if}
     {#if latencyLabel}
-      <span class="latency">{latencyLabel}</span>
+      <span class="latency" title={latencyLabel}>{latencyLabel}</span>
     {/if}
     {#if slot.status.kind === "active"}
       {#each headerMeters as { channel, index } (channel.id)}
@@ -439,9 +458,11 @@
     cursor: grab;
   }
 
+  /* T-809: in a narrow rack the name keeps at least a few characters (a plugin slot also carries
+     its status, a flagged key and a latency label); the latency text gives way first. */
   .name {
-    flex: 1;
-    min-width: 0;
+    flex: 1 1 auto;
+    min-width: 4.5rem;
     margin-left: var(--pv-space-1);
     overflow: hidden;
     color: var(--pv-text-primary);
@@ -451,7 +472,22 @@
     white-space: nowrap;
   }
 
+  /* T-809: the flagged-plugin key keeps the warning colour at rest (it carries meaning, with its
+     tooltip naming it), and the kit's hover/focus states. */
+  .flag {
+    display: inline-flex;
+    color: var(--pv-warning-text);
+  }
+
+  .flag :global(.pv-icon-button) {
+    color: inherit;
+  }
+
   .latency {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
     color: var(--pv-text-tertiary);
     font-size: var(--pv-text-xs);
     font-variant-numeric: tabular-nums;

@@ -7,14 +7,15 @@
 import Activity from "@lucide/svelte/icons/activity";
 import AudioLines from "@lucide/svelte/icons/audio-lines";
 import AudioWaveform from "@lucide/svelte/icons/audio-waveform";
+import Ban from "@lucide/svelte/icons/ban";
 import ChartSpline from "@lucide/svelte/icons/chart-spline";
 import Check from "@lucide/svelte/icons/check";
 import ChevronDown from "@lucide/svelte/icons/chevron-down";
 import ChevronLeft from "@lucide/svelte/icons/chevron-left";
 import ChevronRight from "@lucide/svelte/icons/chevron-right";
-import ChevronUp from "@lucide/svelte/icons/chevron-up";
 import ChevronsLeft from "@lucide/svelte/icons/chevrons-left";
 import ChevronsRight from "@lucide/svelte/icons/chevrons-right";
+import ChevronUp from "@lucide/svelte/icons/chevron-up";
 import Circle from "@lucide/svelte/icons/circle";
 import CircleAlert from "@lucide/svelte/icons/circle-alert";
 import CircleCheck from "@lucide/svelte/icons/circle-check";
@@ -26,6 +27,8 @@ import Eye from "@lucide/svelte/icons/eye";
 import EyeOff from "@lucide/svelte/icons/eye-off";
 import Flag from "@lucide/svelte/icons/flag";
 import FolderOpen from "@lucide/svelte/icons/folder-open";
+import FolderPlus from "@lucide/svelte/icons/folder-plus";
+import FolderSearch from "@lucide/svelte/icons/folder-search";
 import Gauge from "@lucide/svelte/icons/gauge";
 import GripVertical from "@lucide/svelte/icons/grip-vertical";
 import HardDrive from "@lucide/svelte/icons/hard-drive";
@@ -38,14 +41,17 @@ import Lock from "@lucide/svelte/icons/lock";
 import Mic from "@lucide/svelte/icons/mic";
 import MicOff from "@lucide/svelte/icons/mic-off";
 import Minus from "@lucide/svelte/icons/minus";
+import PackagePlus from "@lucide/svelte/icons/package-plus";
 import PanelBottom from "@lucide/svelte/icons/panel-bottom";
 import PanelLeft from "@lucide/svelte/icons/panel-left";
 import PanelRight from "@lucide/svelte/icons/panel-right";
 import Pause from "@lucide/svelte/icons/pause";
 import Play from "@lucide/svelte/icons/play";
+import Plug from "@lucide/svelte/icons/plug";
 import Plus from "@lucide/svelte/icons/plus";
 import Power from "@lucide/svelte/icons/power";
 import Redo2 from "@lucide/svelte/icons/redo-2";
+import RefreshCw from "@lucide/svelte/icons/refresh-cw";
 import Repeat from "@lucide/svelte/icons/repeat";
 import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
 import Save from "@lucide/svelte/icons/save";
@@ -114,6 +120,13 @@ export const ICONS = {
   bypass: Power,
   cleanup: WandSparkles,
   drag: GripVertical,
+  // Plugins (T-809)
+  plugin: Plug,
+  install: PackagePlus,
+  blocked: Ban,
+  refresh: RefreshCw,
+  folderAdd: FolderPlus,
+  reveal: FolderSearch,
   // Files / app
   open: FolderOpen,
   save: Save,

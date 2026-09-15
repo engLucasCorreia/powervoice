@@ -166,7 +166,8 @@ pub fn clap_search_paths() -> Vec<PathBuf> {
     dirs
 }
 
-fn is_clap(path: &Path) -> bool {
+/// Whether `path` names a CLAP plugin (`.clap`, any case).
+pub(crate) fn is_clap(path: &Path) -> bool {
     path.extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("clap"))
 }
@@ -267,6 +268,24 @@ fn write_cache(path: &Path, entries: Vec<CacheEntry>) {
     }
 }
 
+/// Records one file's scan result in the cache (T-809: an installed plugin is known at the next
+/// start without another sandboxed scan), replacing any entry for the same path. Skipped when the
+/// file can't be stat'ed.
+pub(crate) fn cache_upsert(cache: &Path, file: &Path, plugins: &[ScannedPlugin]) {
+    let Some(stamp) = stamp(file) else {
+        return;
+    };
+    let key = file.to_string_lossy().into_owned();
+    let mut entries = read_cache(cache);
+    entries.retain(|e| e.path != key);
+    entries.push(CacheEntry {
+        path: key,
+        stamp,
+        plugins: plugins.to_vec(),
+    });
+    write_cache(cache, entries);
+}
+
 /// What an exit status means for a scan that printed nothing usable.
 fn describe_exit(status: std::process::ExitStatus) -> ScanFileError {
     #[cfg(unix)]
@@ -295,6 +314,20 @@ pub fn scan_file(
     timeout: Duration,
 ) -> Result<Vec<ScannedPlugin>, String> {
     scan_file_inner(binary, path, timeout).map_err(|e| e.message)
+}
+
+/// Scans one file like [`scan_file`], keeping whether the failure was a crash, a timeout or
+/// anything else (T-809's "Install module…" blocklists only the first two, ADR-008 §5).
+pub(crate) fn scan_one(
+    binary: &Path,
+    path: &Path,
+    timeout: Duration,
+) -> Result<Vec<ScannedPlugin>, ScanFailure> {
+    scan_file_inner(binary, path, timeout).map_err(|e| ScanFailure {
+        path: path.to_path_buf(),
+        message: e.message,
+        kind: e.kind,
+    })
 }
 
 fn scan_file_inner(
@@ -503,6 +536,17 @@ pub fn cached_effect_specs(
     cache: Option<&Path>,
     blocklist: Option<&Path>,
 ) -> Vec<SandboxSpec> {
+    effect_specs(&cached_outcome(files, cache, blocklist))
+}
+
+/// [`cached_effect_specs`]'s underlying outcome: every plugin the cache knows for `files`
+/// (current stamp, not blocklisted), with its full scan data (ports, parameter count — T-809's
+/// plugin manager shows them). Never spawns a sandbox.
+pub fn cached_outcome(
+    files: &[PathBuf],
+    cache: Option<&Path>,
+    blocklist: Option<&Path>,
+) -> ScanOutcome {
     let cache_entries = cache.map(read_cache).unwrap_or_default();
     let mut blocklist = Blocklist::load(blocklist.map(Path::to_path_buf));
     let mut outcome = ScanOutcome::default();
@@ -524,7 +568,7 @@ pub fn cached_effect_specs(
                 }));
         }
     }
-    effect_specs(&outcome)
+    outcome
 }
 
 /// Whether a scanned plugin is an audio effect the rack can host (no instruments or note

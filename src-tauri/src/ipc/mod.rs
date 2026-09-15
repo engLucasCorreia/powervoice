@@ -85,7 +85,10 @@ pub use normalize_dto::{NormalizeJobStartedDto, NormalizeResultDto};
 pub use nr_capture_commands::*;
 pub use nr_capture_dto::NrCaptureStartedDto;
 pub use plugin_commands::*;
-pub use plugin_dto::{PluginEntryDto, PluginPortsDto, PluginStatusDto};
+pub use plugin_dto::{
+    BlockCauseDto, InstallFailureDto, InstalledEffectDto, PluginEntryDto, PluginFoldersDto,
+    PluginInstallResultDto, PluginPortsDto, PluginStatusDto,
+};
 pub use preset_commands::*;
 pub use preset_dto::{PresetEntryDto, PresetRefDto};
 pub use rack_commands::*;
@@ -219,6 +222,10 @@ crate::ipc_commands!(
     plugins_unblock,
     plugins_add_folder,
     plugins_remove_folder,
+    plugins_clear_flag,
+    plugins_folders,
+    plugins_install,
+    plugins_reveal,
 );
 
 #[cfg(feature = "spike")]
@@ -326,6 +333,10 @@ crate::ipc_commands!(
     plugins_unblock,
     plugins_add_folder,
     plugins_remove_folder,
+    plugins_clear_flag,
+    plugins_folders,
+    plugins_install,
+    plugins_reveal,
     spike_env,
     spike_waveform_peaks,
     spike_spectrogram_texture,

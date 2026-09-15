@@ -197,3 +197,45 @@ sandbox isolates crashes, **not** malicious code. Packages are unsigned in v1.
 2. Should trusted packaged modules be allowed in-process (no sandbox latency) in a later version?
 3. The final app identifier and name, which determine the install directory, are tied to the product
    name (MEMORY open question).
+
+## Amendment 1 — T-809 "Install module…" for a bare `.clap`, as implemented (2026-09-15)
+
+**Where a bare `.clap` goes (refines §6/§7 step 1).** Not `modules/_clap/<file>`: it's copied into the
+**standard per-user CLAP folder**, the one the ticket names and every CLAP host (T-803's
+`clap_search_paths`) already scans:
+
+| OS | Install folder |
+|---|---|
+| Linux/BSD | `~/.clap` |
+| macOS | `~/Library/Audio/Plug-Ins/CLAP` (the `.clap` bundle directory is copied recursively; symlinks stay symlinks) |
+| Windows | `%LOCALAPPDATA%\Programs\Common\CLAP` |
+
+Why: it needs no new scan root (the `modules/` scan of the T-804 follow-up doesn't exist yet), the
+plugin also works in the user's other CLAP hosts, and it's per-user, so no admin rights. System
+folders (`/usr/lib/clap`, `/Library/…`, `%COMMONPROGRAMFILES%`) are never written:
+`vox_plugin_host::install::user_clap_dir()` only derives the folder from `HOME` / `LOCALAPPDATA`,
+which must be absolute, and `src-tauri` never takes a destination from the UI. `.voxmod` packages
+(§7 steps 2–5: zip validation, manifest, `module-info`) still wait for T-805 and the `zip`/`sha2`
+dependency request.
+
+**Flow** (`vox_plugin_host::install::install_file`, `PluginCatalog::install`, command
+`plugins_install(path, replace)`):
+1. The picked path must exist, end in `.clap`, and be a file (a directory only on macOS). It must
+   not be blocklisted (refused up front, no scan) and must not already be the installed copy.
+2. A file with the same name in the install folder is a **collision**: nothing changes until the
+   UI has asked and calls again with `replace: true`.
+3. The copy is staged next to its destination under a hidden name that doesn't end in `.clap`
+   (a scan running at the same time never sees it), synced, then renamed into place. A replaced
+   file is renamed aside first and kept until the new one has scanned.
+4. **Only the new file is scanned** (one `powervoice-sandbox --scan`, the 30 s timeout), under the
+   catalog's scan lock, so an install and a rescan never overwrite each other's cache.
+5. At least one audio effect: the scan result goes into the cache (`clap-scan.json`), the effects
+   join the catalog snapshot (the newest install wins an id) and hot-add into every observed
+   registry, so they're in Add module at once. The old file, if any, is deleted.
+6. No audio effect, or a failed scan: **roll back**. The new file is deleted and a replaced one is
+   restored. A scan that **crashed or timed out** also blocklists the *picked* file (ADR-008 §5),
+   so the plugin manager lists it with its reason and installing it again is refused until it
+   changes or is unblocked.
+
+**Trust (§7):** the install dialog says that plugins are native code with the user's permissions,
+and that the sandbox contains crashes, not malicious code.

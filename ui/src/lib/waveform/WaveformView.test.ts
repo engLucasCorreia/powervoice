@@ -278,6 +278,103 @@ describe("WaveformView (S1-03)", () => {
     }
   });
 
+  // H-28 item 1: a take recording into an empty document must not blow Svelte's effect-update
+  // depth (`effect_update_depth_exceeded`). This was seen from the follow effects pre-H-27; H-27
+  // unified record-follow/playback-follow behind one `ViewportWriter` (`viewportFollow.ts`), and
+  // this reproduces the exact scenario (a burst of telemetry ticks growing the take, each one
+  // re-running the zoom-to-fit effect and the follow effect in the same flush) on current main to
+  // confirm it no longer reproduces.
+  it("does not throw effect_update_depth_exceeded while a take records into an empty document", async () => {
+    const widthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get: () => 800,
+    });
+    const heightDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "clientHeight",
+    );
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get: () => 200,
+    });
+
+    const recordingDoc: DocumentDto = {
+      name: null,
+      path: null,
+      sample_rate_hz: 48_000,
+      len_samples: 0, // S1-04: the take isn't committed until Stop
+      dirty: false,
+      audio_rev: 0, sidecar_dirty: false, spectral_view: null, waveform_view: null, recovered: false,
+    };
+    const recordingState: RecordStateDto = {
+      input_device: "Mic",
+      input_channel: 1,
+      input_status: "healthy",
+      armed: true,
+      input_open: true,
+      input_rate_hz: 48_000,
+      recording: true,
+      finishing: false,
+      monitor: "off",
+      monitoring: true,
+      monitor_latency_us: null,
+      monitor_dropouts: 0,
+      dropout_count: 0,
+      disk_remaining_s: null,
+    };
+    mockIPC(
+      (cmd) => {
+        if (cmd === "record_get") {
+          return recordingState;
+        }
+        if (cmd === "record_peaks_get") {
+          return headerOnlyVxpk();
+        }
+        return null;
+      },
+      { shouldMockEvents: true },
+    );
+
+    const stopDocument = await initDocument();
+    const stopRecord = initRecord();
+    await emit("document_changed", recordingDoc);
+    flushSync();
+    await Promise.resolve();
+
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(WaveformView, { target });
+    flushSync();
+    await Promise.resolve();
+
+    try {
+      // A burst of telemetry ticks growing the take — each one updates `rec.elapsedSamples`,
+      // which drives the H-07 zoom-to-fit effect (writes `startSample`/`samplesPerPixel`), which
+      // in turn re-runs the shared follow effect (reads both). If either effect fed back into
+      // itself without the `ViewportWriter`/reference-stable-`INITIAL_*_STATE` guards, this loop
+      // would throw `effect_update_depth_exceeded` on some tick.
+      expect(() => {
+        for (let i = 1; i <= 200; i++) {
+          onInputTelemetry(frame(VXTM_FLAGS.RECORDING, i * 4_800));
+          flushSync();
+        }
+      }).not.toThrow();
+      expect(target.querySelector('[data-testid="waveform-canvas"]')).not.toBeNull();
+    } finally {
+      unmount(app);
+      target.remove();
+      stopRecord();
+      stopDocument();
+      if (widthDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, "clientWidth", widthDescriptor);
+      }
+      if (heightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, "clientHeight", heightDescriptor);
+      }
+    }
+  });
+
   // H-10 item 6: `LivePeaks` doubles its bucket size once a multi-hour take decimates
   // (crates/engine/src/capture.rs). The view must size its *next* request from the response's
   // own `samplesPerBucket`, not the fixed starting constant — otherwise, once the backend has

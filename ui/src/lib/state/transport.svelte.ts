@@ -48,6 +48,14 @@ const SILENT: OutputMeter = {
 let state = $state<TransportStateDto>({ ...IDLE });
 let playheadSamples = $state(0);
 let meter = $state<OutputMeter>({ ...SILENT });
+/** H-28 item 2: `true` once the initial `transport_state`/`transport_get` has been applied. A
+ * telemetry frame that beats it (`initTransport` subscribes to telemetry before awaiting
+ * `transportGet`) would otherwise seed the extrapolator with an anchor computed against the
+ * `IDLE` default's `doc_len_samples: 0` — clamping every position to 0 until the next frame, and
+ * (worse) making {@link applyState}'s `!extrapolator.hasAnchor` check see a real anchor already
+ * present, so the authoritative `transport_get`/`transport_state` snapshot's own
+ * `playhead_samples` is silently dropped instead of applied. */
+let ready = false;
 
 const extrapolator = new PlayheadExtrapolator();
 /** S1-04: other stores (the record panel) see every decoded telemetry frame. */
@@ -93,6 +101,7 @@ function report(err: unknown): void {
 
 function applyState(next: TransportStateDto): void {
   state = next;
+  ready = true;
   if (!next.playing && !extrapolator.hasAnchor) {
     playheadSamples = next.playhead_samples;
   }
@@ -156,6 +165,13 @@ export function onTelemetry(message: unknown): void {
   }
   for (const listener of telemetryListeners) {
     listener(frame);
+  }
+  if (!ready) {
+    // H-28 item 2: ignore this store's own use of the frame (the input meter, the extrapolator
+    // anchor) until the initial transport state is known — see `ready`'s doc comment. Other
+    // stores (`record.svelte.ts`'s input meter/elapsed time) already saw it via the listener loop
+    // above, unaffected by this store's own readiness.
+    return;
   }
   meter = {
     peakDbfs: frame.outPeakDbfs,
@@ -250,6 +266,7 @@ export function resetTransportForTest(): void {
   state = { ...IDLE };
   playheadSamples = 0;
   meter = { ...SILENT };
+  ready = false;
   extrapolator.reset();
   clock.offsetNs = 0;
 }

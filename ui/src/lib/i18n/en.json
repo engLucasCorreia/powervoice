@@ -37,6 +37,7 @@
 
   "menu.view": "View",
   "menu.view.analyzer": "Analyzer",
+  "menu.view.playhead_follow": "Follow Playhead",
   "menu.view.zoom_in": "Zoom In",
   "menu.view.zoom_out": "Zoom Out",
   "menu.view.renderer": "Renderer",

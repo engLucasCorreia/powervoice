@@ -5,6 +5,7 @@ import { documentState } from "../document/document.svelte";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { pushNotice } from "./notices.svelte";
 import { hasSelection, selectionState, setSelectionFromResult } from "./selection.svelte";
+import { formatNumber, parseNumber } from "../ui/units";
 
 /**
  * LUFS normalize store (S4-01, PROMPT §3.3): the three integrated-loudness favorites and the
@@ -67,8 +68,9 @@ export function normalizeLufsState(): {
   };
 }
 
+// H-28 item 4: U+2212 (not the ASCII hyphen `toFixed` writes) via `units.ts::formatNumber`.
 function formatTarget(lufs: number): string {
-  return lufs.toFixed(1);
+  return formatNumber(lufs, 1);
 }
 
 function isIpcError(value: unknown): value is IpcError {
@@ -115,15 +117,12 @@ async function run(targetLufs: number): Promise<void> {
 /** A favorite toolbar button / Favorites menu item (one click, no dialog). */
 export const normalizeLufsFavorite = (targetLufs: number): Promise<void> => run(targetLufs);
 
-/** Parses the dialog's LUFS text field (locale-neutral, `−` accepted as minus) into a finite
- * value within `[TARGET_MIN_LUFS, TARGET_MAX_LUFS]`, or `null`. */
+/** Parses the dialog's LUFS text field (locale-neutral) into a finite value within
+ * `[TARGET_MIN_LUFS, TARGET_MAX_LUFS]`, or `null`. H-28 item 4: `units.ts::parseNumber` accepts
+ * both the ASCII `-` and the U+2212 minus `formatTarget` now writes. */
 export function parseTargetLufs(text: string): number | null {
-  const normalized = text.trim().replace(/−/g, "-");
-  if (normalized === "") {
-    return null;
-  }
-  const value = Number(normalized);
-  if (!Number.isFinite(value) || value < TARGET_MIN_LUFS || value > TARGET_MAX_LUFS) {
+  const value = parseNumber(text);
+  if (value === null || value < TARGET_MIN_LUFS || value > TARGET_MAX_LUFS) {
     return null;
   }
   return value;

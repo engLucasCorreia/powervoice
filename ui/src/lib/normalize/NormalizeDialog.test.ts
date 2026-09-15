@@ -54,6 +54,21 @@ function mountDialog(): { target: HTMLElement; app: object } {
 }
 
 describe("NormalizeDialog (S2-02, SPEC-010 §2.4/AC-14)", () => {
+  // H-28 item 4: the rendered target field shows the true minus (U+2212), not the ASCII `-`.
+  it("shows the true minus sign for the default (negative) target", async () => {
+    await openFixture();
+    openNormalizeDialog();
+    const { target, app } = mountDialog();
+
+    const input = target.querySelector<HTMLInputElement>(
+      '[data-testid="normalize-dialog-target"]',
+    )!;
+    expect(input.value).toBe("−1.00");
+
+    unmount(app);
+    target.remove();
+  });
+
   it("is hidden until opened", () => {
     const { target, app } = mountDialog();
     expect(target.querySelector('[data-testid="normalize-dialog"]')).toBeNull();

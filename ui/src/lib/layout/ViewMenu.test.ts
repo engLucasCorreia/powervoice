@@ -155,6 +155,42 @@ describe("ViewMenu (H-19)", () => {
     target.remove();
   });
 
+  // H-28 item 3: a View-menu checkbox bound to `Settings.playhead_follow`, same pattern as
+  // Analyzer — reflects the loaded setting and round-trips through settings_set on toggle.
+  it("Follow Playhead is a menuitemcheckbox bound to Settings.playhead_follow", async () => {
+    const fixture = makeSettings({ playhead_follow: true });
+    let lastSaved: Settings | undefined;
+    mockIPC((cmd, args) => {
+      if (cmd === "settings_get") {
+        return fixture;
+      }
+      if (cmd === "settings_set") {
+        lastSaved = (args as { settings: Settings }).settings;
+        return lastSaved;
+      }
+      return null;
+    });
+    await loadSettings();
+
+    const { target, app } = mountMenu();
+    openMenu(target);
+
+    const checkbox = target.querySelector('[data-testid="menu-view-playhead-follow"]');
+    expect(checkbox?.getAttribute("role")).toBe("menuitemcheckbox");
+    expect(checkbox?.getAttribute("aria-checked")).toBe("true");
+
+    (checkbox as HTMLButtonElement).click();
+    flushSync();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+
+    expect(lastSaved?.playhead_follow).toBe(false);
+    expect(settingsState().current?.playhead_follow).toBe(false);
+
+    unmount(app);
+    target.remove();
+  });
+
   it("Zoom In/Out show the registry's shortcut labels and dispatch the matching actions", () => {
     mockIPC(() => null);
     const zoomIn = vi.fn();

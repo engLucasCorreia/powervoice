@@ -12,6 +12,7 @@ import { noticeFromIpcError } from "../notices/fromIpcError";
 import { pushNotice } from "./notices.svelte";
 import { saveSettings, settingsState } from "./settings.svelte";
 import { hasSelection, selectionState, setSelectionFromResult } from "./selection.svelte";
+import { formatNumber, parseNumber } from "../ui/units";
 
 /**
  * Normalize store (S2-02, SPEC-010): the three one-click favorites and the Normalize… dialog.
@@ -81,8 +82,10 @@ export function normalizeState(): {
   };
 }
 
+// H-28 item 4: U+2212 (not the ASCII hyphen `toFixed` writes) via `units.ts::formatNumber`, so
+// the target field's minus sign matches every other numeric readout in the app.
 function formatTarget(value: number, unit: NormalizeTargetUnit): string {
-  return unit === "db" ? value.toFixed(2) : value.toFixed(1);
+  return formatNumber(value, unit === "db" ? 2 : 1);
 }
 
 /** `T = 10^(target_db / 20)` in %, i.e. `100 * T` (mirrors `vox_project::target_db_to_pct`). */
@@ -140,15 +143,12 @@ async function run(targetDb: number | null, targetPct: number | null): Promise<v
 /** A favorite toolbar button / Favorites menu item (SPEC-010 §2.1: one click, no dialog). */
 export const normalizeFavorite = (targetDb: number): Promise<void> => run(targetDb, null);
 
-/** Parses `text` in `unit` (SPEC-010 §2.4: locale-neutral, `−` accepted as minus) into a finite
- * value within that unit's range, or `null`. */
+/** Parses `text` in `unit` (SPEC-010 §2.4: locale-neutral) into a finite value within that unit's
+ * range, or `null`. H-28 item 4: `units.ts::parseNumber` accepts both the ASCII `-` and the
+ * U+2212 minus `formatTarget` now writes (plus the other dash variants a copied readout uses). */
 export function parseNormalizeTarget(text: string, unit: NormalizeTargetUnit): number | null {
-  const normalized = text.trim().replace(/−/g, "-");
-  if (normalized === "") {
-    return null;
-  }
-  const value = Number(normalized);
-  if (!Number.isFinite(value)) {
+  const value = parseNumber(text);
+  if (value === null) {
     return null;
   }
   const [min, max] = unit === "db" ? [TARGET_MIN_DB, TARGET_MAX_DB] : [TARGET_MIN_PCT, TARGET_MAX_PCT];

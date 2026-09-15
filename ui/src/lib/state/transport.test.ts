@@ -7,6 +7,7 @@ import {
   initTransport,
   onTelemetry,
   resetTransportForTest,
+  transportState,
 } from "./transport.svelte";
 
 /**
@@ -86,6 +87,46 @@ describe("extrapolatedPositionAt (S2-03, SPEC-009 §4.3)", () => {
     expect(extrapolatedPositionAt(anchorMs + 10)).toBeCloseTo(48_480, 0);
     // Exactly at the anchor: no extrapolation yet.
     expect(extrapolatedPositionAt(anchorMs)).toBeCloseTo(48_000, 0);
+
+    stop();
+  });
+});
+
+// H-28 item 2: `initTransport` subscribes to telemetry before awaiting `transportGet` (matching
+// the real engine, which can start streaming telemetry before the initial state round trip
+// lands). A telemetry frame arriving in that gap must not corrupt the initial state application.
+describe("a telemetry frame arriving before transport_get resolves (H-28 item 2)", () => {
+  it("is ignored, so the initial transport_get snapshot's own playhead_samples still applies", async () => {
+    let resolveGet: (value: TransportStateDto) => void = () => {};
+    const getPromise = new Promise<TransportStateDto>((resolve) => {
+      resolveGet = resolve;
+    });
+    mockIPC((cmd) => {
+      if (cmd === "clock_now_ns") return performance.now() * 1e6;
+      if (cmd === "transport_get") return getPromise;
+      return null;
+    });
+
+    const initPromise = initTransport();
+    // A telemetry frame beats transport_get's round trip (a race the real engine can hit too).
+    onTelemetry(
+      buildVxtmFrame({ playheadSample: 999, playheadTimeNs: performance.now() * 1e6, rate: 48_000 }),
+    );
+
+    resolveGet({
+      playing: false,
+      playhead_samples: 555_555,
+      play_start_samples: 0,
+      doc_len_samples: 480_000,
+      doc_rate_hz: 48_000,
+      can_play: true,
+    });
+    const stop = await initPromise;
+
+    // Without the fix, the pre-ready frame would already have set an extrapolator anchor, so
+    // `applyState`'s `!extrapolator.hasAnchor` guard would skip applying the snapshot's own
+    // `playhead_samples`, leaving the readout stuck at 0.
+    expect(transportState().playheadSamples).toBe(555_555);
 
     stop();
   });

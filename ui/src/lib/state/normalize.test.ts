@@ -25,6 +25,7 @@ import {
 import { resetSelectionForTest, selectionState, setSelectionFromResult } from "./selection.svelte";
 import { loadSettings, resetSettingsStateForTest } from "./settings.svelte";
 import { resetWaveformViewForTest } from "./waveformView.svelte";
+import { MINUS } from "../ui/units";
 
 function doc(overrides: Partial<DocumentDto> = {}): DocumentDto {
   return {
@@ -393,7 +394,9 @@ describe("Normalize… dialog (SPEC-010 §2.4)", () => {
 
     setNormalizeDialogUnit("db");
     expect(normalizeState().dialogUnit).toBe("db");
-    expect(Number(normalizeState().dialogText)).toBeCloseTo(-1.0, 1);
+    // H-28 item 4: the text now uses the true minus (U+2212), which `Number()` can't parse —
+    // `parseNormalizeTarget` (backed by `units.ts::parseNumber`) is the field's own parser.
+    expect(parseNormalizeTarget(normalizeState().dialogText, "db")).toBeCloseTo(-1.0, 1);
   });
 
   it("Apply in % mode sends targetPct (not targetDb) — the value in the unit it was entered", async () => {
@@ -415,6 +418,18 @@ describe("Normalize… dialog (SPEC-010 §2.4)", () => {
     expect(calls).toEqual([
       { startSamples: 0, endSamples: 480_000, targetDb: null, targetPct: 50 },
     ]);
+  });
+
+  // H-28 item 4: the target field must show the true minus (U+2212, `units.ts::formatNumber`),
+  // not the ASCII `-` `toFixed` writes, and must still accept an ASCII `-` typed back in.
+  it("shows the true minus sign for a negative target, and still parses an ASCII '-' back", async () => {
+    await openFixture();
+    openNormalizeDialog();
+    expect(normalizeState().dialogText).toBe(`${MINUS}1.00`);
+
+    setNormalizeDialogText("-2.00");
+    expect(normalizeState().dialogValid).toBe(true);
+    expect(parseNormalizeTarget(`${MINUS}2.00`, "db")).toBe(-2);
   });
 
   it("reopens with the last applied value and unit (SPEC-010 §2.4 dialog memory)", async () => {

@@ -7,17 +7,24 @@
   import { MENU_MNEMONICS } from "../menu/menubar.svelte";
   import type { RendererPreference } from "../render/rendererMode";
   import { rendererPref, setRendererPreference } from "../state/rendererPref.svelte";
-  import { saveSettings } from "../state/settings.svelte";
+  import { saveSettings, settingsState } from "../state/settings.svelte";
   import { spectralState } from "../state/spectral.svelte";
   import type { MenuEntry } from "../ui/menuModel";
 
   /**
    * View menu (H-19): Spectral/Analyzer toggles, waveform zoom, and the H-13 renderer override
    * (View → Renderer, backed by `Settings.renderer_preference`). H-26: on the shared menu.
+   * H-28 item 3: Follow Playhead (SPEC-003 §3/SPEC-006 §2.8, `Settings.playhead_follow`), same
+   * checkbox pattern as Analyzer — no shortcut is named in either spec, so none is bound.
    */
   const analyzer = analyzerState();
   const spectral = spectralState();
   const renderer = rendererPref();
+  const playheadFollow = $derived(settingsState().current?.playhead_follow ?? true);
+
+  function togglePlayheadFollow(): void {
+    void saveSettings({ playhead_follow: !playheadFollow });
+  }
 
   const RENDERER_OPTIONS: readonly { value: RendererPreference; labelKey: string }[] = [
     { value: "auto", labelKey: "menu.view.renderer_auto" },
@@ -49,6 +56,14 @@
       checked: analyzer.visible,
       testid: "menu-view-analyzer",
       onselect: () => setAnalyzerVisible(!analyzer.visible),
+    },
+    {
+      kind: "checkbox",
+      id: "playhead-follow",
+      label: t("menu.view.playhead_follow"),
+      checked: playheadFollow,
+      testid: "menu-view-playhead-follow",
+      onselect: togglePlayheadFollow,
     },
     { kind: "separator", id: "sep-zoom" },
     {

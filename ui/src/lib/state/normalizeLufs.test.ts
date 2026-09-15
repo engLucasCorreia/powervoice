@@ -20,6 +20,7 @@ import {
 } from "./normalizeLufs.svelte";
 import { resetSelectionForTest, selectionState, setSelectionFromResult } from "./selection.svelte";
 import { resetWaveformViewForTest } from "./waveformView.svelte";
+import { MINUS } from "../ui/units";
 
 function doc(overrides: Partial<DocumentDto> = {}): DocumentDto {
   return {
@@ -248,5 +249,17 @@ describe("Normalize (LUFS)… dialog", () => {
     openNormalizeLufsDialog();
     closeNormalizeLufsDialog();
     expect(normalizeLufsState().dialogOpen).toBe(false);
+  });
+
+  // H-28 item 4: the target field must show the true minus (U+2212, `units.ts::formatNumber`),
+  // not the ASCII `-` `toFixed` writes, and must still accept an ASCII `-` typed back in.
+  it("shows the true minus sign for the default target, and still parses an ASCII '-' back", async () => {
+    await openFixture();
+    openNormalizeLufsDialog();
+    expect(normalizeLufsState().dialogText).toBe(`${MINUS}19.0`);
+
+    setNormalizeLufsDialogText("-14.0");
+    expect(normalizeLufsState().dialogValid).toBe(true);
+    expect(parseTargetLufs(`${MINUS}14.0`)).toBe(-14);
   });
 });

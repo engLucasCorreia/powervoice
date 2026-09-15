@@ -7,7 +7,12 @@ import { clearActionHandlers } from "../keymap";
 import { resetSelectionForTest, selectionState } from "../state/selection.svelte";
 import { resetSpectralForTest, spectralState } from "../state/spectral.svelte";
 import { docDto, transportStateDto } from "../test/fixtures";
-import { resetWaveformViewForTest, waveformViewApi } from "../state/waveformView.svelte";
+import {
+  resetWaveformViewForTest,
+  setTimeRulerFormat,
+  timeRulerFormatState,
+  waveformViewApi,
+} from "../state/waveformView.svelte";
 import EditorView from "./EditorView.svelte";
 
 const widthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
@@ -245,6 +250,7 @@ describe("EditorView shared ruler/scrollbar (H-12, SPEC-007 §2.1's ruler → wa
         samples_per_pixel: 100, // well within [0.1, zoom-full = 480000/800 = 600]
         selection: { start_sample: 1_000, end_sample: 2_000 },
         cursor_samples: 1_500,
+        time_ruler_format: "samples",
       },
     });
 
@@ -257,6 +263,8 @@ describe("EditorView shared ruler/scrollbar (H-12, SPEC-007 §2.1's ruler → wa
     expect(waveformViewApi().startSample).toBe(12_000);
     expect(waveformViewApi().samplesPerPixel).toBe(100);
     expect(selectionState().current).toEqual({ startSample: 1_000, endSample: 2_000 });
+    // T-206: time_ruler_format needs no viewport to validate, so it's applied immediately too.
+    expect(timeRulerFormatState().current).toBe("samples");
 
     const scrollbar = target.querySelector<HTMLInputElement>('[data-testid="editor-scrollbar"]')!;
     expect(scrollbar.value).toBe("12000");
@@ -273,6 +281,7 @@ describe("EditorView shared ruler/scrollbar (H-12, SPEC-007 §2.1's ruler → wa
         samples_per_pixel: 1e9, // far beyond zoom-full for this document/viewport
         selection: null,
         cursor_samples: 0,
+        time_ruler_format: "timecode",
       },
     });
 
@@ -313,6 +322,45 @@ describe("EditorView shared ruler/scrollbar (H-12, SPEC-007 §2.1's ruler → wa
     // canvas, not the amplitude gutter) — the leftmost tick (sample 0) sits exactly at it.
     const leftPx = tickEls.map((el) => Number(el.style.left.replace("px", "")));
     expect(Math.min(...leftPx)).toBe(48);
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("switches ruler tick labels between timecode/samples/seconds (T-206, SPEC-006 §2.5)", async () => {
+    stubSize(800, 400);
+    setupIpc();
+    await openDocument("/home/user/take.wav");
+
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(EditorView, { target });
+    await settle();
+
+    const tickLabels = (): string[] =>
+      Array.from(
+        target.querySelectorAll<HTMLElement>('[data-testid="editor-ruler"] .tick'),
+      ).map((el) => el.textContent ?? "");
+
+    // Default: timecode, "m:ss"-shaped compact labels (asserted above too).
+    expect(tickLabels().length).toBeGreaterThan(0);
+    for (const label of tickLabels()) {
+      expect(label).toMatch(/^\d+:\d{2}$/);
+    }
+
+    setTimeRulerFormat("samples");
+    await settle();
+    expect(tickLabels().length).toBeGreaterThan(0);
+    for (const label of tickLabels()) {
+      expect(label).toMatch(/^\d+$/);
+    }
+
+    setTimeRulerFormat("seconds");
+    await settle();
+    expect(tickLabels().length).toBeGreaterThan(0);
+    for (const label of tickLabels()) {
+      expect(label).toMatch(/^\d+(\.\d+)?$/);
+    }
 
     unmount(app);
     target.remove();

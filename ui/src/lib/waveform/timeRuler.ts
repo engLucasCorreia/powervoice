@@ -48,3 +48,13 @@ export function formatRulerTime(seconds: number, stepSeconds: number, includeHou
   }
   return `${base}.${pad(frac, decimals)}`;
 }
+
+/**
+ * Formats `seconds` for the time ruler's `seconds` format (SPEC-006 §2.5) at tick spacing
+ * `stepSeconds`: a plain decimal, `0` decimals at a `>= 1` second step, milliseconds (same
+ * precision rule as {@link formatRulerTime}) below that — so, unlike `timecode`, no `h:m:s`
+ * grouping, just the number of seconds.
+ */
+export function formatRulerSeconds(seconds: number, stepSeconds: number): string {
+  return Math.max(0, seconds).toFixed(decimalsForStep(stepSeconds));
+}

@@ -239,6 +239,7 @@ function documentFixture(options: PreviewOptions): DocumentDto {
           samples_per_pixel: 4800,
           selection: { start_sample: 19 * PREVIEW_RATE_HZ, end_sample: 25.4 * PREVIEW_RATE_HZ },
           cursor_samples: 19 * PREVIEW_RATE_HZ,
+          time_ruler_format: "timecode",
         },
   });
 }

@@ -24,6 +24,7 @@ use vox_project::{
     save_snapshot_flac, sidecar_path_for, validate_range, write_sidecar,
 };
 
+use crate::ipc::document_dto::TimeRulerFormatDto;
 use crate::ipc::{IpcError, IpcErrorCode};
 use crate::settings::{BitDepth, SaveDitherPref};
 
@@ -217,10 +218,11 @@ pub struct SpectralViewInfo {
 
 /// H-12 (SPEC-018 §2.6.5's `view.waveform`): the shared waveform/spectral viewport plus the
 /// selection and edit cursor, lifted out of `EditorView`'s own state so it can be persisted per
-/// document (like [`SpectralViewInfo`]) and restored on open. `vertical_zoom`,
-/// `amplitude_ruler_mode` and `time_ruler_format` (SPEC-018 §2.6.5) have no corresponding UI yet
-/// (no vertical zoom, one fixed ruler mode) and are left for whichever ticket adds them. Plain
-/// data — [`crate::ipc::document_dto::WaveformViewDto`] is the ts-rs wire type.
+/// document (like [`SpectralViewInfo`]) and restored on open. `vertical_zoom` and
+/// `amplitude_ruler_mode` (SPEC-018 §2.6.5) still have no corresponding UI yet (no vertical zoom,
+/// one fixed ruler mode) and are left for whichever ticket adds them; T-206 adds
+/// `time_ruler_format` (SPEC-006 §2.5). Plain data —
+/// [`crate::ipc::document_dto::WaveformViewDto`] is the ts-rs wire type.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WaveformViewInfo {
     pub start_sample: u64,
@@ -228,6 +230,9 @@ pub struct WaveformViewInfo {
     /// `[start, end)` document samples, or `None` (no selection).
     pub selection: Option<(u64, u64)>,
     pub cursor_samples: u64,
+    /// T-206 (SPEC-006 §2.5, SPEC-018 §2.6.5): the time ruler's display format, persisted per
+    /// document like the rest of `waveform`.
+    pub time_ruler_format: TimeRulerFormatDto,
 }
 
 /// S2-01: the in-app clipboard (SPEC-008 §2.6), same-document only for now (cleared whenever a
@@ -937,15 +942,18 @@ fn spectral_view_of(view: &serde_json::Value) -> Option<SpectralViewInfo> {
     })
 }
 
-/// `doc.sidecar.view["waveform"]` -> [`WaveformViewInfo`] (SPEC-018 §2.6.5, this ticket's subset:
-/// `start_sample`/`samples_per_pixel`/`selection`/`cursor_samples` only — see the struct doc for
-/// what's deferred). A malformed or partial section (missing `start_sample`/`samples_per_pixel`)
-/// reports "no opinion" (`None`), same as a missing one. `selection`/`cursor_samples` are
-/// restored only when they fit `[0, len_samples]` (§2.6.5: "restored when within `[0, L]`...
-/// otherwise `null` / 0"); `start_sample`/`samples_per_pixel` are restored as-is here — clamping
-/// them to the current viewport width (§2.6.5's "an out-of-range `samples_per_pixel` -> zoom
-/// full") needs the viewport's pixel width, which only `WaveformView` knows, so that half of the
-/// rule is applied there (`state/waveformView.svelte.ts`'s pending-restore mechanism).
+/// `doc.sidecar.view["waveform"]` -> [`WaveformViewInfo`] (SPEC-018 §2.6.5: `start_sample`/
+/// `samples_per_pixel`/`selection`/`cursor_samples`/`time_ruler_format` — see the struct doc for
+/// what's still deferred). A malformed or partial section (missing `start_sample`/
+/// `samples_per_pixel`) reports "no opinion" (`None`), same as a missing one. `selection`/
+/// `cursor_samples` are restored only when they fit `[0, len_samples]` (§2.6.5: "restored when
+/// within `[0, L]`... otherwise `null` / 0"); `start_sample`/`samples_per_pixel` are restored
+/// as-is here — clamping them to the current viewport width (§2.6.5's "an out-of-range
+/// `samples_per_pixel` -> zoom full") needs the viewport's pixel width, which only `WaveformView`
+/// knows, so that half of the rule is applied there (`state/waveformView.svelte.ts`'s
+/// pending-restore mechanism). `time_ruler_format` (§2.6.5: "SPEC-006 enums") falls back to
+/// `Timecode` (SPEC-006 §2.5's default) on a missing or unrecognized value, same "no opinion on
+/// the invalid part" spirit as `selection`/`cursor_samples`.
 fn waveform_view_of(view: &serde_json::Value, len_samples: u64) -> Option<WaveformViewInfo> {
     let w = view.get("waveform")?;
     let start_sample = w.get("start_sample")?.as_u64()?;
@@ -966,11 +974,17 @@ fn waveform_view_of(view: &serde_json::Value, len_samples: u64) -> Option<Wavefo
         .and_then(|v| v.as_u64())
         .filter(|&c| c <= len_samples)
         .unwrap_or(0);
+    let time_ruler_format = match w.get("time_ruler_format").and_then(|v| v.as_str()) {
+        Some("samples") => TimeRulerFormatDto::Samples,
+        Some("seconds") => TimeRulerFormatDto::Seconds,
+        _ => TimeRulerFormatDto::Timecode,
+    };
     Some(WaveformViewInfo {
         start_sample,
         samples_per_pixel,
         selection,
         cursor_samples,
+        time_ruler_format,
     })
 }
 
@@ -1678,6 +1692,11 @@ impl DocumentService {
             Some((start, end)) => serde_json::json!({ "start_sample": start, "end_sample": end }),
             None => serde_json::Value::Null,
         };
+        let time_ruler_format = match waveform.time_ruler_format {
+            TimeRulerFormatDto::Timecode => "timecode",
+            TimeRulerFormatDto::Samples => "samples",
+            TimeRulerFormatDto::Seconds => "seconds",
+        };
         view.insert(
             "waveform".to_string(),
             serde_json::json!({
@@ -1685,6 +1704,7 @@ impl DocumentService {
                 "samples_per_pixel": waveform.samples_per_pixel,
                 "selection": selection,
                 "cursor_samples": waveform.cursor_samples,
+                "time_ruler_format": time_ruler_format,
             }),
         );
         doc.sidecar.view = serde_json::Value::Object(view);
@@ -5604,6 +5624,7 @@ mod tests {
             samples_per_pixel: 37.25,
             selection: Some((2_000, 4_000)),
             cursor_samples: 3_000,
+            time_ruler_format: TimeRulerFormatDto::Seconds,
         });
 
         let save_path = dir.join("with-rack.wav");
@@ -5666,6 +5687,11 @@ mod tests {
         assert!((waveform_view.samples_per_pixel - 37.25).abs() < 1e-9);
         assert_eq!(waveform_view.selection, Some((2_000, 4_000)));
         assert_eq!(waveform_view.cursor_samples, 3_000);
+        assert_eq!(
+            waveform_view.time_ruler_format,
+            TimeRulerFormatDto::Seconds,
+            "T-206: time_ruler_format round-trips too"
+        );
 
         assert!(
             !info.sidecar_dirty,
@@ -5684,6 +5710,7 @@ mod tests {
             samples_per_pixel: 2.0,
             selection: None,
             cursor_samples: 0,
+            time_ruler_format: TimeRulerFormatDto::Timecode,
         });
         assert_eq!(service.info().waveform_view, None);
     }
@@ -5715,6 +5742,7 @@ mod tests {
             samples_per_pixel: 4.0,
             selection: Some((0, 100)),
             cursor_samples: 100,
+            time_ruler_format: TimeRulerFormatDto::Samples,
         });
 
         assert!(!service.info().sidecar_dirty);
@@ -5738,6 +5766,11 @@ mod tests {
             waveform_view_of(&view, 1_000).expect("start_sample/samples_per_pixel are present");
         assert_eq!(info.selection, None, "start > end is dropped");
         assert_eq!(info.cursor_samples, 42);
+        assert_eq!(
+            info.time_ruler_format,
+            TimeRulerFormatDto::Timecode,
+            "T-206: a missing time_ruler_format falls back to the SPEC-006 §2.5 default"
+        );
 
         let missing_view = serde_json::json!({ "waveform": { "start_sample": 10 } });
         assert_eq!(
@@ -5755,6 +5788,7 @@ mod tests {
                 "samples_per_pixel": 1.0,
                 "selection": { "start_sample": 0, "end_sample": 2_000 },
                 "cursor_samples": 5_000,
+                "time_ruler_format": "not-a-real-format",
             }
         });
         let info = waveform_view_of(&out_of_range, 1_000).unwrap();
@@ -5762,6 +5796,27 @@ mod tests {
         assert_eq!(
             info.cursor_samples, 0,
             "cursor beyond len_samples falls back to 0"
+        );
+        assert_eq!(
+            info.time_ruler_format,
+            TimeRulerFormatDto::Timecode,
+            "T-206: an unrecognized time_ruler_format value falls back to the default too"
+        );
+
+        let samples_format = serde_json::json!({
+            "waveform": {
+                "start_sample": 0,
+                "samples_per_pixel": 1.0,
+                "selection": null,
+                "cursor_samples": 0,
+                "time_ruler_format": "samples",
+            }
+        });
+        assert_eq!(
+            waveform_view_of(&samples_format, 1_000)
+                .unwrap()
+                .time_ruler_format,
+            TimeRulerFormatDto::Samples
         );
     }
 

@@ -87,6 +87,7 @@ export function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     playhead_follow: true,
     plugins: { custom_folders: [], disabled: [] },
     tours: { progress: [] },
+    snap_to_zero_crossing: false,
     ...overrides,
   };
 }

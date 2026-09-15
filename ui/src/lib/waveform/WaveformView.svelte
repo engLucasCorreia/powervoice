@@ -15,16 +15,23 @@
   import { Button, EmptyState } from "../ui";
   import {
     beginDrag,
+    beginHandleDrag,
     clearSelection,
     dragTo,
     endDrag,
+    endHandleDrag,
+    handleDragTo,
+    isSelectionLocked,
     selectAllOf,
     selectionState,
+    setSelectionFromResult,
     shiftClickTo,
   } from "../state/selection.svelte";
   import { seek, transportState } from "../state/transport.svelte";
   import { audioKeyFor, consumePendingRestore } from "../state/waveformView.svelte";
   import { amplitudeTicksDbfs, centerlineY } from "./amplitudeAxis";
+  import { hitTestHandle, normalizeSelection } from "./selection";
+  import { snapSampleToZeroCrossing } from "./zeroCrossing";
   import { fitGutterLabels } from "../ui/axisLabels";
   import {
     clampSamplesPerPixel,
@@ -150,6 +157,15 @@
   let pointerDownSample: number | null = null;
   let pointerDownShiftKey = false;
   let dragging = false;
+  /** T-206 (SPEC-006 §2.9): `true` from a handle-hit pointerdown until pointerup — routes
+   * pointermove/pointerup to the handle-drag store functions instead of the plain-drag ones. */
+  let handleDragActive = false;
+  /** T-206: hovering within `SELECTION_HANDLE_HIT_PX` of a selection boundary shows a resize
+   * cursor (SPEC-006 §2.9). */
+  let nearHandle = $state(false);
+  /** T-206 (SPEC-006 §2.10): invalidates a stale async zero-crossing snap result — e.g. a new
+   * drag starts, or the selection is cleared, before the previous drag's snap resolves. */
+  let selectionSnapSeq = 0;
   /** H-07: the last `record_peaks_get` response applied (`null`: none polled yet). */
   let liveBuckets = $state<Array<[number, number]>>([]);
   let liveStartSample = $state(0);
@@ -809,9 +825,42 @@
     return Math.max(0, Math.min(sampleAtPixel(px, startSample, samplesPerPixel), lenSamples));
   }
 
-  /** Mousedown (SPEC-006 §2.9): Shift+click extends the far selection edge on pointerup; a plain
-   * mousedown starts a live-updating drag (`state/selection.svelte.ts`), which a plain click
-   * (no movement) undoes on pointerup by clearing the selection and seeking instead. */
+  /** The device-pixel x of `clientX` inside the canvas container, or `null` if it isn't mounted. */
+  function pxAtClientX(clientX: number): number | null {
+    if (!containerEl) {
+      return null;
+    }
+    return clientX - containerEl.getBoundingClientRect().left;
+  }
+
+  /** Hit-tests `clientX` against the current selection's two handles (SPEC-006 §2.9). `null`
+   * with no selection, while locked (T-304), or when the pointer isn't within the hit width. */
+  function handleHitAtClientX(clientX: number): "start" | "end" | null {
+    const sel = selection.current;
+    const px = pxAtClientX(clientX);
+    if (!sel || px === null || isSelectionLocked()) {
+      return null;
+    }
+    const startPx = pixelAtSample(sel.startSample, startSample, samplesPerPixel);
+    const endPx = pixelAtSample(sel.endSample, startSample, samplesPerPixel);
+    return hitTestHandle(px, startPx, endPx);
+  }
+
+  /** SPEC-006 §2.10: async zero-crossing snap, gated on `Settings.snap_to_zero_crossing`. A
+   * no-op (returns `sample` unchanged) when the setting is off — kept synchronous in that (by
+   * far the more common) case so existing callers/tests that don't await it still see the
+   * unsnapped result applied immediately. */
+  function maybeSnapToZeroCrossing(sample: number): number | Promise<number> {
+    if (!isOpen || !settingsState().current?.snap_to_zero_crossing) {
+      return sample;
+    }
+    return snapSampleToZeroCrossing(peaksGet, doc.current.audio_rev, lenSamples, sample);
+  }
+
+  /** Mousedown (SPEC-006 §2.9): a hit on an existing selection's handle starts a handle drag;
+   * Shift+click extends the far selection edge on pointerup; a plain mousedown starts a
+   * live-updating click-drag (`state/selection.svelte.ts`), which a plain click (no movement)
+   * undoes on pointerup by clearing the selection and seeking instead. */
   function onPointerDown(event: PointerEvent): void {
     if (!isOpen) {
       return;
@@ -820,14 +869,34 @@
     pointerDownShiftKey = event.shiftKey;
     pointerDownSample = sampleAtClientX(event.clientX);
     dragging = false;
-    if (!event.shiftKey && pointerDownSample !== null) {
-      beginDrag(pointerDownSample);
+    handleDragActive = false;
+    if (event.shiftKey || pointerDownSample === null) {
+      return;
     }
+    const hit = handleHitAtClientX(event.clientX);
+    if (hit) {
+      const sel = selection.current!;
+      handleDragActive = true;
+      nearHandle = true;
+      beginHandleDrag(hit === "start" ? sel.endSample : sel.startSample);
+      return;
+    }
+    beginDrag(pointerDownSample);
   }
 
-  /** Live-updates the drag selection (SPEC-006 §2.9: "live-updating" while dragging). */
+  /** Live-updates the drag selection (SPEC-006 §2.9: "live-updating" while dragging) — a handle
+   * drag or a plain click-drag, whichever `onPointerDown` started; otherwise just updates the
+   * hover cursor (SPEC-006 §2.9: "hovering within 6 px of a boundary shows a resize cursor"). */
   function onPointerMove(event: PointerEvent): void {
+    if (handleDragActive) {
+      const sample = sampleAtClientX(event.clientX);
+      if (sample !== null) {
+        handleDragTo(sample);
+      }
+      return;
+    }
     if (pointerDownShiftKey || pointerDownSample === null || pointerDownClientX === null) {
+      nearHandle = handleHitAtClientX(event.clientX) !== null;
       return;
     }
     if (!dragging && Math.abs(event.clientX - pointerDownClientX) >= 3) {
@@ -841,28 +910,87 @@
     }
   }
 
+  function onPointerLeave(): void {
+    nearHandle = false;
+  }
+
   function onPointerUp(event: PointerEvent): void {
     const wasDragging = dragging;
+    const wasHandleDrag = handleDragActive;
     const shiftKey = pointerDownShiftKey;
     const downSample = pointerDownSample;
     pointerDownClientX = null;
     pointerDownSample = null;
     pointerDownShiftKey = false;
     dragging = false;
+    handleDragActive = false;
     if (!isOpen || downSample === null) {
       return;
     }
     const upSample = sampleAtClientX(event.clientX) ?? downSample;
-    if (shiftKey) {
-      shiftClickTo(upSample, transport.playheadSamples);
+
+    if (wasHandleDrag) {
+      const fixedSample = endHandleDrag();
+      if (fixedSample === null) {
+        return;
+      }
+      const snapped = maybeSnapToZeroCrossing(upSample);
+      if (typeof snapped === "number") {
+        const range = normalizeSelection(fixedSample, snapped);
+        setSelectionFromResult(range ? [range.startSample, range.endSample] : null);
+        return;
+      }
+      const seq = ++selectionSnapSeq;
+      void snapped.then((sample) => {
+        if (seq !== selectionSnapSeq) {
+          return; // superseded by a newer gesture (SPEC-006 §2.3-style staleness guard)
+        }
+        const range = normalizeSelection(fixedSample, sample);
+        setSelectionFromResult(range ? [range.startSample, range.endSample] : null);
+      });
       return;
     }
+
+    if (shiftKey) {
+      const snapped = maybeSnapToZeroCrossing(upSample);
+      if (typeof snapped === "number") {
+        shiftClickTo(snapped, transport.playheadSamples);
+        return;
+      }
+      const seq = ++selectionSnapSeq;
+      void snapped.then((sample) => {
+        if (seq !== selectionSnapSeq) {
+          return;
+        }
+        shiftClickTo(sample, transport.playheadSamples);
+      });
+      return;
+    }
+
     if (wasDragging) {
       dragTo(upSample);
       endDrag();
+      const anchorSnap = maybeSnapToZeroCrossing(downSample);
+      const endSnap = maybeSnapToZeroCrossing(upSample);
+      if (typeof anchorSnap === "number" && typeof endSnap === "number") {
+        return; // snap disabled: dragTo's unsnapped result above already stands
+      }
+      const seq = ++selectionSnapSeq;
+      void Promise.all([anchorSnap, endSnap]).then(([a, b]) => {
+        if (seq !== selectionSnapSeq) {
+          return;
+        }
+        const range = normalizeSelection(a, b);
+        if (range) {
+          setSelectionFromResult([range.startSample, range.endSample]);
+        }
+        // `a === b` (snapping collapsed the selection to a point): keep the unsnapped drag
+        // result rather than replacing a real selection with nothing.
+      });
       return;
     }
-    // A plain click (no drag): clears the selection and moves the cursor (SPEC-006 §2.9).
+    // A plain click (no drag): clears the selection and moves the cursor (SPEC-006 §2.9) —
+    // never snapped (SPEC-006 §2.10: only selection boundaries snap, not cursor placement).
     endDrag();
     clearSelection();
     void seek(upSample);
@@ -962,11 +1090,13 @@
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="canvas-container"
+        class:resize-cursor={nearHandle}
         bind:this={containerEl}
         onwheel={onWheel}
         onpointerdown={onPointerDown}
         onpointermove={onPointerMove}
         onpointerup={onPointerUp}
+        onpointerleave={onPointerLeave}
         ondblclick={onDoubleClick}
       >
         <canvas
@@ -1073,6 +1203,11 @@
     position: relative;
     flex: 1;
     min-height: 0;
+  }
+
+  /* T-206 (SPEC-006 §2.9): a resize cursor within SELECTION_HANDLE_HIT_PX of a selection edge. */
+  .canvas-container.resize-cursor {
+    cursor: ew-resize;
   }
 
   canvas {

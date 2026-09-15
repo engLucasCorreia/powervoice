@@ -1094,7 +1094,15 @@ plugins: PluginsSettingsDto,
  * T-709: guided-tour progress (completed/skipped/dismissed tours, with the tour version).
  * Additive field — the settings version stays 1.
  */
-tours: ToursSettingsDto, };
+tours: ToursSettingsDto, 
+/**
+ * T-206 (SPEC-006 §2.10): whether a selection boundary placed/dragged in the waveform view
+ * snaps to the nearest zero crossing within the fixed ±512-sample search window. App
+ * preference (SPEC-018 §2.6.5: "not stored" in the per-document sidecar), View-only — never
+ * read by the engine. Default off (SPEC-006 §2.10). Additive field — the settings version
+ * stays 1.
+ */
+snap_to_zero_crossing: boolean, };
 
 /**
  * Slot status (SPEC-012 §2.2, §2.9; T-802: `restarting` for a sandboxed plugin whose automatic
@@ -1179,6 +1187,14 @@ export type TelemetryKindDto = "gain_reduction" | "level" | "indicator" | "value
 export type ThemePref = "dark" | "light" | "system" | "high_contrast";
 
 /**
+ * T-206 (SPEC-006 §2.5): the waveform/spectral time ruler's display format, also used by the
+ * toolbar clock and the marker list/selection readouts (this ticket's "one formatter, everything
+ * that shows time uses it"). Default `Timecode` (SPEC-006 §2.5's own "Decided: default =
+ * timecode").
+ */
+export type TimeRulerFormatDto = "timecode" | "samples" | "seconds";
+
+/**
  * How a tour last ended for this user.
  */
 export type TourOutcome = "completed" | "skipped" | "dismissed";
@@ -1223,10 +1239,13 @@ export type WaveformSelectionDto = { start_sample: number, end_sample: number, }
 /**
  * H-12 (SPEC-018 §2.6.5's `view.waveform`, this ticket's subset — see `WaveformViewInfo`'s doc
  * for what's deferred): the shared waveform/spectral viewport plus the selection and edit
- * cursor, persisted like `SpectralViewDto`.
+ * cursor, persisted like `SpectralViewDto`. T-206 adds `time_ruler_format` (SPEC-006 §2.5/§2.2,
+ * SPEC-018 §2.6.5's `waveform.time_ruler_format`) — the other deferred fields (`vertical_zoom`,
+ * `amplitude_ruler_mode`) still have no corresponding UI and are left for whichever ticket adds
+ * them (`WaveformViewInfo`'s doc).
  */
 export type WaveformViewDto = { start_sample: number, samples_per_pixel: number, 
 /**
  * `null` = no selection.
  */
-selection: WaveformSelectionDto | null, cursor_samples: number, };
+selection: WaveformSelectionDto | null, cursor_samples: number, time_ruler_format: TimeRulerFormatDto, };

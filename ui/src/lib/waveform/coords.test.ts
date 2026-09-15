@@ -11,6 +11,7 @@ import {
   RAW_SPP,
   reduceColumns,
   sampleAtPixel,
+  sampleTicks,
   showsDots,
   timeTicks,
   zoomAroundSample,
@@ -218,5 +219,49 @@ describe("timeTicks (SPEC-006 §2.5, §4.2, AC-6)", () => {
     expect(timeTicks(0, 1, 100, 0, 60)).toEqual([]);
     expect(timeTicks(0, 0, 100, 48_000, 60)).toEqual([]);
     expect(timeTicks(0, 1, 0, 48_000, 60)).toEqual([]);
+  });
+});
+
+describe("sampleTicks (SPEC-006 §2.5/§4.2 'samples' format, AC-6)", () => {
+  it("ticks are exact multiples of a {1,2,5}x10^n sample step, needing no reconversion", () => {
+    const startSample = 12_345;
+    const samplesPerPixel = 10;
+    const viewportPx = 500;
+    const ticks = sampleTicks(startSample, samplesPerPixel, viewportPx, 60);
+    expect(ticks.length).toBeGreaterThan(0);
+    const step = ticks.length > 1 ? ticks[1]! - ticks[0]! : ticks[0]!;
+    for (const tick of ticks) {
+      expect(Number.isInteger(tick)).toBe(true);
+      expect(tick % step).toBe(0);
+    }
+  });
+
+  it("covers the whole visible sample range", () => {
+    const startSample = 0;
+    const samplesPerPixel = 100;
+    const viewportPx = 200; // visible: [0, 20_000)
+    const ticks = sampleTicks(startSample, samplesPerPixel, viewportPx, 60);
+    expect(ticks[0]).toBeLessThanOrEqual(startSample);
+    expect(ticks.at(-1)).toBeGreaterThanOrEqual(startSample + viewportPx * samplesPerPixel);
+  });
+
+  it("the step never drops below 1 sample even zoomed in past 1:1", () => {
+    const ticks = sampleTicks(0, 0.1, 50, 60);
+    expect(ticks.length).toBeGreaterThan(1);
+    const step = ticks[1]! - ticks[0]!;
+    expect(step).toBeGreaterThanOrEqual(1);
+    expect(Number.isInteger(step)).toBe(true);
+  });
+
+  it("returns nothing for a degenerate viewport/spp", () => {
+    expect(sampleTicks(0, 0, 100, 60)).toEqual([]);
+    expect(sampleTicks(0, 1, 0, 60)).toEqual([]);
+  });
+
+  it("never emits a negative tick", () => {
+    const ticks = sampleTicks(5, 10, 50, 60);
+    for (const tick of ticks) {
+      expect(tick).toBeGreaterThanOrEqual(0);
+    }
   });
 });

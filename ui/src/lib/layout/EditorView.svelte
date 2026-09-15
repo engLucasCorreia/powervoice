@@ -5,9 +5,20 @@
   import { selectionState } from "../state/selection.svelte";
   import { spectralState } from "../state/spectral.svelte";
   import { transportState } from "../state/transport.svelte";
-  import { schedulePersistWaveformView, waveformViewApi } from "../state/waveformView.svelte";
-  import { clampStartSample, niceTickStepSeconds, pixelAtSample, timeTicks } from "../waveform/coords";
-  import { formatRulerTime } from "../waveform/timeRuler";
+  import {
+    schedulePersistWaveformView,
+    timeRulerFormatState,
+    waveformViewApi,
+  } from "../state/waveformView.svelte";
+  import {
+    clampStartSample,
+    niceTickStepSeconds,
+    pixelAtSample,
+    sampleTicks,
+    timeTicks,
+  } from "../waveform/coords";
+  import { formatSamplesValue } from "../waveform/timeFormat";
+  import { formatRulerSeconds, formatRulerTime } from "../waveform/timeRuler";
   import WaveformView from "../waveform/WaveformView.svelte";
 
   /**
@@ -34,6 +45,7 @@
   const transport = transportState();
   const selection = selectionState();
   const spectral = spectralState();
+  const timeFormat = timeRulerFormatState();
 
   const lenSamples = $derived(doc.current.len_samples);
   const rateHz = $derived(doc.current.sample_rate_hz);
@@ -66,6 +78,7 @@
       wv.samplesPerPixel,
       selection.current,
       transport.state.playhead_samples,
+      timeFormat.current,
     );
   });
 
@@ -95,18 +108,29 @@
    * labels so every tick in one ruler has the same shape. */
   const includeHours = $derived(rateHz > 0 && lenSamples / rateHz >= 3600);
 
+  // T-206 (SPEC-006 §2.5): `timecode`/`seconds` share the seconds-based tick ladder (§4.2), only
+  // the label differs; `samples` uses its own sample-space ladder (`coords.ts::sampleTicks`) so a
+  // tick's position is never a rounded-then-reconverted seconds value.
   const ticks = $derived.by(() => {
     if (rateHz <= 0 || canvasWidthPx <= 0) {
       return [];
     }
+    const viewportPxInt = Math.ceil(canvasWidthPx);
+    if (timeFormat.current === "samples") {
+      return sampleTicks(wv.startSample, wv.samplesPerPixel, viewportPxInt, 70).map((sample) => ({
+        px: pixelAtSample(sample, wv.startSample, wv.samplesPerPixel) + RULER_GUTTER_PX,
+        label: formatSamplesValue(sample),
+      }));
+    }
     const minGapSeconds = (70 * wv.samplesPerPixel) / rateHz;
     const step = niceTickStepSeconds(minGapSeconds);
-    return timeTicks(wv.startSample, wv.samplesPerPixel, Math.ceil(canvasWidthPx), rateHz, 70).map(
-      (tick) => ({
-        px: pixelAtSample(tick.sample, wv.startSample, wv.samplesPerPixel) + RULER_GUTTER_PX,
-        label: formatRulerTime(tick.seconds, step, includeHours),
-      }),
-    );
+    return timeTicks(wv.startSample, wv.samplesPerPixel, viewportPxInt, rateHz, 70).map((tick) => ({
+      px: pixelAtSample(tick.sample, wv.startSample, wv.samplesPerPixel) + RULER_GUTTER_PX,
+      label:
+        timeFormat.current === "seconds"
+          ? formatRulerSeconds(tick.seconds, step)
+          : formatRulerTime(tick.seconds, step, includeHours),
+    }));
   });
 
   // H-26: labels start 2 px right of their tick; one that would run past the ruler's right end

@@ -7,6 +7,8 @@ import {
   resetWaveformViewForTest,
   schedulePersistWaveformView,
   setPendingRestore,
+  setTimeRulerFormat,
+  timeRulerFormatState,
   waveformViewApi,
 } from "./waveformView.svelte";
 
@@ -35,6 +37,14 @@ describe("waveformViewApi (H-12, SPEC-018 §2.6.5's view.waveform)", () => {
   });
 });
 
+describe("timeRulerFormatState (T-206, SPEC-006 §2.5)", () => {
+  it("defaults to timecode and is settable", () => {
+    expect(timeRulerFormatState().current).toBe("timecode");
+    setTimeRulerFormat("samples");
+    expect(timeRulerFormatState().current).toBe("samples");
+  });
+});
+
 describe("H-12: sidecar_view_set_waveform persistence (debounced, SPEC-018 §2.6.5)", () => {
   it("debounces a sidecar_view_set_waveform call with the full snapshot", () => {
     vi.useFakeTimers();
@@ -59,8 +69,31 @@ describe("H-12: sidecar_view_set_waveform persistence (debounced, SPEC-018 §2.6
         samples_per_pixel: 2.5,
         selection: { start_sample: 100, end_sample: 200 },
         cursor_samples: 150,
+        time_ruler_format: "timecode",
       },
     });
+  });
+
+  it("persists the current time_ruler_format, or an explicit override", () => {
+    vi.useFakeTimers();
+    const calls: unknown[] = [];
+    mockIPC((cmd, args) => {
+      calls.push(args);
+      return null;
+    });
+
+    setTimeRulerFormat("samples");
+    schedulePersistWaveformView(0, 1, null, 0);
+    vi.advanceTimersByTime(300);
+    expect((calls[0] as { waveform: { time_ruler_format: unknown } }).waveform.time_ruler_format).toBe(
+      "samples",
+    );
+
+    schedulePersistWaveformView(0, 1, null, 0, "seconds");
+    vi.advanceTimersByTime(300);
+    expect((calls[1] as { waveform: { time_ruler_format: unknown } }).waveform.time_ruler_format).toBe(
+      "seconds",
+    );
   });
 
   it("a null selection persists as null (no selection)", () => {

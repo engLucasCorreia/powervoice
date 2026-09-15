@@ -1,4 +1,5 @@
 import { sidecarViewSetWaveform } from "../ipc/commands";
+import type { TimeRulerFormatDto } from "../ipc/bindings";
 import type { SelectionRange } from "../waveform/selection";
 
 /**
@@ -36,6 +37,27 @@ interface ViewportSnapshot {
 }
 
 let state = $state<ViewportSnapshot>({ startSample: 0, samplesPerPixel: 1 });
+
+/**
+ * T-206 (SPEC-006 §2.5, SPEC-018 §2.6.5's `waveform.time_ruler_format`): the time display format
+ * — `timecode` (default), `samples`, `seconds`. Unlike `startSample`/`samplesPerPixel` this needs
+ * no viewport width to validate, so `document.svelte.ts` applies a restored value immediately on
+ * open (same as the selection/cursor, H-12's doc comment) rather than going through
+ * {@link setPendingRestore}.
+ */
+let timeRulerFormat = $state<TimeRulerFormatDto>("timecode");
+
+export function timeRulerFormatState(): { readonly current: TimeRulerFormatDto } {
+  return {
+    get current() {
+      return timeRulerFormat;
+    },
+  };
+}
+
+export function setTimeRulerFormat(format: TimeRulerFormatDto): void {
+  timeRulerFormat = format;
+}
 
 interface PendingRestore {
   audioKey: string;
@@ -83,6 +105,7 @@ export function schedulePersistWaveformView(
   samplesPerPixel: number,
   selection: SelectionRange | null,
   cursorSamples: number,
+  timeRulerFormatValue: TimeRulerFormatDto = timeRulerFormat,
 ): void {
   if (persistTimer !== null) {
     clearTimeout(persistTimer);
@@ -96,6 +119,7 @@ export function schedulePersistWaveformView(
         ? { start_sample: selection.startSample, end_sample: selection.endSample }
         : null,
       cursor_samples: cursorSamples,
+      time_ruler_format: timeRulerFormatValue,
     }).catch(() => {
       // Fire-and-forget, same as `spectral.svelte.ts`: no document open, or the IPC call itself
       // failed — the next Save just won't carry this particular viewport tweak.
@@ -142,4 +166,5 @@ export function resetWaveformViewForTest(): void {
   }
   state = { startSample: 0, samplesPerPixel: 1 };
   pendingRestore = null;
+  timeRulerFormat = "timecode";
 }

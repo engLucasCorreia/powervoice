@@ -28,7 +28,12 @@ import { saveSettings, settingsState } from "../state/settings.svelte";
 import { setSelectionFromResult } from "../state/selection.svelte";
 import { applyRestoredSpectralView } from "../state/spectral.svelte";
 import { seek } from "../state/transport.svelte";
-import { audioKeyFor, clearPendingRestore, setPendingRestore } from "../state/waveformView.svelte";
+import {
+  audioKeyFor,
+  clearPendingRestore,
+  setPendingRestore,
+  setTimeRulerFormat,
+} from "../state/waveformView.svelte";
 
 /**
  * Document store (S1-03): the open document's facts (`document_changed` event + command
@@ -253,8 +258,8 @@ function updateWindowTitle(info: DocumentDto): void {
  * here — SPEC-018 §2.6.5's "an out-of-range `samples_per_pixel` -> zoom full" needs the
  * viewport's pixel width, which only `WaveformView` knows — so it's recorded as a *pending*
  * restore (`setPendingRestore`) for `WaveformView`'s own zoom-to-fit effect to consume once that
- * width is known. Selection and cursor need no viewport to validate (already clamped to `[0, L]`
- * on the Rust side) and are applied immediately.
+ * width is known. Selection, cursor and (T-206) `time_ruler_format` need no viewport to validate
+ * (already clamped/defaulted on the Rust side) and are applied immediately.
  */
 function applyDoc(next: DocumentDto, isOpen = false): void {
   doc = next;
@@ -274,8 +279,10 @@ function applyDoc(next: DocumentDto, isOpen = false): void {
     );
     setSelectionFromResult(view.selection ? [view.selection.start_sample, view.selection.end_sample] : null);
     void seek(view.cursor_samples);
+    setTimeRulerFormat(view.time_ruler_format);
   } else {
     clearPendingRestore();
+    setTimeRulerFormat("timecode");
   }
 }
 

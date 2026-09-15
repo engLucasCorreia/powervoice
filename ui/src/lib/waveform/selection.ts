@@ -53,3 +53,32 @@ export function selectAll(lenSamples: number): SelectionRange | null {
 export function isEmptySelection(selection: SelectionRange | null): boolean {
   return selection === null || selection.startSample === selection.endSample;
 }
+
+/** SPEC-006 §2.9/§3 `selection_handle_hit_px`: a selection boundary's grab-handle hit width. */
+export const SELECTION_HANDLE_HIT_PX = 6;
+
+/**
+ * Hit-tests a pointer at device pixel `px` against a selection's two boundary handles (SPEC-006
+ * §2.9, AC-8: "a handle's hit target is exactly `selection_handle_hit_px` wide, centered on the
+ * boundary pixel"). Returns which edge was hit, or `null`. When both handles' hit zones overlap
+ * (a very narrow/zoomed-out selection) the nearer one wins, `"start"` on an exact tie.
+ */
+export function hitTestHandle(
+  px: number,
+  startPx: number,
+  endPx: number,
+  hitPx: number = SELECTION_HANDLE_HIT_PX,
+): "start" | "end" | null {
+  const half = hitPx / 2;
+  const distStart = Math.abs(px - startPx);
+  const distEnd = Math.abs(px - endPx);
+  const hitStart = distStart <= half;
+  const hitEnd = distEnd <= half;
+  if (hitStart && (!hitEnd || distStart <= distEnd)) {
+    return "start";
+  }
+  if (hitEnd) {
+    return "end";
+  }
+  return null;
+}

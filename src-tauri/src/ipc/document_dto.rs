@@ -95,7 +95,10 @@ impl From<SpectralViewDto> for SpectralViewInfo {
 
 /// H-12 (SPEC-018 §2.6.5's `view.waveform`, this ticket's subset — see `WaveformViewInfo`'s doc
 /// for what's deferred): the shared waveform/spectral viewport plus the selection and edit
-/// cursor, persisted like `SpectralViewDto`.
+/// cursor, persisted like `SpectralViewDto`. T-206 adds `time_ruler_format` (SPEC-006 §2.5/§2.2,
+/// SPEC-018 §2.6.5's `waveform.time_ruler_format`) — the other deferred fields (`vertical_zoom`,
+/// `amplitude_ruler_mode`) still have no corresponding UI and are left for whichever ticket adds
+/// them (`WaveformViewInfo`'s doc).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "bindings.ts")]
 pub struct WaveformViewDto {
@@ -104,6 +107,7 @@ pub struct WaveformViewDto {
     /// `null` = no selection.
     pub selection: Option<WaveformSelectionDto>,
     pub cursor_samples: u64,
+    pub time_ruler_format: TimeRulerFormatDto,
 }
 
 /// `[start_sample, end_sample)` document samples (SPEC-006 §2.2's selection shape).
@@ -112,6 +116,20 @@ pub struct WaveformViewDto {
 pub struct WaveformSelectionDto {
     pub start_sample: u64,
     pub end_sample: u64,
+}
+
+/// T-206 (SPEC-006 §2.5): the waveform/spectral time ruler's display format, also used by the
+/// toolbar clock and the marker list/selection readouts (this ticket's "one formatter, everything
+/// that shows time uses it"). Default `Timecode` (SPEC-006 §2.5's own "Decided: default =
+/// timecode").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum TimeRulerFormatDto {
+    #[default]
+    Timecode,
+    Samples,
+    Seconds,
 }
 
 impl From<WaveformViewInfo> for WaveformViewDto {
@@ -126,6 +144,7 @@ impl From<WaveformViewInfo> for WaveformViewDto {
                     end_sample,
                 }),
             cursor_samples: v.cursor_samples,
+            time_ruler_format: v.time_ruler_format,
         }
     }
 }
@@ -137,6 +156,7 @@ impl From<WaveformViewDto> for WaveformViewInfo {
             samples_per_pixel: v.samples_per_pixel,
             selection: v.selection.map(|s| (s.start_sample, s.end_sample)),
             cursor_samples: v.cursor_samples,
+            time_ruler_format: v.time_ruler_format,
         }
     }
 }

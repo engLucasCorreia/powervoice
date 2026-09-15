@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { pixelAtSample, sampleAtPixel } from "./coords";
-import { extendSelection, isEmptySelection, normalizeSelection, selectAll } from "./selection";
+import {
+  extendSelection,
+  hitTestHandle,
+  isEmptySelection,
+  normalizeSelection,
+  selectAll,
+  SELECTION_HANDLE_HIT_PX,
+} from "./selection";
 
 describe("normalizeSelection (SPEC-006 §2.9)", () => {
   it("normalizes start < end regardless of drag direction", () => {
@@ -46,6 +53,34 @@ describe("isEmptySelection (SPEC-008 §2.2)", () => {
     expect(isEmptySelection(null)).toBe(true);
     expect(isEmptySelection({ startSample: 10, endSample: 10 })).toBe(true);
     expect(isEmptySelection({ startSample: 10, endSample: 20 })).toBe(false);
+  });
+});
+
+describe("hitTestHandle (SPEC-006 §2.9/§3, AC-8)", () => {
+  const startPx = 100;
+  const endPx = 300;
+
+  it("hits are exactly SELECTION_HANDLE_HIT_PX wide, centered on the boundary", () => {
+    const half = SELECTION_HANDLE_HIT_PX / 2;
+    expect(hitTestHandle(startPx - half, startPx, endPx)).toBe("start");
+    expect(hitTestHandle(startPx + half, startPx, endPx)).toBe("start");
+    expect(hitTestHandle(startPx - half - 1, startPx, endPx)).toBeNull();
+    expect(hitTestHandle(startPx + half + 1, startPx, endPx)).toBeNull();
+    expect(hitTestHandle(endPx - half, startPx, endPx)).toBe("end");
+    expect(hitTestHandle(endPx + half, startPx, endPx)).toBe("end");
+  });
+
+  it("misses entirely in the middle of the selection", () => {
+    expect(hitTestHandle(200, startPx, endPx)).toBeNull();
+  });
+
+  it("the nearer handle wins when a narrow selection makes both hit zones overlap", () => {
+    expect(hitTestHandle(99, 100, 101)).toBe("start");
+    expect(hitTestHandle(102, 100, 101)).toBe("end");
+  });
+
+  it("start wins on an exact tie (identical start/end pixels)", () => {
+    expect(hitTestHandle(100, 100, 100)).toBe("start");
   });
 });
 

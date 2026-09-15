@@ -5,9 +5,11 @@
   import NormalizeToolbarButtons from "../normalize/NormalizeToolbarButtons.svelte";
   import RecordControls from "../record/RecordControls.svelte";
   import { recordState } from "../state/record.svelte";
+  import SelectionReadout from "./SelectionReadout.svelte";
   import { spectralState } from "../state/spectral.svelte";
   import { playFromStart, playPause, returnToStart, stop, transportState } from "../state/transport.svelte";
-  import { formatTime } from "../transport/playhead";
+  import { timeRulerFormatState } from "../state/waveformView.svelte";
+  import { formatDocumentTime } from "../waveform/timeFormat";
   import { IconButton, Separator } from "../ui";
 
   /**
@@ -23,8 +25,13 @@
   const transport = transportState();
   const spectral = spectralState();
   const rec = recordState();
+  const timeFormat = timeRulerFormatState();
   let devicesOpen = $state(false);
-  const time = $derived(formatTime(transport.playheadSamples, transport.state.doc_rate_hz));
+  // T-206 (SPEC-006 §2.5): the toolbar clock follows the same time_ruler_format as the ruler,
+  // marker list and selection readouts — "everything that shows time uses it."
+  const time = $derived(
+    formatDocumentTime(transport.playheadSamples, transport.state.doc_rate_hz, timeFormat.current),
+  );
   const playing = $derived(transport.state.playing);
 </script>
 
@@ -65,6 +72,7 @@
   </div>
   <Separator orientation="vertical" />
   <span class="time" data-testid="transport-time" data-tour="time">{time}</span>
+  <SelectionReadout />
   <Separator orientation="vertical" />
   <RecordControls />
   <Separator orientation="vertical" />

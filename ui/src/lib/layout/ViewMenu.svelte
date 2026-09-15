@@ -9,9 +9,11 @@
   import { rendererPref, setRendererPreference } from "../state/rendererPref.svelte";
   import { saveSettings, settingsState } from "../state/settings.svelte";
   import { spectralState } from "../state/spectral.svelte";
+  import { setTimeRulerFormat, timeRulerFormatState } from "../state/waveformView.svelte";
   import { chooseTheme } from "../theme/chooseTheme";
   import { themeState, THEMES } from "../theme/theme.svelte";
   import type { MenuEntry } from "../ui/menuModel";
+  import type { TimeRulerFormatDto } from "../ipc/bindings";
 
   /**
    * View menu (H-19): Spectral/Analyzer toggles, waveform zoom, and the H-13 renderer override
@@ -21,16 +23,32 @@
    * T-708: Theme ▸ (Dark / Light / Match System / High Contrast), radio rows from the same theme
    * list as Preferences → Appearance; applies at once and persists. SPEC-003 names no theme
    * shortcut, so none is bound.
+   * T-206: Time Format ▸ (Timecode / Samples / Seconds, SPEC-006 §2.5, per-document —
+   * `waveformView.svelte.ts`'s `timeRulerFormatState`, no shortcut named by the spec) and Snap to
+   * Zero Crossing (SPEC-006 §2.10, `Settings.snap_to_zero_crossing`, same checkbox pattern as
+   * Follow Playhead).
    */
   const analyzer = analyzerState();
   const spectral = spectralState();
   const renderer = rendererPref();
   const theme = themeState();
+  const timeFormat = timeRulerFormatState();
   const playheadFollow = $derived(settingsState().current?.playhead_follow ?? true);
+  const snapToZeroCrossing = $derived(settingsState().current?.snap_to_zero_crossing ?? false);
 
   function togglePlayheadFollow(): void {
     void saveSettings({ playhead_follow: !playheadFollow });
   }
+
+  function toggleSnapToZeroCrossing(): void {
+    void saveSettings({ snap_to_zero_crossing: !snapToZeroCrossing });
+  }
+
+  const TIME_FORMAT_OPTIONS: readonly { value: TimeRulerFormatDto; labelKey: string }[] = [
+    { value: "timecode", labelKey: "menu.view.time_format_timecode" },
+    { value: "samples", labelKey: "menu.view.time_format_samples" },
+    { value: "seconds", labelKey: "menu.view.time_format_seconds" },
+  ];
 
   const RENDERER_OPTIONS: readonly { value: RendererPreference; labelKey: string }[] = [
     { value: "auto", labelKey: "menu.view.renderer_auto" },
@@ -70,6 +88,14 @@
       checked: playheadFollow,
       testid: "menu-view-playhead-follow",
       onselect: togglePlayheadFollow,
+    },
+    {
+      kind: "checkbox",
+      id: "snap-to-zero-crossing",
+      label: t("menu.view.snap_to_zero_crossing"),
+      checked: snapToZeroCrossing,
+      testid: "menu-view-snap-to-zero-crossing",
+      onselect: toggleSnapToZeroCrossing,
     },
     { kind: "separator", id: "sep-zoom" },
     {
@@ -118,6 +144,22 @@
         checked: renderer.value === option.value,
         testid: `menu-renderer-${option.value}`,
         onselect: () => pickRenderer(option.value),
+      })),
+    },
+    {
+      kind: "submenu",
+      id: "time-format",
+      label: t("menu.view.time_format"),
+      testid: "menu-time-format",
+      menuTestid: "menu-time-format-list",
+      minWidth: 160,
+      items: TIME_FORMAT_OPTIONS.map((option) => ({
+        kind: "radio" as const,
+        id: option.value,
+        label: tDynamic(option.labelKey),
+        checked: timeFormat.current === option.value,
+        testid: `menu-time-format-${option.value}`,
+        onselect: () => setTimeRulerFormat(option.value),
       })),
     },
   ]);

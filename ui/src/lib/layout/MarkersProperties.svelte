@@ -11,7 +11,8 @@
     renameMarker,
     selectMarker,
   } from "../markers/markers.svelte";
-  import { formatTime } from "../transport/playhead";
+  import { timeRulerFormatState } from "../state/waveformView.svelte";
+  import { formatDocumentTime } from "../waveform/timeFormat";
 
   /**
    * Markers panel (S2-03, SPEC-009 §2.8 essential subset): a flat, position-sorted list — click
@@ -25,6 +26,9 @@
   const markers = markersState();
   const isOpen = $derived(hasDocument(doc.current));
   const rateHz = $derived(doc.current.sample_rate_hz);
+  // T-206 (SPEC-006 §2.5): the marker list's times follow the same time_ruler_format as the
+  // ruler, toolbar clock and selection readouts.
+  const timeFormat = timeRulerFormatState();
 
   let renamingId = $state<number | null>(null);
   let renameValue = $state("");
@@ -127,10 +131,12 @@
                 ondblclick={() => startRename(marker.id, marker.name)}
               >
                 <span class="marker-name">{marker.name}</span>
-                <span class="marker-time">{formatTime(marker.pos_samples, rateHz)}</span>
+                <span class="marker-time">
+                  {formatDocumentTime(marker.pos_samples, rateHz, timeFormat.current)}
+                </span>
                 {#if marker.len_samples > 0}
                   <span class="marker-duration">
-                    {formatTime(marker.len_samples, rateHz)}
+                    {formatDocumentTime(marker.len_samples, rateHz, timeFormat.current)}
                   </span>
                 {/if}
               </button>

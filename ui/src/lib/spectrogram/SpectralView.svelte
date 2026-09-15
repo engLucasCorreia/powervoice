@@ -6,6 +6,7 @@
   import { t } from "../i18n";
   import { spectroDetach } from "../ipc/commands";
   import { markersState } from "../markers/markers.svelte";
+  import { peaksGet } from "../ipc/commands";
   import { recordState } from "../state/record.svelte";
   import {
     beginDrag,
@@ -14,11 +15,15 @@
     endDrag,
     selectAllOf,
     selectionState,
+    setSelectionFromResult,
     shiftClickTo,
   } from "../state/selection.svelte";
+  import { settingsState } from "../state/settings.svelte";
   import { CEIL_RANGE_DB, FLOOR_RANGE_DB, spectralState } from "../state/spectral.svelte";
   import { seek, transportState } from "../state/transport.svelte";
   import { formatTime } from "../transport/playhead";
+  import { normalizeSelection } from "../waveform/selection";
+  import { snapSampleToZeroCrossing } from "../waveform/zeroCrossing";
   import {
     clampFreqRange,
     formatHoverFreqHz,
@@ -108,6 +113,9 @@
   let dragging = false;
   let rulerDragStartY: number | null = null;
   let rulerDragStartRange: [number, number] | null = null;
+  /** T-206 (SPEC-006 §2.10): invalidates a stale async zero-crossing snap result, same guard as
+   * `WaveformView.svelte`'s (the two panes share one selection). */
+  let selectionSnapSeq = 0;
 
   const doc = documentState();
   const transport = transportState();
@@ -622,6 +630,16 @@
     hoverY = null;
   }
 
+  /** SPEC-006 §2.10: async zero-crossing snap, gated on `Settings.snap_to_zero_crossing` — same
+   * helper/contract as `WaveformView.svelte`'s (the panes share one selection, so a boundary
+   * placed here must snap exactly like one placed in the waveform view). */
+  function maybeSnapToZeroCrossing(sample: number): number | Promise<number> {
+    if (!isOpen || !settingsState().current?.snap_to_zero_crossing) {
+      return sample;
+    }
+    return snapSampleToZeroCrossing(peaksGet, doc.current.audio_rev, lenSamples, sample);
+  }
+
   function onPointerUp(event: PointerEvent): void {
     const wasDragging = dragging;
     const shiftKey = pointerDownShiftKey;
@@ -634,13 +652,41 @@
       return;
     }
     const upSample = sampleAtClientX(event.clientX) ?? downSample;
+
     if (shiftKey) {
-      shiftClickTo(upSample, transport.playheadSamples);
+      const snapped = maybeSnapToZeroCrossing(upSample);
+      if (typeof snapped === "number") {
+        shiftClickTo(snapped, transport.playheadSamples);
+        return;
+      }
+      const seq = ++selectionSnapSeq;
+      void snapped.then((sample) => {
+        if (seq !== selectionSnapSeq) {
+          return;
+        }
+        shiftClickTo(sample, transport.playheadSamples);
+      });
       return;
     }
+
     if (wasDragging) {
       dragTo(upSample);
       endDrag();
+      const anchorSnap = maybeSnapToZeroCrossing(downSample);
+      const endSnap = maybeSnapToZeroCrossing(upSample);
+      if (typeof anchorSnap === "number" && typeof endSnap === "number") {
+        return; // snap disabled: dragTo's unsnapped result above already stands
+      }
+      const seq = ++selectionSnapSeq;
+      void Promise.all([anchorSnap, endSnap]).then(([a, b]) => {
+        if (seq !== selectionSnapSeq) {
+          return;
+        }
+        const range = normalizeSelection(a, b);
+        if (range) {
+          setSelectionFromResult([range.startSample, range.endSample]);
+        }
+      });
       return;
     }
     endDrag();

@@ -51,6 +51,11 @@
   "menu.view.theme_light": "Light",
   "menu.view.theme_system": "Match System",
   "menu.view.theme_high_contrast": "High Contrast",
+  "menu.view.time_format": "Time Format",
+  "menu.view.time_format_timecode": "Timecode",
+  "menu.view.time_format_samples": "Samples",
+  "menu.view.time_format_seconds": "Seconds",
+  "menu.view.snap_to_zero_crossing": "Snap to Zero Crossing",
 
   "rack.ab": "A/B",
   "rack.ab_badge": "Listening only — exports always render the rack",
@@ -414,6 +419,10 @@
   "waveform.empty": "Open a WAV file to see its waveform",
   "waveform.canvas_label": "Waveform",
   "waveform.amp_unit": "dBFS",
+  "selection.start": "Start",
+  "selection.end": "End",
+  "selection.length": "Length",
+  "selection.readout_label": "Selection",
   "notice.renderer.fallback_waveform": "Using the Canvas2D waveform renderer — WebGL2 isn't available on this system.",
   "notice.renderer.context_lost_waveform": "The waveform's graphics context was lost — switched to the Canvas2D renderer.",
 

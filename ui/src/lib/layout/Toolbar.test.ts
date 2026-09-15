@@ -3,6 +3,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { attachKeymap, clearActionHandlers } from "../keymap";
 import { initTransport, resetTransportForTest } from "../state/transport.svelte";
+import { resetWaveformViewForTest, setTimeRulerFormat } from "../state/waveformView.svelte";
 import { transportStateDto } from "../test/fixtures";
 import Toolbar from "./Toolbar.svelte";
 
@@ -45,6 +46,7 @@ afterEach(() => {
   clearMocks();
   clearActionHandlers();
   resetTransportForTest();
+  resetWaveformViewForTest();
 });
 
 async function settle(): Promise<void> {
@@ -55,6 +57,30 @@ async function settle(): Promise<void> {
 const transportCalls = () => calls.filter((c) => c.startsWith("transport_") && c !== "transport_get");
 
 describe("transport bar (S1-01)", () => {
+  it("the clock follows Settings' time_ruler_format (T-206, SPEC-006 §2.5)", async () => {
+    playing = true; // gives transport.playheadSamples a non-zero, non-extrapolated value below
+    const teardown = await initTransport();
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(Toolbar, { target, props: { version: "1" } });
+    flushSync();
+
+    const clock = () => target.querySelector('[data-testid="transport-time"]')!.textContent;
+    expect(clock()).toBe("00:00:00.000"); // default: timecode
+
+    setTimeRulerFormat("samples");
+    flushSync();
+    expect(clock()).toBe("0");
+
+    setTimeRulerFormat("seconds");
+    flushSync();
+    expect(clock()).toBe("0.000000");
+
+    unmount(app);
+    target.remove();
+    teardown();
+  });
+
   it("buttons call the transport commands", async () => {
     const teardown = await initTransport();
     const target = document.createElement("div");

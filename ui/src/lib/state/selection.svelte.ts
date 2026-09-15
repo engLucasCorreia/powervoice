@@ -20,6 +20,9 @@ import {
 let selection = $state<SelectionRange | null>(null);
 /** The fixed edge of an in-progress click-drag (SPEC-006 §2.9): the mousedown sample. */
 let dragAnchorSample: number | null = null;
+/** T-206: the *other* edge during an in-progress handle drag (SPEC-006 §2.9's grab handles) —
+ * distinct from `dragAnchorSample` (a plain click-drag has no existing selection yet). */
+let handleFixedSample: number | null = null;
 /** T-304: gestures are ignored (a record operation runs). */
 let locked = false;
 
@@ -42,6 +45,7 @@ export function setSelectionLocked(value: boolean): void {
   locked = value;
   if (value) {
     dragAnchorSample = null;
+    handleFixedSample = null;
   }
 }
 
@@ -70,6 +74,40 @@ export function dragTo(sample: number): void {
 /** Mouseup: ends the current drag (the last `dragTo` already set the final selection). */
 export function endDrag(): void {
   dragAnchorSample = null;
+}
+
+/** Mousedown on a selection handle (SPEC-006 §2.9): starts a drag of one boundary, keeping the
+ * opposite boundary (`fixedSample`) fixed. */
+export function beginHandleDrag(fixedSample: number): void {
+  if (locked) {
+    return;
+  }
+  handleFixedSample = fixedSample;
+  dragAnchorSample = null;
+}
+
+/** `true` while a handle drag (as opposed to a plain click-drag) is in progress. */
+export function isHandleDragging(): boolean {
+  return handleFixedSample !== null;
+}
+
+/** Pointer move during a handle drag: live-updates the selection, keeping the fixed edge in
+ * place. Reuses {@link normalizeSelection}, so dragging past the fixed edge naturally swaps which
+ * edge is "start" (SPEC-006 AC-8). */
+export function handleDragTo(sample: number): void {
+  if (handleFixedSample === null || locked) {
+    return;
+  }
+  selection = normalizeSelection(handleFixedSample, sample);
+}
+
+/** Mouseup: ends the handle drag, returning the fixed edge it was anchored to (`null` if no
+ * handle drag was in progress) so the caller can apply a final (possibly snapped) position
+ * against it. */
+export function endHandleDrag(): number | null {
+  const fixed = handleFixedSample;
+  handleFixedSample = null;
+  return fixed;
 }
 
 /** Shift+click at `sample`, with `cursorSample` the current edit cursor (SPEC-006 §2.9). */
@@ -109,5 +147,6 @@ export function setSelectionFromResult(range: [number, number] | null): void {
 export function resetSelectionForTest(): void {
   selection = null;
   dragAnchorSample = null;
+  handleFixedSample = null;
   locked = false;
 }

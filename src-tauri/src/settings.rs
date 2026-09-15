@@ -626,6 +626,12 @@ pub struct Settings {
     /// T-709: guided-tour progress (completed/skipped/dismissed tours, with the tour version).
     /// Additive field — the settings version stays 1.
     pub tours: ToursSettingsDto,
+    /// T-206 (SPEC-006 §2.10): whether a selection boundary placed/dragged in the waveform view
+    /// snaps to the nearest zero crossing within the fixed ±512-sample search window. App
+    /// preference (SPEC-018 §2.6.5: "not stored" in the per-document sidecar), View-only — never
+    /// read by the engine. Default off (SPEC-006 §2.10). Additive field — the settings version
+    /// stays 1.
+    pub snap_to_zero_crossing: bool,
     #[serde(flatten)]
     #[ts(skip)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -657,6 +663,7 @@ impl Default for Settings {
             playhead_follow: true,
             plugins: PluginsSettingsDto::default(),
             tours: ToursSettingsDto::default(),
+            snap_to_zero_crossing: false,
             extra: serde_json::Map::new(),
         }
     }
@@ -1072,6 +1079,29 @@ mod tests {
 
         let json = br#"{"version":1,"monitor_mode":"dry"}"#;
         assert!(parse_and_migrate(json).unwrap().playhead_follow);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// T-206 (SPEC-006 §2.10): the setting round-trips, and an older settings file with no
+    /// `snap_to_zero_crossing` key falls back to off (container-level `#[serde(default)]`, same
+    /// convention as `playhead_follow` above).
+    #[test]
+    fn snap_to_zero_crossing_round_trips_and_defaults_to_off() {
+        let dir = temp_dir("snap-to-zero-crossing");
+        let path = dir.join("settings.json");
+
+        assert!(!Settings::default().snap_to_zero_crossing);
+
+        let settings = Settings {
+            snap_to_zero_crossing: true,
+            ..Settings::default()
+        };
+        save(&path, &settings).unwrap();
+        assert!(load_or_default(&path).snap_to_zero_crossing);
+
+        let json = br#"{"version":1,"monitor_mode":"dry"}"#;
+        assert!(!parse_and_migrate(json).unwrap().snap_to_zero_crossing);
 
         std::fs::remove_dir_all(&dir).ok();
     }

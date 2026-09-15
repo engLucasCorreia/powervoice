@@ -115,7 +115,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-203 | Per-chunk peak pyramid + binary IPC | W1 | S+OR | M1 | → S1-02/S1-03 (subset), rest hardening |
 | T-204 | STFT spectrogram tile service | W1 | O | M1 | done |
 | T-205 | Waveform renderer: zoom/scroll, amplitude zoom, rulers, extrapolated playhead | W2 | S | T-203 | → S1-03 (Canvas2D subset), rest hardening |
-| T-206 | Selection model, time formats, zero-crossing snap | W3 | S | T-205 | in progress |
+| T-206 | Selection model, time formats, zero-crossing snap | W3 | S | T-205 | done |
 | T-207 | Spectrogram renderer, log/linear, split view | W3 | S | T-204, T-205 | done |
 | T-208 | Live output analyzer: post-rack tap, FFT worker, 1/24-oct bands, VXSA, bottom-dock UI | W3 | S+OR | T-205 | done (follow-ups → H-16) |
 | T-209 | File menu & dialogs: Open, Save, Save As, downmix dialog, save format, clip prompt, unsaved-changes prompt, import progress | W3 | S | T-201, T-202, T-205 | done (gaps → H-20) |
@@ -168,7 +168,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 ## M7 — Polish & packaging
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
-| T-701 | Shortcut map audit (Audition-compatible) | W1 | S | M6 | todo |
+| T-701 | Shortcut map audit (Audition-compatible) | W1 | S | M6 | in progress |
 | T-702 | i18n audit | W1 | H | M6 | todo |
 | T-703 | Settings audit | W1 | S | M6 | todo |
 | T-704 | Performance tuning vs targets | W1 | O | M6 | todo |

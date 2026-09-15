@@ -8,6 +8,11 @@ import { resetMenuBarForTest } from "../menu/menubar.svelte";
 import { rendererPref, resetRendererPrefForTest } from "../state/rendererPref.svelte";
 import { loadSettings, resetSettingsStateForTest, settingsState } from "../state/settings.svelte";
 import { resetSpectralForTest, spectralState } from "../state/spectral.svelte";
+import {
+  resetWaveformViewForTest,
+  setTimeRulerFormat,
+  timeRulerFormatState,
+} from "../state/waveformView.svelte";
 import { applyThemePref, resetThemeForTest, themeState } from "../theme/theme.svelte";
 import { settingsFixture as makeSettings } from "../test/fixtures";
 import ViewMenu from "./ViewMenu.svelte";
@@ -21,6 +26,7 @@ afterEach(() => {
   resetSpectralForTest();
   resetRendererPrefForTest();
   resetThemeForTest();
+  resetWaveformViewForTest();
 });
 
 function mountMenu(): { target: HTMLElement; app: ReturnType<typeof mount> } {
@@ -136,6 +142,78 @@ describe("ViewMenu (H-19)", () => {
 
     unmount(app);
     target.remove();
+  });
+
+  // T-206 (SPEC-006 §2.10): a View-menu checkbox bound to Settings.snap_to_zero_crossing, same
+  // pattern as Follow Playhead — default off.
+  it("Snap to Zero Crossing is a menuitemcheckbox bound to Settings.snap_to_zero_crossing", async () => {
+    const fixture = makeSettings({ snap_to_zero_crossing: false });
+    let lastSaved: Settings | undefined;
+    mockIPC((cmd, args) => {
+      if (cmd === "settings_get") {
+        return fixture;
+      }
+      if (cmd === "settings_set") {
+        lastSaved = (args as { settings: Settings }).settings;
+        return lastSaved;
+      }
+      return null;
+    });
+    await loadSettings();
+
+    const { target, app } = mountMenu();
+    openMenu(target);
+
+    const checkbox = target.querySelector('[data-testid="menu-view-snap-to-zero-crossing"]');
+    expect(checkbox?.getAttribute("role")).toBe("menuitemcheckbox");
+    expect(checkbox?.getAttribute("aria-checked")).toBe("false");
+
+    (checkbox as HTMLButtonElement).click();
+    flushSync();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+
+    expect(lastSaved?.snap_to_zero_crossing).toBe(true);
+    expect(settingsState().current?.snap_to_zero_crossing).toBe(true);
+
+    unmount(app);
+    target.remove();
+  });
+
+  describe("Time Format submenu (T-206, SPEC-006 §2.5)", () => {
+    it("lists timecode/samples/seconds as menuitemradio rows, the current one checked", () => {
+      mockIPC(() => null);
+      setTimeRulerFormat("samples");
+      const { target, app } = mountMenu();
+      openMenu(target);
+      target.querySelector<HTMLButtonElement>('[data-testid="menu-time-format"]')!.click();
+      flushSync();
+
+      const rows = ["timecode", "samples", "seconds"].map((value) =>
+        target.querySelector(`[data-testid="menu-time-format-${value}"]`),
+      );
+      expect(rows.map((row) => row?.getAttribute("role"))).toEqual(Array(3).fill("menuitemradio"));
+      expect(rows.map((row) => row?.getAttribute("aria-checked"))).toEqual(["false", "true", "false"]);
+
+      unmount(app);
+      target.remove();
+    });
+
+    it("picking one updates the live store immediately (no persistence round trip needed)", () => {
+      mockIPC(() => null);
+      const { target, app } = mountMenu();
+      openMenu(target);
+      target.querySelector<HTMLButtonElement>('[data-testid="menu-time-format"]')!.click();
+      flushSync();
+      target.querySelector<HTMLButtonElement>('[data-testid="menu-time-format-seconds"]')!.click();
+      flushSync();
+
+      expect(timeRulerFormatState().current).toBe("seconds");
+      expect(target.querySelector('[data-testid="view-menu"]')).toBeNull();
+
+      unmount(app);
+      target.remove();
+    });
   });
 
   it("Zoom In/Out show the registry's shortcut labels and dispatch the matching actions", () => {

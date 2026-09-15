@@ -104,8 +104,30 @@ export function clampStartSample(
   return Math.min(Math.max(startSample, 0), Math.max(maxStart, 0));
 }
 
-/** One "nice" tick step from the `{1, 2, 5} × 10ⁿ` ladder (SPEC-006 §4.2), in seconds. */
+/** One "nice" tick step from the `{1, 2, 5} × 10ⁿ` ladder (SPEC-006 §4.2). */
 const NICE_STEPS = [1, 2, 5] as const;
+
+/**
+ * The largest step from the `{1, 2, 5} × 10ⁿ` ladder such that `minGap` separates consecutive
+ * ticks (SPEC-006 §4.2) — unit-agnostic: seconds for {@link niceTickStepSeconds}
+ * (`timecode`/`seconds` ruler formats, both a seconds-based ladder per §4.2), samples for
+ * {@link sampleTicks} (the `samples` format's own ladder).
+ */
+function niceStep(minGap: number): number {
+  if (minGap <= 0) {
+    return NICE_STEPS[0];
+  }
+  const exponent = Math.floor(Math.log10(minGap));
+  for (let e = exponent - 1; e <= exponent + 1; e++) {
+    for (const base of NICE_STEPS) {
+      const step = base * 10 ** e;
+      if (step >= minGap) {
+        return step;
+      }
+    }
+  }
+  return NICE_STEPS[0] * 10 ** (exponent + 2);
+}
 
 /**
  * The largest step from the `{1, 2, 5} × 10ⁿ` ladder such that `minGapSeconds` of document time
@@ -113,19 +135,7 @@ const NICE_STEPS = [1, 2, 5] as const;
  * minimum on-screen pixel gap and the current `samplesPerPixel`/`sampleRateHz`.
  */
 export function niceTickStepSeconds(minGapSeconds: number): number {
-  if (minGapSeconds <= 0) {
-    return NICE_STEPS[0];
-  }
-  const exponent = Math.floor(Math.log10(minGapSeconds));
-  for (let e = exponent - 1; e <= exponent + 1; e++) {
-    for (const base of NICE_STEPS) {
-      const step = base * 10 ** e;
-      if (step >= minGapSeconds) {
-        return step;
-      }
-    }
-  }
-  return NICE_STEPS[0] * 10 ** (exponent + 2);
+  return niceStep(minGapSeconds);
 }
 
 /**
@@ -192,10 +202,11 @@ export interface TimeTick {
 }
 
 /**
- * Time-ruler tick positions for the visible range (SPEC-006 §2.5, §4.2, `timecode`/`seconds`
- * format — both use a seconds-based ladder; `samples` format is deferred to hardening). Each
- * tick's `sample` is `round(seconds × sampleRateHz)`, and every label is generated from that same
- * sample via the shared {@link pixelAtSample} — never rounded independently (AC-6).
+ * Time-ruler tick positions for the visible range (SPEC-006 §2.5, §4.2): the `timecode`/
+ * `seconds` formats' shared seconds-based ladder (the `samples` format uses its own ladder
+ * directly in sample space, {@link sampleTicks}). Each tick's `sample` is
+ * `round(seconds × sampleRateHz)`, and every label is generated from that same sample via the
+ * shared {@link pixelAtSample} — never rounded independently (AC-6).
  */
 export function timeTicks(
   startSample: number,
@@ -221,6 +232,38 @@ export function timeTicks(
       continue;
     }
     ticks.push({ sample: Math.round(seconds * sampleRateHz), seconds });
+  }
+  return ticks;
+}
+
+/**
+ * Time-ruler tick positions for the `samples` format (SPEC-006 §2.5/§4.2: "1/2/5×10ⁿ samples for
+ * `samples`") — a ladder directly in sample space, so a tick's position is never a rounded
+ * seconds-domain value: it's exactly `k × step` for an integer sample step, needing no conversion
+ * through `sampleRateHz` at all (AC-6's exactness for free).
+ */
+export function sampleTicks(
+  startSample: number,
+  samplesPerPixel: number,
+  viewportPx: number,
+  minLabelGapPx: number,
+): number[] {
+  if (samplesPerPixel <= 0 || viewportPx <= 0) {
+    return [];
+  }
+  const minGapSamples = minLabelGapPx * samplesPerPixel;
+  // Sample positions are integers; the {1,2,5}×10ⁿ ladder can fall below 1 once zoomed in past
+  // 1 sample/px, so the step is floored at 1 sample.
+  const step = Math.max(1, Math.round(niceStep(minGapSamples)));
+  const endSample = startSample + viewportPx * samplesPerPixel;
+  const firstTick = Math.floor(startSample / step) * step;
+  const ticks: number[] = [];
+  const maxTicks = 10_000;
+  for (let i = 0, sample = firstTick; sample <= endSample + step && i < maxTicks; i++, sample += step) {
+    if (sample < 0) {
+      continue;
+    }
+    ticks.push(sample);
   }
   return ticks;
 }

@@ -1,6 +1,6 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Settings } from "../ipc/bindings";
 import { decideLater, initRecovery, resetRecoveryForTest } from "../recovery/recovery.svelte";
 import { applyRecordStateForTest, resetRecordForTest } from "../state/record.svelte";
@@ -38,13 +38,28 @@ async function setup(options: { recoverable?: boolean; progress?: Settings["tour
   flushSync();
 }
 
+/**
+ * Lets the `WelcomeOffer` component's `delayMs` (always 0 in this file, see `setup`) timer and
+ * any settings/recovery IPC promises it's waiting on resolve, then flushes the resulting DOM
+ * update. H-33: this used to be a real `setTimeout(resolve, 5)` racing the component's own real
+ * `setTimeout(…, delayMs)` — almost always long enough, but under full-suite parallel load (many
+ * worker processes contending for the CPU) Node could occasionally not run the component's timer
+ * within that 5 ms wall-clock window, flaking the "not null" assertions right after. Fake timers
+ * make the wait exact instead of a wall-clock guess: `advanceTimersByTimeAsync` fires every timer
+ * due within that (virtual) window and, being `Async`, also drains the microtask queue between
+ * ticks so the mocked IPC promises in `setup` settle too.
+ */
 async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 5));
+  await vi.advanceTimersByTimeAsync(5);
   flushSync();
 }
 
 const offer = (): HTMLElement | null => document.querySelector('[data-testid="tour-offer"]');
 const button = (id: string): HTMLElement => document.querySelector<HTMLElement>(`[data-testid="${id}"]`)!;
+
+beforeEach(() => {
+  vi.useFakeTimers();
+});
 
 afterEach(() => {
   if (app) {
@@ -58,6 +73,7 @@ afterEach(() => {
   resetRecordForTest();
   resetSettingsStateForTest();
   clearMocks();
+  vi.useRealTimers();
 });
 
 describe("Welcome tour offer (T-709)", () => {

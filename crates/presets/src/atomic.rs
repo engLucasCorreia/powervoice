@@ -36,8 +36,24 @@ fn temp_path(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{name}.tmp-{}", std::process::id()))
 }
 
-/// Preset names under `dir`: the stem of every non-hidden `*.json` file (a leftover atomic-write
-/// temp file starts with `.` and is skipped), sorted. Empty — not an error — when `dir` doesn't
+/// True if `file_name` is a leftover [`write_atomic`] temp file — i.e. it matches exactly the
+/// pattern [`temp_path`] produces (`.<original file name>.tmp-<pid>`): starts with `.` and ends
+/// with `.tmp-` followed by one or more ASCII digits. This is deliberately narrower than "starts
+/// with `.`": a sanitized preset name never starts with `.` (`name::sanitize_preset_name`
+/// replaces leading dots), so in practice this only ever matches real crash leftovers, not a
+/// preset whose sanitized name happens to start with a dot.
+fn is_atomic_temp_leftover(file_name: &str) -> bool {
+    if !file_name.starts_with('.') {
+        return false;
+    }
+    match file_name.rsplit_once(".tmp-") {
+        Some((_, pid)) => !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()),
+        None => false,
+    }
+}
+
+/// Preset names under `dir`: the stem of every `*.json` file that isn't a leftover atomic-write
+/// temp file (see [`is_atomic_temp_leftover`]), sorted. Empty — not an error — when `dir` doesn't
 /// exist yet (no preset has been saved there).
 pub fn list_json_names(dir: &Path) -> Result<Vec<String>, PresetError> {
     let mut names = Vec::new();
@@ -55,7 +71,7 @@ pub fn list_json_names(dir: &Path) -> Result<Vec<String>, PresetError> {
         let Some(file_name) = file_name.to_str() else {
             continue;
         };
-        if file_name.starts_with('.') {
+        if is_atomic_temp_leftover(file_name) {
             continue;
         }
         if let Some(name) = file_name.strip_suffix(".json") {
@@ -135,5 +151,44 @@ mod tests {
     fn listing_a_directory_that_does_not_exist_yet_is_empty_not_an_error() {
         let dir = tmp_dir("missing").join("never-created");
         assert_eq!(list_json_names(&dir).unwrap(), Vec::<String>::new());
+    }
+
+    /// H-33: temp-file detection used to be "any leading `.`", which also hid a legitimately
+    /// dot-prefixed `.json` file (e.g. one written by a future/other tool, or before
+    /// `name::sanitize_preset_name` started stripping leading dots). It must match only the exact
+    /// shape `temp_path` produces: `.<name>.tmp-<all-digits pid>`.
+    #[test]
+    fn only_the_exact_atomic_temp_pattern_is_hidden_not_every_dot_prefixed_file() {
+        assert!(is_atomic_temp_leftover(&format!(
+            ".Real.json.tmp-{}",
+            std::process::id()
+        )));
+        // Not the pattern write_atomic produces: no ".tmp-" marker, or a non-numeric/empty
+        // suffix after it, or no leading dot at all.
+        for not_a_leftover in [
+            ".hidden.json",
+            "..evil.json",
+            ".tmp-not-a-pid.json",
+            ".Foo.json.tmp-",
+            ".Foo.json.tmp-12a",
+            "Real.json.tmp-123",
+        ] {
+            assert!(
+                !is_atomic_temp_leftover(not_a_leftover),
+                "{not_a_leftover:?} should not be treated as a temp leftover"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dot_prefixed_json_file_that_is_not_a_temp_leftover_is_listed() {
+        let dir = tmp_dir("dot-prefixed-real-file");
+        // Not something sanitize_preset_name would produce any more (H-33), but list_json_names
+        // must not conflate "starts with a dot" with "is a crash leftover" — only the exact
+        // write_atomic temp pattern is special.
+        std::fs::write(dir.join("..evil.json"), b"{}").unwrap();
+        let names = list_json_names(&dir).unwrap();
+        assert_eq!(names, vec!["..evil".to_owned()]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

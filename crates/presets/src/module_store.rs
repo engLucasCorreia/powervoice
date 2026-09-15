@@ -320,6 +320,33 @@ mod tests {
         assert_eq!(entries.len(), 1, "{entries:?}");
     }
 
+    /// H-33: `sanitize_preset_name("../../evil")` used to produce a name starting with `.`
+    /// (`".._.._evil"`), which saved fine but then `list_json_names` hid it as if it were an
+    /// atomic-write temp file — the preset existed on disk but never showed up in the UI's preset
+    /// menu. Prove the full round trip: save a traversal-like name, see it in `list`, `load` it
+    /// back by the name `save` returned.
+    #[test]
+    fn traversal_like_name_round_trips_through_save_list_and_load() {
+        let store = ModulePresetStore::new(tmp_dir("traversal-round-trip"));
+        let saved_name = store
+            .save(
+                "org.powervoice.gain",
+                "../../evil",
+                &state(&[("gain_db", 2.0)]),
+            )
+            .unwrap();
+        assert!(
+            !saved_name.starts_with('.'),
+            "sanitized name {saved_name:?} must not start with '.'"
+        );
+        assert_eq!(
+            store.list("org.powervoice.gain").unwrap(),
+            vec![saved_name.clone()]
+        );
+        let loaded = store.load("org.powervoice.gain", &saved_name).unwrap();
+        assert_eq!(loaded.params["gain_db"], 2.0);
+    }
+
     #[test]
     fn corrupt_json_is_reported_as_corrupt_not_a_panic() {
         let root = tmp_dir("corrupt");

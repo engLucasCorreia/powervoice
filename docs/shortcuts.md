@@ -15,6 +15,7 @@ menus becomes ⌘ — every table below shows both.
 | Play / pause | `Space` | `Space` |
 | Play from start | `Shift+Space` | `⇧Space` |
 | Return to start | `Home` | `Home` |
+| Loop playback on/off | `Ctrl+L` | `⌘L` |
 | Record (start/stop) — provisional binding | `Shift+R` | `⇧R` |
 | Add marker | `M` | `M` |
 | Undo | `Ctrl+Z` | `⌘Z` |

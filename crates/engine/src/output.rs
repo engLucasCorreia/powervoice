@@ -11,6 +11,13 @@
 //! when that sample is heard, not when it enters the rack. While the monitor feeds the rack, a transport restart skips the rack reset: the live
 //! input keeps flowing through it, so a reset would cut the talent's monitored voice.
 //!
+//! H-37 (SPEC-003 §2.1, ADR-002 §8 and Amendment 3): a loop wrap ([`packet_flags::LOOP_WRAP`])
+//! is seamless — no fade, no rack reset (the rack's tails continue across the seam). A small
+//! preallocated history of where the rack input started or jumped (`(rack frame, document
+//! position)`) maps the heard position back into the loop end for one rack latency after a wrap,
+//! instead of clamping it at the play start. Loop turned off mid-pass ends playback at the next
+//! wrap (the old loop end).
+//!
 //! T-304 (SPEC-022 §2.14, §4.7, §4.10): during a calibration run the preallocated sweep is mixed
 //! in after the rack (5 repetitions, 1.6 s apart); the heard time of each repetition's first
 //! sample leaves through the RT event ring. Its state is a read index and a flag.
@@ -85,6 +92,65 @@ enum Next {
     Empty,
 }
 
+/// Marks kept for the heard-position mapping (at least one rack latency of loop passes; a loop
+/// is ≥ 10 ms, so 128 marks cover ≥ 1.28 s of latency).
+const HISTORY: usize = 128;
+
+/// Where the rack input (re)started (`start`: a play/seek start) or jumped (a loop wrap):
+/// rack input frame `frame` carries document position `doc`.
+#[derive(Clone, Copy, Debug, Default)]
+struct Mark {
+    frame: u64,
+    doc: u64,
+    start: bool,
+}
+
+/// A fixed ring of the latest [`Mark`]s (no allocation after construction).
+struct History {
+    marks: [Mark; HISTORY],
+    /// Index of the next write.
+    head: usize,
+    len: usize,
+}
+
+impl History {
+    fn new() -> Self {
+        Self {
+            marks: [Mark::default(); HISTORY],
+            head: 0,
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, m: Mark) {
+        self.marks[self.head] = m;
+        self.head = (self.head + 1) % HISTORY;
+        self.len = (self.len + 1).min(HISTORY);
+    }
+
+    /// The document position heard when rack input frame `h` (= first frame − rack latency)
+    /// leaves the rack. `now_pos` is the position entering the rack at the first frame and
+    /// `latency_doc` the rack latency in document samples (ADR-002 §8's `p_in − L_rack`, which
+    /// holds inside the newest segment). An older segment maps exactly; a frame before the
+    /// current play start clamps to it ("at least the play start").
+    fn heard(&self, h: i128, now_pos: u64, latency_doc: u64, doc_rate: u64, dev_rate: u64) -> u64 {
+        for i in 0..self.len {
+            let m = self.marks[(self.head + HISTORY - 1 - i) % HISTORY];
+            if i128::from(m.frame) <= h {
+                if i == 0 {
+                    return now_pos.saturating_sub(latency_doc).max(m.doc);
+                }
+                let into = u64::try_from(h - i128::from(m.frame)).unwrap_or(0);
+                return m.doc + into * doc_rate / dev_rate.max(1);
+            }
+            if m.start {
+                return m.doc;
+            }
+        }
+        now_pos.saturating_sub(latency_doc)
+    }
+}
+
 struct State {
     mode: Mode,
     /// Epoch whose packets are played.
@@ -116,6 +182,12 @@ struct State {
     calib_pos: Option<u64>,
     /// T-304: frames between calibration repetition starts (1.6 s).
     calib_spacing: u64,
+    /// H-37: rack input frames so far (the index of the frame being produced).
+    frame: u64,
+    /// H-37: recent starts and loop wraps of the rack input, for the heard position.
+    history: History,
+    /// H-37: loop was turned off mid-pass — the next [`packet_flags::LOOP_WRAP`] ends playback.
+    end_at_wrap: bool,
 }
 
 fn emit(parts: &mut OutputParts, e: RtEvent) {
@@ -161,6 +233,7 @@ impl State {
         ) {
             // The end of the previous pass comes first, whatever the rack still holds.
             self.flush_end(parts, 0, true);
+            self.end_at_wrap = false;
         }
         match cmd {
             AudioCmd::Play { epoch, pos, reset } => self.start(epoch, pos, reset),
@@ -204,6 +277,7 @@ impl State {
             } => parts
                 .monitor
                 .command(tap, in_rate_hz, target_frames, ending),
+            AudioCmd::SetLoop { finish_pass } => self.end_at_wrap = finish_pass,
             AudioCmd::Calibrate { start } => {
                 if start {
                     self.calib_pos = Some(0);
@@ -256,6 +330,11 @@ impl State {
             }
             self.mode = Mode::Playing;
             self.gain = 0.0;
+            self.history.push(Mark {
+                frame: self.frame,
+                doc: self.start_pos,
+                start: true,
+            });
         }
     }
 
@@ -286,7 +365,20 @@ impl State {
                     self.next_pos = p.doc_pos;
                     return Next::End;
                 }
+                Ok(_) if flags & packet_flags::LOOP_WRAP != 0 && self.end_at_wrap => {
+                    // SPEC-003 §2.1: loop off — the pass just played was the last; `next_pos`
+                    // is the old loop end.
+                    self.has_cur = false;
+                    return Next::End;
+                }
                 Ok(p) => {
+                    if flags & packet_flags::LOOP_WRAP != 0 {
+                        self.history.push(Mark {
+                            frame: self.frame,
+                            doc: p.doc_pos,
+                            start: false,
+                        });
+                    }
                     self.cur = p;
                     self.cur_off = 0;
                     self.has_cur = true;
@@ -449,6 +541,9 @@ impl OutputCb {
                 rack_out: vec![0.0; max_block],
                 calib_pos: None,
                 calib_spacing: vox_dsp::calibration::spacing_frames(dev_rate_hz.max(1)),
+                frame: 0,
+                history: History::new(),
+                end_at_wrap: false,
             },
             parts: Some(parts),
             slot,
@@ -483,10 +578,10 @@ impl OutputCallback for OutputCb {
         let latency = u64::from(parts.live.latency_samples());
         let latency_doc = (latency * st.doc_rate + st.dev_rate / 2) / st.dev_rate;
         let block_epoch = st.epoch;
-        let block_start = st.start_pos;
         let heard_time_ns = ts.to_app_ns(ts.playback_ns);
         let dev_rate = u32::try_from(st.dev_rate).unwrap_or(u32::MAX);
         let mut first_pos: Option<u64> = None;
+        let mut first_frame = 0u64;
         let mut peak = 0.0f32;
         let mut sum_sq = 0.0f64;
         let mut done = 0;
@@ -506,9 +601,11 @@ impl OutputCallback for OutputCb {
             let sub_pos = playing.then_some(st.next_pos);
             if first_pos.is_none() {
                 first_pos = sub_pos;
+                first_frame = st.frame;
             }
             for i in 0..n {
                 st.rack_in[i] = st.sample(parts);
+                st.frame += 1;
             }
             // T-107 (SPEC-002 §2.7): the Through-rack tap joins the playback at the rack input.
             parts.monitor.render(n);
@@ -549,13 +646,16 @@ impl OutputCallback for OutputCb {
             st.underrun = false;
             parts.counters.underruns.fetch_add(1, Ordering::Relaxed);
         }
+        // ADR-002 §8: `heard_pos = p_in − L_rack`, mapped through the recent starts and loop
+        // wraps (H-37) so a position heard just after a wrap is the loop end, not the play start.
         let heard_pos = first_pos.map(|p| {
-            let start = if block_epoch == st.epoch {
-                block_start
+            if block_epoch == st.epoch {
+                let h = i128::from(first_frame) - i128::from(latency);
+                st.history
+                    .heard(h, p, latency_doc, st.doc_rate, st.dev_rate)
             } else {
-                0
-            };
-            p.saturating_sub(latency_doc).max(start)
+                p.saturating_sub(latency_doc)
+            }
         });
         emit(
             parts,

@@ -8,6 +8,7 @@
  */
 
 import { pixelAtSample } from "../waveform/coords";
+import { LOOP_STRIP_PX, loopGeometry } from "./loopOverlay";
 import { QuadBatch, type Rgba } from "./quads";
 
 export interface OverlayMarker {
@@ -20,6 +21,8 @@ export interface OverlayColors {
   marker: Rgba;
   markerRegionFill: Rgba;
   playhead: Rgba;
+  /** H-37: the loop brace/boundaries (required when `loop` is set). */
+  loop?: Rgba;
 }
 
 export interface OverlayInput {
@@ -28,6 +31,10 @@ export interface OverlayInput {
   viewportPx: number;
   heightPx: number;
   selection: { startSample: number; endSample: number } | null;
+  /** H-37: the active loop region (`null`/absent: not looping). */
+  loop?: { startSample: number; endSample: number } | null;
+  /** H-37: the loop brace strip's height in this batch's pixel space. Default `LOOP_STRIP_PX`. */
+  loopStripPx?: number;
   markers: readonly OverlayMarker[];
   /** `null` hides the playhead (e.g. no document open). */
   playheadSample: number | null;
@@ -60,6 +67,17 @@ export function buildOverlayBatch(input: OverlayInput): QuadBatch {
     const x0 = Math.max(0, pixelAtSample(input.selection.startSample, startSample, samplesPerPixel));
     const x1 = Math.min(viewportPx, pixelAtSample(input.selection.endSample, startSample, samplesPerPixel));
     batch.rect(x0, 0, x1, heightPx, colors.selectionFill);
+  }
+
+  if (input.loop && colors.loop) {
+    const geometry = loopGeometry(input.loop, startSample, samplesPerPixel, viewportPx);
+    if (geometry.strip) {
+      const stripPx = Math.min(input.loopStripPx ?? LOOP_STRIP_PX, heightPx);
+      batch.rect(geometry.strip.x0, 0, geometry.strip.x1, stripPx, colors.loop);
+    }
+    for (const px of geometry.lines) {
+      batch.vLine(px, 0, heightPx, colors.loop, lineWidthPx);
+    }
   }
 
   for (const marker of input.markers) {

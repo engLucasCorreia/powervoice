@@ -155,6 +155,8 @@
   "transport.stop": "Stop",
   "transport.play_from_start": "Play from start",
   "transport.return_to_start": "Return to start",
+  "transport.loop": "Loop playback",
+  "transport.loop_inert": "Loop playback — select a time range to loop",
 
   "meter.output": "Output level",
   "meter.peak": "Peak {value} dBFS",
@@ -1200,6 +1202,7 @@
   "shortcut.transport.play_pause": "Play / pause",
   "shortcut.transport.play_from_start": "Play from start",
   "shortcut.transport.return_to_start": "Return to start",
+  "shortcut.transport.toggle_loop": "Loop playback on/off",
   "shortcut.record.toggle": "Record (start/stop) — provisional binding",
   "shortcut.marker.add": "Add marker",
   "shortcut.marker.delete_selected": "Delete selected marker(s)",

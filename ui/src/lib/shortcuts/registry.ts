@@ -75,6 +75,9 @@ export interface ShortcutDef extends KeyBinding {
  *   automated fetch, and the only other source found (tutorialtactic) claims Shift+Space "(in
  *   record mode)", which is the same owner-overridden ambiguity — so Shift+R stays, still
  *   provisional, not contradicted by anything with better sourcing).
+ * - Ctrl/⌘+L = Loop playback toggle (H-37, SPEC-003 §2.5 amendment): Audition's default per the
+ *   secondary sources checked (killerkeys, Prism Multimedia); helpx.adobe.com still 403s. Ctrl+L
+ *   was unbound in PowerVoice.
  * - M = add marker. Ctrl/⌘+Z = undo, Ctrl/⌘+Shift+Z = redo. Ctrl/⌘+O/S/Shift+S = open/save/save as.
  * - `=`/`-` = waveform zoom in/out (horizontal). H-35: `Alt+=`/`Alt+-` = vertical (amplitude) zoom
  *   in/out — **Verified** against Audition by the same two sources as horizontal `=`/`-`
@@ -114,6 +117,13 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     code: "Home",
     scope: "global",
     labelKey: "shortcut.transport.return_to_start",
+  },
+  {
+    action: "transport.toggle_loop",
+    code: "KeyL",
+    mod: true,
+    scope: "global",
+    labelKey: "shortcut.transport.toggle_loop",
   },
   { action: "record.toggle", code: "KeyR", shift: true, scope: "global", labelKey: "shortcut.record.toggle" },
   { action: "marker.add", code: "KeyM", scope: "global", labelKey: "shortcut.marker.add" },

@@ -587,3 +587,19 @@ component tests), golden `VXPK` fixtures extended with `PARTIAL`/stale-`audio_re
 - Multi-document/tabs, remappable shortcuts (PROMPT §2, locked out of v1).
 - Exact theme token color values (§2.12) — a design-tokens artifact belonging to the implementing
   ticket, not this behavior spec.
+
+
+## Amendment 1 — H-37 loop region display (2026-09-15, autonomous)
+
+- **§2.12 gains one token, `--wave-loop`** (dark `#c9a0ff`, light `#7c4ddb`, high contrast
+  `#e0c2ff`): the loop region's colour, distinct from the selection accent, playhead, markers and
+  record red.
+- **While looping** (Loop on with an effective region — the engine's `loop_range`, SPEC-003
+  Amendment 1), the waveform and spectral panes draw a **3 px brace strip along the top edge**
+  from the loop start to the loop end plus a **boundary line at each end** (content stroke width),
+  over the selection fill (the region itself is the selection, already shaded); the shared time
+  ruler shows a **3 px bar along its bottom edge** over the same span. One geometry helper
+  (`render/loopOverlay.ts`) serves the WebGL2 and Canvas2D paths of both panes.
+- **§2.8 follow at a wrap:** the displayed playhead jumps from the loop end back to the loop start
+  (SPEC-003 §2.2 amendment); band-follow treats it like any jump — when the loop is longer than the
+  view, the view reframes in that frame so the loop start sits on the band's leading edge.

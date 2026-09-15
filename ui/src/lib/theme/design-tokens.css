@@ -120,6 +120,7 @@
   --wave-record: var(--pv-record); /* the take being recorded */
   --wave-record-head: var(--pv-record);
   --wave-punch-region: rgba(255, 79, 86, 0.12);
+  --wave-loop: #c9a0ff; /* H-37: the loop region's brace and boundaries (SPEC-006 §2.12 amendment) */
 
   /* Spectral pane (SPEC-007 §4.7). The well stays dark in every theme: the colormaps start at
      black, so Inferno (the default) reads the same in Dark, Light and High Contrast. */
@@ -248,6 +249,7 @@
   --wave-record: var(--pv-record);
   --wave-record-head: var(--pv-record);
   --wave-punch-region: rgba(224, 38, 46, 0.1);
+  --wave-loop: #7c4ddb;
 
   --spec-bg: #0d0e10;
   --spec-pending: #232630;
@@ -372,6 +374,7 @@
   --wave-record: var(--pv-record);
   --wave-record-head: var(--pv-record);
   --wave-punch-region: rgba(255, 90, 96, 0.2);
+  --wave-loop: #e0c2ff;
 
   --spec-bg: #000000;
   --spec-pending: #1c1f24;

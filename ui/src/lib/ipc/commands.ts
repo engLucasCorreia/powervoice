@@ -106,6 +106,16 @@ export async function transportSeek(positionSamples: number): Promise<TransportS
   return invoke<TransportStateDto>("transport_seek" satisfies CommandName, { positionSamples });
 }
 
+/** H-37 (SPEC-003 §2.1): the Loop toggle. */
+export async function transportSetLoop(enabled: boolean): Promise<TransportStateDto> {
+  return invoke<TransportStateDto>("transport_set_loop" satisfies CommandName, { enabled });
+}
+
+/** H-37: the time selection `[start, end)` (`null`: none) — Play from start and the loop region. */
+export async function transportSetSelection(selection: [number, number] | null): Promise<TransportStateDto> {
+  return invoke<TransportStateDto>("transport_set_selection" satisfies CommandName, { selection });
+}
+
 /** S1-01: binary `VXTM` telemetry frames at 60 Hz (ADR-003 §2) on `channel`. */
 export async function telemetrySubscribe(channel: Channel<ArrayBuffer>): Promise<void> {
   return invoke<void>("telemetry_subscribe" satisfies CommandName, { channel });

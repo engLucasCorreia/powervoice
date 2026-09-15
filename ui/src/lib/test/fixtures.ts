@@ -157,6 +157,8 @@ export function transportStateDto(overrides: Partial<TransportStateDto> = {}): T
     doc_len_samples: 0,
     doc_rate_hz: 48_000,
     can_play: false,
+    loop_enabled: false,
+    loop_range: null,
     ...overrides,
   };
 }

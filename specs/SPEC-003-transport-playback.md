@@ -245,3 +245,47 @@ loop-toggle key is assigned in SPEC-019. Original questions:
    keep/drop that binding.
 3. Loop Playback's default shortcut is unverified (no source found any binding at all) — assign a
    PowerVoice-specific key, or leave loop toggle mouse/menu-only for v1?
+
+
+## Amendment 1 — H-37 loop playback, as implemented (2026-09-15, autonomous)
+
+Conservative, Audition-like readings of what §2.1/§3/§4/AC-4 left open or contradicted:
+
+- **Loop region = the live time selection.** While Loop is on, the loop region is the current
+  selection; the UI syncs every selection change to the engine (`transport_set_selection`, which
+  also feeds Play from start — the engine's selection was a never-called stub before). A change
+  during playback applies from the reader's read position (≤ ~200 ms ahead of what is heard). A
+  selection shorter than **10 ms** is inert, like no selection. Clearing the selection during looped
+  playback lets playback continue normally past the old loop end.
+- **Where looping applies.** Playback wraps when it reaches the loop end from before it: a Play
+  before S plays into the loop, a Play at or after E plays on to the document end without looping.
+  Turning Loop **on** mid-play wraps at E when the read position is still before E.
+- **Loop off mid-play** (§2.1's "lets the current pass finish and then stop advancing past the old
+  loop end"): the pass being heard finishes, then playback **stops at the old loop end** with Pause
+  semantics (the playhead stays at E, like the document end; the end is reported once the rack has
+  drained, T-401). If the reader already queued the next pass, the output callback ends at that
+  pass's first packet. Re-enabling Loop within the reader's read-ahead of the end may not cancel
+  the stop.
+- **The seam** is a hard cut with no crossfade (AC-4) and is **seamless**: no fade, no epoch
+  change, and — **superseding §4 "Loop wrap" and AC-4's reset clause — no rack reset**. The rack
+  processes the looped stream continuously, so tails (reverb, delay lines, lookahead) run into the
+  next pass, as in Audition. The reader flags the first packet of a pass `LOOP_WRAP` (not
+  `DISCONTINUITY`). AC-4's last sentence now reads: *With a non-empty rack, the rack is not reset at
+  a seam: through an exact delay module the output is the looped stream delayed by the module's
+  latency across every seam.*
+- **Heard position (§4 "Transport clock").** `heard_pos = p_in − L_rack` is mapped through a small
+  preallocated history of the rack input's recent starts and loop wraps, so for one rack latency
+  after a wrap the playhead reads the end of the previous pass, not the play start. The "clamped to
+  at least the play start" rule applies to the current play/seek start only.
+- **Display (§2.2).** The extrapolated position wraps inside the engine's effective loop range
+  (`TransportState.loop_range`) once it passes the loop end, so the playhead jumps back to S at the
+  seam by itself and the post-wrap anchor agrees with the prediction (§4's "a loop wrap is a jump"
+  is superseded: at most a slew). Telemetry sets `VXTM` `LOOPING` while playing a loop.
+- **Shortcut (§2.5 "Loop Playback toggle" row, and open question 3):** **Ctrl/⌘+L**, Audition's
+  default per the secondary sources checked (killerkeys, Prism Multimedia); the official Adobe page
+  still refuses automated fetches. The toolbar's Loop button (after Play from start) shows the
+  pressed state; while Loop is on without a usable selection its tooltip says to select a range.
+- **Device-rate mismatch (§2.4).** The reader resamples the looped stream without resetting the
+  resampler at the seam, so the resampled output stays continuous; packet positions follow the
+  exact input-time of each device frame, so the playhead does not drift over passes.
+- **Export and bake** render the document range and never loop.

@@ -8,6 +8,9 @@
 //! - **Return to start** seeks to 0 (keeps playing when playing).
 //! - **Seek** while playing restarts at the new position (fade-out, rack reset, fade-in).
 //! - Engine-initiated stops (device loss, new document, document end) behave like Pause.
+//! - **Loop** (H-37, SPEC-003 §2.1/§3): a toggle; while on, the effective loop region is the
+//!   time selection (inert without one, or when shorter than the minimum). The document end and
+//!   the end of a pass after loop off both stop at their position (Pause semantics).
 
 /// A transport command (UI → engine).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +47,10 @@ pub struct TransportState {
     pub doc_rate_hz: u32,
     /// A document is loaded and an output stream is open.
     pub can_play: bool,
+    /// H-37: the Loop toggle.
+    pub loop_enabled: bool,
+    /// H-37: the effective loop region `[start, end)` (loop on and a long-enough selection).
+    pub loop_range: Option<(u64, u64)>,
 }
 
 /// What the control thread must do after a command.
@@ -74,6 +81,8 @@ pub(crate) struct Transport {
     rack_pos: Option<u64>,
     /// A stop fade whose final position is still to come.
     awaiting: Option<(u32, StopKind)>,
+    /// H-37: the Loop toggle.
+    loop_enabled: bool,
 }
 
 impl Transport {
@@ -99,6 +108,25 @@ impl Transport {
 
     pub(crate) fn len(&self) -> u64 {
         self.len
+    }
+
+    pub(crate) fn loop_enabled(&self) -> bool {
+        self.loop_enabled
+    }
+
+    /// H-37: sets the Loop toggle.
+    pub(crate) fn set_loop_enabled(&mut self, on: bool) {
+        self.loop_enabled = on;
+    }
+
+    /// H-37 (SPEC-003 §3): the effective loop region — the selection while loop is on, when it
+    /// is at least `min_len` samples long (`None`: loop is inert).
+    pub(crate) fn loop_region(&self, min_len: u64) -> Option<(u64, u64)> {
+        if !self.loop_enabled {
+            return None;
+        }
+        self.selection
+            .filter(|&(s, e)| e > s && e - s >= min_len.max(1))
     }
 
     /// Applies `cmd`. `heard`: the heard position now (for Pause); `alive`: the output stream
@@ -216,7 +244,8 @@ impl Transport {
     pub(crate) fn on_ended(&mut self, epoch: u32, pos: u64) -> bool {
         if self.playing && epoch == self.epoch {
             self.playing = false;
-            self.playhead = self.len;
+            // The document end, or (H-37) the old loop end after loop off.
+            self.playhead = pos.min(self.len);
             self.rack_pos = Some(pos);
             self.awaiting = None;
             return true;
@@ -233,19 +262,24 @@ impl Transport {
         self.rack_pos = None;
     }
 
-    /// A new document (length `len`); the caller stopped playback first.
+    /// A new document or revision (length `len`); the caller stopped playback first. The
+    /// selection is the UI's (H-37: it syncs every change), so it is only clamped here.
     pub(crate) fn set_doc(&mut self, len: u64) {
         self.len = len;
         self.playhead = self.playhead.min(len);
         self.play_start = self.play_start.min(len);
         self.display_pos = self.display_pos.min(len);
         self.rack_pos = None;
-        self.selection = None;
+        let sel = self.selection;
+        self.set_selection(sel);
     }
 
-    /// The time selection (stub until the waveform view exists).
+    /// The time selection (Play from start, the loop region), clamped to the document; an
+    /// empty one is none.
     pub(crate) fn set_selection(&mut self, sel: Option<(u64, u64)>) {
-        self.selection = sel.map(|(a, b)| (a.min(b).min(self.len), a.max(b).min(self.len)));
+        self.selection = sel
+            .map(|(a, b)| (a.min(b).min(self.len), a.max(b).min(self.len)))
+            .filter(|&(a, b)| b > a);
     }
 }
 
@@ -339,5 +373,43 @@ mod tests {
             })
         );
         assert_eq!(doc(0).command(Play, true, 0, true), None, "empty document");
+    }
+
+    /// H-37 (SPEC-003 §2.1/§3): the loop region is the selection while loop is on; inert
+    /// without one or below the minimum length; a document change clamps (not clears) it.
+    #[test]
+    fn loop_region_follows_the_toggle_and_the_selection() {
+        let mut t = doc(10_000);
+        t.set_selection(Some((6_000, 2_000)));
+        assert_eq!(t.loop_region(480), None, "loop off");
+        t.set_loop_enabled(true);
+        assert_eq!(t.loop_region(480), Some((2_000, 6_000)));
+        assert_eq!(t.loop_region(4_001), None, "shorter than the minimum");
+        t.set_doc(5_000);
+        assert_eq!(
+            t.loop_region(480),
+            Some((2_000, 5_000)),
+            "clamped to the new length"
+        );
+        t.set_doc(1_000);
+        assert_eq!(
+            t.loop_region(1),
+            None,
+            "the selection fell outside the document"
+        );
+        t.set_selection(None);
+        assert_eq!(t.loop_region(1), None, "no selection: inert");
+        t.set_loop_enabled(false);
+        assert!(!t.loop_enabled());
+    }
+
+    /// H-37: the end of a pass after loop off stops at its position (Pause semantics).
+    #[test]
+    fn an_end_before_the_document_end_keeps_its_position() {
+        let mut t = doc(10_000);
+        t.command(Play, true, 0, true);
+        assert!(t.on_ended(1, 6_000));
+        assert_eq!(t.playhead(), 6_000);
+        assert!(!t.playing());
     }
 }

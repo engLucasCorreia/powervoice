@@ -119,6 +119,27 @@ pub async fn transport_seek(
     transport(&engine, TransportCommand::Seek(position_samples)).await
 }
 
+/// H-37 (SPEC-003 §2.1): the Loop toggle. Off during looped playback lets the pass finish.
+#[tauri::command]
+pub async fn transport_set_loop(
+    engine: State<'_, AudioEngine>,
+    enabled: bool,
+) -> Result<TransportStateDto, IpcError> {
+    let state = blocking(&engine, move |h| h.set_loop(enabled)).await?;
+    Ok(TransportStateDto::from(&state))
+}
+
+/// H-37: the UI's time selection `[start, end)` (`null`: none) — Play from start's position
+/// and, while loop is on, the loop region.
+#[tauri::command]
+pub async fn transport_set_selection(
+    engine: State<'_, AudioEngine>,
+    selection: Option<(u64, u64)>,
+) -> Result<TransportStateDto, IpcError> {
+    let state = blocking(&engine, move |h| h.set_selection(selection)).await?;
+    Ok(TransportStateDto::from(&state))
+}
+
 /// Streams binary `VXTM` frames (playhead anchor + output meter) at 60 Hz over `channel`,
 /// replacing any previous subscriber.
 #[tauri::command]

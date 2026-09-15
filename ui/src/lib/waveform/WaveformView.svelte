@@ -62,6 +62,7 @@
   import { buildOverlayBatch } from "../render/overlayGeometry";
   import { QuadBatch } from "../render/quads";
   import { crispOffset, themeColors } from "../theme/themeColors";
+  import { LOOP_STRIP_PX, loopFromRange, loopGeometry } from "../render/loopOverlay";
   import { pushNotice } from "../state/notices.svelte";
   import { rendererPref } from "../state/rendererPref.svelte";
   import { decodeVxpk } from "./vxpk";
@@ -529,6 +530,7 @@
       viewportPx,
       heightPx,
       selection: selection.current,
+      loop: loopFromRange(transport.state.loop_range),
       markers: markerList,
       playheadSample: isOpen ? transport.playheadSamples : null,
       lineWidthPx: themeColors().strokePx,
@@ -537,6 +539,7 @@
         marker: themeColors().wave.marker.rgba,
         markerRegionFill: themeColors().wave.markerRegion.rgba,
         playhead: themeColors().wave.playhead.rgba,
+        loop: themeColors().wave.loop.rgba,
       },
     });
   }
@@ -595,6 +598,7 @@
       fillColumns(ctx, cols.base, themeColors().wave.fill.css, centerY, vz);
       fillColumns(ctx, cols.take, themeColors().wave.record.css, centerY, vz);
       drawSelection(ctx);
+      drawLoop(ctx);
       drawMarkers(ctx, opMarkers(layout, markers.list, isTakeMarker));
       drawPlayhead(ctx, centerY);
       const headPx = pixelAtSample(layout.at + layout.takeLen, startSample, samplesPerPixel);
@@ -620,6 +624,7 @@
       ctx.fillRect(0, 0, viewportPx, heightPx);
     }
     drawSelection(ctx);
+    drawLoop(ctx);
     drawMarkers(ctx);
     drawPlayhead(ctx, centerY);
     ctx.restore();
@@ -674,6 +679,27 @@
   }
 
   /** The time selection (S2-01, SPEC-006 §2.1/§2.9), clipped to the visible viewport. */
+  /** H-37 (SPEC-006 §2.12 amendment): the loop brace and boundaries while looping. */
+  function drawLoop(ctx: CanvasRenderingContext2D): void {
+    const loop = loopFromRange(transport.state.loop_range);
+    if (!loop) {
+      return;
+    }
+    const geometry = loopGeometry(loop, startSample, samplesPerPixel, viewportPx);
+    ctx.fillStyle = themeColors().wave.loop.css;
+    if (geometry.strip) {
+      ctx.fillRect(geometry.strip.x0, 0, geometry.strip.x1 - geometry.strip.x0, LOOP_STRIP_PX);
+    }
+    ctx.strokeStyle = themeColors().wave.loop.css;
+    ctx.lineWidth = themeColors().strokePx;
+    for (const px of geometry.lines) {
+      ctx.beginPath();
+      ctx.moveTo(px + crispOffset(ctx.lineWidth), 0);
+      ctx.lineTo(px + crispOffset(ctx.lineWidth), heightPx);
+      ctx.stroke();
+    }
+  }
+
   function drawSelection(ctx: CanvasRenderingContext2D): void {
     const sel = selection.current;
     if (!sel) {

@@ -42,6 +42,8 @@ export interface ThemeColors {
     readonly record: ThemeColor;
     readonly recordHead: ThemeColor;
     readonly punchRegion: ThemeColor;
+    /** H-37: the loop region's brace (top strip, ruler bar) and boundary lines. */
+    readonly loop: ThemeColor;
   };
   readonly spec: {
     readonly bg: ThemeColor;
@@ -120,6 +122,7 @@ export function readThemeColors(theme: ResolvedTheme): ThemeColors {
       record: color("--wave-record"),
       recordHead: color("--wave-record-head"),
       punchRegion: color("--wave-punch-region"),
+      loop: color("--wave-loop"),
     },
     spec: {
       bg: color("--spec-bg"),

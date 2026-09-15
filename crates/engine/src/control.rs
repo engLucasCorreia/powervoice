@@ -58,7 +58,8 @@ use crate::record::{
     RecordState, StopReason,
 };
 use crate::rt::{
-    AUDIO_CMD_CAPACITY, AudioCmd, PLAYBACK_RING_PACKETS, RT_EVENT_CAPACITY, RtCounters, RtEvent,
+    AUDIO_CMD_CAPACITY, AudioCmd, MIN_LOOP_MS, PLAYBACK_RING_PACKETS, RT_EVENT_CAPACITY,
+    RtCounters, RtEvent,
 };
 use crate::telemetry::{
     InputMeter, Meter, ModuleTelemetryPublisher, ModuleTelemetrySink, TelemetryFrame,
@@ -399,6 +400,8 @@ pub(crate) struct Control {
     /// `analyzer` actually publish, independent of the fixed 60 Hz control tick.
     rate_gate: TelemetryRateGate,
     last_state: Option<TransportState>,
+    /// H-37: the loop region last sent to the reader and the output callback.
+    loop_sent: Option<(u64, u64)>,
     // --- Input / recording (S1-04) ---
     /// Capture-writer on its own thread (`Engine`) or inline in the tick (`ManualEngine`).
     threaded: bool,
@@ -525,6 +528,7 @@ impl Control {
             // SPEC-003 §3 factory default: 60 Hz (matches `AnalyzerPublisher::default`'s rate).
             rate_gate: TelemetryRateGate::new(60),
             last_state: None,
+            loop_sent: None,
             threaded,
             in_device_id: None,
             input: None,
@@ -640,7 +644,30 @@ impl Control {
             doc_len_samples: self.transport.len(),
             doc_rate_hz: self.doc_rate(),
             can_play: self.can_play(),
+            loop_enabled: self.transport.loop_enabled(),
+            loop_range: self.loop_region(),
         }
+    }
+
+    /// H-37 (SPEC-003 §3): the effective loop region (≥ `MIN_LOOP_MS` at the document rate).
+    fn loop_region(&self) -> Option<(u64, u64)> {
+        let min_len = u64::from(self.doc_rate()) * MIN_LOOP_MS / 1000;
+        self.transport.loop_region(min_len)
+    }
+
+    /// H-37: hands a changed loop region to the reader and the output callback. `finish`: loop
+    /// was turned off — during playback, the pass being played ends at the old loop end.
+    fn sync_loop(&mut self, finish: bool) {
+        let region = self.loop_region();
+        if region == self.loop_sent {
+            return;
+        }
+        let finish = finish && self.loop_sent.is_some() && self.transport.playing();
+        self.loop_sent = region;
+        self.reader_send(ReaderCmd::SetLoop { region, finish });
+        self.audio_cmd(AudioCmd::SetLoop {
+            finish_pass: finish,
+        });
     }
 
     fn emit_state_if_changed(&mut self) {
@@ -660,7 +687,15 @@ impl Control {
             Some(a) if a.epoch == self.transport.epoch() => {
                 let rate = i128::from(self.doc_rate());
                 let dt = i128::from(now) - i128::from(a.time_ns);
-                let p = i128::from(a.pos) + dt * rate / 1_000_000_000;
+                let mut p = i128::from(a.pos) + dt * rate / 1_000_000_000;
+                // H-37 (SPEC-003 §2.2): wrapped inside the loop range when looping.
+                if let Some((s, e)) = self.loop_region()
+                    && a.pos < e
+                    && p >= i128::from(e)
+                {
+                    let (s, e) = (i128::from(s), i128::from(e));
+                    p = s + (p - e).rem_euclid(e - s);
+                }
                 let lo = i128::from(self.transport.display_pos().min(a.pos));
                 p.clamp(lo, i128::from(self.transport.len()).max(lo)) as u64
             }
@@ -733,8 +768,22 @@ impl Control {
         }
     }
 
-    pub(crate) fn set_selection(&mut self, sel: Option<(u64, u64)>) {
+    /// The UI's time selection (Play from start; H-37: the loop region while loop is on).
+    pub(crate) fn set_selection(&mut self, sel: Option<(u64, u64)>) -> TransportState {
         self.transport.set_selection(sel);
+        self.sync_loop(false);
+        self.emit_state_if_changed();
+        self.transport_state()
+    }
+
+    /// H-37 (SPEC-003 §2.1): the Loop toggle. Turning it off during looped playback lets the
+    /// pass being played finish, then playback stops at the old loop end.
+    pub(crate) fn set_loop(&mut self, enabled: bool) -> TransportState {
+        let was = self.transport.loop_enabled();
+        self.transport.set_loop_enabled(enabled);
+        self.sync_loop(was && !enabled);
+        self.emit_state_if_changed();
+        self.transport_state()
     }
 
     // --- Document --------------------------------------------------------------------------
@@ -747,6 +796,7 @@ impl Control {
         self.doc = doc.clone();
         self.reader_send(ReaderCmd::SetDoc(doc));
         self.transport.set_doc(len);
+        self.sync_loop(false);
         let reopen = match (&self.output, &self.doc) {
             (Some(out), Some(d)) => {
                 let doc_rate = d.snapshot.sample_rate_hz;
@@ -3098,6 +3148,9 @@ impl Control {
         }
         if self.monitor_active {
             bits |= vxtm_flags::MONITORING;
+        }
+        if self.transport.playing() && self.loop_region().is_some() {
+            bits |= vxtm_flags::LOOPING;
         }
         if self.xrun {
             bits |= vxtm_flags::XRUN;

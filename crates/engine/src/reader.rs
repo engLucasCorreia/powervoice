@@ -8,7 +8,16 @@
 //! (`RunSpec`): silence before document position 0, the record range muted (or the original, with
 //! Hear original), the 5 ms listening fades, and an END packet at the run end (none for cursor
 //! recordings, which play silence until Stop). No `DISCONTINUITY` and no rack reset inside a run.
+//!
+//! H-37 (SPEC-003 §2.1, ADR-002 Amendment 3): **loop playback.** The input stream (what is read,
+//! or fed to the resampler) jumps from the loop end back to the loop start, sample-exactly; each
+//! jump is queued as a segment `(virtual input index, document position)`. Output packets never
+//! straddle a jump: the first packet of a pass carries [`packet_flags::LOOP_WRAP`] and the loop
+//! start as its `doc_pos` (with resampling, the first device frame whose input time reaches the
+//! jump). The resampler is never reset at a seam, so the resampled stream stays continuous. Loop
+//! off during a pass ends the stream at the old loop end (an END packet there).
 
+use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
 
@@ -37,18 +46,77 @@ pub(crate) enum ReaderCmd {
     StartRun { epoch: u32, pos: u64, run: RunSpec },
     /// Stop streaming.
     Stop,
+    /// H-37: the effective loop region (`None`: not looping). `finish`: loop was turned off
+    /// during playback — a stream inside (or heading into) the old region ends at its end.
+    SetLoop {
+        region: Option<(u64, u64)>,
+        finish: bool,
+    },
+}
+
+/// Where the input stream (re)starts: from virtual input index `virt` on, it reads document
+/// position `doc` onwards. `wrap`: a loop jump (not the stream start).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Seg {
+    virt: u64,
+    doc: u64,
+    wrap: bool,
 }
 
 struct Active {
     epoch: u32,
-    start: u64,
     /// Next (virtual, for a run) position to read.
     next_in: u64,
-    /// Device frames emitted since `start` (resampling only).
+    /// Output (device) frames emitted since the start.
     emitted: u64,
+    /// Input samples read since the start (= `emitted` without resampling).
+    fed: u64,
+    /// Input segments not yet fully passed by the output, oldest first (never empty).
+    segs: VecDeque<Seg>,
+    /// H-37: loop turned off mid-pass — the stream ends at this document position.
+    end_at: Option<u64>,
     done: bool,
     /// T-304: a record operation's run (positions are virtual).
     run: Option<RunSpec>,
+}
+
+/// The first output frame whose input time (frame · `num` / `den` input samples) reaches the
+/// virtual input index `virt`.
+fn first_frame(virt: u64, num: u128, den: u128) -> u64 {
+    (u128::from(virt) * den).div_ceil(num) as u64
+}
+
+impl Active {
+    /// Fills `buf` with the next input samples, jumping from the loop end back to the loop start
+    /// (`looping`, only while the read position is before the loop end) and queueing each jump.
+    fn feed(&mut self, reader: &mut SnapshotReader, looping: Option<(u64, u64)>, buf: &mut [f32]) {
+        let mut off = 0;
+        while off < buf.len() {
+            let wrap = looping.filter(|&(_, e)| self.next_in < e);
+            let mut n = buf.len() - off;
+            if let Some((_, e)) = wrap {
+                n = n.min((e - self.next_in) as usize);
+            }
+            let chunk = &mut buf[off..off + n];
+            match self.run {
+                Some(run) => run.render(self.next_in, chunk, |q, b| read_doc(reader, q, b)),
+                None => read_doc(reader, self.next_in, chunk),
+            }
+            self.next_in += n as u64;
+            self.fed += n as u64;
+            off += n;
+            if let Some((s, e)) = wrap
+                && self.next_in == e
+            {
+                self.next_in = s;
+                self.segs.push_back(Seg {
+                    virt: self.fed,
+                    doc: s,
+                    wrap: true,
+                });
+            }
+        }
+    }
 }
 
 pub(crate) struct Reader {
@@ -62,6 +130,8 @@ pub(crate) struct Reader {
     /// speed); the control thread posted the notice (`Control::build_output`).
     resample_failed: bool,
     active: Option<Active>,
+    /// H-37: the effective loop region (never applied to a record operation's run).
+    loop_region: Option<(u64, u64)>,
 }
 
 /// The resampler playing a `doc_rate_hz` document at `dev_rate_hz` needs (`None`: same rate).
@@ -93,6 +163,7 @@ impl Reader {
             resampler: None,
             resample_failed: false,
             active: None,
+            loop_region: None,
         }
     }
 
@@ -107,11 +178,19 @@ impl Reader {
     }
 
     fn start(&mut self, epoch: u32, pos: u64, run: Option<RunSpec>) {
+        let mut segs = VecDeque::with_capacity(8);
+        segs.push_back(Seg {
+            virt: 0,
+            doc: pos,
+            wrap: false,
+        });
         self.active = Some(Active {
             epoch,
-            start: pos,
             next_in: pos,
             emitted: 0,
+            fed: 0,
+            segs,
+            end_at: None,
             done: false,
             run,
         });
@@ -163,6 +242,21 @@ impl Reader {
                     r.release_segments();
                 }
             }
+            ReaderCmd::SetLoop { region, finish } => {
+                let old = self.loop_region;
+                self.loop_region = region;
+                if let Some(a) = self.active.as_mut()
+                    && a.run.is_none()
+                    && !a.done
+                {
+                    a.end_at = match (finish, old) {
+                        // SPEC-003 §2.1: the pass finishes, then the stream ends at the old end.
+                        (true, Some((_, e))) if a.next_in <= e => Some(e),
+                        (true, _) => a.end_at,
+                        (false, _) => None,
+                    };
+                }
+            }
         }
     }
 
@@ -185,72 +279,79 @@ impl Reader {
             len,
             doc_rate_hz,
             dev_rate_hz,
+            loop_region,
         } = self
         else {
             return 0;
         };
-        // Where the stream ends: the document end, or a run's end (`None`: never).
+        // Input samples per output frame, as a ratio (1:1 without resampling).
+        let (num, den) = if resampler.is_some() {
+            (u128::from(*doc_rate_hz), u128::from(*dev_rate_hz))
+        } else {
+            (1, 1)
+        };
+        let looping = if a.run.is_some() { None } else { *loop_region };
+        // Where the stream ends: the document end (or the old loop end after loop off), or a
+        // run's end (`None`: never).
         let limit = match a.run {
             Some(run) => run.end_v(),
-            None => Some(*len),
+            None => Some(a.end_at.map_or(*len, |e| e.min(*len))),
         };
         let mut pushed = 0;
         while !a.done && prod.slots() > 0 && PLAYBACK_RING_PACKETS - prod.slots() < target {
             let mut pkt = Packet::new(a.epoch);
-            match resampler.as_mut() {
-                None => {
-                    if limit.is_some_and(|l| a.next_in >= l) {
-                        pkt.flags = packet_flags::END;
-                        pkt.doc_pos = limit.unwrap_or(a.next_in);
-                        a.done = true;
-                    } else {
-                        let room = limit.map_or(PACKET_FRAMES as u64, |l| {
-                            (l - a.next_in).min(PACKET_FRAMES as u64)
-                        });
-                        let n = room as usize;
-                        match a.run {
-                            Some(run) => run.render(a.next_in, &mut pkt.samples[..n], |q, b| {
-                                read_doc(reader, q, b)
-                            }),
-                            None => read_doc(reader, a.next_in, &mut pkt.samples[..n]),
-                        }
-                        pkt.len = n as u16;
-                        pkt.doc_pos = a.next_in;
-                        a.next_in += n as u64;
-                    }
+            let j = a.emitted;
+            while a.segs.len() > 1 && first_frame(a.segs[1].virt, num, den) <= j {
+                a.segs.pop_front();
+            }
+            let seg = a.segs[0];
+            let virt_j = (u128::from(j) * num / den) as u64;
+            let doc_pos = seg.doc + virt_j.saturating_sub(seg.virt);
+            // The next jump: already queued by the input side, or the one it will make at the
+            // loop end.
+            let next_wrap = if a.segs.len() > 1 {
+                Some(a.segs[1].virt)
+            } else {
+                looping
+                    .filter(|&(_, e)| a.next_in < e)
+                    .map(|(_, e)| a.fed + (e - a.next_in))
+            };
+            // The stream end, in the newest segment — unless the input wraps before reaching it.
+            let back = a.segs.back().copied().unwrap_or(seg);
+            let end_frame = limit
+                .filter(|&l| !looping.is_some_and(|(_, e)| a.next_in < e && e <= l))
+                .map(|l| first_frame(back.virt + l.saturating_sub(back.doc), num, den));
+            if end_frame.is_some_and(|f| j >= f) {
+                pkt.flags = packet_flags::END;
+                pkt.doc_pos = limit.unwrap_or(doc_pos);
+                a.done = true;
+            } else {
+                let mut n = PACKET_FRAMES as u64;
+                if let Some(f) = end_frame {
+                    n = n.min(f - j);
                 }
-                Some(rs) => {
-                    let num = u128::from(*doc_rate_hz);
-                    let den = u128::from(*dev_rate_hz);
-                    let doc_pos = a.start + (u128::from(a.emitted) * num / den) as u64;
-                    let total = limit.map_or(u64::MAX, |l| {
-                        (u128::from(l.saturating_sub(a.start)) * den).div_ceil(num) as u64
-                    });
-                    if limit.is_some_and(|l| doc_pos >= l) || a.emitted >= total {
-                        pkt.flags = packet_flags::END;
-                        pkt.doc_pos = limit.unwrap_or(doc_pos);
-                        a.done = true;
-                    } else {
-                        let n = (total - a.emitted).min(PACKET_FRAMES as u64) as usize;
-                        let next_in = &mut a.next_in;
-                        let run = a.run;
-                        let pulled = rs.pull(&mut pkt.samples[..n], |buf| {
-                            match run {
-                                Some(run) => {
-                                    run.render(*next_in, buf, |q, b| read_doc(reader, q, b));
-                                }
-                                None => read_doc(reader, *next_in, buf),
-                            }
-                            *next_in += buf.len() as u64;
-                        });
+                if let Some(f) = next_wrap.map(|w| first_frame(w, num, den))
+                    && f > j
+                {
+                    n = n.min(f - j);
+                }
+                let n = n as usize;
+                if seg.wrap && j == first_frame(seg.virt, num, den) {
+                    pkt.flags |= packet_flags::LOOP_WRAP;
+                }
+                match resampler.as_mut() {
+                    None => a.feed(reader, looping, &mut pkt.samples[..n]),
+                    Some(rs) => {
+                        let pulled =
+                            rs.pull(&mut pkt.samples[..n], |buf| a.feed(reader, looping, buf));
                         if pulled.is_err() {
                             pkt.samples[..n].fill(0.0);
                         }
-                        pkt.len = n as u16;
-                        pkt.doc_pos = doc_pos;
-                        a.emitted += n as u64;
                     }
                 }
+                pkt.len = n as u16;
+                pkt.doc_pos = doc_pos;
+                a.emitted += n as u64;
             }
             if prod.push(pkt).is_err() {
                 break;

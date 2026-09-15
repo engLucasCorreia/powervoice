@@ -244,9 +244,16 @@ impl EngineHandle {
         let _ = self.call(move |c| c.set_document(doc));
     }
 
-    /// Sets the time selection used by Play from start (`None`: no selection).
-    pub fn set_selection(&self, selection: Option<(u64, u64)>) {
-        let _ = self.call(move |c| c.set_selection(selection));
+    /// Sets the time selection used by Play from start and (H-37) as the loop region
+    /// (`None`: no selection); returns the new state.
+    pub fn set_selection(&self, selection: Option<(u64, u64)>) -> TransportState {
+        self.call(move |c| c.set_selection(selection))
+            .unwrap_or_default()
+    }
+
+    /// H-37 (SPEC-003 §2.1): the Loop toggle; returns the new state.
+    pub fn set_loop(&self, enabled: bool) -> TransportState {
+        self.call(move |c| c.set_loop(enabled)).unwrap_or_default()
     }
 
     /// The device view for the Settings dialog.
@@ -508,8 +515,13 @@ impl ManualEngine {
     }
 
     /// See [`EngineHandle::set_selection`].
-    pub fn set_selection(&mut self, selection: Option<(u64, u64)>) {
-        self.control.set_selection(selection);
+    pub fn set_selection(&mut self, selection: Option<(u64, u64)>) -> TransportState {
+        self.control.set_selection(selection)
+    }
+
+    /// See [`EngineHandle::set_loop`].
+    pub fn set_loop(&mut self, enabled: bool) -> TransportState {
+        self.control.set_loop(enabled)
     }
 
     /// See [`EngineHandle::devices`].

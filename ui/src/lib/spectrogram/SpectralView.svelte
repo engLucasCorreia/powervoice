@@ -21,6 +21,7 @@
   import { settingsState } from "../state/settings.svelte";
   import { CEIL_RANGE_DB, FLOOR_RANGE_DB, spectralState } from "../state/spectral.svelte";
   import { seek, transportState } from "../state/transport.svelte";
+  import { LOOP_STRIP_PX, loopFromRange, loopGeometry } from "../render/loopOverlay";
   import { formatTime } from "../transport/playhead";
   import { normalizeSelection } from "../waveform/selection";
   import { snapSampleToZeroCrossing } from "../waveform/zeroCrossing";
@@ -312,6 +313,8 @@
       viewportPx: backingW,
       heightPx: backingH,
       selection: selection.current,
+      loop: loopFromRange(transport.state.loop_range),
+      loopStripPx: LOOP_STRIP_PX * dpr,
       markers: markers.list,
       playheadSample: transport.playheadSamples,
       markerStyle: "lines",
@@ -321,6 +324,7 @@
         marker: themeColors().wave.marker.rgba,
         markerRegionFill: themeColors().wave.markerRegion.rgba,
         playhead: themeColors().wave.playhead.rgba,
+        loop: themeColors().wave.loop.rgba,
       },
     });
 
@@ -409,6 +413,23 @@
       if (x1 > x0) {
         ctx.fillStyle = themeColors().wave.selectionFill.css;
         ctx.fillRect(x0, 0, x1 - x0, heightPx);
+      }
+    }
+    // H-37: the loop brace and boundaries (same geometry as the waveform pane's).
+    const loop = loopFromRange(transport.state.loop_range);
+    if (loop) {
+      const geometry = loopGeometry(loop, startSample, samplesPerPixel, viewportPx);
+      ctx.fillStyle = themeColors().wave.loop.css;
+      if (geometry.strip) {
+        ctx.fillRect(geometry.strip.x0, 0, geometry.strip.x1 - geometry.strip.x0, LOOP_STRIP_PX);
+      }
+      ctx.strokeStyle = themeColors().wave.loop.css;
+      ctx.lineWidth = themeColors().strokePx;
+      for (const px of geometry.lines) {
+        ctx.beginPath();
+        ctx.moveTo(px + crispOffset(ctx.lineWidth), 0);
+        ctx.lineTo(px + crispOffset(ctx.lineWidth), heightPx);
+        ctx.stroke();
       }
     }
     if (markers.list.length > 0) {

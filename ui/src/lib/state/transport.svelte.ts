@@ -10,6 +10,8 @@ import {
   transportPlayFromStart,
   transportReturnToStart,
   transportSeek,
+  transportSetLoop,
+  transportSetSelection,
   transportStop,
 } from "../ipc/commands";
 import { VXTM_FLAGS, decodeVxtm, toArrayBuffer, type TelemetryFrame } from "../ipc/telemetry";
@@ -17,11 +19,17 @@ import { registerAction } from "../shortcuts";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { ClockSync, PlayheadExtrapolator } from "../transport/playhead";
 import { pushNotice } from "./notices.svelte";
+import { selectionState } from "./selection.svelte";
 
 /**
  * Transport store (S1-01): the engine's transport state (`transport_state` event + command
  * results), the extrapolated playhead (SPEC-003 §2.2) and the output meter, both fed by `VXTM`
- * telemetry. Registers the transport keymap actions (Space, Shift+Space, Home).
+ * telemetry. Registers the transport keymap actions (Space, Shift+Space, Home, Ctrl/⌘+L).
+ *
+ * H-37 (SPEC-003 §2.1): the Loop toggle (`toggleLoop`) and the time selection sync — the engine
+ * loops the selection while loop is on (and Play from start starts at it), so every selection
+ * change is sent, latest-wins (one call in flight, so a drag's burst can never land out of
+ * order). The extrapolated playhead wraps inside the engine's effective `loop_range`.
  */
 
 const IDLE: TransportStateDto = {
@@ -31,6 +39,8 @@ const IDLE: TransportStateDto = {
   doc_len_samples: 0,
   doc_rate_hz: 0,
   can_play: false,
+  loop_enabled: false,
+  loop_range: null,
 };
 
 export interface OutputMeter {
@@ -113,6 +123,7 @@ function applyState(next: TransportStateDto): void {
   }
   state = next;
   ready = true;
+  extrapolator.setLoop(next.loop_range ?? null);
   if (!next.playing && !extrapolator.hasAnchor) {
     playheadSamples = next.playhead_samples;
   }
@@ -134,6 +145,45 @@ export const returnToStart = (): Promise<void> => run(transportReturnToStart);
 /** S1-03: click-to-seek on the waveform view moves the playhead to a document sample. */
 export const seek = (positionSamples: number): Promise<void> =>
   run(() => transportSeek(positionSamples));
+/** H-37 (SPEC-003 §2.1): toggles loop playback (Ctrl/⌘+L, the toolbar's Loop button). */
+export const toggleLoop = (): Promise<void> => run(() => transportSetLoop(!state.loop_enabled));
+
+type Range = [number, number] | null;
+/** What the engine last acknowledged / what the UI wants it to have. */
+let selectionSent: Range = null;
+let selectionWanted: Range = null;
+let selectionInFlight = false;
+
+function sameRange(a: Range, b: Range): boolean {
+  return a === b || (a !== null && b !== null && a[0] === b[0] && a[1] === b[1]);
+}
+
+async function pushSelection(): Promise<void> {
+  if (selectionInFlight) {
+    return; // the running loop below picks the newest wish up when its call returns
+  }
+  while (!sameRange(selectionWanted, selectionSent)) {
+    const next = selectionWanted;
+    selectionInFlight = true;
+    try {
+      applyState(await transportSetSelection(next));
+    } catch (err) {
+      report(err);
+    } finally {
+      selectionInFlight = false;
+    }
+    selectionSent = next;
+  }
+}
+
+/** H-37: hands the current time selection to the engine (`null` or empty: none). */
+export function syncSelection(range: { startSample: number; endSample: number } | null): Promise<void> {
+  selectionWanted =
+    range && range.endSample > range.startSample
+      ? [Math.round(range.startSample), Math.round(range.endSample)]
+      : null;
+  return pushSelection();
+}
 
 /** Space: Pause while playing, else Play. */
 export function playPause(): Promise<void> {
@@ -215,7 +265,17 @@ export async function initTransport(): Promise<() => void> {
     registerAction("transport.play_pause", () => void playPause()),
     registerAction("transport.play_from_start", () => void playFromStart()),
     registerAction("transport.return_to_start", () => void returnToStart()),
+    registerAction("transport.toggle_loop", () => void toggleLoop()),
   ];
+  // H-37: every selection change reaches the engine (Play from start, the loop region).
+  const selection = selectionState();
+  cleanups.push(
+    $effect.root(() => {
+      $effect(() => {
+        void syncSelection(selection.current);
+      });
+    }),
+  );
   let disposed = false;
 
   const requestFrame: (cb: () => void) => number =
@@ -279,5 +339,8 @@ export function resetTransportForTest(): void {
   meter = { ...SILENT };
   ready = false;
   extrapolator.reset();
+  selectionSent = null;
+  selectionWanted = null;
+  selectionInFlight = false;
   clock.offsetNs = 0;
 }

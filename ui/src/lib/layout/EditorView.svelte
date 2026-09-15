@@ -20,6 +20,7 @@
   } from "../waveform/coords";
   import { formatSamplesValue } from "../waveform/timeFormat";
   import { formatRulerSeconds, formatRulerTime } from "../waveform/timeRuler";
+  import { loopFromRange, loopGeometry } from "../render/loopOverlay";
   import WaveformView from "../waveform/WaveformView.svelte";
 
   /**
@@ -65,6 +66,17 @@
   /** Matches `WaveformView.svelte`'s `.amp-ruler` and `SpectralView.svelte`'s `.ruler` width. */
   const RULER_GUTTER_PX = 48;
   const canvasWidthPx = $derived(Math.max(0, viewportPx - RULER_GUTTER_PX));
+
+  // H-37 (SPEC-006 §2.12 amendment): while looping, a brace bar along the ruler's bottom edge
+  // spans the loop region (clipped to the visible canvas area, past the gutter).
+  const rulerLoop = $derived.by(() => {
+    const loop = loopFromRange(transport.state.loop_range);
+    if (!loop || canvasWidthPx <= 0 || wv.samplesPerPixel <= 0) {
+      return null;
+    }
+    const strip = loopGeometry(loop, wv.startSample, wv.samplesPerPixel, canvasWidthPx).strip;
+    return strip ? { left: strip.x0 + RULER_GUTTER_PX, width: strip.x1 - strip.x0 } : null;
+  });
 
   // H-12: persists the shared viewport plus the selection and the edit cursor (SPEC-018 §2.6.5),
   // debounced (never marks the document modified, §2.4). The cursor is the transport's
@@ -187,6 +199,13 @@
   {#if isOpen}
     <div class="ruler" data-testid="editor-ruler">
       <div class="ruler-gutter" data-testid="editor-ruler-gutter"></div>
+      {#if rulerLoop}
+        <div
+          class="loop-bar"
+          data-testid="editor-ruler-loop"
+          style={`left: ${rulerLoop.left}px; width: ${rulerLoop.width}px`}
+        ></div>
+      {/if}
       {#each rulerLabels as tick (tick.px)}
         <span class="tick" style={`left: ${tick.px}px`}>{tick.label}</span>
       {/each}
@@ -294,6 +313,16 @@
     left: 0;
     width: 48px;
     border-right: var(--pv-border-width) solid var(--pv-border-subtle);
+  }
+
+  /* H-37: the loop region's brace on the ruler (the `--wave-loop` token). */
+  .loop-bar {
+    position: absolute;
+    bottom: 0;
+    height: 3px;
+    border-radius: 1px;
+    background: var(--wave-loop);
+    pointer-events: none;
   }
 
   .tick {

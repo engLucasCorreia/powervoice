@@ -1,27 +1,34 @@
-# T-110 — Bench harness: divan benches, callback-time histogram, `powervoice-cli bench`
+# T-110 — Bench harness (divan, callback-time histogram)
 
-- **Milestone / wave:** M1 / W3
-- **Tier:** Sonnet
-- **Depends on:** T-105
-- **Spec refs:** PROMPT §4 performance targets · **ADR refs:** ADR-002
+- **Tier:** Sonnet (no review loop)
+- **Depends on:** T-105 (done). This is the prerequisite for T-704 (performance tuning against targets).
+- **Read first:**
+  - CLAUDE.md (the `just bench` recipe), MEMORY.md;
+  - PROMPT.md, for the performance targets: callback budget, load, memory, UI frame time, open/import/export speed, whichever are listed;
+  - specs/SPEC-000 (performance targets, if any), docs/adr/ADR-002 (the RT budget);
+  - `crates/engine`, `crates/rack`, `crates/dsp`, `crates/modules`, `crates/project`, and any existing benches.
+- **Dependency:** `divan` is named by this ticket. Run `just notices` after adding it.
 
-## Goal
-Performance is measured from M1 on, so M7's tuning (T-704) starts from numbers, not guesses.
+## Scope (in)
+1. **divan benches** (`benches/` in the relevant crates, run by `just bench`):
+   - per-module `process()` cost at 48 kHz for 64/128/256/512/1024-frame blocks: gate, NR, EQ, dynamics, limiter, gain, and a full voice rack;
+   - LUFS/true-peak measurement throughput;
+   - resampler;
+   - peaks/overview generation;
+   - spectrogram tile computation;
+   - chunk-store read/prefetch;
+   - export encode (WAV/FLAC/MP3 if LAME is present);
+   - sandbox IPC round trip per block (the CLAP test plugin).
+2. **Callback-time histogram:**
+   - a fake-backend harness that runs the real output callback path with a typical rack for N seconds;
+   - it records per-callback wall time into a preallocated histogram (no allocation in the callback; use the `no_alloc` check), then reports p50/p95/p99/max against the block deadline;
+   - it is exposed as `just bench-callback`.
+3. **Report:** `just bench` writes a Markdown summary to `target/bench/summary.md` with each metric against its PROMPT/SPEC target where one exists. Not committed. This is T-704's baseline.
+4. **CI-safe:** benches never run in `just check`, only in `just bench`. A smoke `cargo test` can check that the bench targets compile (`cargo bench --no-run` in `check` only if it's fast; otherwise skip it).
 
-## Scope
-**In:**
-- `divan` benches for: Gain `process` per sample, rack with 1/8/16 TestGain slots, snapshot reader throughput, peak-pyramid computation per chunk.
-- Fake-backend callback-time histogram (p50/p95/p99/max per callback at 64/256/1024 frames) for playback with a rack.
-- `powervoice-cli bench [--json]` running a fixed suite and printing a table; `just bench` runs divan + the CLI suite and writes `bench-results/<date>.json` (gitignored).
+## Tests
+- The harness histogram maths.
+- The bench targets compile.
+- Report the baseline numbers from this machine.
 
-**Out:** optimization work (T-704).
-
-## Crates / files
-`crates/*/benches/`, `crates/cli`, `justfile`. Allowed new dep: `divan` (dev-dependency).
-
-## Acceptance tests to write
-- [ ] `powervoice-cli bench --json` emits valid JSON with all suite entries (integration test with a short suite flag).
-- [ ] `just bench` completes on the owner's machine; numbers included in the report.
-
-## Definition of Done
-- [ ] `just check` green; report includes the first baseline table.
+`just check` must pass.

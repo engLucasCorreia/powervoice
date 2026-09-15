@@ -74,8 +74,9 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-34 | Plugin polish (T-806): de-flake `sandbox/tests/teardown.rs::nothing_outlives_its_owner` (fd baseline after warm-up release), Linux Install Module wording for picking a file inside a `.vst3` bundle, rename scan cache to `plugin-scan.json` with migration | S | done |
 | H-35 | Zoom commands (T-701 found SPEC-006 §2.6 claims them but they don't exist): Zoom to Selection, Zoom Full, vertical amplitude zoom (Alt+= / Alt+-) with Audition bindings, View menu + toolbar entries | S | done |
 | H-36 | Fix flaky LV2 test `crates/sandbox/tests/lv2.rs::a_latency_change_goes_through_the_worker_and_asks_for_a_restart` (offline worker round trip fails 8/10 in isolation on main) | S | done |
-| H-37 | Loop playback (SPEC-003 AC-4; engine has none — found by T-401): loop region = selection, seamless wrap, playhead history across the wrap (ADR-002 §8), Loop transport button + shortcut | O | in progress |
+| H-37 | Loop playback (SPEC-003 AC-4; engine has none — found by T-401): loop region = selection, seamless wrap, playhead history across the wrap (ADR-002 §8), Loop transport button + shortcut | O | done |
 | H-38 | Packaging (T-807, A-022): deb Recommends `liblilv-0-0`, Arch optdepends `lilv`, AppImage note; user-guide note that LV2 needs lilv | H | done |
+| H-39 | Loop in the menus (H-37): Loop Playback checkbox item (View or a Transport section, shared Menu + Ctrl/⌘+L chip), tour step mention | H | todo |
 | H-18 | Shared test factories for DTOs (`ui/src/lib/test/fixtures.ts` + Rust builders) so a new DTO field touches one helper, not 20 test literals (merge-friction fix) | H | done |
 | H-17 | Recovery follow-ups (T-301): dialog stays open for remaining sessions (A-015), AC-3/AC-11 timing on a real disk (test-big), compaction off the document lock, markers during an interrupted take, Memory-for-audio UI, `/tmp/vox-project-*` sweep | S | done |
 | H-15 | Sidecar follow-ups (T-306): recent-file-missing dialog, read-only folder matrix (AC-13), SIGKILL-during-sidecar-save test (AC-6), per-slot leniency for a malformed rack slot, perf budget (AC-18) | S | done |
@@ -107,7 +108,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-106 | Recording: crash-safe WAV, peaks stream, take → undoable edit | W3 | O | T-105 | → S1-04 (subset), rest hardening |
 | T-107 | Monitoring off/dry/through-rack, drift-corrected in→out ring | W3 | O | T-105 | done |
 | T-108 | IPC layer: M1 commands/events, VXTM/VXRP channels, binary decoders + golden fixtures, clock sync | W3 | S | T-104, T-105 | → S1-01/S1-03 (subset), rest hardening |
-| T-110 | Bench harness (divan, callback-time histogram) | W3 | S | T-105 | todo |
+| T-110 | Bench harness (divan, callback-time histogram) | W3 | S | T-105 | in progress |
 | T-109 | UI: device settings, transport bar, meter bridge, live recording waveform | W4 | S | T-106, T-107, T-108 | → S1-01/S1-04 (subset), rest hardening |
 
 ## M2 — Editor view
@@ -194,7 +195,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-807 | LV2 adapter (livi) | W4 | O | T-803, T-804 | done |
 | T-808 | JSFX adapter (ysfx, sandbox-only) | W4 | O | T-803, T-804 | todo |
 | T-809 | Plugin manager UI + "Install module…" | W5 | S | T-804 | done |
-| T-810 | Plugin state in presets/sidecar | W5 | S | T-803 | todo |
+| T-810 | Plugin state in presets/sidecar | W5 | S | T-803 | in progress |
 | T-811 | VST2 adapter (prefer Carla bridge) | W5 | O | T-803 + owner legal sign-off | gated |
 
 ## M9 — Native plugin editors

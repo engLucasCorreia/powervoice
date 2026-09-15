@@ -314,3 +314,25 @@ ADR-008 §2 foresaw one exception to §2's "no syscalls" rule. As implemented in
   shared segment.
 - The portable spin-then-yield fallback (the macOS/Windows primitive until the real ones land)
   yields/sleeps while waiting, bounded by the same deadline.
+
+
+## Amendment 3 — loop playback without a rack reset (H-37, 2026-09-15)
+Supersedes §5's loop-wrap bullet (short packet + `DISCONTINUITY` + rack `reset()`), per SPEC-003
+Amendment 1:
+- **Reader.** `ReaderCmd::SetLoop { region, finish }` sets the effective loop region. The input
+  stream (what is read, or fed to the `rubato::Fft` resampler) jumps from the loop end to the loop
+  start sample-exactly; each jump is queued as a segment `(virtual input index, doc position)`.
+  Output packets never straddle a jump; the first packet of a pass carries the new
+  `packet_flags::LOOP_WRAP` and the loop start as `doc_pos` (resampled: the first device frame whose
+  input time reaches the jump). No epoch change, no resampler reset. `finish` (loop off mid-play)
+  ends the stream at the old loop end with an END packet. Runs (T-304) never loop.
+- **Output callback.** A `LOOP_WRAP` packet is played seamlessly: no fade and no rack reset, so
+  tails continue. `AudioCmd::SetLoop { finish_pass }` makes the next `LOOP_WRAP` end playback
+  (the reader may already have queued the next pass); Play/Seek/Stop clear it.
+- **§8 heard position.** A preallocated 128-entry history of `(rack input frame, doc position,
+  start?)` marks every play/seek start and loop wrap. The heard position of the first frame is
+  looked up at rack frame `first − L_rack`: inside the newest segment it is `p_in − L_rack` (as
+  before); in an older segment it maps exactly (the loop end region after a wrap); before the
+  current start it clamps to it. No allocation, bounded loops.
+- **Minimum loop length** 10 ms at the document rate (shorter selections are inert), which keeps
+  the 64-packet ring's read-ahead above the prebuffer and bounds the history per rack latency.

@@ -8,6 +8,8 @@ export type ActionId =
   | "transport.play_pause"
   | "transport.play_from_start"
   | "transport.return_to_start"
+  // H-37 (SPEC-003 §2.1/§2.5 amendment): the Loop playback toggle.
+  | "transport.toggle_loop"
   | "record.toggle"
   | "marker.add"
   | "marker.delete_selected"

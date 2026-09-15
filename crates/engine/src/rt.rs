@@ -26,7 +26,14 @@ pub(crate) const READ_AHEAD_MS: u64 = 200;
 pub(crate) mod packet_flags {
     /// The document ends here; the packet carries no samples.
     pub(crate) const END: u16 = 1 << 0;
+    /// H-37 (SPEC-003 §2.1, ADR-002 Amendment 3): the first packet of a new loop pass — its
+    /// `doc_pos` is the loop start, and the previous packet ended at the loop end. The stream is
+    /// seamless: no fade, no epoch change and no rack reset.
+    pub(crate) const LOOP_WRAP: u16 = 1 << 1;
 }
+
+/// H-37 (SPEC-003 §3): a loop shorter than this (at the document rate) is inert.
+pub(crate) const MIN_LOOP_MS: u64 = 10;
 
 /// One playback-ring element (ADR-002 §5): `len` device-rate samples whose first sample is
 /// document position `doc_pos`, tagged with the transport epoch that requested them.
@@ -70,6 +77,10 @@ pub(crate) enum AudioCmd {
         target_frames: u32,
         ending: bool,
     },
+    /// H-37 (SPEC-003 §2.1): the loop changed. `finish_pass`: loop was turned off during looped
+    /// playback — the pass being played ends at the next [`packet_flags::LOOP_WRAP`] (the reader
+    /// ends the stream at the old loop end if it has not wrapped yet). `false` cancels that.
+    SetLoop { finish_pass: bool },
     /// T-304 (SPEC-022 §2.14, §4.7): start (`true`) or abort the calibration run — the
     /// preallocated sweep, 5 repetitions at 1.6 s spacing, mixed in after the rack.
     Calibrate { start: bool },

@@ -659,6 +659,10 @@ export function installPreviewIpc(options: PreviewOptions): void {
   let documentOpens = 0;
   let seq = 0;
 
+  // H-37: the Loop toggle and the synced selection (the loop region while loop is on).
+  let loopEnabled = false;
+  let selectionRange: [number, number] | null = null;
+
   // H-31: `transport_get` and the six transport command cases below (`transport_play`,
   // `transport_pause`, `transport_stop`, `transport_play_from_start`, `transport_return_to_start`,
   // `transport_seek`) all answer with a `TransportStateDto` built from this one snapshot — none of
@@ -671,6 +675,8 @@ export function installPreviewIpc(options: PreviewOptions): void {
       doc_len_samples: open ? doc.len_samples : 0,
       doc_rate_hz: open ? PREVIEW_RATE_HZ : 0,
       can_play: true,
+      loop_enabled: loopEnabled,
+      loop_range: loopEnabled ? selectionRange : null,
       ...overrides,
     });
   };
@@ -704,6 +710,12 @@ export function installPreviewIpc(options: PreviewOptions): void {
           const at = a.positionSamples as number;
           return transportSnapshot({ playhead_samples: at, play_start_samples: at });
         }
+        case "transport_set_loop":
+          loopEnabled = a.enabled === true;
+          return transportSnapshot();
+        case "transport_set_selection":
+          selectionRange = (a.selection as [number, number] | null) ?? null;
+          return transportSnapshot();
         case "clock_now_ns":
           return 0;
         case "record_get":

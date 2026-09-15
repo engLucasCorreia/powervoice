@@ -23,6 +23,11 @@ pub struct TransportStateDto {
     pub doc_rate_hz: u32,
     /// A document is loaded and an output device is open.
     pub can_play: bool,
+    /// H-37 (SPEC-003 §2.1): the Loop toggle.
+    pub loop_enabled: bool,
+    /// H-37: the effective loop region `[start, end)` — the selection while loop is on (`null`:
+    /// loop off, or inert without a long-enough selection).
+    pub loop_range: Option<(u64, u64)>,
 }
 
 impl From<&TransportState> for TransportStateDto {
@@ -34,6 +39,8 @@ impl From<&TransportState> for TransportStateDto {
             doc_len_samples: s.doc_len_samples,
             doc_rate_hz: s.doc_rate_hz,
             can_play: s.can_play,
+            loop_enabled: s.loop_enabled,
+            loop_range: s.loop_range,
         }
     }
 }

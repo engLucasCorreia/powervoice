@@ -5,7 +5,10 @@
  * - each animation frame shows `sample + (now − timeNs) · rate / 1e9`, clamped to the document;
  * - a new anchor within 20 ms of audio of the prediction is slewed to over 100 ms; larger
  *   differences (seek, resume, loop wrap) jump;
- * - `now` is the UI clock mapped to the engine's app clock by {@link ClockSync}.
+ * - `now` is the UI clock mapped to the engine's app clock by {@link ClockSync};
+ * - H-37: while looping, the extrapolated position wraps inside the loop range
+ *   (`[start, end)`, the engine's `loop_range`) once it passes the loop end, so the displayed
+ *   playhead jumps back to the loop start at each seam instead of running past it.
  */
 
 export interface PlayheadAnchor {
@@ -21,18 +24,40 @@ export const SLEW_MS = 100;
 /** Differences below this much audio are slewed, larger ones jump. */
 export const SLEW_THRESHOLD_S = 0.02;
 
+/** H-37: the loop region `[start, end)` in document samples. */
+export type LoopRange = readonly [number, number];
+
+/** H-37 (SPEC-003 §2.2): `pos` extrapolated from an anchor at `anchorSample`, wrapped inside
+ * `loop` once it passes the loop end — only when the anchor itself is before the loop end
+ * (playback past the loop, or heading into it from before, is not looping yet / any more). */
+export function wrapInLoop(anchorSample: number, pos: number, loop: LoopRange | null | undefined): number {
+  if (!loop) {
+    return pos;
+  }
+  const [start, end] = loop;
+  if (end <= start || anchorSample >= end || pos < end) {
+    return pos;
+  }
+  return start + ((pos - end) % (end - start));
+}
+
 function clamp(x: number, lenSamples: number): number {
   return Math.min(Math.max(x, 0), Math.max(lenSamples, 0));
 }
 
 /** Extrapolated position at `nowNs`. Holds the anchor until its time is reached (the first
  * frames of a start are heard only after the output latency). */
-export function extrapolate(anchor: PlayheadAnchor, nowNs: number, lenSamples: number): number {
+export function extrapolate(
+  anchor: PlayheadAnchor,
+  nowNs: number,
+  lenSamples: number,
+  loop?: LoopRange | null,
+): number {
   let pos = anchor.sample;
   if (anchor.rate > 0 && nowNs > anchor.timeNs) {
     pos += ((nowNs - anchor.timeNs) * anchor.rate) / 1e9;
   }
-  return clamp(pos, lenSamples);
+  return clamp(wrapInLoop(anchor.sample, pos, loop), lenSamples);
 }
 
 /** Anchor-following playhead with the slew/jump rule. */
@@ -40,6 +65,7 @@ export class PlayheadExtrapolator {
   private anchor: PlayheadAnchor | null = null;
   private slewOffset = 0;
   private slewStartNs = 0;
+  private loop: LoopRange | null = null;
 
   constructor(private readonly slewNs: number = SLEW_MS * 1e6) {}
 
@@ -47,12 +73,17 @@ export class PlayheadExtrapolator {
     return this.anchor !== null;
   }
 
+  /** H-37: the loop range the extrapolation wraps inside (`null`: not looping). */
+  setLoop(loop: LoopRange | null): void {
+    this.loop = loop;
+  }
+
   /** Takes a new anchor received at `nowNs`. */
   update(next: PlayheadAnchor, nowNs: number, lenSamples: number): void {
     let offset = 0;
     if (this.anchor && next.rate > 0 && this.anchor.rate > 0) {
       const predicted = this.position(nowNs, lenSamples);
-      const target = extrapolate(next, nowNs, lenSamples);
+      const target = extrapolate(next, nowNs, lenSamples, this.loop);
       const diff = predicted - target;
       if (Math.abs(diff) < next.rate * SLEW_THRESHOLD_S) {
         offset = diff;
@@ -68,7 +99,7 @@ export class PlayheadExtrapolator {
     if (!this.anchor) {
       return 0;
     }
-    const base = extrapolate(this.anchor, nowNs, lenSamples);
+    const base = extrapolate(this.anchor, nowNs, lenSamples, this.loop);
     if (this.slewOffset === 0) {
       return base;
     }
@@ -83,6 +114,7 @@ export class PlayheadExtrapolator {
   reset(): void {
     this.anchor = null;
     this.slewOffset = 0;
+    this.loop = null;
   }
 }
 

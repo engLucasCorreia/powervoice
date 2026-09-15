@@ -10,7 +10,14 @@
   import { recordState } from "../state/record.svelte";
   import SelectionReadout from "./SelectionReadout.svelte";
   import { spectralState } from "../state/spectral.svelte";
-  import { playFromStart, playPause, returnToStart, stop, transportState } from "../state/transport.svelte";
+  import {
+    playFromStart,
+    playPause,
+    returnToStart,
+    stop,
+    toggleLoop,
+    transportState,
+  } from "../state/transport.svelte";
   import { timeRulerFormatState } from "../state/waveformView.svelte";
   import { formatDocumentTime } from "../waveform/timeFormat";
   import { IconButton, Separator } from "../ui";
@@ -41,6 +48,10 @@
     formatDocumentTime(transport.playheadSamples, transport.state.doc_rate_hz, timeFormat.current),
   );
   const playing = $derived(transport.state.playing);
+  // H-37 (SPEC-003 §2.1): loop on with no (long-enough) selection is inert — say so in the tooltip.
+  const loopLabel = $derived(
+    transport.state.loop_enabled && !transport.state.loop_range ? t("transport.loop_inert") : t("transport.loop"),
+  );
 </script>
 
 <header class="toolbar" class:on-air={rec.state.recording} data-testid="toolbar">
@@ -76,6 +87,14 @@
       testid="transport-play-from-start"
       disabled={!transport.state.can_play}
       onclick={() => void playFromStart()}
+    />
+    <IconButton
+      icon="loop"
+      label={loopLabel}
+      shortcut={shortcutLabelForAction("transport.toggle_loop")}
+      pressed={transport.state.loop_enabled}
+      testid="transport-loop"
+      onclick={() => void toggleLoop()}
     />
   </div>
   <Separator orientation="vertical" />

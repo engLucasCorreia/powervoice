@@ -752,3 +752,9 @@ export async function pluginsInstall(path: string, replace: boolean): Promise<Pl
 export async function pluginsReveal(path: string): Promise<void> {
   return invoke<void>("plugins_reveal" satisfies CommandName, { path });
 }
+
+/** H-29: "Uninstall…" — removes a plugin file from the per-user install folder (refusing
+ * anything else) and drops it from the registry and the scan cache. */
+export async function pluginsUninstall(path: string): Promise<void> {
+  return invoke<void>("plugins_uninstall" satisfies CommandName, { path });
+}

@@ -2,9 +2,10 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
 import { pluginsState, resetPluginsForTest } from "../plugins/plugins.svelte";
-import { folderFixture, pluginFixtures, settle } from "../plugins/testing";
+import { settle } from "../plugins/testing";
 import { clearNotices } from "../state/notices.svelte";
 import { resetSettingsStateForTest } from "../state/settings.svelte";
+import { folderFixture, pluginFixtures } from "../test/fixtures";
 import PreferencesDialog from "./PreferencesDialog.svelte";
 import { openPreferences, preferencesState, resetPreferencesForTest } from "./preferences.svelte";
 

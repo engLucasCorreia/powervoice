@@ -5,12 +5,13 @@ import {
   fileName,
   filterPlugins,
   formatLabel,
+  isInInstallFolder,
   portsKey,
   rowKey,
   sortPlugins,
   statusInfo,
 } from "./pluginList";
-import { FLAGGED_ID, pluginEntry, pluginFixtures } from "./testing";
+import { FLAGGED_ID, pluginEntry, pluginFixtures } from "../test/fixtures";
 
 const names = (list: { name: string }[]) => list.map((e) => e.name);
 
@@ -33,6 +34,26 @@ describe("plugin list logic (T-809)", () => {
       detailKey: "plugins.crashed_times",
       detailParams: { count: 3 },
     });
+    expect(
+      statusInfo({ kind: "shadowed", by: "/home/u/.clap/acme-deesser.clap" }),
+    ).toMatchObject({
+      tone: "neutral",
+      labelKey: "plugins.status.shadowed",
+      detailKey: "plugins.shadowed_by",
+      detailParams: { path: "acme-deesser.clap" },
+    });
+  });
+
+  it("only treats a direct child of the install folder as installed (H-29)", () => {
+    expect(isInInstallFolder("/home/u/.clap/acme.clap", "/home/u/.clap")).toBe(true);
+    expect(isInInstallFolder("/home/u/.clap/acme.clap", "/home/u/.clap/")).toBe(true);
+    expect(isInInstallFolder("C:\\Plugins\\CLAP\\acme.clap", "C:\\Plugins\\CLAP")).toBe(true);
+    expect(isInInstallFolder("/usr/lib/clap/acme.clap", "/home/u/.clap")).toBe(false);
+    // A look-alike sibling folder is not a prefix match.
+    expect(isInInstallFolder("/home/u/.clap-extra/acme.clap", "/home/u/.clap")).toBe(false);
+    // A nested subfolder doesn't count either — installs are never nested.
+    expect(isInInstallFolder("/home/u/.clap/nested/acme.clap", "/home/u/.clap")).toBe(false);
+    expect(isInInstallFolder("/home/u/.clap/acme.clap", null)).toBe(false);
   });
 
   it("spells every backend's format badge and upper-cases unknown ones", () => {
@@ -109,7 +130,13 @@ describe("plugin list logic (T-809)", () => {
 
   it("counts statuses and knows which rows can be switched", () => {
     const list = pluginFixtures();
-    expect(countPlugins(list)).toEqual({ total: 8, disabled: 1, blocklisted: 3, flagged: 1 });
+    expect(countPlugins(list)).toEqual({
+      total: 8,
+      disabled: 1,
+      blocklisted: 3,
+      flagged: 1,
+      shadowed: 0,
+    });
     const byName = (n: string) => list.find((e) => e.name === n)!;
     expect(canToggle(byName("De-esser"))).toBe(true);
     expect(canToggle(byName("Tape Saturator"))).toBe(true);

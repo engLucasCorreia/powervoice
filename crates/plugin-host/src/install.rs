@@ -286,6 +286,47 @@ pub fn install_file(
     }
 }
 
+/// Why "Uninstall…" (H-29) didn't remove a file. Every variant leaves the file as it was.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum UninstallError {
+    /// The file doesn't exist any more.
+    #[error("the file doesn't exist")]
+    NotFound,
+    /// `path` isn't inside the per-user install folder. The plugin manager only offers
+    /// "Uninstall…" for files there; anything found in a standard or custom folder offers
+    /// "Block" instead — this is the server-side half of that rule (canonicalized, so a symlink
+    /// can't be used to point "the installed file" somewhere else).
+    #[error("this file isn't in the plugin folder PowerVoice installs into")]
+    OutsideInstallFolder,
+    /// The environment names no per-user plugin folder (`HOME` unset…) — nothing could ever have
+    /// been installed, so nothing is inside it either.
+    #[error("there is no per-user plugin folder")]
+    NoInstallDir,
+    /// Removing it failed.
+    #[error("{0}")]
+    Io(String),
+}
+
+/// Removes `target`, refusing anything outside `install_dir` (H-29; see the module docs and
+/// [`UninstallError::OutsideInstallFolder`]). The caller ([`crate::catalog::PluginCatalog`])
+/// drops the plugin from the registry and the scan cache; an open document that already uses it
+/// keeps its slot — `vox_rack::Registry::resolve` falls back to the "Missing module" placeholder
+/// once the id is gone from the registry, and the slot's own stored state is never touched by any
+/// of this (ADR-006 §7 step 6).
+pub fn uninstall_file(target: &Path, install_dir: &Path) -> Result<(), UninstallError> {
+    let canon_target = std::fs::canonicalize(target).map_err(|_| UninstallError::NotFound)?;
+    let canon_dir =
+        std::fs::canonicalize(install_dir).map_err(|_| UninstallError::OutsideInstallFolder)?;
+    if canon_target.parent() != Some(canon_dir.as_path()) {
+        return Err(UninstallError::OutsideInstallFolder);
+    }
+    remove_any(target).map_err(io_uninstall)
+}
+
+fn io_uninstall(e: std::io::Error) -> UninstallError {
+    UninstallError::Io(e.to_string())
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -572,5 +613,99 @@ pub(crate) mod tests {
             std::fs::read_link(copy.join("Contents").join("Current")).unwrap(),
             PathBuf::from("MacOS/X")
         );
+    }
+
+    // --- H-29: "Uninstall…" -----------------------------------------------------------------
+
+    #[test]
+    fn uninstall_removes_a_file_inside_the_install_folder() {
+        let f = fixture("uninstall", b"plugin");
+        std::fs::create_dir_all(&f.dest).unwrap();
+        let target = f.dest.join("acme-deesser.clap");
+        std::fs::write(&target, b"plugin").unwrap();
+
+        assert_eq!(uninstall_file(&target, &f.dest), Ok(()));
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn uninstall_removes_a_bundle_directory() {
+        let root = TempDir::new("uninstall-bundle");
+        let dest = root.0.join("dest");
+        std::fs::create_dir_all(&dest).unwrap();
+        let bundle = dest.join("X.clap");
+        std::fs::create_dir_all(bundle.join("Contents").join("MacOS")).unwrap();
+        std::fs::write(bundle.join("Contents").join("MacOS").join("X"), b"bin").unwrap();
+
+        assert_eq!(uninstall_file(&bundle, &dest), Ok(()));
+        assert!(!bundle.exists());
+    }
+
+    #[test]
+    fn uninstall_refuses_a_missing_file() {
+        let f = fixture("uninstall-missing", b"x");
+        std::fs::create_dir_all(&f.dest).unwrap();
+        let missing = f.dest.join("not-there.clap");
+        assert_eq!(
+            uninstall_file(&missing, &f.dest),
+            Err(UninstallError::NotFound)
+        );
+    }
+
+    /// The one thing that matters for H-29's trust boundary: a file living anywhere else — even
+    /// right next to the install folder, sharing most of its path — is never removed.
+    #[test]
+    fn uninstall_refuses_a_file_outside_the_install_folder() {
+        let f = fixture("uninstall-outside", b"plugin");
+        // `f.source` (in `home/Downloads`) is never inside `f.dest` (`home/.clap`).
+        assert_eq!(
+            uninstall_file(&f.source, &f.dest),
+            Err(UninstallError::OutsideInstallFolder)
+        );
+        assert!(f.source.exists(), "untouched");
+
+        // A look-alike sibling folder (`.clap-extra`) is not a match by string prefix alone.
+        let lookalike_dir = f.dest.with_file_name(format!(
+            "{}-extra",
+            f.dest.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::create_dir_all(&lookalike_dir).unwrap();
+        let lookalike_file = lookalike_dir.join("acme-deesser.clap");
+        std::fs::write(&lookalike_file, b"plugin").unwrap();
+        assert_eq!(
+            uninstall_file(&lookalike_file, &f.dest),
+            Err(UninstallError::OutsideInstallFolder)
+        );
+        assert!(lookalike_file.exists(), "untouched");
+    }
+
+    /// A subfolder of the install folder isn't "inside" it for this purpose — every installed
+    /// file is a direct child ([`install_file`] never nests one).
+    #[test]
+    fn uninstall_refuses_a_nested_subfolder_of_the_install_folder() {
+        let f = fixture("uninstall-nested", b"plugin");
+        std::fs::create_dir_all(&f.dest).unwrap();
+        let nested_dir = f.dest.join("nested");
+        std::fs::create_dir_all(&nested_dir).unwrap();
+        let nested = nested_dir.join("acme.clap");
+        std::fs::write(&nested, b"plugin").unwrap();
+        assert_eq!(
+            uninstall_file(&nested, &f.dest),
+            Err(UninstallError::OutsideInstallFolder)
+        );
+        assert!(nested.exists());
+    }
+
+    #[test]
+    fn uninstall_refuses_when_the_install_folder_does_not_exist() {
+        let root = TempDir::new("uninstall-no-dir");
+        let dest = root.0.join("never-created");
+        let elsewhere = root.0.join("elsewhere.clap");
+        std::fs::write(&elsewhere, b"plugin").unwrap();
+        assert_eq!(
+            uninstall_file(&elsewhere, &dest),
+            Err(UninstallError::OutsideInstallFolder)
+        );
+        assert!(elsewhere.exists());
     }
 }

@@ -55,6 +55,7 @@
   import PreferencesDialog from "./lib/preferences/PreferencesDialog.svelte";
   import InstallPluginDialog from "./lib/plugins/InstallPluginDialog.svelte";
   import PluginManagerDialog from "./lib/plugins/PluginManagerDialog.svelte";
+  import UninstallPluginDialog from "./lib/plugins/UninstallPluginDialog.svelte";
   import { initPlugins } from "./lib/plugins/plugins.svelte";
   import RecoveryDialog from "./lib/recovery/RecoveryDialog.svelte";
   import { initRecovery } from "./lib/recovery/recovery.svelte";
@@ -463,6 +464,7 @@
 <PreferencesDialog />
 <PluginManagerDialog />
 <InstallPluginDialog />
+<UninstallPluginDialog />
 <UnsavedChangesDialog />
 <ConfirmDialog />
 <RecentMissingDialog />

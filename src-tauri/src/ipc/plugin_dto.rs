@@ -7,7 +7,7 @@ use ts_rs::TS;
 use vox_plugin_host::blocklist::{BlockInfo, BlockReason};
 use vox_plugin_host::health::CrashFlag;
 use vox_plugin_host::install::InstallError;
-use vox_plugin_host::scan::FailureKind;
+use vox_plugin_host::scan::{FailureKind, ShadowedPlugin};
 use vox_plugin_host::{ClapPluginRef, InstallReport, PluginDetails, SandboxSpec};
 
 /// Why a file is blocklisted (T-809: the UI words it through i18n; `reason` stays the log text).
@@ -53,6 +53,10 @@ pub enum PluginStatusDto {
     /// Registered and working, but has crashed at runtime at least once (ADR-008 §5) — a
     /// warning badge, not a block; the user decides whether to block it.
     Flagged { crash_count: u32 },
+    /// Scanned fine, but another file already provides this id and won the duplicate-id policy
+    /// (H-29, ADR-008 Amendment 5); this one is never registered. `by` is the winning file's
+    /// path.
+    Shadowed { by: String },
 }
 
 /// One audio port side's channel count (T-804 item 3, ADR-008 §6).
@@ -155,16 +159,38 @@ pub fn blocklisted_entry(path: &Path, info: &BlockInfo) -> PluginEntryDto {
     }
 }
 
+/// A duplicate-id loser's plugin manager entry (H-29): it scanned fine but isn't registered, so
+/// `id` is left empty, like a blocklisted-with-no-descriptor row — a non-empty id here would
+/// collide with the winner's own row (the UI keys rows by id, falling back to the path only when
+/// it's empty).
+pub fn shadowed_entry(shadow: &ShadowedPlugin) -> PluginEntryDto {
+    PluginEntryDto {
+        id: String::new(),
+        name: shadow.plugin.name.clone(),
+        vendor: shadow.plugin.vendor.clone(),
+        version: shadow.plugin.version.clone(),
+        format: "clap".to_string(),
+        path: shadow.path.to_string_lossy().into_owned(),
+        status: PluginStatusDto::Shadowed {
+            by: shadow.shadowed_by.to_string_lossy().into_owned(),
+        },
+        ports: None,
+        param_count: 0,
+    }
+}
+
 /// `plugins_list`'s answer: every registered effect (sorted by id; `Disabled` before `Flagged`
 /// before `Ok`), except that one whose **file** is blocklisted shows as `Blocklisted` — keeping
 /// its real name — (T-809: blocking a registered plugin, or a flagged one, until the next
-/// rescan drops it); then every other blocklisted file, by path, identified by its file name.
+/// rescan drops it); then every other blocklisted file, by path, identified by its file name;
+/// then every duplicate-id loser (H-29), "Shadowed by …" the file that won instead.
 pub fn plugin_list(
     specs: &[SandboxSpec],
     details: impl Fn(&str) -> Option<PluginDetails>,
     disabled: &[String],
     flag: impl Fn(&str) -> CrashFlag,
     blocked: &[(PathBuf, BlockInfo)],
+    shadowed: &[ShadowedPlugin],
 ) -> Vec<PluginEntryDto> {
     let blocked_info = |path: &str| {
         blocked
@@ -188,6 +214,12 @@ pub fn plugin_list(
         let key = path.to_string_lossy();
         if !list.iter().any(|e| e.path == key) {
             list.push(blocklisted_entry(path, info));
+        }
+    }
+    for shadow in shadowed {
+        let key = shadow.path.to_string_lossy();
+        if !list.iter().any(|e| e.path == key) {
+            list.push(shadowed_entry(shadow));
         }
     }
     list
@@ -450,6 +482,7 @@ mod tests {
             &[],
             |_| CrashFlag::default(),
             &blocked,
+            &[],
         );
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].name, "De-esser");
@@ -468,6 +501,62 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn scanned(id: &str, name: &str) -> vox_plugin_host::scan::ScannedPlugin {
+        vox_plugin_host::scan::ScannedPlugin {
+            id: id.into(),
+            name: name.into(),
+            vendor: "Acme".into(),
+            version: "1.0".into(),
+            features: vec!["audio-effect".into()],
+            ..vox_plugin_host::scan::ScannedPlugin::default()
+        }
+    }
+
+    /// H-29: a duplicate-id loser gets an empty id (so it never collides, as a UI row key, with
+    /// the winner it's shadowed by) and a `Shadowed { by }` status naming the winning path.
+    #[test]
+    fn shadowed_entry_has_no_id_and_names_the_winner() {
+        let shadow = ShadowedPlugin {
+            path: PathBuf::from("/media/plugins/acme-old.clap"),
+            plugin: scanned("com.acme.deesser", "De-esser"),
+            shadowed_by: PathBuf::from("/home/u/.clap/acme-deesser.clap"),
+        };
+        let e = shadowed_entry(&shadow);
+        assert_eq!(e.id, "");
+        assert_eq!(e.name, "De-esser");
+        assert_eq!(
+            e.status,
+            PluginStatusDto::Shadowed {
+                by: "/home/u/.clap/acme-deesser.clap".into()
+            }
+        );
+    }
+
+    /// `plugin_list` appends shadowed rows after registered and blocklisted ones, and never
+    /// double-lists a path that's already there for some other reason.
+    #[test]
+    fn plugin_list_appends_shadowed_rows() {
+        let shadow = ShadowedPlugin {
+            path: PathBuf::from("/media/plugins/acme-old.clap"),
+            plugin: scanned("com.acme.deesser", "De-esser (old)"),
+            shadowed_by: PathBuf::from(PATH),
+        };
+        let list = plugin_list(
+            &[spec("clap:com.acme.deesser", PATH)],
+            |_| None,
+            &[],
+            |_| CrashFlag::default(),
+            &[],
+            &[shadow],
+        );
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[1].name, "De-esser (old)");
+        assert_eq!(
+            list[1].status,
+            PluginStatusDto::Shadowed { by: PATH.into() }
+        );
     }
 
     #[test]

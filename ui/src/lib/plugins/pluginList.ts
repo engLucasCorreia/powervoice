@@ -41,7 +41,13 @@ export function formatLabel(format: string): string {
 }
 
 /** Status severity for sorting: problems first when sorting by status ascending. */
-const STATUS_RANK: Record<StatusKind, number> = { blocklisted: 0, flagged: 1, disabled: 2, ok: 3 };
+const STATUS_RANK: Record<StatusKind, number> = {
+  blocklisted: 0,
+  shadowed: 1,
+  flagged: 2,
+  disabled: 3,
+  ok: 4,
+};
 
 export interface StatusInfo {
   kind: StatusKind;
@@ -89,6 +95,15 @@ export function statusInfo(status: PluginStatusDto): StatusInfo {
         labelKey: "plugins.status.flagged",
         detailKey: status.crash_count === 1 ? "plugins.crashed_once" : "plugins.crashed_times",
         detailParams: { count: status.crash_count },
+      };
+    case "shadowed":
+      return {
+        kind: "shadowed",
+        tone: "neutral",
+        icon: "copy",
+        labelKey: "plugins.status.shadowed",
+        detailKey: "plugins.shadowed_by",
+        detailParams: { path: fileName(status.by) },
       };
   }
 }
@@ -163,10 +178,17 @@ export interface PluginCounts {
   disabled: number;
   blocklisted: number;
   flagged: number;
+  shadowed: number;
 }
 
 export function countPlugins(list: readonly PluginEntryDto[]): PluginCounts {
-  const counts: PluginCounts = { total: list.length, disabled: 0, blocklisted: 0, flagged: 0 };
+  const counts: PluginCounts = {
+    total: list.length,
+    disabled: 0,
+    blocklisted: 0,
+    flagged: 0,
+    shadowed: 0,
+  };
   for (const entry of list) {
     if (entry.status.kind !== "ok") {
       counts[entry.status.kind] += 1;
@@ -175,7 +197,20 @@ export function countPlugins(list: readonly PluginEntryDto[]): PluginCounts {
   return counts;
 }
 
-/** Whether a row can be switched on/off (a blocklisted file isn't registered at all). */
+/** Whether a row can be switched on/off (a blocklisted or shadowed file isn't registered). */
 export function canToggle(entry: PluginEntryDto): boolean {
   return entry.id !== "" && entry.status.kind !== "blocklisted";
+}
+
+/** Whether `path` is a direct child of `installDir` (H-29): only files there offer
+ * "Uninstall…" in the row menu — anything else offers "Block" instead. Path-separator
+ * agnostic (either OS); a look-alike sibling folder (`.clap-extra`) never matches. */
+export function isInInstallFolder(path: string, installDir: string | null): boolean {
+  if (!installDir) {
+    return false;
+  }
+  const slashes = (p: string) => p.replace(/\\/g, "/");
+  const dir = slashes(installDir).replace(/\/+$/, "");
+  const file = slashes(path);
+  return file.startsWith(`${dir}/`) && !file.slice(dir.length + 1).includes("/");
 }

@@ -22,6 +22,7 @@
     fileName,
     filterPlugins,
     formatLabel,
+    isInInstallFolder,
     portsKey,
     rowKey,
     sortPlugins,
@@ -35,6 +36,7 @@
     closePluginManager,
     pluginsState,
     refreshPlugins,
+    requestUninstall,
     rescanPlugins,
     revealPlugin,
     setManagerTab,
@@ -117,6 +119,9 @@
     if (!entry) {
       return [];
     }
+    // "Uninstall…" (H-29) replaces "Block" for a file PowerVoice itself installed; a file found
+    // anywhere else is never removed here, only blocked.
+    const installed = isInInstallFolder(entry.path, ps.folders?.install ?? null);
     const items: MenuEntry[] = [];
     if (entry.status.kind === "blocklisted") {
       items.push({
@@ -137,14 +142,27 @@
           onselect: () => void clearPluginFlag(entry),
         });
       }
+      if (!installed) {
+        items.push({
+          kind: "item",
+          id: "block",
+          label: t("plugins.action.block"),
+          title: t("plugins.action.block_title"),
+          icon: "blocked",
+          testid: "plugin-action-block",
+          onselect: () => void blockPlugin(entry),
+        });
+      }
+    }
+    if (installed) {
       items.push({
         kind: "item",
-        id: "block",
-        label: t("plugins.action.block"),
-        title: t("plugins.action.block_title"),
-        icon: "blocked",
-        testid: "plugin-action-block",
-        onselect: () => void blockPlugin(entry),
+        id: "uninstall",
+        label: t("plugins.action.uninstall"),
+        title: t("plugins.action.uninstall_title"),
+        icon: "delete",
+        testid: "plugin-action-uninstall",
+        onselect: () => requestUninstall(entry),
       });
     }
     items.push(

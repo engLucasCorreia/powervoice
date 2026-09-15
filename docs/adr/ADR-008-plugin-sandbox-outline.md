@@ -685,3 +685,90 @@ are still skipped), `plugins_set_enabled`, `plugins_block`/`plugins_unblock`,
 - The offline-render deadline-miss fault (`SandboxFault::OfflineDeadline`, set directly from the
   render thread without a lock, ADR-008 Amendment 2 §5) does not flag the health store — only
   faults that go through `Sandbox::record` do, to keep the audio/render path lock-free.
+
+## Amendment 5 — H-29 duplicate-id policy, and "Uninstall…", as implemented (2026-09-15)
+
+Amendment 4 §7 left two gaps for T-809's plugin manager: a duplicate id was resolved by whatever
+order `find_clap_files`'s single alphabetical sort happened to produce (not a deliberate
+priority), and there was no way to remove an installed plugin. H-29 closes both.
+
+### 1. One duplicate-id policy, everywhere (refines §4/Amendment 3 §4, Amendment 4 §5)
+
+**Policy:** a plugin id found in more than one file resolves to **the user's own install folder
+first, then the other standard paths, then custom folders; a tie within one of those goes to
+path order** (plain string comparison of the full path). This is deliberately simple — no
+per-plugin override, no "prefer the newer version" — because it only has to be *predictable*:
+whoever put a file in a higher-priority place wins, and the plugin manager always shows why
+(§3).
+
+**Where it's implemented, once:** `PluginCatalog::search_tiers` (private) now returns the three
+priority groups as separate `Vec<PathBuf>`s — `[install_dir]`, `clap_search_paths()` (unchanged:
+`$CLAP_PATH` first, then the OS's own per-user and system paths, still *one* tier, not split
+further — Amendment 3 §4's reasoning for treating them as one list stands), `custom_folders` —
+instead of one flattened, then globally-sorted, list. `scan::find_clap_files_ranked` finds every
+tier's files (sorted by path within the tier, exactly as the old `find_clap_files` did for its
+one flat list) and concatenates them tier by tier, deduplicating by canonical path across tiers
+(a symlink or coincidental overlap keeps only its highest-priority position). `find_clap_files`
+itself is unchanged — `find_clap_files_ranked` calls it once per tier — so every existing caller
+(the sandbox integration tests, the T-804 custom-folder scan test) is unaffected.
+
+`effect_specs`'s "first occurrence of an id wins" (unchanged code) then applies this order
+directly. Both `PluginCatalog::load_cached` (start-up, cache-only) and `PluginCatalog::rescan`
+(quick and full) call `find_clap_files_ranked(&self.search_tiers())`, so the instant start-up
+list, a quick rescan and a full rescan can never disagree about which file wins a duplicate id.
+`PluginCatalog::install`/`install_with` already made the just-installed file win immediately
+(T-809, unchanged) by dropping any existing spec with the same id — consistent with the policy,
+since the install folder is always the top tier.
+
+### 2. The loser isn't just dropped — it's "Shadowed by …" (refines Amendment 4 §7's known limits)
+
+`scan::effect_specs_with_shadows` is `effect_specs` plus a `Vec<ShadowedPlugin>` of every audio
+effect that lost: its own file, its scanned descriptor (name/vendor/version — it did scan fine),
+and the path of the file that won instead. `PluginCatalog` keeps the latest one (`shadowed()`),
+refreshed by the same `load_cached`/`rescan` calls that refresh `specs()`. `plugins_list`
+appends a row per shadowed plugin (`PluginStatusDto::Shadowed { by }`) after the registered and
+blocklisted ones, with an empty `id` (like a blocklisted file with no descriptor) so it can never
+collide, as a UI row key, with the winner's own row. The plugin manager shows it exactly like any
+other status badge, with a "Shadowed by ‹file›" detail line.
+
+Known limit: shadow information is only as fresh as the last `load_cached`/`rescan` — installing
+a file that starts shadowing (or stops shadowing) some other file doesn't recompute `shadowed()`
+until the next rescan, the same staleness Amendment 4 §7 already accepted for the scan snapshot
+itself.
+
+### 3. "Uninstall…" (T-809 known limit "no uninstall"; refines ADR-006 §7 step 6)
+
+The plugin manager's row menu offers "Uninstall…" only for a file inside the per-user install
+folder (`install::user_clap_dir()`) — the same folder ADR-006 Amendment 1 has "Install module…"
+copy into. Anywhere else, the row offers "Block" instead, unchanged.
+
+`install::uninstall_file(target, install_dir)` refuses anything whose canonicalized parent isn't
+exactly the canonicalized `install_dir` (so a symlink can't be used to point "the installed file"
+somewhere else, and a nested subfolder — nothing `install_file` ever creates — doesn't count
+either), then removes the file (or, on macOS, the bundle directory). `PluginCatalog::uninstall`
+wraps this under the same `scan_lock` as an install/rescan, then:
+- drops every spec whose file is the removed path from the catalog's snapshot and its per-id
+  detail cache;
+- removes the same file's entry from the scan cache (`scan::cache_remove`), so a later scan never
+  trusts a stale hit for a plugin that no longer exists;
+- removes each of those ids from every observed live [`Registry`](../../crates/rack/src/registry.rs)
+  (`Registry::remove`, new: the registry was append/replace-only before this — `register` errors
+  on a duplicate, `upsert` never removes).
+
+An open document that already uses the module keeps its slot: `Registry::resolve` already treats
+a missing id as the "Missing module" placeholder (ADR-005's mechanism, unchanged), and neither
+`uninstall_file` nor `PluginCatalog::uninstall` ever touches a document's own state — the slot's
+stored `state` blob round-trips through the sidecar exactly as it did before the uninstall.
+Uninstalling a file that was shadowing another one doesn't immediately promote the loser back
+into `specs()`/the registry — like §2's known limit, that resolves at the next rescan, not
+instantly.
+
+### Consequences
+
+**Positive:** the duplicate-id outcome no longer depends on filesystem enumeration order or a
+flat alphabetical sort that happened to mix priority tiers together; it's now a policy anyone can
+predict and the manager explains; "Install module…" finally has a way back.
+
+**Negative:** shadow and uninstall state can each be one rescan stale, as noted above — accepted
+for the same reason Amendment 4 accepted it for "missing" status: the alternative is a live
+filesystem watch, which is out of scope here.

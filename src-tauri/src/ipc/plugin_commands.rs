@@ -2,6 +2,7 @@
 //! `vox_plugin_host::catalog`/`install`. The plugin manager UI is `ui/src/lib/plugins/`).
 
 use tauri::{AppHandle, State};
+use vox_plugin_host::install::UninstallError;
 
 use crate::ipc::error::{IpcError, IpcErrorCode};
 use crate::ipc::events::{emit_plugin_scan_progress, emit_plugin_scan_summary};
@@ -9,6 +10,28 @@ use crate::ipc::plugin_dto::{
     PluginEntryDto, PluginFoldersDto, PluginInstallResultDto, plugin_list,
 };
 use crate::settings::SettingsStore;
+
+/// Maps [`UninstallError`] to an `IpcError` (the UI shows it as a toast — H-29's confirm dialog
+/// is the only special-cased uninstall UI; a failure here is the rare, already-changed-underneath
+/// case, not a multi-step flow like "Install module…"'s).
+fn uninstall_ipc_error(err: UninstallError) -> IpcError {
+    match err {
+        UninstallError::NotFound => {
+            IpcError::new(IpcErrorCode::NotFound, "error.plugins.uninstall.not_found")
+        }
+        UninstallError::OutsideInstallFolder => IpcError::new(
+            IpcErrorCode::InvalidArgument,
+            "error.plugins.uninstall.outside_install_folder",
+        ),
+        UninstallError::NoInstallDir => {
+            IpcError::new(IpcErrorCode::Io, "error.plugins.uninstall.no_install_dir")
+        }
+        UninstallError::Io(message) => {
+            IpcError::new(IpcErrorCode::Io, "error.plugins.uninstall.io")
+                .with_param("message", message)
+        }
+    }
+}
 
 /// Rescans, reporting every step through `plugin_scan_progress` and the summary at the end
 /// (T-809: the plugin manager's progress bar follows every rescan, not only the start-up one).
@@ -40,6 +63,7 @@ pub async fn plugins_list(
         &disabled,
         |id| health.as_ref().map(|h| h.get(id)).unwrap_or_default(),
         &crate::plugins::blocklist_snapshot(),
+        &crate::plugins::shadowed_plugins(),
     ))
 }
 
@@ -162,10 +186,50 @@ pub async fn plugins_install(
     Ok(result.into())
 }
 
+/// "Uninstall…" (H-29): removes a plugin file from the per-user install folder — refusing
+/// anything else — and drops it from the registry and the scan cache. An open document that
+/// already uses it keeps its slot, shown as "Missing", with its state untouched.
+#[tauri::command]
+pub async fn plugins_uninstall(path: String) -> Result<(), IpcError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::plugins::uninstall(std::path::Path::new(&path))
+    })
+    .await
+    .map_err(|e| IpcError::internal(e.to_string()))?
+    .map_err(uninstall_ipc_error)
+}
+
 /// Shows a plugin file in the system file manager (T-809).
 #[tauri::command]
 pub async fn plugins_reveal(path: String) -> Result<(), IpcError> {
     crate::plugins::reveal(std::path::Path::new(&path)).map_err(|e| {
         IpcError::new(IpcErrorCode::Io, "error.plugins.reveal").with_param("message", e.to_string())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uninstall_errors_map_to_i18n_keys() {
+        assert_eq!(
+            uninstall_ipc_error(UninstallError::NotFound).key,
+            "error.plugins.uninstall.not_found"
+        );
+        assert_eq!(
+            uninstall_ipc_error(UninstallError::OutsideInstallFolder).key,
+            "error.plugins.uninstall.outside_install_folder"
+        );
+        assert_eq!(
+            uninstall_ipc_error(UninstallError::NoInstallDir).key,
+            "error.plugins.uninstall.no_install_dir"
+        );
+        let io = uninstall_ipc_error(UninstallError::Io("disk full".into()));
+        assert_eq!(io.key, "error.plugins.uninstall.io");
+        assert_eq!(
+            io.params.get("message").map(String::as_str),
+            Some("disk full")
+        );
+    }
 }

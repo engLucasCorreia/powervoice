@@ -6,15 +6,18 @@ import { clearNotices } from "../state/notices.svelte";
 import {
   addPluginFolder,
   blockPlugin,
+  cancelUninstall,
   clearPluginFlag,
   closeInstall,
   confirmReplace,
+  confirmUninstall,
   initPlugins,
   openPluginManager,
   pluginCrashCount,
   pluginsState,
   refreshPlugins,
   removePluginFolder,
+  requestUninstall,
   rescanPlugins,
   resetPluginsForTest,
   revealPlugin,
@@ -23,7 +26,8 @@ import {
   startInstall,
   unblockPlugin,
 } from "./plugins.svelte";
-import { FLAGGED_ID, folderFixture, pluginFixtures, settle } from "./testing";
+import { settle } from "./testing";
+import { FLAGGED_ID, folderFixture, pluginFixtures } from "../test/fixtures";
 
 interface Call {
   cmd: string;
@@ -98,6 +102,44 @@ describe("plugins store (T-809)", () => {
       { cmd: "plugins_rescan", args: { full: true } },
     ]);
     expect(pluginsState().focusKey).toBe("path:/home/u/Downloads/glitchy-comp.clap");
+  });
+
+  it("uninstalls after confirmation, then refreshes the list (H-29)", async () => {
+    const calls = mock();
+    const target = entry("De-esser");
+    expect(pluginsState().uninstallPrompt).toBeNull();
+
+    requestUninstall(target);
+    expect(pluginsState().uninstallPrompt).toEqual({ entry: target, busy: false });
+
+    const done = confirmUninstall();
+    expect(pluginsState().uninstallPrompt?.busy).toBe(true);
+    await done;
+
+    expect(pluginsState().uninstallPrompt).toBeNull();
+    const actions = pluginCalls(calls).filter((c) => c.cmd !== "plugins_list");
+    expect(actions).toEqual([
+      { cmd: "plugins_uninstall", args: { path: target.path } },
+    ]);
+  });
+
+  it("cancelling the uninstall prompt calls nothing", async () => {
+    const calls = mock();
+    requestUninstall(entry("De-esser"));
+    cancelUninstall();
+    expect(pluginsState().uninstallPrompt).toBeNull();
+    expect(pluginCalls(calls).some((c) => c.cmd === "plugins_uninstall")).toBe(false);
+  });
+
+  it("a failed uninstall closes the prompt and reports the error", async () => {
+    mock({
+      plugins_uninstall: () => {
+        throw { code: "invalid_argument", key: "error.plugins.uninstall.outside_install_folder", params: {} };
+      },
+    });
+    requestUninstall(entry("De-esser"));
+    await confirmUninstall();
+    expect(pluginsState().uninstallPrompt).toBeNull();
   });
 
   it("adds a folder from the native folder picker and removes one", async () => {

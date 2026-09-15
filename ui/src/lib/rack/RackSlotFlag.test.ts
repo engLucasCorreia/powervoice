@@ -3,7 +3,8 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RackSlotDto } from "../ipc/bindings";
 import { pluginsState, refreshPlugins, resetPluginsForTest } from "../plugins/plugins.svelte";
-import { FLAGGED_ID, pluginFixtures, settle } from "../plugins/testing";
+import { settle } from "../plugins/testing";
+import { FLAGGED_ID, pluginFixtures } from "../test/fixtures";
 import { resetRackForTest } from "./rack.svelte";
 import RackSlot from "./RackSlot.svelte";
 

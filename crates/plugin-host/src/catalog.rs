@@ -18,8 +18,10 @@ use vox_rack::Registry;
 use crate::blocklist::{BlockReason, Blocklist};
 use crate::factory::{SandboxFactory, SandboxOptions, SandboxSpec};
 use crate::health::HealthStore;
-use crate::install::{self, InstallError};
-use crate::scan::{self, FoundPlugin, ScanFailure, ScanOptions, ScanOutcome, ScannedPlugin};
+use crate::install::{self, InstallError, UninstallError};
+use crate::scan::{
+    self, FoundPlugin, ScanFailure, ScanOptions, ScanOutcome, ScannedPlugin, ShadowedPlugin,
+};
 use vox_sandbox_ipc::protocol::ClapPluginRef;
 
 /// Where the catalog persists its state.
@@ -111,6 +113,9 @@ pub struct PluginCatalog {
     custom_folders: Mutex<Vec<PathBuf>>,
     specs: RwLock<Vec<SandboxSpec>>,
     details: RwLock<HashMap<String, PluginDetails>>,
+    /// Duplicate ids that lost to another file (H-29, ADR-008 Amendment 5); `plugins_list`'s
+    /// "Shadowed by …" rows.
+    shadowed: RwLock<Vec<ShadowedPlugin>>,
     observers: Mutex<Vec<Weak<Registry>>>,
     /// Held for a whole rescan or install (T-809): they read and rewrite the same cache file and
     /// spec snapshot, so one never overwrites the other's result.
@@ -127,6 +132,7 @@ impl PluginCatalog {
             custom_folders: Mutex::new(Vec::new()),
             specs: RwLock::new(Vec::new()),
             details: RwLock::new(HashMap::new()),
+            shadowed: RwLock::new(Vec::new()),
             observers: Mutex::new(Vec::new()),
             scan_lock: Mutex::new(()),
         }
@@ -146,17 +152,31 @@ impl PluginCatalog {
             .unwrap_or_else(PoisonError::into_inner) = folders;
     }
 
-    /// The standard CLAP paths plus the configured custom folders.
+    /// The standard CLAP paths plus the configured custom folders (flat; for callers that don't
+    /// care about search priority). Scanning itself uses [`Self::search_tiers`], which keeps
+    /// them apart.
     pub fn search_dirs(&self) -> Vec<PathBuf> {
-        let mut dirs = scan::clap_search_paths();
-        dirs.extend(
+        self.search_tiers().into_iter().flatten().collect()
+    }
+
+    /// [`Self::search_dirs`], grouped into H-29's duplicate-id priority tiers (ADR-008 Amendment
+    /// 5): the user's own install folder (if the environment names one), then the standard CLAP
+    /// paths (`$CLAP_PATH` first — unchanged since T-803/T-804: it's one tier, not split
+    /// further), then the configured custom folders. [`scan::find_clap_files_ranked`] turns this
+    /// straight into "first occurrence wins" priority.
+    fn search_tiers(&self) -> Vec<Vec<PathBuf>> {
+        let mut tiers = Vec::new();
+        if let Some(install_dir) = install::user_clap_dir() {
+            tiers.push(vec![install_dir]);
+        }
+        tiers.push(scan::clap_search_paths());
+        tiers.push(
             self.custom_folders
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .iter()
-                .cloned(),
+                .clone(),
         );
-        dirs
+        tiers
     }
 
     /// The audio effects known right now (a registry snapshot).
@@ -174,6 +194,15 @@ impl PluginCatalog {
             .unwrap_or_else(PoisonError::into_inner)
             .get(module_id)
             .copied()
+    }
+
+    /// Duplicate-id losers from the last scan or cached load (H-29; `plugins_list`'s "Shadowed
+    /// by …" rows).
+    pub fn shadowed(&self) -> Vec<ShadowedPlugin> {
+        self.shadowed
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Registers `registry` to receive hot-adds from future rescans (T-804 item 1). Held
@@ -197,14 +226,19 @@ impl PluginCatalog {
     /// knows, without spawning a single sandbox process. Never blocks on I/O beyond a directory
     /// walk and reading two small JSON files.
     pub fn load_cached(&self) {
-        let files = scan::find_clap_files(&self.search_dirs());
+        let files = scan::find_clap_files_ranked(&self.search_tiers());
         let outcome = scan::cached_outcome(
             &files,
             self.paths.cache.as_deref(),
             self.paths.blocklist.as_deref(),
         );
-        *self.specs.write().unwrap_or_else(PoisonError::into_inner) = scan::effect_specs(&outcome);
+        let (specs, shadowed) = scan::effect_specs_with_shadows(&outcome);
+        *self.specs.write().unwrap_or_else(PoisonError::into_inner) = specs;
         *self.details.write().unwrap_or_else(PoisonError::into_inner) = details_of(&outcome);
+        *self
+            .shadowed
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = shadowed;
     }
 
     fn factory_for(&self, spec: &SandboxSpec) -> Arc<dyn ModuleFactory> {
@@ -227,10 +261,10 @@ impl PluginCatalog {
             .scan_lock
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let files = scan::find_clap_files(&self.search_dirs());
+        let files = scan::find_clap_files_ranked(&self.search_tiers());
         let options = self.scan_options(force);
         let outcome: ScanOutcome = scan::scan_clap_files_with(&files, &options, on_progress);
-        let new_specs = scan::effect_specs(&outcome);
+        let (new_specs, shadowed) = scan::effect_specs_with_shadows(&outcome);
 
         let previous_ids: std::collections::HashSet<String> =
             self.specs().into_iter().map(|s| s.descriptor.id).collect();
@@ -260,6 +294,10 @@ impl PluginCatalog {
 
         *self.specs.write().unwrap_or_else(PoisonError::into_inner) = new_specs.clone();
         *self.details.write().unwrap_or_else(PoisonError::into_inner) = details_of(&outcome);
+        *self
+            .shadowed
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = shadowed;
         ScanSummary {
             scanned: outcome.scanned,
             cached: outcome.cached,
@@ -387,6 +425,54 @@ impl PluginCatalog {
             effects,
             replaced: installed.replaced,
         })
+    }
+
+    /// "Uninstall…" (H-29): removes `path` from `install_dir` (the per-user plugin folder —
+    /// [`install::user_clap_dir`]; never a system folder — the caller resolves it, same as
+    /// [`Self::install`]'s `dest_dir`) — refusing anything outside it
+    /// ([`install::uninstall_file`]) — then drops whatever it provided from the catalog's
+    /// snapshot, the scan cache, and every observed registry. An open document that already uses
+    /// one of those modules keeps its slot: the registry's next `resolve` falls back to the
+    /// "Missing module" placeholder (`vox_rack::Registry::resolve`), and the slot's own stored
+    /// state is never touched by any of this. Held under the same [`Self::scan_lock`] as
+    /// [`Self::install`]/[`Self::rescan`], so an uninstall never races either.
+    pub fn uninstall(&self, path: &Path, install_dir: &Path) -> Result<(), UninstallError> {
+        let _scanning = self
+            .scan_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        install::uninstall_file(path, install_dir)?;
+
+        let removed_ids: Vec<String> = {
+            let mut specs = self.specs.write().unwrap_or_else(PoisonError::into_inner);
+            let (kept, removed): (Vec<_>, Vec<_>) = std::mem::take(&mut *specs)
+                .into_iter()
+                .partition(|s| spec_path(s).as_deref() != Some(path));
+            *specs = kept;
+            removed.into_iter().map(|s| s.descriptor.id).collect()
+        };
+        {
+            let mut details = self.details.write().unwrap_or_else(PoisonError::into_inner);
+            for id in &removed_ids {
+                details.remove(id);
+            }
+        }
+        if let Some(cache) = &self.paths.cache {
+            scan::cache_remove(cache, path);
+        }
+        let mut observers = self
+            .observers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        observers.retain(|w| w.strong_count() > 0);
+        for id in &removed_ids {
+            for w in observers.iter() {
+                if let Some(registry) = w.upgrade() {
+                    registry.remove(id);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Clears `module_id`'s runtime crash flag (the plugin manager's "Clear crash warning").
@@ -518,6 +604,118 @@ mod tests {
             None,
         );
         assert_eq!(cached.len(), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// H-29's duplicate-id policy ("a user-installed file wins") applies at install time too, not
+    /// just at the next rescan: installing a plugin whose id was already registered from some
+    /// other file immediately supersedes it — the older spec, from a different path, is dropped
+    /// the moment the new one lands, not left to double up until the next scan.
+    #[test]
+    fn installing_a_duplicate_id_supersedes_the_previously_registered_file() {
+        let dir = temp_dir("install-dup");
+        let dest = dir.join("home").join(".clap");
+        let source = dir.join("downloads").join("acme.clap");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, b"plugin").unwrap();
+        let c = catalog(&dir);
+        let registry = Arc::new(Registry::new());
+        c.observe(&registry);
+
+        // A same-id plugin is already registered, as if a previous scan had found it in a
+        // standard or custom folder.
+        let old_path = dir.join("usr-lib-clap").join("acme-old.clap");
+        let old_spec = crate::factory::clap_spec(
+            &old_path,
+            &crate::install::tests::effect("com.acme.deesser"),
+        );
+        registry.upsert(c.factory_for(&old_spec));
+        *c.specs.write().unwrap() = vec![old_spec];
+
+        let report = c
+            .install_with(&source, &dest, false, |_| {
+                Ok(vec![crate::install::tests::effect("com.acme.deesser")])
+            })
+            .unwrap();
+        assert_eq!(report.effects.len(), 1);
+
+        let id = "clap:com.acme.deesser";
+        let specs = c.specs();
+        assert_eq!(
+            specs.len(),
+            1,
+            "the old file's spec is gone, not doubled up"
+        );
+        assert_eq!(specs[0].descriptor.id, id);
+        assert_eq!(
+            spec_path(&specs[0]).as_deref(),
+            Some(dest.join("acme.clap").as_path())
+        );
+        // The registry now resolves to the newly installed file too (hot-added over the old one).
+        assert!(registry.get(id).is_some());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// H-29 item 1: "Uninstall…" removes the file, the scan cache entry and the registry entry —
+    /// and nothing else changes (the file's own directory is left otherwise intact).
+    #[test]
+    fn uninstall_removes_the_file_the_cache_entry_and_the_registry_entry() {
+        let dir = temp_dir("uninstall");
+        let dest = dir.join("home").join(".clap");
+        let source = dir.join("downloads").join("acme.clap");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, b"plugin").unwrap();
+        let c = catalog(&dir);
+        let registry = Arc::new(Registry::new());
+        c.observe(&registry);
+        c.install_with(&source, &dest, false, |_| {
+            Ok(vec![crate::install::tests::effect("com.acme.deesser")])
+        })
+        .unwrap();
+        let target = dest.join("acme.clap");
+        let id = "clap:com.acme.deesser";
+        assert!(target.exists());
+        assert!(registry.get(id).is_some());
+
+        c.uninstall(&target, &dest).unwrap();
+
+        assert!(!target.exists(), "the file is removed");
+        assert!(registry.get(id).is_none(), "dropped from the registry");
+        assert!(
+            !c.specs().iter().any(|s| s.descriptor.id == id),
+            "dropped from the catalog snapshot"
+        );
+        assert_eq!(c.details(id), None, "dropped from the details cache");
+        let cached = scan::cached_effect_specs(&[target], Some(&dir.join("cache.json")), None);
+        assert!(cached.is_empty(), "dropped from the scan cache");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A file outside the install folder is refused, up front — nothing about it changes: not
+    /// the file, not the catalog snapshot, not the registry.
+    #[test]
+    fn uninstall_refuses_a_file_outside_the_install_folder() {
+        let dir = temp_dir("uninstall-outside");
+        let dest = dir.join("home").join(".clap");
+        let outside = dir.join("usr-lib-clap").join("acme.clap");
+        std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        std::fs::write(&outside, b"plugin").unwrap();
+        let c = catalog(&dir);
+        let registry = Arc::new(Registry::new());
+        c.observe(&registry);
+        let spec =
+            crate::factory::clap_spec(&outside, &crate::install::tests::effect("com.acme.deesser"));
+        registry.upsert(c.factory_for(&spec));
+        *c.specs.write().unwrap() = vec![spec];
+
+        let err = c.uninstall(&outside, &dest).unwrap_err();
+        assert_eq!(err, UninstallError::OutsideInstallFolder);
+        assert!(outside.exists());
+        assert!(registry.get("clap:com.acme.deesser").is_some());
+        assert_eq!(c.specs().len(), 1);
 
         std::fs::remove_dir_all(&dir).ok();
     }

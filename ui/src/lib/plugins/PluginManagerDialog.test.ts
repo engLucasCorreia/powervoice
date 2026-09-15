@@ -3,9 +3,10 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
 import { clearNotices } from "../state/notices.svelte";
+import { FLAGGED_ID, folderFixture, pluginEntry, pluginFixtures } from "../test/fixtures";
 import PluginManagerDialog from "./PluginManagerDialog.svelte";
 import { initPlugins, openPluginManager, pluginsState, resetPluginsForTest } from "./plugins.svelte";
-import { FLAGGED_ID, folderFixture, pluginFixtures, settle } from "./testing";
+import { settle } from "./testing";
 
 interface Call {
   cmd: string;
@@ -180,7 +181,9 @@ describe("Plugin manager (T-809)", () => {
       await settle();
     };
     await act("Breath Control", "plugin-action-clear-flag");
-    await act("Breath Control", "plugin-action-block");
+    // "Breath Control" lives in the install folder (H-29), so its row offers "Uninstall…", not
+    // "Block" — use a plugin found elsewhere for that.
+    await act("Tape Saturator", "plugin-action-block");
     await act("Small Room", "plugin-action-reveal");
     await act("Hum Remover", "plugin-action-unblock");
     const actions = calls.filter((c) =>
@@ -188,10 +191,50 @@ describe("Plugin manager (T-809)", () => {
     );
     expect(actions).toEqual([
       { cmd: "plugins_clear_flag", args: { moduleId: FLAGGED_ID } },
-      { cmd: "plugins_block", args: { path: "/home/u/.clap/breath-control.clap" } },
+      { cmd: "plugins_block", args: { path: "/usr/lib/vst3/Tape Saturator.vst3" } },
       { cmd: "plugins_reveal", args: { path: "/usr/lib/lv2/small-room.lv2" } },
       { cmd: "plugins_unblock", args: { path: "/media/plugins/hum-remover.clap" } },
     ]);
+  });
+
+  it("offers Uninstall… (not Block) for a plugin in the install folder, and opens the confirm prompt (H-29)", async () => {
+    mock();
+    const root = await open();
+    // "De-esser" lives at /home/u/.clap/acme-deesser.clap — inside folderFixture().install.
+    q(rowNamed(root, "De-esser"), "plugin-actions")!.click();
+    flushSync();
+    expect(q(document, "plugin-action-block")).toBeNull();
+    const uninstall = q<HTMLElement>(document, "plugin-action-uninstall");
+    expect(uninstall).not.toBeNull();
+    uninstall!.click();
+    // The confirm dialog itself (`UninstallPluginDialog`, mounted alongside this one in
+    // App.svelte) is covered by its own test file — here we only check the row menu wires into
+    // the shared store correctly.
+    expect(pluginsState().uninstallPrompt?.entry.name).toBe("De-esser");
+  });
+
+  it("shows a duplicate-id loser as Shadowed by … (H-29)", async () => {
+    const shadow = pluginEntry({
+      id: "",
+      name: "De-esser (old)",
+      vendor: "Acme Audio",
+      version: "2.0.0",
+      path: "/usr/lib/clap/acme-deesser.clap",
+      status: { kind: "shadowed", by: "/home/u/.clap/acme-deesser.clap" },
+      ports: null,
+      param_count: 0,
+    });
+    mock({ plugins_list: () => [...pluginFixtures(), shadow] });
+    const root = await open();
+    const row = rowNamed(root, "De-esser (old)");
+    expect(text(q(row, "plugin-status"))).toBe("Shadowed");
+    expect(text(q(row, "plugin-status-detail"))).toBe("Shadowed by acme-deesser.clap");
+    // Never registered, so it can't be toggled or uninstalled — only Block, since it isn't
+    // itself in the install folder here.
+    q(row, "plugin-actions")!.click();
+    flushSync();
+    expect(q(document, "plugin-action-uninstall")).toBeNull();
+    expect(q(document, "plugin-action-block")).not.toBeNull();
   });
 
   it("rescans quickly or fully from the Rescan menu", async () => {

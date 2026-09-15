@@ -205,6 +205,31 @@ pub fn find_clap_files(dirs: &[PathBuf]) -> Vec<PathBuf> {
     out
 }
 
+/// [`find_clap_files`], applied to a list of priority **tiers** instead of one flat directory
+/// list (H-29, ADR-008 Amendment 5's duplicate-id policy): every file below one tier's
+/// directories is found and sorted (by path) before moving on to the next tier, so the returned
+/// order is "everything in tier 0, then everything in tier 1, …", each tier internally in path
+/// order. [`effect_specs`]'s "first occurrence of an id wins" then applies this priority
+/// directly and identically everywhere it's used (start-up's cached load, a quick rescan, a full
+/// rescan) — a duplicate id is resolved the same way regardless of which one runs.
+///
+/// Without duplicates across tiers, by canonical path: a file reachable from two tiers (a
+/// symlink, or a custom folder that happens to coincide with a standard one) keeps the position
+/// of its highest-priority (earliest) tier only.
+pub fn find_clap_files_ranked(tiers: &[Vec<PathBuf>]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for tier in tiers {
+        for f in find_clap_files(tier) {
+            let key = std::fs::canonicalize(&f).unwrap_or_else(|_| f.clone());
+            if seen.insert(key) {
+                out.push(f);
+            }
+        }
+    }
+    out
+}
+
 /// A file's plugins, or why it couldn't be scanned.
 type FileResult = Result<Vec<ScannedPlugin>, ScanFileError>;
 
@@ -284,6 +309,19 @@ pub(crate) fn cache_upsert(cache: &Path, file: &Path, plugins: &[ScannedPlugin])
         plugins: plugins.to_vec(),
     });
     write_cache(cache, entries);
+}
+
+/// Drops `file`'s entry from the scan cache (H-29 "Uninstall…"): the file is gone, so a later
+/// scan starts from scratch on it rather than ever trusting a stale hit for a plugin that no
+/// longer exists. A no-op if it had no entry.
+pub(crate) fn cache_remove(cache: &Path, file: &Path) {
+    let key = file.to_string_lossy().into_owned();
+    let mut entries = read_cache(cache);
+    let before = entries.len();
+    entries.retain(|e| e.path != key);
+    if entries.len() != before {
+        write_cache(cache, entries);
+    }
 }
 
 /// What an exit status means for a scan that printed nothing usable.
@@ -578,15 +616,49 @@ pub fn is_effect(p: &ScannedPlugin) -> bool {
     has(features::AUDIO_EFFECT) && !has("instrument") && !has("note-effect")
 }
 
-/// The specs of every audio effect in `outcome`; the first file wins for a duplicate id.
+/// An audio effect that lost a duplicate-id contest to an earlier file (H-29, ADR-008 Amendment
+/// 5): it scanned fine, but another file already provides this id, so it isn't registered. The
+/// plugin manager shows it with a "Shadowed by …" note instead of letting it vanish silently.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShadowedPlugin {
+    /// The file that lost.
+    pub path: PathBuf,
+    /// What it scanned as (id, name, vendor, …) — everything the manager needs to show a row for
+    /// it, since it's never registered.
+    pub plugin: ScannedPlugin,
+    /// The file whose same-id plugin actually won (is registered instead).
+    pub shadowed_by: PathBuf,
+}
+
+/// [`effect_specs`], plus every audio effect that lost a duplicate-id contest to an earlier file
+/// in `outcome.plugins`' order (H-29, ADR-008 Amendment 5: "first occurrence wins" — the caller
+/// is responsible for that order expressing the actual priority, e.g. [`find_clap_files_ranked`]'s
+/// tiers). A plugin can only shadow, or be shadowed by, another from a *different* file: two
+/// entries the same file reports under one id can't happen (a CLAP file has one plugin per id).
+pub fn effect_specs_with_shadows(outcome: &ScanOutcome) -> (Vec<SandboxSpec>, Vec<ShadowedPlugin>) {
+    let mut winners: std::collections::HashMap<String, PathBuf> = std::collections::HashMap::new();
+    let mut specs = Vec::new();
+    let mut shadowed = Vec::new();
+    for f in outcome.plugins.iter().filter(|f| is_effect(&f.plugin)) {
+        match winners.get(&f.plugin.id) {
+            Some(winner) => shadowed.push(ShadowedPlugin {
+                path: f.path.clone(),
+                plugin: f.plugin.clone(),
+                shadowed_by: winner.clone(),
+            }),
+            None => {
+                winners.insert(f.plugin.id.clone(), f.path.clone());
+                specs.push(clap_spec(&f.path, &f.plugin));
+            }
+        }
+    }
+    (specs, shadowed)
+}
+
+/// The specs of every audio effect in `outcome`; the first file wins for a duplicate id. See
+/// [`effect_specs_with_shadows`] for what happens to the losers.
 pub fn effect_specs(outcome: &ScanOutcome) -> Vec<SandboxSpec> {
-    let mut seen = HashSet::new();
-    outcome
-        .plugins
-        .iter()
-        .filter(|f| is_effect(&f.plugin) && seen.insert(f.plugin.id.clone()))
-        .map(|f| clap_spec(&f.path, &f.plugin))
-        .collect()
+    effect_specs_with_shadows(outcome).0
 }
 
 /// A `SandboxFactory` per spec.
@@ -643,6 +715,108 @@ mod tests {
         assert_eq!(specs[0].descriptor.version.to_string(), "1.2.0");
         assert_eq!(specs[0].format, "clap");
         assert!(specs[0].plugin.contains("/a.clap"));
+    }
+
+    /// H-29: the loser of a duplicate id is reported, not just dropped — with a pointer to the
+    /// file that won.
+    #[test]
+    fn a_duplicate_id_is_reported_as_shadowed_by_the_winner() {
+        let found = |path: &str, p| FoundPlugin {
+            path: PathBuf::from(path),
+            plugin: p,
+        };
+        let outcome = ScanOutcome {
+            plugins: vec![
+                found("/a.clap", plugin("com.x.eq", &["audio-effect"])),
+                found("/b.clap", plugin("com.x.eq", &["audio-effect"])),
+                found("/c.clap", plugin("com.x.eq", &["audio-effect"])),
+                found("/b.clap", plugin("com.x.solo", &["audio-effect"])),
+            ],
+            ..ScanOutcome::default()
+        };
+        let (specs, shadowed) = effect_specs_with_shadows(&outcome);
+        assert_eq!(specs.len(), 2, "com.x.eq once, com.x.solo once");
+        assert!(specs.iter().any(|s| s.descriptor.id == "clap:com.x.eq"));
+        assert!(specs.iter().any(|s| s.descriptor.id == "clap:com.x.solo"));
+        assert_eq!(
+            shadowed,
+            vec![
+                ShadowedPlugin {
+                    path: PathBuf::from("/b.clap"),
+                    plugin: plugin("com.x.eq", &["audio-effect"]),
+                    shadowed_by: PathBuf::from("/a.clap"),
+                },
+                ShadowedPlugin {
+                    path: PathBuf::from("/c.clap"),
+                    plugin: plugin("com.x.eq", &["audio-effect"]),
+                    shadowed_by: PathBuf::from("/a.clap"),
+                },
+            ]
+        );
+        // effect_specs (the plain version) is unaffected — same winners, no shadow info.
+        let ids = |v: &[SandboxSpec]| {
+            v.iter()
+                .map(|s| s.descriptor.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&effect_specs(&outcome)), ids(&specs));
+    }
+
+    fn touch(dir: &Path, name: &str) -> PathBuf {
+        let f = dir.join(name);
+        std::fs::write(&f, b"x").unwrap();
+        f
+    }
+
+    /// H-29's duplicate-id policy applies at the file-finding stage: a tier's files all come
+    /// before the next tier's, and (since `effect_specs`'s dedup is "first occurrence wins")
+    /// combined with a scan this is "the user's install folder beats the other standard paths,
+    /// which beat custom folders; ties go to path order" — exactly by putting the install
+    /// folder, then the standard paths, then the custom folders, in that tier order.
+    #[test]
+    fn ranked_file_finding_orders_tiers_before_paths_within_a_tier() {
+        let dir = temp_dir("ranked");
+        let install = dir.join("install");
+        let standard_a = dir.join("standard-a");
+        let standard_b = dir.join("standard-b");
+        let custom = dir.join("custom");
+        for d in [&install, &standard_a, &standard_b, &custom] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        // Two files in the same (standard) tier: path order breaks the tie between them.
+        let zeta = touch(&standard_b, "zeta.clap");
+        let alpha = touch(&standard_a, "alpha.clap");
+        let installed = touch(&install, "acme.clap");
+        let custom_file = touch(&custom, "custom.clap");
+
+        let tiers = vec![
+            vec![install.clone()],
+            vec![standard_a.clone(), standard_b.clone()],
+            vec![custom.clone()],
+        ];
+        let files = find_clap_files_ranked(&tiers);
+        assert_eq!(files, vec![installed, alpha, zeta, custom_file]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A file reachable from two tiers (a symlink into a lower-priority folder, say) is only
+    /// ever listed once, at its highest-priority position.
+    #[cfg(unix)]
+    #[test]
+    fn ranked_file_finding_deduplicates_across_tiers() {
+        let dir = temp_dir("ranked-dedup");
+        let install = dir.join("install");
+        let standard = dir.join("standard");
+        std::fs::create_dir_all(&install).unwrap();
+        std::fs::create_dir_all(&standard).unwrap();
+        let real = touch(&install, "acme.clap");
+        std::os::unix::fs::symlink(&real, standard.join("acme.clap")).unwrap();
+
+        let files = find_clap_files_ranked(&[vec![install.clone()], vec![standard.clone()]]);
+        assert_eq!(files, vec![real]);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

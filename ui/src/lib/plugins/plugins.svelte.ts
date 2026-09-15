@@ -24,6 +24,7 @@ import {
   pluginsReveal,
   pluginsSetEnabled,
   pluginsUnblock,
+  pluginsUninstall,
 } from "../ipc/commands";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { pushNotice } from "../state/notices.svelte";
@@ -80,6 +81,9 @@ let sortKey = $state<SortKey>("name");
 let sortDir = $state<SortDir>("asc");
 let pending = $state<string | null>(null);
 let install = $state<InstallState>({ phase: "idle" });
+/** "Uninstall…" (H-29): the row awaiting confirmation, or `null` when the confirm dialog is
+ * closed. `busy`: the IPC call is in flight (the dialog's buttons disable). */
+let uninstallPrompt = $state<{ entry: PluginEntryDto; busy: boolean } | null>(null);
 /** Crash counts by module id, from the last list (the rack's flagged-slot affordance). */
 let crashCounts = $state<Record<string, number>>({});
 
@@ -100,6 +104,7 @@ export function pluginsState(): {
   readonly sortDir: SortDir;
   readonly pending: string | null;
   readonly install: InstallState;
+  readonly uninstallPrompt: { entry: PluginEntryDto; busy: boolean } | null;
 } {
   return {
     get open() {
@@ -146,6 +151,9 @@ export function pluginsState(): {
     },
     get install() {
       return install;
+    },
+    get uninstallPrompt() {
+      return uninstallPrompt;
     },
   };
 }
@@ -312,6 +320,39 @@ export async function revealPlugin(entry: PluginEntryDto): Promise<void> {
   await withPending(entry, () => pluginsReveal(entry.path));
 }
 
+// --- "Uninstall…" (H-29) ---------------------------------------------------------------------
+
+/** Opens the confirm dialog for `entry` (the row menu only offers this for a file inside the
+ * per-user install folder — see `isInInstallFolder`). */
+export function requestUninstall(entry: PluginEntryDto): void {
+  uninstallPrompt = { entry, busy: false };
+}
+
+/** Closes the confirm dialog without removing anything (ignored while the removal is in flight). */
+export function cancelUninstall(): void {
+  if (uninstallPrompt?.busy) {
+    return;
+  }
+  uninstallPrompt = null;
+}
+
+/** The confirm dialog's destructive action: removes the file, then refreshes the list. */
+export async function confirmUninstall(): Promise<void> {
+  if (!uninstallPrompt || uninstallPrompt.busy) {
+    return;
+  }
+  const { entry } = uninstallPrompt;
+  uninstallPrompt = { entry, busy: true };
+  try {
+    await pluginsUninstall(entry.path);
+    uninstallPrompt = null;
+    await refreshPlugins();
+  } catch (err) {
+    uninstallPrompt = null;
+    report(err);
+  }
+}
+
 /** Adds a scan folder picked with the native folder dialog; a rescan follows (with progress). */
 export async function addPluginFolder(): Promise<void> {
   const picked = await openDialog({ directory: true, multiple: false, title: t("plugins.folders.pick_title") });
@@ -453,5 +494,6 @@ export function resetPluginsForTest(): void {
   sortDir = "asc";
   pending = null;
   install = { phase: "idle" };
+  uninstallPrompt = null;
   crashCounts = {};
 }

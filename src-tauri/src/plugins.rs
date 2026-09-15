@@ -18,7 +18,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use vox_plugin_host::health::HealthStore;
-use vox_plugin_host::install::InstallError;
+use vox_plugin_host::install::{InstallError, UninstallError};
+use vox_plugin_host::scan::ShadowedPlugin;
 use vox_plugin_host::{
     CatalogPaths, InstallReport, PluginCatalog, PluginDetails, SandboxOptions, SandboxSpec,
     ScanSummary,
@@ -101,6 +102,11 @@ pub fn registry_specs() -> Vec<SandboxSpec> {
 /// The catalog's blocklist snapshot (T-804 item 6; for `plugins_list`).
 pub fn blocklist_snapshot() -> Vec<(PathBuf, vox_plugin_host::blocklist::BlockInfo)> {
     catalog().blocklist_snapshot()
+}
+
+/// The catalog's duplicate-id losers (H-29 item 6; for `plugins_list`'s "Shadowed by …" rows).
+pub fn shadowed_plugins() -> Vec<ShadowedPlugin> {
+    catalog().shadowed()
 }
 
 /// Blocks `path` manually (`plugins_block`).
@@ -193,6 +199,13 @@ pub fn standard_folders() -> Vec<PathBuf> {
 pub fn install(source: &std::path::Path, replace: bool) -> Result<InstallReport, InstallError> {
     let dir = install_dir().ok_or(InstallError::NoInstallDir)?;
     catalog().install(source, &dir, replace)
+}
+
+/// "Uninstall…" (H-29): removes `path` from [`install_dir`] — never a system folder — and drops
+/// it from the registry and the scan cache (`vox_plugin_host::PluginCatalog::uninstall`).
+pub fn uninstall(path: &std::path::Path) -> Result<(), UninstallError> {
+    let dir = install_dir().ok_or(UninstallError::NoInstallDir)?;
+    catalog().uninstall(path, &dir)
 }
 
 /// The OS command that shows `path` in the file manager (T-809): macOS selects it in Finder,

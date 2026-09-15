@@ -105,6 +105,14 @@ impl Registry {
         lock(&self.factories).get(id).cloned()
     }
 
+    /// Removes `id` (H-29 "Uninstall…"): `true` if it was registered. A rack slot that already
+    /// references it, live or in a document not yet reopened, is unaffected here — the next call
+    /// to [`Self::resolve`] for that slot simply falls back to the "Missing module" placeholder,
+    /// preserving the slot's own stored state untouched.
+    pub fn remove(&self, id: &str) -> bool {
+        lock(&self.factories).remove(id).is_some()
+    }
+
     /// Registered ids, sorted.
     pub fn ids(&self) -> Vec<String> {
         lock(&self.factories).keys().cloned().collect()
@@ -237,5 +245,49 @@ impl Registry {
             }
             p => Ok(p),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vox_module_api::ModuleRef;
+    use vox_module_api::test_util::{TestGain, TestGainFactory};
+
+    /// H-29 "Uninstall…"/T-804 hot-remove: once a module's factory leaves the registry, a slot
+    /// that still names it resolves to the "Missing module" placeholder instead of erroring —
+    /// and the slot's own state (what an open document would keep) is completely untouched by
+    /// either the removal or the resolve.
+    #[test]
+    fn removing_a_module_falls_back_to_the_missing_placeholder_and_keeps_the_slots_state() {
+        let registry = Registry::new();
+        let id = TestGain::ID.to_string();
+        registry.register(Arc::new(TestGainFactory::new())).unwrap();
+
+        let module_ref = ModuleRef {
+            id: id.clone(),
+            version: vox_module_api::Version::new(1, 0, 0),
+        };
+        let state = TestGain::state_with_gain_db(-6.0);
+        let slot = SlotModel::new(&module_ref, false, &state);
+        let before_state = slot.state.clone();
+        assert!(matches!(
+            registry.resolve(&slot).unwrap(),
+            Resolved::Module(_)
+        ));
+
+        assert!(registry.remove(&id), "it was registered");
+        assert!(!registry.remove(&id), "already gone");
+
+        match registry.resolve(&slot).unwrap() {
+            Resolved::Placeholder { message, too_new } => {
+                assert!(message.contains(&id), "{message}");
+                assert!(!too_new);
+            }
+            other => panic!("expected a placeholder, got {other:?}"),
+        }
+        // The slot itself — what a document's sidecar would keep — is never mutated by any of
+        // this: resolving (successfully or not) only ever reads it.
+        assert_eq!(slot.state, before_state);
     }
 }

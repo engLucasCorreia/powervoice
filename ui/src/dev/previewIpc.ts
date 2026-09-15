@@ -58,6 +58,7 @@ export function installPreviewIpc(theme: ThemePref): void {
     record_offsets: [],
     save_dither: "tpdf",
     theme,
+    playhead_follow: true,
   };
 
   mockIPC(

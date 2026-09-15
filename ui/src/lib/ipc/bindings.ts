@@ -955,7 +955,13 @@ layout: LayoutPrefsDto,
  * H-25: the UI colour theme (Preferences → Appearance). Additive field — the settings
  * version stays 1.
  */
-theme: ThemePref, };
+theme: ThemePref, 
+/**
+ * H-27 (SPEC-003 §3 `playhead_follow`, SPEC-006 §2.8): whether the waveform/spectral view
+ * scrolls to keep the playhead inside the follow band during playback. View-only — never
+ * read by the engine. Default on. Additive field — the settings version stays 1.
+ */
+playhead_follow: boolean, };
 
 /**
  * Slot status (SPEC-012 §2.2, §2.9; T-802: `restarting` for a sandboxed plugin whose automatic

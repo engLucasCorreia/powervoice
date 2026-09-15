@@ -57,11 +57,18 @@
   } from "./opLayout";
   import { PeaksRequester } from "./peaksRequester";
   import {
+    followPlayhead,
+    INITIAL_PLAYBACK_FOLLOW_STATE,
+    suspendPlaybackFollow,
+    type PlaybackFollowState,
+  } from "./playbackFollow";
+  import {
     followRecordHead,
     INITIAL_RECORD_FOLLOW_STATE,
     suspendRecordFollow,
     type RecordFollowState,
   } from "./recordFollow";
+  import { ViewportWriter } from "./viewportFollow";
   import { buildColumnQuads, buildRawPolyline } from "./webglGeometry";
   import { type WaveformGlContent, WaveformGlRenderer } from "./webglRenderer";
 
@@ -96,6 +103,14 @@
    *
    * H-23 (A-016): while that operation runs, the view also page-flips to keep the record head in
    * view, respecting a user scroll/zoom until the head reaches the next page (`recordFollow.ts`).
+   *
+   * H-27 (SPEC-006 §2.8): while playing (and `Settings.playhead_follow` is on), the view instead
+   * continuously scrolls to keep the extrapolated playhead inside a follow band spanning the
+   * middle 80% of the viewport (`playbackFollow.ts`), respecting a user scroll/zoom until the
+   * playhead re-enters the band. Recording and playback are mutually exclusive transport states,
+   * so exactly one of the two follow policies is ever active; one `ViewportWriter`
+   * (`viewportFollow.ts`) tells a user-driven viewport change apart from either policy's own last
+   * write, shared so neither policy duplicates that diff.
    */
 
   /** Must match `vox_engine::record::LIVE_PEAKS_SPB` (H-07). */
@@ -232,30 +247,61 @@
     startSample = 0;
   });
 
-  // H-23 (A-016, `recordFollow.ts`): during a record operation on a document with audio (`layout`
-  // non-null — a plain new recording is handled by the zoom-to-fit effect above instead), page-flip
-  // the view to keep the record head visible.
+  // H-23 (A-016, `recordFollow.ts`) + H-27 (SPEC-006 §2.8, `playbackFollow.ts`): one
+  // viewport-writer effect drives whichever follow policy is active — page-flip during a record
+  // operation on a document with audio (`layout` non-null — a plain new recording is handled by
+  // the zoom-to-fit effect above instead), or continuous band-follow while playing. The two are
+  // mutually exclusive transport states, so a single `ViewportWriter` (shared, not duplicated per
+  // policy) is enough to tell a user-initiated viewport change (scroll, zoom, click-to-seek, the
+  // shared scrollbar) apart from either policy's own last write.
   let recordFollowState = $state<RecordFollowState>(INITIAL_RECORD_FOLLOW_STATE);
-  /** The `startSample` this effect itself last applied — any other value seen next time is a user
-   * scroll/zoom/click-to-seek/drag (the shared scrollbar included), not a flip of its own. */
-  let recordFollowLastSet: number | null = null;
+  let playbackFollowState = $state<PlaybackFollowState>(INITIAL_PLAYBACK_FOLLOW_STATE);
+  const viewportWriter = new ViewportWriter();
+  const playheadFollowEnabled = $derived(settingsState().current?.playhead_follow ?? true);
   $effect(() => {
-    if (!layout || viewportPx <= 0 || samplesPerPixel <= 0) {
+    if (viewportPx <= 0 || samplesPerPixel <= 0) {
       recordFollowState = INITIAL_RECORD_FOLLOW_STATE;
-      recordFollowLastSet = null;
+      playbackFollowState = INITIAL_PLAYBACK_FOLLOW_STATE;
+      viewportWriter.reset();
       return;
     }
     const viewportSamples = viewportPx * samplesPerPixel;
-    if (recordFollowLastSet !== null && startSample !== recordFollowLastSet) {
-      recordFollowState = suspendRecordFollow(startSample, viewportSamples);
+    const userChanged = viewportWriter.isUserChange(startSample);
+    if (layout) {
+      playbackFollowState = INITIAL_PLAYBACK_FOLLOW_STATE;
+      if (userChanged) {
+        recordFollowState = suspendRecordFollow(startSample, viewportSamples);
+      }
+      const head = layout.at + layout.takeLen;
+      const flip = followRecordHead(startSample, viewportSamples, head, recordFollowState);
+      recordFollowState = flip.state;
+      if (flip.startSample !== startSample) {
+        startSample = flip.startSample;
+      }
+    } else if (transport.state.playing && playheadFollowEnabled) {
+      recordFollowState = INITIAL_RECORD_FOLLOW_STATE;
+      if (userChanged) {
+        playbackFollowState = suspendPlaybackFollow();
+      }
+      const result = followPlayhead(
+        startSample,
+        viewportSamples,
+        lenSamples,
+        transport.playheadSamples,
+        playbackFollowState,
+      );
+      playbackFollowState = result.state;
+      if (result.startSample !== startSample) {
+        startSample = clampStartSample(result.startSample, samplesPerPixel, lenSamples, viewportPx);
+      }
+    } else {
+      // Not recording or playing (or the setting is off): neither policy runs, and its state
+      // resets so the next Play/record operation starts fresh rather than resuming a stale
+      // suspension (SPEC-006 §2.8's fallback resume rule — "or at the next play").
+      recordFollowState = INITIAL_RECORD_FOLLOW_STATE;
+      playbackFollowState = INITIAL_PLAYBACK_FOLLOW_STATE;
     }
-    const head = layout.at + layout.takeLen;
-    const flip = followRecordHead(startSample, viewportSamples, head, recordFollowState);
-    recordFollowState = flip.state;
-    if (flip.startSample !== startSample) {
-      startSample = flip.startSample;
-    }
-    recordFollowLastSet = startSample;
+    viewportWriter.set(startSample);
   });
 
   // H-07: polls record_peaks_get at ~10 Hz while recording (the document has no committed audio

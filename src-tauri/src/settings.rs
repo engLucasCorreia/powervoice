@@ -561,6 +561,10 @@ pub struct Settings {
     /// H-25: the UI colour theme (Preferences → Appearance). Additive field — the settings
     /// version stays 1.
     pub theme: ThemePref,
+    /// H-27 (SPEC-003 §3 `playhead_follow`, SPEC-006 §2.8): whether the waveform/spectral view
+    /// scrolls to keep the playhead inside the follow band during playback. View-only — never
+    /// read by the engine. Default on. Additive field — the settings version stays 1.
+    pub playhead_follow: bool,
     #[serde(flatten)]
     #[ts(skip)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -589,6 +593,7 @@ impl Default for Settings {
             save_dither: SaveDitherPref::default(),
             layout: LayoutPrefsDto::default(),
             theme: ThemePref::default(),
+            playhead_follow: true,
             extra: serde_json::Map::new(),
         }
     }
@@ -963,6 +968,29 @@ mod tests {
 
         let system = br#"{"version":1,"theme":"system"}"#;
         assert_eq!(parse_and_migrate(system).unwrap().theme, ThemePref::System);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// H-27 (SPEC-003 §3 `playhead_follow`): the setting round-trips, and an older settings file
+    /// with no `playhead_follow` key falls back to on (container-level `#[serde(default)]`, same
+    /// convention as `theme`/`layout` above).
+    #[test]
+    fn playhead_follow_round_trips_and_defaults_to_on() {
+        let dir = temp_dir("playhead-follow");
+        let path = dir.join("settings.json");
+
+        assert!(Settings::default().playhead_follow);
+
+        let settings = Settings {
+            playhead_follow: false,
+            ..Settings::default()
+        };
+        save(&path, &settings).unwrap();
+        assert!(!load_or_default(&path).playhead_follow);
+
+        let json = br#"{"version":1,"monitor_mode":"dry"}"#;
+        assert!(parse_and_migrate(json).unwrap().playhead_follow);
 
         std::fs::remove_dir_all(&dir).ok();
     }

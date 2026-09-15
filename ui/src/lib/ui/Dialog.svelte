@@ -36,6 +36,7 @@
     onkeydown,
     children,
     footer,
+    headerActions,
     actions,
     ...rest
   }: {
@@ -47,6 +48,8 @@
     onkeydown?: (event: KeyboardEvent) => void;
     children: Snippet;
     footer?: Snippet;
+    /** T-709: controls beside the title (a panel's tour "?"). */
+    headerActions?: Snippet;
     actions?: DialogAction[];
   } & Omit<HTMLAttributes<HTMLDivElement>, "title" | "role" | "onkeydown" | "children"> = $props();
 
@@ -139,7 +142,14 @@
     tabindex="-1"
     onkeydown={handleKeydown}
   >
-    <h2 id={headingId} class="title">{title}</h2>
+    {#if headerActions}
+      <div class="title-row">
+        <h2 id={headingId} class="title">{title}</h2>
+        <div class="header-actions">{@render headerActions()}</div>
+      </div>
+    {:else}
+      <h2 id={headingId} class="title">{title}</h2>
+    {/if}
     <div class="body">
       {@render children()}
     </div>
@@ -215,6 +225,26 @@
     font-size: var(--pv-text-lg);
     line-height: var(--pv-leading-lg);
     font-weight: var(--pv-weight-semibold);
+  }
+
+  .title-row {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: var(--pv-space-2);
+    padding: var(--pv-space-5) var(--pv-space-4) var(--pv-space-3) var(--pv-space-5);
+  }
+
+  .title-row .title {
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+  }
+
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--pv-space-half);
   }
 
   .body {

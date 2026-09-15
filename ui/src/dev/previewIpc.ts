@@ -18,6 +18,8 @@
  *           bake   (T-602, with `scene=rack`: the noise-only confirm or the progress dialog)
  *   &menu=file | edit | view | effects | help | normalize | add-module | rack-slot
  *        | theme   (T-708: View → Theme ▸ open)
+ *   &scene=tour&step=n[&tour=welcome|rack|noise|loudness|punch|plugins]   (T-709)
+ *   &dialog=tour-offer   (T-709: the first-run Welcome tour offer)
  * The audio is synthetic (a narrator's phrases with breaths), generated here as the same binary
  * frames the backend sends (VXPK peaks, VXST spectrogram tiles, VXTM telemetry).
  * Commands it doesn't know return null, like the App shell tests.
@@ -636,6 +638,8 @@ export function installPreviewIpc(options: PreviewOptions): void {
       dock_tab: hasScene("loudness") ? "loudness" : "meters",
     },
     theme,
+    // T-709: the Welcome offer only in `&dialog=tour-offer`; everywhere else it's been answered.
+    tours: { progress: dialog === "tour-offer" ? [] : [{ id: "welcome", version: 1, outcome: "dismissed" }] },
   });
 
   const doc = documentFixture(options);

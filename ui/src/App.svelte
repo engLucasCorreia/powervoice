@@ -71,6 +71,9 @@
   import { applySpectralDefaults, initSpectral } from "./lib/state/spectral.svelte";
   import { loadSettings, settingsState } from "./lib/state/settings.svelte";
   import { initTransport } from "./lib/state/transport.svelte";
+  import TourOverlay from "./lib/tour/TourOverlay.svelte";
+  import { armWelcomeOffer } from "./lib/tour/tour.svelte";
+  import WelcomeOffer from "./lib/tour/WelcomeOffer.svelte";
 
   let version = $state("");
 
@@ -227,6 +230,8 @@
       // tab), seeded before the splitters' first render. `?? DEFAULT_LAYOUT_PREFS` tolerates a
       // mocked/pre-H-24 settings object in tests, same convention as `renderer_preference`.
       applyLayoutPrefs(current.layout ?? DEFAULT_LAYOUT_PREFS);
+      // T-709: the first-run Welcome tour offer (it waits for the crash-recovery check itself).
+      armWelcomeOffer(current.tours);
     });
   });
 
@@ -417,7 +422,7 @@
       onReset={() => setDockHeightPx(DEFAULT_LAYOUT_PREFS.dock_height_px)}
       onStep={onDockStep}
     />
-    <div class="dock" data-testid="bottom-dock" style={`height: ${dockHeightPx}px`}>
+    <div class="dock" data-testid="bottom-dock" data-tour="dock" style={`height: ${dockHeightPx}px`}>
       <div class="dock-tabs" role="tablist" aria-label={t("panel.meters.title")}>
         <button
           type="button"
@@ -480,6 +485,8 @@
 <BakeDialogs />
 <AboutDialog {version} />
 <CalibrationDialog />
+<WelcomeOffer />
+<TourOverlay />
 
 <style>
   .shell {

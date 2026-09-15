@@ -17,6 +17,7 @@ import ChevronsLeft from "@lucide/svelte/icons/chevrons-left";
 import ChevronsRight from "@lucide/svelte/icons/chevrons-right";
 import ChevronUp from "@lucide/svelte/icons/chevron-up";
 import Circle from "@lucide/svelte/icons/circle";
+import CircleQuestionMark from "@lucide/svelte/icons/circle-question-mark";
 import CircleAlert from "@lucide/svelte/icons/circle-alert";
 import CircleCheck from "@lucide/svelte/icons/circle-check";
 import ClipboardPaste from "@lucide/svelte/icons/clipboard-paste";
@@ -149,6 +150,7 @@ export const ICONS = {
   check: Check,
   // Status
   info: Info,
+  help: CircleQuestionMark,
   success: CircleCheck,
   warning: TriangleAlert,
   error: CircleAlert,

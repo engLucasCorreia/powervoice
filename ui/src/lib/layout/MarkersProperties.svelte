@@ -69,7 +69,7 @@
   }
 </script>
 
-<aside class="markers-properties" data-testid="markers-properties">
+<aside class="markers-properties" data-testid="markers-properties" data-tour="markers">
   <section class="markers-panel">
     <PanelHeader title={t("panel.markers.title")}>
       {#snippet actions()}

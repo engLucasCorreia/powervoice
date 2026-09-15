@@ -9,7 +9,7 @@
   let { label, children }: { label: string; children: Snippet } = $props();
 </script>
 
-<div class="menu-bar" role="menubar" aria-label={label} data-testid="menu-bar">
+<div class="menu-bar" role="menubar" aria-label={label} data-testid="menu-bar" data-tour="menubar">
   {@render children()}
 </div>
 

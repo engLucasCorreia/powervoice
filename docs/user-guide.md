@@ -4,6 +4,15 @@ PowerVoice is a focused editor for **simple voice-over work**: record mono voice
 shape it, hit a loudness target, and export. It edits **one mono audio file at a time** (like Adobe
 Audition's Waveform Editor) — there's no multitrack timeline.
 
+## Guided tours
+
+The first time PowerVoice starts it offers a two-minute **Welcome tour** that walks through choosing
+your devices, recording a practice take, navigating the take, markers, the effects rack, noise
+reduction, meters and loudness, and export. Replay it any time from **Help → Take the Tour**, or pick
+any tour from **Help → Tours**. A **?** in the Rack, Loudness, Noise Reduction, Punch & pre-roll and
+Plugin Manager headers starts a short tour of that panel. Use **→**/**Enter** and **←** to move,
+**Esc** to leave.
+
 ## Install
 
 See the [README](../README.md#install) for install instructions per platform, and

@@ -155,7 +155,7 @@
   }
 </script>
 
-<main class="editor" data-testid="editor" bind:this={containerEl}>
+<main class="editor" data-testid="editor" data-tour="editor" bind:this={containerEl}>
   {#if isOpen}
     <div class="ruler" data-testid="editor-ruler">
       <div class="ruler-gutter" data-testid="editor-ruler-gutter"></div>

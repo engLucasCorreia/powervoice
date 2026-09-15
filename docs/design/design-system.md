@@ -141,8 +141,8 @@ letter-spacing except +0.01em on the xl time; one weight step per level of hiera
 Elevation: **level 0** panels (1 px `--pv-border` edge, no shadow) · **level 1** raised cards
 (`--pv-bg-raised`, `--pv-shadow-1` optional) · **level 2** menus/popovers/tooltips
 (`--pv-bg-overlay`, border + `--pv-shadow-2`) · **level 3** dialogs (`--pv-bg-overlay`,
-`--pv-shadow-3`, backdrop). Layers: dropdown 100 · sticky 200 · overlay 900 · dialog 1000 · toast
-1100 · tooltip 1200 (`--pv-z-*`).
+`--pv-shadow-3`, backdrop). Layers: dropdown 100 · sticky 200 · overlay 900 · dialog 1000 · tour 1050
+(T-709) · toast 1100 · tooltip 1200 (`--pv-z-*`).
 
 ## 6. Motion
 
@@ -528,3 +528,37 @@ loudness/ACX results, and each dialog — for screenshots at 1280×720 and 2126�
 - **`Toggle hideLabel`** (new in the kit): the label is kept for assistive tech only, for a switch
   in a table row whose column header already says what it does.
 
+## 21. Guided tours (T-709)
+
+- **Where:** Help → **Take the Tour** (the Welcome tour: 10 steps along the user guide's first-recording
+  flow) and Help → **Tours ▸** (all six). A "?" (`tour/TourButton.svelte`) starts a panel's short tour:
+  the Rack header, the Loudness controls row, the Noise Reduction capture row, the Punch & pre-roll
+  popover title, and the Plugin Manager's title bar (`Dialog`'s new `headerActions` snippet). First
+  run: `WelcomeOffer` (Start tour / Later / Don't show again), shown only after the crash-recovery
+  check, never over the recovery dialog, while recording, or during a tour.
+- **Code:** `ui/src/lib/tour/` — `tours.ts` (content as i18n keys; each step names `data-tour`
+  anchors with fallbacks, optional `enter` hook, `waitFor` gate, `interactive`), `tour.svelte.ts`
+  (state, progress saved to `Settings.tours`), `progress.ts` (offer rules), `tourPlacement.ts`
+  (pure maths on `placePopover`), `targets.ts` (DOM lookup, visible part, modal check),
+  `TourOverlay.svelte`.
+- **Spotlight:** the target padded 6 px and cut to its scroll container, a `--pv-radius-lg` cut-out
+  ringed in `--pv-accent` at `--pv-focus-width`; the dim is `--pv-bg-backdrop` drawn as the cut-out's
+  spread shadow. No target: a full scrim and a centred card.
+- **Card:** level-3 surface, 352 px: tour name + "Step n of N" (xs tertiary, tabular), a segmented
+  progress bar, optional 40 px illustration tile (`--pv-accent-soft`), 15 px title, secondary body, an
+  accent-soft hint chip on action-gated steps, then Skip tour (ghost) · Back · Next/Done (primary;
+  secondary while a gated action hasn't happened, so it reads as "skip this step"). A pointer on the
+  edge facing the target.
+- **Placement:** preferred side, centred on the target → opposite side → the perpendicular sides →
+  inside a target that fills the window (bottom-right) → centred. Always shifted back inside the window.
+- **Behaviour:** pointer blocked outside the cut-out (and over it unless the step is `interactive`);
+  the tour steps aside while any `aria-modal` dialog that doesn't contain its target is open (New
+  Recording, Audio Devices) and comes back after; re-measured every frame and on resize/scroll, so it
+  follows splitters. Keys: → / Enter next, ← back, Esc skip (captured before the app's shortcuts).
+  Focus moves to the card each step; `aria-live` announces "‹tour›, step n of N: ‹title›". Reduced
+  motion: no transitions or entrance, no smooth scrolling.
+- **Adding a step:** i18n keys, a `data-tour` anchor on a stable element, the step in `tours.ts`;
+  bump the tour's `version` to offer it again (not to anyone who chose Don't show again).
+  `tourAnchors.test.ts` mounts the App and fails if an anchor disappears.
+- **Preview:** `?preview&scene=tour&step=n` (`&tour=welcome|rack|noise|loudness|punch|plugins`; combine
+  with `rack`/`loudness`/`plugins` scenes), `&dialog=tour-offer`.

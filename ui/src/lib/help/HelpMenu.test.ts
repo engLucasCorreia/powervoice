@@ -1,12 +1,15 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
 import { resetMenuBarForTest } from "../menu/menubar.svelte";
+import { resetTourForTest, tourState } from "../tour/tour.svelte";
+import { TOUR_IDS } from "../tour/tours";
 import { aboutState, resetAboutForTest } from "./about.svelte";
 import HelpMenu from "./HelpMenu.svelte";
 
 afterEach(() => {
   resetMenuBarForTest();
   resetAboutForTest();
+  resetTourForTest();
 });
 
 function mountMenu(): { target: HTMLElement; app: ReturnType<typeof mount> } {
@@ -52,6 +55,41 @@ describe("HelpMenu (H-19)", () => {
 
     expect(aboutState().open).toBe(true);
     expect(target.querySelector('[data-testid="help-menu"]')).toBeNull();
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Take the Tour starts the Welcome tour from its first step (T-709)", () => {
+    const { target, app } = mountMenu();
+    target.querySelector<HTMLButtonElement>('[data-testid="menu-trigger-help"]')!.click();
+    flushSync();
+    target.querySelector<HTMLButtonElement>('[data-testid="menu-tour"]')!.click();
+    flushSync();
+
+    expect(tourState().tour?.id).toBe("welcome");
+    expect(tourState().index).toBe(0);
+    expect(target.querySelector('[data-testid="help-menu"]')).toBeNull();
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Tours ▸ lists every tour and replays the one chosen (T-709)", () => {
+    const { target, app } = mountMenu();
+    target.querySelector<HTMLButtonElement>('[data-testid="menu-trigger-help"]')!.click();
+    flushSync();
+    target.querySelector<HTMLElement>('[data-testid="menu-tours"]')!.click();
+    flushSync();
+
+    const list = target.querySelector('[data-testid="menu-tours-list"]');
+    expect(list?.getAttribute("role")).toBe("menu");
+    for (const id of TOUR_IDS) {
+      expect(target.querySelector(`[data-testid="menu-tour-${id}"]`)).not.toBeNull();
+    }
+    target.querySelector<HTMLElement>('[data-testid="menu-tour-loudness"]')!.click();
+    flushSync();
+    expect(tourState().tour?.id).toBe("loudness");
 
     unmount(app);
     target.remove();

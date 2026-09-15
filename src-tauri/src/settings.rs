@@ -521,6 +521,42 @@ pub struct PluginsSettingsDto {
     pub disabled: Vec<String>,
 }
 
+// --- Guided tours (T-709) -----------------------------------------------------------------------
+
+/// How a tour last ended for this user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum TourOutcome {
+    /// Reached the last step and pressed Done.
+    Completed,
+    /// Left part-way (Skip, Esc).
+    Skipped,
+    /// "Don't show again" on the first-run offer: never offered again, even for a newer version.
+    Dismissed,
+}
+
+/// One tour's progress. `version` is the tour's content version when it ended, so a tour that
+/// gained steps (a higher version) can be offered again to someone who completed or skipped the
+/// older one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct TourProgressDto {
+    /// Tour id (`welcome`, `rack`, `noise`, `loudness`, `punch`, `plugins`).
+    pub id: String,
+    pub version: u32,
+    pub outcome: TourOutcome,
+}
+
+/// Help → Tours progress (T-709). The UI owns the meaning of the ids; the backend only stores
+/// them. At most one entry per id (the UI replaces it).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(default)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct ToursSettingsDto {
+    pub progress: Vec<TourProgressDto>,
+}
+
 // --- Settings root -------------------------------------------------------------------------------
 
 /// The whole settings file. `#[serde(default)]` at the container level means any field missing
@@ -587,6 +623,9 @@ pub struct Settings {
     /// T-804 (ADR-008 §5/§6): Settings → Plugins (custom scan folders, disabled module ids).
     /// Additive field — the settings version stays 1.
     pub plugins: PluginsSettingsDto,
+    /// T-709: guided-tour progress (completed/skipped/dismissed tours, with the tour version).
+    /// Additive field — the settings version stays 1.
+    pub tours: ToursSettingsDto,
     #[serde(flatten)]
     #[ts(skip)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -617,6 +656,7 @@ impl Default for Settings {
             theme: ThemePref::default(),
             playhead_follow: true,
             plugins: PluginsSettingsDto::default(),
+            tours: ToursSettingsDto::default(),
             extra: serde_json::Map::new(),
         }
     }
@@ -1328,6 +1368,48 @@ mod tests {
         assert_eq!(migrated.plugins, PluginsSettingsDto::default());
         assert!(migrated.plugins.custom_folders.is_empty());
         assert!(migrated.plugins.disabled.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- T-709: guided-tour progress ------------------------------------------------------------
+
+    /// Tour progress round-trips through save/load (snake_case outcomes on disk), and an older
+    /// settings file with no `tours` key starts with no progress at all (the Welcome tour is
+    /// offered).
+    #[test]
+    fn tours_progress_round_trips_and_defaults_to_empty() {
+        let dir = temp_dir("tours-settings");
+        let path = dir.join("settings.json");
+
+        let settings = Settings {
+            tours: ToursSettingsDto {
+                progress: vec![
+                    TourProgressDto {
+                        id: "welcome".to_string(),
+                        version: 1,
+                        outcome: TourOutcome::Dismissed,
+                    },
+                    TourProgressDto {
+                        id: "rack".to_string(),
+                        version: 2,
+                        outcome: TourOutcome::Completed,
+                    },
+                ],
+            },
+            ..Settings::default()
+        };
+        save(&path, &settings).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("\"dismissed\""),
+            "outcomes are snake_case on disk: {text}"
+        );
+        assert_eq!(load_or_default(&path).tours, settings.tours);
+
+        let json = br#"{"version":1,"monitor_mode":"dry"}"#;
+        assert!(parse_and_migrate(json).unwrap().tours.progress.is_empty());
+        assert!(Settings::default().tours.progress.is_empty());
 
         std::fs::remove_dir_all(&dir).ok();
     }

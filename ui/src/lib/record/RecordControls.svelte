@@ -23,6 +23,7 @@
     monitorLatencyLevel,
   } from "./format";
   import { ROLL_MAX_S, XFADE_MAX_MS, bufferHint, offsetReadout, phaseLabel } from "./punch";
+  import TourButton from "../tour/TourButton.svelte";
 
   /**
    * Record panel controls (S1-04, SPEC-002 §2.1–§2.2, §2.7): Input (arm) toggle, Record/Stop
@@ -137,7 +138,7 @@
 </script>
 
 <div class="record" role="group" aria-label={t("record.group")} data-testid="record-controls">
-  <div class="cluster">
+  <div class="cluster" data-tour="record">
     <span class="rec-wrap">
       <Button
         variant="record"
@@ -228,7 +229,7 @@
         {t("record.monitor_latency", { ms: formatLatencyMs(latencyUs) })}
       </span>
     {/if}
-    <span class="punch-wrap">
+    <span class="punch-wrap" data-tour="punch">
       <IconButton
         icon="punch"
         label={t("record.punch_section")}
@@ -248,7 +249,10 @@
         onclose={() => (panelOpen = false)}
       >
         <div class="panel">
-          <div class="panel-title">{t("record.punch_section")}</div>
+          <div class="panel-title">
+            <span>{t("record.punch_section")}</span>
+            <TourButton tour="punch" />
+          </div>
           <div class="row" role="group" aria-label={t("record.mode")} title={t("record.mode_title")}>
             <span class="row-label">{t("record.mode")}</span>
             <div class="segments">
@@ -570,6 +574,10 @@
   }
 
   .panel-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--pv-space-2);
     color: var(--pv-text-secondary);
     font-size: var(--pv-text-sm);
     font-weight: var(--pv-weight-semibold);

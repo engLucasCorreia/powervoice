@@ -59,7 +59,7 @@
   ]);
 </script>
 
-<div class="normalize">
+<div class="normalize" data-tour="normalize">
   <Button
     variant="ghost"
     iconEnd="chevronDown"

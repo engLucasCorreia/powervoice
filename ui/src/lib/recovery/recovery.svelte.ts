@@ -25,6 +25,8 @@ let takeActions = $state<Record<string, RecoveredTakeActionDto>>({});
 let unrecoverable = $state<string[]>([]);
 let pendingDiscard = $state<RecoverableSessionDto | null>(null);
 let busy = $state(false);
+/** T-709: the start-up check has finished (the first-run tour offer waits for it). */
+let checked = $state(false);
 
 /** Read-only accessor for the dialog. */
 export function recoveryState(): {
@@ -33,6 +35,7 @@ export function recoveryState(): {
   readonly storage: StorageInfoDto | null;
   readonly pendingDiscard: RecoverableSessionDto | null;
   readonly busy: boolean;
+  readonly checked: boolean;
 } {
   return {
     get mode() {
@@ -49,6 +52,9 @@ export function recoveryState(): {
     },
     get busy() {
       return busy;
+    },
+    get checked() {
+      return checked;
     },
   };
 }
@@ -72,6 +78,8 @@ export async function initRecovery(): Promise<void> {
     }
   } catch (err) {
     report(err);
+  } finally {
+    checked = true;
   }
 }
 
@@ -188,4 +196,5 @@ export function resetRecoveryForTest(): void {
   unrecoverable = [];
   pendingDiscard = null;
   busy = false;
+  checked = false;
 }

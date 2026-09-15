@@ -1077,7 +1077,12 @@ playhead_follow: boolean,
  * T-804 (ADR-008 §5/§6): Settings → Plugins (custom scan folders, disabled module ids).
  * Additive field — the settings version stays 1.
  */
-plugins: PluginsSettingsDto, };
+plugins: PluginsSettingsDto, 
+/**
+ * T-709: guided-tour progress (completed/skipped/dismissed tours, with the tour version).
+ * Additive field — the settings version stays 1.
+ */
+tours: ToursSettingsDto, };
 
 /**
  * Slot status (SPEC-012 §2.2, §2.9; T-802: `restarting` for a sandboxed plugin whose automatic
@@ -1160,6 +1165,28 @@ export type TelemetryKindDto = "gain_reduction" | "level" | "indicator" | "value
  * rings and thicker waveform lines.
  */
 export type ThemePref = "dark" | "light" | "system" | "high_contrast";
+
+/**
+ * How a tour last ended for this user.
+ */
+export type TourOutcome = "completed" | "skipped" | "dismissed";
+
+/**
+ * One tour's progress. `version` is the tour's content version when it ended, so a tour that
+ * gained steps (a higher version) can be offered again to someone who completed or skipped the
+ * older one.
+ */
+export type TourProgressDto = { 
+/**
+ * Tour id (`welcome`, `rack`, `noise`, `loudness`, `punch`, `plugins`).
+ */
+id: string, version: number, outcome: TourOutcome, };
+
+/**
+ * Help → Tours progress (T-709). The UI owns the meaning of the ids; the backend only stores
+ * them. At most one entry per id (the UI replaces it).
+ */
+export type ToursSettingsDto = { progress: Array<TourProgressDto>, };
 
 /**
  * Transport state (`transport_state` event, transport command results). While playing, the

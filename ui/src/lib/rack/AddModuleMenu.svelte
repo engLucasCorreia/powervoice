@@ -85,7 +85,7 @@
   );
 </script>
 
-<div class="add-module">
+<div class="add-module" data-tour="rack-add">
   <Button
     icon="add"
     iconEnd="chevronDown"

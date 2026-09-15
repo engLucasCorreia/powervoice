@@ -96,6 +96,7 @@
     aria-expanded={open}
     data-menu-trigger={id}
     data-testid={triggerTestid}
+    data-tour={`menu-${id}`}
     onclick={onTriggerClick}
     onkeydown={onTriggerKeydown}
     onpointerenter={onTriggerPointerEnter}

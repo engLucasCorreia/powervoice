@@ -64,7 +64,7 @@
     />
   </div>
   <Separator orientation="vertical" />
-  <span class="time" data-testid="transport-time">{time}</span>
+  <span class="time" data-testid="transport-time" data-tour="time">{time}</span>
   <Separator orientation="vertical" />
   <RecordControls />
   <Separator orientation="vertical" />
@@ -85,6 +85,7 @@
       icon="settings"
       label={t("devices.open")}
       testid="open-audio-devices"
+      data-tour="devices"
       onclick={() => (devicesOpen = true)}
     />
   </div>

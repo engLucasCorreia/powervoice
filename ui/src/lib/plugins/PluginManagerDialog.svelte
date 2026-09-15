@@ -48,6 +48,7 @@
     type ManagerTab,
   } from "./plugins.svelte";
   import Tabs from "../ui/Tabs.svelte";
+  import TourButton from "../tour/TourButton.svelte";
 
   /**
    * The plugin manager (T-809): Effects → Manage Plugins…, Preferences → Plugins, a flagged rack
@@ -234,7 +235,7 @@
 {/snippet}
 
 {#snippet pluginsPanel()}
-  <div class="toolbar">
+  <div class="toolbar" data-tour="plugins-toolbar">
     <label class="search">
       <Icon name="search" size="sm" />
       <input
@@ -282,6 +283,7 @@
       variant="primary"
       icon="install"
       testid="plugins-install"
+      data-tour="plugins-install"
       title={t("plugins.install_title")}
       onclick={() => void startInstall()}
     >
@@ -489,17 +491,23 @@
     onkeydown={onKeydown}
     actions={[{ label: t("plugins.close"), role: "primary", testid: "plugin-manager-close", onclick: closePluginManager }]}
   >
+    {#snippet headerActions()}
+      <TourButton tour="plugins" size="md" />
+    {/snippet}
     <div class="manager">
-      <Tabs
-        {tabs}
-        selected={ps.tab}
-        label={t("plugins.tabs")}
-        idPrefix="plugin-manager"
-        testid="plugin-manager-tabs"
-        onchange={setManagerTab}
-      />
+      <div class="tabs-anchor" data-tour="plugins-tabs">
+        <Tabs
+          {tabs}
+          selected={ps.tab}
+          label={t("plugins.tabs")}
+          idPrefix="plugin-manager"
+          testid="plugin-manager-tabs"
+          onchange={setManagerTab}
+        />
+      </div>
       <div
         class="panel"
+        data-tour="plugins-list"
         role="tabpanel"
         id="plugin-manager-panel-{ps.tab}"
         aria-labelledby="plugin-manager-tab-{ps.tab}"
@@ -525,7 +533,8 @@
     margin-inline: calc(-1 * var(--pv-space-5));
   }
 
-  .manager :global(.pv-tabs) {
+  .manager :global(.pv-tabs),
+  .tabs-anchor {
     flex: none;
   }
 

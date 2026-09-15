@@ -469,6 +469,8 @@
   --pv-z-sticky: 200;
   --pv-z-overlay: 900;
   --pv-z-dialog: 1000;
+  /* T-709: the guided tour sits over dialogs (a step may point into one) and under toasts. */
+  --pv-z-tour: 1050;
   --pv-z-toast: 1100;
   --pv-z-tooltip: 1200;
 }

@@ -4,6 +4,7 @@
   import { Badge, Button, SegmentedControl, type SegmentOption } from "../ui";
   import type { AcxRuleDto, AcxRuleStatusDto } from "../ipc/bindings";
   import { acxState, runAcxCheck } from "./acx.svelte";
+  import TourButton from "../tour/TourButton.svelte";
   import {
     canAnalyzeLoudness,
     cancelLoudnessAnalyze,
@@ -111,7 +112,7 @@
 
 
 <footer class="loudness-panel" data-testid="loudness-panel">
-  <div class="controls">
+  <div class="controls" data-tour="loudness-controls">
     <span class="title">{t("panel.loudness.title")}</span>
     <SegmentedControl
       options={SOURCES}
@@ -137,10 +138,11 @@
         {t("panel.loudness.analyze")}
       </Button>
     {/if}
+    <span class="tour-help"><TourButton tour="loudness" /></span>
   </div>
 
   {#if state.report}
-    <div class="readouts">
+    <div class="readouts" data-tour="loudness-readouts">
       <span class="readout lead" data-testid="loudness-integrated">
         {t("panel.loudness.integrated", { value: db(state.report.integrated_lufs) })}
       </span>
@@ -161,12 +163,12 @@
       </span>
     </div>
   {:else}
-    <p class="readout muted" data-testid="loudness-not-analyzed">
+    <p class="readout muted" data-testid="loudness-not-analyzed" data-tour="loudness-readouts">
       {t("panel.loudness.not_analyzed")}
     </p>
   {/if}
 
-  <div class="acx" data-testid="acx-section">
+  <div class="acx" data-testid="acx-section" data-tour="acx">
     <div class="acx-head">
       <Button size="sm" icon="check" testid="acx-check" loading={acx.running} disabled={!acxEnabled} onclick={() => void runAcxCheck()}>
         {acx.running ? t("panel.acx.checking") : t("panel.acx.check")}
@@ -259,6 +261,11 @@
     flex-wrap: wrap;
     align-items: center;
     gap: var(--pv-space-2) var(--pv-space-3);
+  }
+
+  /* T-709: the Loudness tour's "?" sits at the end of the controls row. */
+  .tour-help {
+    margin-left: auto;
   }
 
   .title {

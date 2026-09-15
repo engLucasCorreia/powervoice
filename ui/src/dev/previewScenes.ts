@@ -21,6 +21,8 @@ import { continueBakeConfirm, startBake } from "../lib/state/bake.svelte";
 import { openNormalizeDialog } from "../lib/state/normalize.svelte";
 import { openNormalizeLufsDialog } from "../lib/state/normalizeLufs.svelte";
 import { openCalibration, openNewRecordingPrompt, toggleRecord } from "../lib/state/record.svelte";
+import { startTour } from "../lib/tour/tour.svelte";
+import { isTourId } from "../lib/tour/tours";
 import { PREVIEW_INSTALL_SOURCE, PREVIEW_PATH, PREVIEW_RATE_HZ, type PreviewOptions } from "./previewIpc";
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -38,9 +40,10 @@ export async function runPreviewScene(options: PreviewOptions, menu: string | nu
 
   const wantsDocument =
     scenes.some((s) =>
-      ["document", "spectral", "loudness", "rack", "plugins", "plugins-scanning", "plugins-folders"].includes(s),
+      ["document", "spectral", "loudness", "rack", "plugins", "plugins-scanning", "plugins-folders", "tour"].includes(s),
     ) ||
-    (dialog !== null && !["about", "preferences", "recovery", "new-recording", "audio-devices", "channel-choice"].includes(dialog));
+    (dialog !== null &&
+      !["about", "preferences", "recovery", "new-recording", "audio-devices", "channel-choice", "tour-offer"].includes(dialog));
 
   if (scenes.includes("recording")) {
     await emit("document_changed", {
@@ -161,6 +164,16 @@ export async function runPreviewScene(options: PreviewOptions, menu: string | nu
     await sleep(200);
     const slots = document.querySelectorAll<HTMLElement>('[data-testid="rack-slot"]');
     slots[slots.length - 1]?.scrollIntoView({ block: "center" });
+  }
+
+  // T-709: a tour at a step — `&tour=welcome|rack|noise|loudness|punch|plugins` (default welcome),
+  // `&step=n` (1-based, default 1).
+  if (scenes.includes("tour")) {
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get("tour") ?? "welcome";
+    const step = Number.parseInt(params.get("step") ?? "1", 10);
+    await sleep(200);
+    startTour(isTourId(id) ? id : "welcome", Number.isFinite(step) ? step - 1 : 0);
   }
 
   if (menu) {

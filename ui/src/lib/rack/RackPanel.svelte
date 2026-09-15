@@ -7,6 +7,7 @@
   import AddModuleMenu from "./AddModuleMenu.svelte";
   import { addModule, loadRack, moveSlot, rackState, setAb } from "./rack.svelte";
   import RackSlot from "./RackSlot.svelte";
+  import TourButton from "../tour/TourButton.svelte";
 
   /**
    * The rack panel (right dock, SPEC-012 §2.1): header (A/B, latency), the Add-module menu, and
@@ -82,7 +83,7 @@
   });
 </script>
 
-<aside class="rack" data-testid="rack">
+<aside class="rack" data-testid="rack" data-tour="rack">
   <PanelHeader title={t("panel.rack.title")}>
     {#snippet actions()}
       {#if latencyLabel}
@@ -92,11 +93,13 @@
         size="sm"
         variant="ghost"
         testid="rack-ab"
+        data-tour="rack-ab"
         aria-pressed={rs.state.ab}
         onclick={() => void setAb(!rs.state.ab)}
       >
         {t("rack.ab")}
       </Button>
+      <TourButton tour="rack" />
     {/snippet}
   </PanelHeader>
   <div class="content">
@@ -108,7 +111,7 @@
       disabled={rs.state.slots.length >= MAX_SLOTS}
       onselect={(id) => void addModule(id, rs.state.slots.length)}
     />
-    <div class="slots">
+    <div class="slots" data-tour="rack-slots">
       {#if rs.loading}
         <p class="note">{t("rack.loading")}</p>
       {:else if rs.unavailable}

@@ -9,8 +9,8 @@
  *
  * new DTO field → update this file only
  *
- * (e.g. T-709's upcoming `Settings.tours` — when it lands, add it to `settingsFixture`'s
- * returned object here and nowhere else.)
+ * (e.g. T-709's `Settings.tours` was added to `settingsFixture`'s returned object here and
+ * nowhere else.)
  */
 import type {
   DevicePrefsDto,
@@ -86,6 +86,7 @@ export function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     theme: "dark",
     playhead_follow: true,
     plugins: { custom_folders: [], disabled: [] },
+    tours: { progress: [] },
     ...overrides,
   };
 }

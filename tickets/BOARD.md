@@ -153,7 +153,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
 | T-601 | Loudness analysis I/S/M/LRA/TP | W1 | S+OR | M5 | done (via S4-01) |
-| T-602 | Bake rack (offline render, pre-roll, latency trim, tail) | W1 | O | M5 | todo |
+| T-602 | Bake rack (offline render, pre-roll, latency trim, tail) | W1 | O | M5 | in progress |
 | T-603 | LUFS normalize favorites | W2 | S | T-601 | done (via S4-01 + H-09) |
 | T-604 | ACX check on processed output | W2 | S | T-601, T-602 | done (via S4-03) |
 | T-605 | Encoders (LAME dynamic), rubato, TPDF dither | W2 | S+OR | T-602 | done (via S4-02 + H-02 + H-14) |

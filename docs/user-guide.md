@@ -81,6 +81,10 @@ select 0.5–60 s of room tone/silence and use Capture Noise Print, provisionall
 compressor → limiter, compressor on by default), and a **True-Peak Limiter** (a safety ceiling for
 loudness delivery).
 
+**Third-party plugins**: PowerVoice also supports plugins in CLAP, VST3, and LV2 formats. Use the
+**Plugin Manager** or the **Add Module** menu's **Plugins** section to install and add them to your
+rack. If LV2 plugins aren't available, see [LV2 plugins are unavailable](#lv2-plugins-are-unavailable).
+
 ### Rack presets
 
 Rather than build a chain from scratch, load a **rack preset** from the rack panel's preset menu:
@@ -188,6 +192,28 @@ without it; only MP3 export is affected.
 - **macOS**: `brew install lame` (Homebrew) provides `libmp3lame.dylib`.
 
 After installing, restart PowerVoice — it probes for the library at startup.
+
+### LV2 plugins are unavailable
+
+LV2 is one of the plugin formats PowerVoice can host. To use LV2 plugins, your computer needs a small
+free library called **lilv**. PowerVoice doesn't include it; it uses the copy installed on your system.
+If lilv is missing, LV2 plugins don't appear under **Add module** and the Plugin Manager shows the
+message *"LV2 support needs the lilv library (liblilv-0), which isn't installed"*. Everything else,
+including CLAP and VST3 plugins, keeps working.
+
+Install lilv:
+
+- **Debian / Ubuntu**: `sudo apt install liblilv-0-0` (the PowerVoice .deb recommends it, so `apt`
+  usually installs it for you).
+- **Fedora**: `sudo dnf install lilv-libs`.
+- **Arch**: `sudo pacman -S lilv`.
+- **AppImage**: install lilv with your distribution's package manager, as above.
+- **macOS**: `brew install lilv`.
+- **Windows**: LV2 plugins aren't supported on Windows. Use CLAP or VST3 plugins instead.
+
+You don't need to restart PowerVoice: lilv is loaded the next time an LV2 plugin is scanned, so use
+**Rescan** in the Plugin Manager. Advanced: to use your own lilv build, set the `POWERVOICE_LILV`
+environment variable to its full path.
 
 ### Recording sounds delayed / out of sync with playback
 

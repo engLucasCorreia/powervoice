@@ -160,6 +160,28 @@ Note (ADR-007 §4): replacing a `.dylib` *inside a signed app bundle* would inva
 signature — irrelevant here since PowerVoice never bundles LAME itself, only ever loads the
 system's copy.
 
+### LV2 plugin support
+
+LV2 plugins need the **lilv** library at runtime. PowerVoice doesn't bundle it: the plugin sandbox
+loads it the first time an LV2 plugin is scanned or loaded (`liblilv-0.so.0` / `liblilv-0.so` on
+Linux; `liblilv-0.0.dylib` / `liblilv-0.dylib`, including the Homebrew folders, on macOS). If it's
+missing, LV2 scans and loads fail with an in-app message and every other feature, including CLAP and
+VST3 plugins, keeps working. **LV2 is not supported on Windows** (the backend is compiled out there).
+
+**Linux (.deb)**: `liblilv-0-0` is a `Recommends` of the deb package, so `apt` installs it by default.
+Manually: `sudo apt install liblilv-0-0` (Debian/Ubuntu), `sudo dnf install lilv-libs` (Fedora) or
+`sudo pacman -S lilv` (Arch).
+
+**Linux (AppImage)**: install the system lilv package as above; the AppImage doesn't bundle it.
+
+**Linux (Arch)**: there's no PKGBUILD yet. When one is added it should declare
+`optdepends=('lilv: LV2 plugin support')`.
+
+**macOS**: `brew install lilv`.
+
+**Overriding the library path**: set `POWERVOICE_LILV` to an absolute path to a custom lilv build
+(advanced use only; normally unnecessary).
+
 ## Cross-compiling a Windows check from Linux (`just check-cross`)
 
 `just check-cross` runs `cargo check --target x86_64-pc-windows-gnu` over every crate that has no

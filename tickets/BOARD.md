@@ -75,7 +75,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-35 | Zoom commands (T-701 found SPEC-006 §2.6 claims them but they don't exist): Zoom to Selection, Zoom Full, vertical amplitude zoom (Alt+= / Alt+-) with Audition bindings, View menu + toolbar entries | S | done |
 | H-36 | Fix flaky LV2 test `crates/sandbox/tests/lv2.rs::a_latency_change_goes_through_the_worker_and_asks_for_a_restart` (offline worker round trip fails 8/10 in isolation on main) | S | done |
 | H-37 | Loop playback (SPEC-003 AC-4; engine has none — found by T-401): loop region = selection, seamless wrap, playhead history across the wrap (ADR-002 §8), Loop transport button + shortcut | O | in progress |
-| H-38 | Packaging (T-807, A-022): deb Recommends `liblilv-0-0`, Arch optdepends `lilv`, AppImage note; user-guide note that LV2 needs lilv | H | in progress |
+| H-38 | Packaging (T-807, A-022): deb Recommends `liblilv-0-0`, Arch optdepends `lilv`, AppImage note; user-guide note that LV2 needs lilv | H | done |
 | H-18 | Shared test factories for DTOs (`ui/src/lib/test/fixtures.ts` + Rust builders) so a new DTO field touches one helper, not 20 test literals (merge-friction fix) | H | done |
 | H-17 | Recovery follow-ups (T-301): dialog stays open for remaining sessions (A-015), AC-3/AC-11 timing on a real disk (test-big), compaction off the document lock, markers during an interrupted take, Memory-for-audio UI, `/tmp/vox-project-*` sweep | S | done |
 | H-15 | Sidecar follow-ups (T-306): recent-file-missing dialog, read-only folder matrix (AC-13), SIGKILL-during-sidecar-save test (AC-6), per-slot leniency for a malformed rack slot, perf budget (AC-18) | S | done |

@@ -2,6 +2,7 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
 import { clearNotices } from "../state/notices.svelte";
+import { docDto } from "../test/fixtures";
 import ClipPromptDialog from "./ClipPromptDialog.svelte";
 import { documentState, resetDocumentStateForTest, saveDocument } from "./document.svelte";
 
@@ -51,18 +52,7 @@ describe("ClipPromptDialog (SPEC-005 §2.8)", () => {
     const app = mount(ClipPromptDialog, { target });
     flushSync();
 
-    const pending = triggerOvers(12, 1.8, () => ({
-      name: "take.wav",
-      path: "/home/user/take.wav",
-      sample_rate_hz: 48_000,
-      len_samples: 480_000,
-      dirty: false,
-      audio_rev: 2,
-      sidecar_dirty: false,
-      spectral_view: null,
-      waveform_view: null,
-      recovered: false,
-    }));
+    const pending = triggerOvers(12, 1.8, () => docDto({ audio_rev: 2 }));
     await new Promise((r) => setTimeout(r, 0));
     flushSync();
 
@@ -90,18 +80,7 @@ describe("ClipPromptDialog (SPEC-005 §2.8)", () => {
     let floatArgs: unknown;
     const pending = triggerOvers(1, -0.5, () => {
       floatArgs = "unused";
-      return {
-        name: "take.wav",
-        path: "/home/user/take.wav",
-        sample_rate_hz: 48_000,
-        len_samples: 480_000,
-        dirty: false,
-        audio_rev: 3,
-        sidecar_dirty: false,
-        spectral_view: null,
-        waveform_view: null,
-        recovered: false,
-      };
+      return docDto({ audio_rev: 3 });
     });
     await new Promise((r) => setTimeout(r, 0));
     flushSync();

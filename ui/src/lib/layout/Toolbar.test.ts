@@ -1,23 +1,16 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { TransportStateDto } from "../ipc/bindings";
 import { attachKeymap, clearActionHandlers } from "../keymap";
 import { initTransport, resetTransportForTest } from "../state/transport.svelte";
+import { transportStateDto } from "../test/fixtures";
 import Toolbar from "./Toolbar.svelte";
 
 let calls: string[] = [];
 let playing = false;
 
-function stateDto(): TransportStateDto {
-  return {
-    playing,
-    playhead_samples: 0,
-    play_start_samples: 0,
-    doc_len_samples: 96_000,
-    doc_rate_hz: 48_000,
-    can_play: true,
-  };
+function stateDto() {
+  return transportStateDto({ playing, doc_len_samples: 96_000, can_play: true });
 }
 
 beforeEach(() => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { MarkerDto, RecordPhaseDto, RecordStartedDto, RecordStateDto } from "../ipc/bindings";
+import type { MarkerDto, RecordPhaseDto, RecordStartedDto } from "../ipc/bindings";
+import { recordStateDto } from "../test/fixtures";
 import {
   displayOfDoc,
   opColumns,
@@ -16,22 +17,7 @@ import {
  * over the old audio.
  */
 
-const STATE: RecordStateDto = {
-  input_device: "Mic",
-  input_channel: 1,
-  input_status: "healthy",
-  armed: true,
-  input_open: true,
-  input_rate_hz: 48_000,
-  recording: true,
-  finishing: false,
-  monitor: "off",
-  monitoring: false,
-  monitor_latency_us: null,
-  monitor_dropouts: 0,
-  dropout_count: 0,
-  disk_remaining_s: null,
-};
+const STATE = recordStateDto({ armed: true, input_open: true, recording: true });
 
 function started(op: RecordStartedDto["op"], at: number, end: number | null, aligned: boolean): RecordStartedDto {
   return {

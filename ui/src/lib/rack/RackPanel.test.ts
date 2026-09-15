@@ -3,6 +3,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
 import type { LocalizedTextDto, ModuleDescriptorDto, RackSlotDto, RackStateDto } from "../ipc/bindings";
 import { initTransport, resetTransportForTest } from "../state/transport.svelte";
+import { rackSlotDto, rackStateDto as rackFixture, transportStateDto } from "../test/fixtures";
 import { resetRackForTest } from "./rack.svelte";
 import RackPanel from "./RackPanel.svelte";
 
@@ -22,26 +23,7 @@ function moduleFixture(id: string, features: string[]): ModuleDescriptorDto {
 }
 
 function slotFixture(uid: number): RackSlotDto {
-  return {
-    uid,
-    module: "org.powervoice.gain@1.0.0",
-    module_id: "org.powervoice.gain",
-    name: `Slot ${uid}`,
-    bypass: false,
-    latency_samples: 0,
-    status: { kind: "active" },
-    params: [],
-    groups: [],
-    values: [],
-    noise_profile: null,
-    curve_handles: null,
-    telemetry: [],
-    sandboxed: false,
-  };
-}
-
-function rackFixture(slots: RackSlotDto[], ab = false, latency_samples = 0): RackStateDto {
-  return { slots, ab, latency_samples };
+  return rackSlotDto({ uid, name: `Slot ${uid}`, params: [], values: [] });
 }
 
 afterEach(() => {
@@ -71,14 +53,7 @@ async function setup(rack: RackStateDto, modules: ModuleDescriptorDto[]) {
         case "rack_move":
           return rackFixture([...rack.slots].reverse());
         case "transport_get":
-          return {
-            playing: false,
-            playhead_samples: 0,
-            play_start_samples: 0,
-            doc_len_samples: 0,
-            doc_rate_hz: 48_000,
-            can_play: false,
-          };
+          return transportStateDto({ doc_rate_hz: 48_000 });
         case "clock_now_ns":
           return 0;
         default:
@@ -196,14 +171,7 @@ describe("RackPanel", () => {
           return rackFixture([...rack.slots].reverse());
         }
         if (cmd === "transport_get") {
-          return {
-            playing: false,
-            playhead_samples: 0,
-            play_start_samples: 0,
-            doc_len_samples: 0,
-            doc_rate_hz: 48_000,
-            can_play: false,
-          };
+          return transportStateDto({ doc_rate_hz: 48_000 });
         }
         if (cmd === "clock_now_ns") return 0;
         return null;

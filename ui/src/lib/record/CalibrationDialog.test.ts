@@ -2,29 +2,15 @@ import { emit } from "@tauri-apps/api/event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { CalibrationResultDto, RecordOffsetDto, RecordStateDto } from "../ipc/bindings";
+import type { CalibrationResultDto, RecordOffsetDto } from "../ipc/bindings";
 import { clearActionHandlers } from "../keymap";
 import { initRecord, openCalibration, recordState, resetRecordForTest } from "../state/record.svelte";
+import { recordStateDto } from "../test/fixtures";
 import CalibrationDialog from "./CalibrationDialog.svelte";
 
 let calls: Array<{ cmd: string; args: unknown }> = [];
 
-const REC: RecordStateDto = {
-  input_device: "Mic",
-  input_channel: 1,
-  input_status: "healthy",
-  armed: false,
-  input_open: false,
-  input_rate_hz: 48_000,
-  recording: false,
-  finishing: false,
-  monitor: "off",
-  monitoring: false,
-  monitor_latency_us: null,
-  monitor_dropouts: 0,
-  dropout_count: 0,
-  disk_remaining_s: null,
-};
+const REC = recordStateDto();
 
 function offsetDto(source: RecordOffsetDto["source"], ms: number): RecordOffsetDto {
   return {

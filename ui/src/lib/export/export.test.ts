@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ExportRequestDto, JobProgressDto, ParamInfoDto, RackSlotDto, RackStateDto } from "../ipc/bindings";
 import { loadRack, resetRackForTest } from "../rack/rack.svelte";
 import { clearNotices } from "../state/notices.svelte";
+import { rackSlotDto, rackStateDto } from "../test/fixtures";
 import {
   applyJobProgress,
   cancelExportDialog,
@@ -56,29 +57,21 @@ function noiseOnlyParam(overrides: Partial<ParamInfoDto> = {}): ParamInfoDto {
 /** An `org.powervoice.noise-reduction` slot, "Output noise only" on by default. */
 function nrSlotFixture(overrides: Partial<RackSlotDto> = {}): RackSlotDto {
   const params = overrides.params ?? [noiseOnlyParam()];
-  return {
-    uid: 1,
+  return rackSlotDto({
     module: "org.powervoice.noise-reduction@1.0.0",
     module_id: "org.powervoice.noise-reduction",
     name: "Noise Reduction",
-    bypass: false,
-    latency_samples: 0,
-    status: { kind: "active" },
     params,
-    groups: [],
     values: params.map((p) => ({ id: p.id, value: 1, normalized: 1, text: "On" })),
     noise_profile: "loaded",
-    curve_handles: null,
-    telemetry: [],
-    sandboxed: false,
     ...overrides,
-  };
+  });
 }
 
 /** Seeds the live rack store (`rackState()`) via a mocked `loadRack()` — the way `confirmExport`
  * reads it for the SPEC-014 §2.6 noise-only check. */
 async function seedRack(slots: RackSlotDto[]): Promise<void> {
-  const state: RackStateDto = { slots, ab: false, latency_samples: 0 };
+  const state: RackStateDto = rackStateDto(slots);
   mockIPC((cmd) => {
     if (cmd === "rack_list_modules") {
       return [];

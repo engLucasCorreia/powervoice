@@ -3,8 +3,13 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { documentState, initDocument, resetDocumentStateForTest } from "../document/document.svelte";
-import type { DocumentDto, RecordStateDto, TransportStateDto } from "../ipc/bindings";
+import type { DocumentDto } from "../ipc/bindings";
 import { VXTM_FLAGS, type TelemetryFrame } from "../ipc/telemetry";
+import {
+  docDto as docFixture,
+  recordStateDto,
+  transportStateDto,
+} from "../test/fixtures";
 import { attachKeymap, clearActionHandlers } from "../keymap";
 import {
   initRecord,
@@ -43,47 +48,25 @@ let dropoutCount = 0;
 let diskRemainingS: number | null = null;
 let monitorLatencyUs: number | null = null;
 
-function recDto(): RecordStateDto {
-  return {
+function recDto(): ReturnType<typeof recordStateDto> {
+  return recordStateDto({
     input_device: inputDevice,
-    input_channel: 1,
     input_status: inputDevice ? "healthy" : "not_selected",
     armed: recording,
     input_open: recording,
-    input_rate_hz: 48_000,
     recording,
-    finishing: false,
-    monitor: "off",
-    monitoring: false,
     monitor_latency_us: monitorLatencyUs,
-    monitor_dropouts: 0,
     dropout_count: dropoutCount,
     disk_remaining_s: diskRemainingS,
-  };
+  });
 }
 
-function transportDto(): TransportStateDto {
-  return {
-    playing: false,
-    playhead_samples: 0,
-    play_start_samples: 0,
-    doc_len_samples: docLen,
-    doc_rate_hz: 48_000,
-    can_play: docLen > 0,
-  };
+function transportDto(): ReturnType<typeof transportStateDto> {
+  return transportStateDto({ doc_len_samples: docLen, can_play: docLen > 0 });
 }
 
 function docDto(len_samples: number, dirty: boolean): DocumentDto {
-  return {
-    name: "take.wav",
-    path: "/tmp/take.wav",
-    sample_rate_hz: 48_000,
-    len_samples,
-    dirty,
-    audio_rev: 1,
-    sidecar_dirty: false,
-    spectral_view: null, waveform_view: null, recovered: false,
-  };
+  return docFixture({ path: "/tmp/take.wav", len_samples, dirty });
 }
 
 function frame(flags: number, playheadSample = 0): TelemetryFrame {

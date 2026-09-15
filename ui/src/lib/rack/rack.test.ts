@@ -6,12 +6,12 @@ import type {
   LocalizedTextDto,
   ModuleDescriptorDto,
   ParamChangedDto,
-  ParamInfoDto,
   RackLatencyDto,
   RackSlotDto,
   RackStateDto,
 } from "../ipc/bindings";
 import { clearNotices, noticesState } from "../state/notices.svelte";
+import { paramInfoDto, rackSlotDto, rackStateDto as rackFixture } from "../test/fixtures";
 import {
   addModule,
   flushPendingDrags,
@@ -45,56 +45,9 @@ function moduleFixture(id: string): ModuleDescriptorDto {
   return { id, name: text(id), vendor: "PowerVoice", description: text(""), features: ["utility"] };
 }
 
-function paramFixture(overrides: Partial<ParamInfoDto> = {}): ParamInfoDto {
-  return {
-    id: 0,
-    key: "gain_db",
-    name: text("Gain"),
-    group: null,
-    unit: { kind: "db" },
-    min: -60,
-    max: 12,
-    default: 0,
-    taper: { kind: "linear" },
-    step: null,
-    enum_labels: [],
-    decimals: 1,
-    smoothing_ms: 20,
-    flags: {
-      automatable: true,
-      stepped: false,
-      boolean: false,
-      read_only: false,
-      hidden: false,
-      bypass: false,
-    },
-    ...overrides,
-  };
-}
-
 function slotFixture(overrides: Partial<RackSlotDto> = {}): RackSlotDto {
-  const params = overrides.params ?? [paramFixture()];
-  return {
-    uid: 1,
-    module: "org.powervoice.gain@1.0.0",
-    module_id: "org.powervoice.gain",
-    name: "Gain",
-    bypass: false,
-    latency_samples: 0,
-    status: { kind: "active" },
-    params,
-    groups: [],
-    values: params.map((p) => ({ id: p.id, value: p.default, normalized: 0.5, text: "0.0 dB" })),
-    noise_profile: null,
-    curve_handles: null,
-    telemetry: [],
-    sandboxed: false,
-    ...overrides,
-  };
-}
-
-function rackFixture(slots: RackSlotDto[], ab = false, latency_samples = 0): RackStateDto {
-  return { slots, ab, latency_samples };
+  const params = overrides.params ?? [paramInfoDto()];
+  return rackSlotDto({ params, ...overrides });
 }
 
 afterEach(() => {
@@ -339,7 +292,7 @@ describe("live events", () => {
         if (cmd === "rack_get") {
           return rackFixture([
             slotFixture({
-              params: [paramFixture({ id: 0 }), paramFixture({ id: 1, key: "mix" })],
+              params: [paramInfoDto({ id: 0 }), paramInfoDto({ id: 1, key: "mix" })],
               values: [
                 { id: 0, value: 0, normalized: 0.5, text: "0.0 dB" },
                 { id: 1, value: 0, normalized: 0.5, text: "0.0 dB" },

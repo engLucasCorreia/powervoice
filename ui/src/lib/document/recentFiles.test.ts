@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { RecentFileDto } from "../ipc/bindings";
 import { clearNotices } from "../state/notices.svelte";
 import { resetDocumentStateForTest } from "./document.svelte";
+import { docDto } from "../test/fixtures";
 import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 import {
   clearRecentFiles,
@@ -89,18 +90,7 @@ describe("recentFiles store (T-306, SPEC-018 §2.12)", () => {
       mockIPC((cmd, args) => {
         if (cmd === "document_open") {
           openedPath = (args as { path: string }).path;
-          return {
-            name: "A.wav",
-            path: "/vo/A.wav",
-            sample_rate_hz: 48_000,
-            len_samples: 100,
-            dirty: false,
-            audio_rev: 1,
-            sidecar_dirty: false,
-            spectral_view: null,
-            waveform_view: null,
-            recovered: false,
-          };
+          return docDto({ name: "A.wav", path: "/vo/A.wav", len_samples: 100 });
         }
         throw new Error(`unmocked command: ${cmd}`);
       });
@@ -114,18 +104,7 @@ describe("recentFiles store (T-306, SPEC-018 §2.12)", () => {
       mockIPC((cmd, args) => {
         if (cmd === "document_open") {
           openedPath = (args as { path: string }).path;
-          return {
-            name: "A.wav",
-            path: "/vo/A.wav",
-            sample_rate_hz: 48_000,
-            len_samples: 100,
-            dirty: false,
-            audio_rev: 1,
-            sidecar_dirty: false,
-            spectral_view: null,
-            waveform_view: null,
-            recovered: false,
-          };
+          return docDto({ name: "A.wav", path: "/vo/A.wav", len_samples: 100 });
         }
         throw new Error(`unmocked command: ${cmd}`);
       });

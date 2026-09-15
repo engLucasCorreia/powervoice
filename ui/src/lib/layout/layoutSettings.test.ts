@@ -14,54 +14,7 @@ import {
   setRackCollapsed,
   setRackWidthPx,
 } from "./layoutSettings.svelte";
-
-function settingsFixture(): Settings {
-  return {
-    version: 1,
-    device: {
-      host: "pipewire",
-      input_device: null,
-      input_channel: 1,
-      output_device: null,
-      sample_rate_hz: null,
-      buffer_size_frames: null,
-    },
-    default_format: { sample_rate_hz: 48_000, bit_depth: "24" },
-    monitor_mode: "off",
-    monitor_hint_shown: false,
-    telemetry_rate_hz: 60,
-    memory_budget_mib: 2048,
-    normalize_dialog: { value: -1, unit: "db" },
-    recent_files: [],
-    spectral_defaults: {
-      freq_scale: "log",
-      colormap: "inferno",
-      display_floor_db: -120,
-      display_ceil_db: 0,
-      fft_size: null,
-    },
-    analyzer_visible: true,
-    analyzer_response: "medium",
-    analyzer_peak_hold: true,
-    multichannel_policy: "ask",
-    renderer_preference: "auto",
-    layout: { ...DEFAULT_LAYOUT_PREFS },
-    record: {
-      mode: "insert",
-      punch_on_selection: true,
-      preroll_s: 5,
-      postroll_s: 1,
-      preroll_at_cursor: false,
-      hear_original: false,
-      punch_xfade_ms: 10,
-    },
-    record_offsets: [],
-    save_dither: "tpdf",
-    theme: "dark",
-    playhead_follow: true,
-    plugins: { custom_folders: [], disabled: [] },
-  };
-}
+import { settingsFixture } from "../test/fixtures";
 
 afterEach(() => {
   clearMocks();

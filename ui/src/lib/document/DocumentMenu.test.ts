@@ -1,11 +1,12 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { DocumentDto, RecentFileDto } from "../ipc/bindings";
+import type { RecentFileDto } from "../ipc/bindings";
 import { clearActionHandlers, registerAction } from "../keymap";
 import { resetMenuBarForTest } from "../menu/menubar.svelte";
 import { clearNotices } from "../state/notices.svelte";
 import { applyRecordStateForTest, recordState, resetRecordForTest } from "../state/record.svelte";
+import { docDto } from "../test/fixtures";
 import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 import DocumentMenu from "./DocumentMenu.svelte";
 import { openDocument, resetDocumentStateForTest } from "./document.svelte";
@@ -76,18 +77,7 @@ describe("DocumentMenu / File menu (H-19)", () => {
   });
 
   it("shows the document name (with a modified marker) and enables Save/Save As/Close once open", async () => {
-    const fixture: DocumentDto = {
-      name: "take.wav",
-      path: "/home/user/take.wav",
-      sample_rate_hz: 48_000,
-      len_samples: 480_000,
-      dirty: true,
-      audio_rev: 1,
-      sidecar_dirty: false,
-      spectral_view: null,
-      waveform_view: null,
-      recovered: false,
-    };
+    const fixture = docDto({ dirty: true });
     mockIPC((cmd) => {
       if (cmd === "document_open") {
         return fixture;
@@ -209,18 +199,7 @@ describe("DocumentMenu / File menu (H-19)", () => {
       const entries: RecentFileDto[] = [
         { path: "/a/b.wav", name: "b.wav", folder: "/a", exists: true },
       ];
-      const opened: DocumentDto = {
-        name: "b.wav",
-        path: "/a/b.wav",
-        sample_rate_hz: 48_000,
-        len_samples: 100,
-        dirty: false,
-        audio_rev: 1,
-        sidecar_dirty: false,
-        spectral_view: null,
-        waveform_view: null,
-        recovered: false,
-      };
+      const opened = docDto({ name: "b.wav", path: "/a/b.wav", len_samples: 100 });
       mockIPC((cmd) => {
         if (cmd === "recent_files_get") {
           return entries;

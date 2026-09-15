@@ -2,13 +2,13 @@ import { emit } from "@tauri-apps/api/event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { DocumentDto, RecordStateDto } from "../ipc/bindings";
 import { VXTM_FLAGS, type TelemetryFrame } from "../ipc/telemetry";
 import { clearActionHandlers } from "../keymap";
 import { initDocument, openDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import { clearNotices } from "../state/notices.svelte";
 import { initRecord, onInputTelemetry, resetRecordForTest } from "../state/record.svelte";
 import { resetSelectionForTest, selectionState } from "../state/selection.svelte";
+import { docDto, recordStateDto } from "../test/fixtures";
 import WaveformView from "./WaveformView.svelte";
 import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 
@@ -90,14 +90,7 @@ describe("WaveformView (S1-03)", () => {
   });
 
   it("renders the canvas once a document is open", async () => {
-    const fixture: DocumentDto = {
-      name: "take.wav",
-      path: "/home/user/take.wav",
-      sample_rate_hz: 48_000,
-      len_samples: 480_000,
-      dirty: false,
-      audio_rev: 1, sidecar_dirty: false, spectral_view: null, waveform_view: null, recovered: false,
-    };
+    const fixture = docDto();
     mockIPC((cmd) => {
       if (cmd === "document_open") {
         return fixture;
@@ -143,14 +136,7 @@ describe("WaveformView (S1-03)", () => {
     const peakRequests: unknown[] = [];
     mockIPC((cmd, args) => {
       if (cmd === "document_open") {
-        return {
-          name: "take.wav",
-          path: "/home/user/take.wav",
-          sample_rate_hz: 48_000,
-          len_samples: 480_000,
-          dirty: false,
-          audio_rev: 1, sidecar_dirty: false, spectral_view: null, waveform_view: null, recovered: false,
-        } satisfies DocumentDto;
+        return docDto();
       }
       if (cmd === "peaks_get") {
         peakRequests.push(args);
@@ -207,30 +193,9 @@ describe("WaveformView (S1-03)", () => {
     });
 
     const livePeakRequests: unknown[] = [];
-    const recordingDoc: DocumentDto = {
-      name: null,
-      path: null,
-      sample_rate_hz: 48_000,
-      len_samples: 0, // S1-04: the take isn't committed until Stop
-      dirty: false,
-      audio_rev: 0, sidecar_dirty: false, spectral_view: null, waveform_view: null, recovered: false,
-    };
-    const recordingState: RecordStateDto = {
-      input_device: "Mic",
-      input_channel: 1,
-      input_status: "healthy",
-      armed: true,
-      input_open: true,
-      input_rate_hz: 48_000,
-      recording: true,
-      finishing: false,
-      monitor: "off",
-      monitoring: true,
-      monitor_latency_us: null,
-      monitor_dropouts: 0,
-      dropout_count: 0,
-      disk_remaining_s: null,
-    };
+    // S1-04: the take isn't committed until Stop, so the document is empty while recording.
+    const recordingDoc = docDto({ name: null, path: null, len_samples: 0, audio_rev: 0 });
+    const recordingState = recordStateDto({ armed: true, input_open: true, recording: true, monitoring: true });
     mockIPC(
       (cmd, args) => {
         if (cmd === "record_get") {
@@ -299,30 +264,9 @@ describe("WaveformView (S1-03)", () => {
       get: () => 200,
     });
 
-    const recordingDoc: DocumentDto = {
-      name: null,
-      path: null,
-      sample_rate_hz: 48_000,
-      len_samples: 0, // S1-04: the take isn't committed until Stop
-      dirty: false,
-      audio_rev: 0, sidecar_dirty: false, spectral_view: null, waveform_view: null, recovered: false,
-    };
-    const recordingState: RecordStateDto = {
-      input_device: "Mic",
-      input_channel: 1,
-      input_status: "healthy",
-      armed: true,
-      input_open: true,
-      input_rate_hz: 48_000,
-      recording: true,
-      finishing: false,
-      monitor: "off",
-      monitoring: true,
-      monitor_latency_us: null,
-      monitor_dropouts: 0,
-      dropout_count: 0,
-      disk_remaining_s: null,
-    };
+    // S1-04: the take isn't committed until Stop, so the document is empty while recording.
+    const recordingDoc = docDto({ name: null, path: null, len_samples: 0, audio_rev: 0 });
+    const recordingState = recordStateDto({ armed: true, input_open: true, recording: true, monitoring: true });
     mockIPC(
       (cmd) => {
         if (cmd === "record_get") {
@@ -385,30 +329,8 @@ describe("WaveformView (S1-03)", () => {
     const heightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
     Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 200 });
 
-    const recordingDoc: DocumentDto = {
-      name: null,
-      path: null,
-      sample_rate_hz: 48_000,
-      len_samples: 0,
-      dirty: false,
-      audio_rev: 0, sidecar_dirty: false, spectral_view: null, waveform_view: null, recovered: false,
-    };
-    const recordingState: RecordStateDto = {
-      input_device: "Mic",
-      input_channel: 1,
-      input_status: "healthy",
-      armed: true,
-      input_open: true,
-      input_rate_hz: 48_000,
-      recording: true,
-      finishing: false,
-      monitor: "off",
-      monitoring: true,
-      monitor_latency_us: null,
-      monitor_dropouts: 0,
-      dropout_count: 0,
-      disk_remaining_s: null,
-    };
+    const recordingDoc = docDto({ name: null, path: null, len_samples: 0, audio_rev: 0 });
+    const recordingState = recordStateDto({ armed: true, input_open: true, recording: true, monitoring: true });
     const requests: Array<{ startBucket: number; count: number }> = [];
     mockIPC(
       (cmd, args) => {
@@ -491,14 +413,7 @@ describe("WaveformView selection (S2-01)", () => {
   });
 
   async function openFixture(lenSamples: number): Promise<void> {
-    const fixture: DocumentDto = {
-      name: "take.wav",
-      path: "/home/user/take.wav",
-      sample_rate_hz: 48_000,
-      len_samples: lenSamples,
-      dirty: false,
-      audio_rev: 1, sidecar_dirty: false, spectral_view: null, waveform_view: null, recovered: false,
-    };
+    const fixture = docDto({ len_samples: lenSamples });
     mockIPC((cmd) => {
       if (cmd === "document_open") {
         return fixture;

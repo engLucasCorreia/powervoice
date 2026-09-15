@@ -9,6 +9,7 @@ import type {
   TelemetryChannelDto,
 } from "../ipc/bindings";
 import { VXMT_FIXTURE_HEX } from "../ipc/vxmt_fixture";
+import { rackSlotDto, rackStateDto } from "../test/fixtures";
 import { onModuleTelemetry, resetRackForTest } from "./rack.svelte";
 import RackSlot from "./RackSlot.svelte";
 
@@ -123,22 +124,14 @@ function bigFixture(): { params: ParamInfoDto[]; groups: ParamGroupDto[] } {
 
 function slotFixture(): RackSlotDto {
   const { params, groups } = bigFixture();
-  return {
-    uid: 1,
+  return rackSlotDto({
     module: "org.powervoice.fixture@1.0.0",
     module_id: "org.powervoice.fixture",
     name: "Fixture",
-    bypass: false,
-    latency_samples: 0,
-    status: { kind: "active" },
     params,
     groups,
     values: params.map((pp) => ({ id: pp.id, value: pp.default, normalized: 0, text: String(pp.default) })),
-    noise_profile: null,
-    curve_handles: null,
-    telemetry: [],
-    sandboxed: false,
-  };
+  });
 }
 
 afterEach(() => {
@@ -148,7 +141,7 @@ afterEach(() => {
 });
 
 function render(slot: RackSlotDto) {
-  mockIPC(() => ({ slots: [], ab: false, latency_samples: 0 }));
+  mockIPC(() => rackStateDto());
   const target = document.createElement("div");
   document.body.appendChild(target);
   const app = mount(RackSlot, {

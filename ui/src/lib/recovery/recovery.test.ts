@@ -1,9 +1,10 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
-import type { DocumentDto, RecoverableSessionDto } from "../ipc/bindings";
+import type { RecoverableSessionDto } from "../ipc/bindings";
 import { documentState, resetDocumentStateForTest, titleFor } from "../document/document.svelte";
 import { clearNotices, noticesState } from "../state/notices.svelte";
+import { docDto } from "../test/fixtures";
 import RecoveryDialog from "./RecoveryDialog.svelte";
 import { formatBytes, formatDuration } from "./format";
 import { initRecovery, openRecoveryStorage, resetRecoveryForTest } from "./recovery.svelte";
@@ -22,18 +23,13 @@ const SESSION: RecoverableSessionDto = {
   size_bytes: 150_000_000,
 };
 
-const RECOVERED: DocumentDto = {
+const RECOVERED = docDto({
   name: "voice.wav",
   path: "/home/user/voice.wav",
-  sample_rate_hz: 48_000,
-  len_samples: 480_000,
   dirty: true,
   audio_rev: 4,
-  waveform_view: null,
-  sidecar_dirty: false,
-  spectral_view: null,
   recovered: true,
-};
+});
 
 afterEach(() => {
   clearMocks();

@@ -1,9 +1,9 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
-import type { DocumentDto } from "../ipc/bindings";
 import { clearNotices } from "../state/notices.svelte";
 import { openDocument, requestOpen, resetDocumentStateForTest } from "./document.svelte";
+import { docDto } from "../test/fixtures";
 import UnsavedChangesDialog from "./UnsavedChangesDialog.svelte";
 import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 
@@ -16,14 +16,7 @@ afterEach(() => {
 
 describe("UnsavedChangesDialog (SPEC-004 §2.8)", () => {
   it("is hidden with no pending prompt, and Cancel resolves the guard without opening", async () => {
-    const dirty: DocumentDto = {
-      name: "take.wav",
-      path: "/home/user/take.wav",
-      sample_rate_hz: 48_000,
-      len_samples: 480_000,
-      dirty: true,
-      audio_rev: 1, sidecar_dirty: false, spectral_view: null, waveform_view: null, recovered: false,
-    };
+    const dirty = docDto({ dirty: true });
     mockIPC((cmd) => (cmd === "document_open" ? dirty : null));
     await openDocument("/home/user/take.wav");
 

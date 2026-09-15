@@ -1,12 +1,13 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
-import type { DocumentDto, RecordStartedDto, RecordStateDto } from "../ipc/bindings";
+import type { RecordStartedDto } from "../ipc/bindings";
 import { clearActionHandlers } from "../keymap";
 import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import { clearNotices } from "../state/notices.svelte";
 import { recordState, resetRecordForTest, toggleRecord } from "../state/record.svelte";
 import { resetSelectionForTest } from "../state/selection.svelte";
+import { docDto, recordStateDto } from "../test/fixtures";
 import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 import WaveformView from "./WaveformView.svelte";
 
@@ -39,35 +40,9 @@ function headerOnlyVxpk(): ArrayBuffer {
   return buf;
 }
 
-const DOC: DocumentDto = {
-  name: "take.wav",
-  path: "/home/user/take.wav",
-  sample_rate_hz: 48_000,
-  len_samples: 480_000,
-  dirty: false,
-  audio_rev: 1,
-  sidecar_dirty: false,
-  spectral_view: null,
-  waveform_view: null,
-  recovered: false,
-};
+const DOC = docDto();
 
-const RECORDING: RecordStateDto = {
-  input_device: "Mic",
-  input_channel: 1,
-  input_status: "healthy",
-  armed: true,
-  input_open: true,
-  input_rate_hz: 48_000,
-  recording: true,
-  finishing: false,
-  monitor: "off",
-  monitoring: false,
-  monitor_latency_us: null,
-  monitor_dropouts: 0,
-  dropout_count: 0,
-  disk_remaining_s: null,
-};
+const RECORDING = recordStateDto({ armed: true, input_open: true, recording: true });
 
 describe("WaveformView during a record operation (H-21)", () => {
   it("keeps the document view and polls the live take", async () => {

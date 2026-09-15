@@ -8,6 +8,7 @@ import { resetNormalizeForTest } from "../state/normalize.svelte";
 import { resetNormalizeLufsForTest } from "../state/normalizeLufs.svelte";
 import { resetRecordForTest } from "../state/record.svelte";
 import { resetSelectionForTest, setSelectionFromResult } from "../state/selection.svelte";
+import { rackSlotDto, rackStateDto } from "../test/fixtures";
 import EffectsMenu from "./EffectsMenu.svelte";
 import { resetNrCaptureForTest } from "./nrCapture.svelte";
 import { loadRack, resetRackForTest } from "./rack.svelte";
@@ -217,7 +218,7 @@ describe("EffectsMenu (H-19)", () => {
           return [{ key: "gentle_cleanup", name: { text: "Gentle cleanup", key: null }, is_factory: true }];
         }
         if (cmd === "rack_preset_load") {
-          return { slots: [], ab: false, latency_samples: 0 };
+          return rackStateDto();
         }
         throw new Error(`unmocked command: ${cmd}`);
       });
@@ -240,28 +241,7 @@ describe("EffectsMenu (H-19)", () => {
 
     it("asks for confirmation before replacing a non-empty rack, and loads on confirm", async () => {
       const calls: Array<[string, unknown]> = [];
-      const oneSlot: RackStateDto = {
-        slots: [
-          {
-            uid: 1,
-            module: "org.powervoice.gain@1.0.0",
-            module_id: "org.powervoice.gain",
-            name: "Gain",
-            bypass: false,
-            latency_samples: 0,
-            status: { kind: "active" },
-            params: [],
-            groups: [],
-            values: [],
-            noise_profile: null,
-            curve_handles: null,
-            telemetry: [],
-            sandboxed: false,
-          },
-        ],
-        ab: false,
-        latency_samples: 0,
-      };
+      const oneSlot: RackStateDto = rackStateDto([rackSlotDto({ params: [], values: [] })]);
       mockIPC(
         (cmd, args) => {
           calls.push([cmd, args]);
@@ -273,7 +253,7 @@ describe("EffectsMenu (H-19)", () => {
             case "rack_presets_list":
               return [{ key: "podcast_voice", name: { text: "Podcast voice", key: null }, is_factory: true }];
             case "rack_preset_load":
-              return { slots: [], ab: false, latency_samples: 0 };
+              return rackStateDto();
             default:
               throw new Error(`unmocked command: ${cmd}`);
           }

@@ -1,11 +1,12 @@
 import { emit } from "@tauri-apps/api/event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it } from "vitest";
-import type { DocumentDto, MarkerDto } from "../ipc/bindings";
+import type { MarkerDto } from "../ipc/bindings";
 import { clearActionHandlers, dispatchAction } from "../keymap";
 import { clearNotices } from "../state/notices.svelte";
 import { resetSelectionForTest, selectAllOf } from "../state/selection.svelte";
 import { resetTransportForTest } from "../state/transport.svelte";
+import { docDto, transportStateDto } from "../test/fixtures";
 import {
   addMarker,
   deleteSelectedMarker,
@@ -35,16 +36,7 @@ afterEach(() => {
   resetTransportForTest();
 });
 
-const DOC_CHANGED: DocumentDto = {
-  name: "take.wav",
-  path: "/tmp/take.wav",
-  sample_rate_hz: 48_000,
-  len_samples: 480_000,
-  dirty: false,
-  audio_rev: 1,
-  sidecar_dirty: false,
-  spectral_view: null, waveform_view: null, recovered: false,
-};
+const DOC_CHANGED = docDto({ path: "/tmp/take.wav" });
 
 function marker(id: number, pos: number, len = 0, name = `m${id}`): MarkerDto {
   return { id, pos_samples: pos, len_samples: len, name };
@@ -157,14 +149,7 @@ describe("markers store (S2-03)", () => {
       if (cmd === "marker_add") return marker(1, 12_345);
       if (cmd === "transport_seek") {
         seeks.push(args);
-        return {
-          playing: false,
-          playhead_samples: 12_345,
-          play_start_samples: 0,
-          doc_len_samples: 480_000,
-          doc_rate_hz: 48_000,
-          can_play: true,
-        };
+        return transportStateDto({ playhead_samples: 12_345, doc_len_samples: 480_000, can_play: true });
       }
       return null;
     });
@@ -181,14 +166,7 @@ describe("markers store (S2-03)", () => {
         return [marker(1, 1_000), marker(2, 5_000), marker(3, 9_000)];
       }
       if (cmd === "transport_seek") {
-        return {
-          playing: false,
-          playhead_samples: 0,
-          play_start_samples: 0,
-          doc_len_samples: 480_000,
-          doc_rate_hz: 48_000,
-          can_play: true,
-        };
+        return transportStateDto({ doc_len_samples: 480_000, can_play: true });
       }
       return null;
     });

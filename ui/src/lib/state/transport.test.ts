@@ -2,6 +2,7 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it } from "vitest";
 import type { TransportStateDto } from "../ipc/bindings";
 import { clearActionHandlers } from "../keymap";
+import { transportStateDto } from "../test/fixtures";
 import {
   extrapolatedPositionAt,
   initTransport,
@@ -49,14 +50,7 @@ function buildVxtmFrame(fields: {
   return buf;
 }
 
-const TRANSPORT_GET: TransportStateDto = {
-  playing: true,
-  playhead_samples: 0,
-  play_start_samples: 0,
-  doc_len_samples: 10_000_000,
-  doc_rate_hz: 48_000,
-  can_play: true,
-};
+const TRANSPORT_GET = transportStateDto({ playing: true, doc_len_samples: 10_000_000, can_play: true });
 
 describe("extrapolatedPositionAt (S2-03, SPEC-009 §4.3)", () => {
   it("falls back to the last known playhead sample before any telemetry anchor arrives", () => {
@@ -113,14 +107,7 @@ describe("a telemetry frame arriving before transport_get resolves (H-28 item 2)
       buildVxtmFrame({ playheadSample: 999, playheadTimeNs: performance.now() * 1e6, rate: 48_000 }),
     );
 
-    resolveGet({
-      playing: false,
-      playhead_samples: 555_555,
-      play_start_samples: 0,
-      doc_len_samples: 480_000,
-      doc_rate_hz: 48_000,
-      can_play: true,
-    });
+    resolveGet(transportStateDto({ playhead_samples: 555_555, doc_len_samples: 480_000, can_play: true }));
     const stop = await initPromise;
 
     // Without the fix, the pre-ready frame would already have set an extrapolator anchor, so

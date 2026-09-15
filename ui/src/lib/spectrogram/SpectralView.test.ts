@@ -2,11 +2,12 @@ import { emit } from "@tauri-apps/api/event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
-import type { DocumentDto, RecordStateDto, SpectroRequestDto } from "../ipc/bindings";
+import type { SpectroRequestDto } from "../ipc/bindings";
 import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import { clearActionHandlers } from "../keymap";
 import { initRecord, resetRecordForTest } from "../state/record.svelte";
 import { resetSpectralForTest, spectralState } from "../state/spectral.svelte";
+import { docDto, recordStateDto } from "../test/fixtures";
 import SpectralView from "./SpectralView.svelte";
 import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 
@@ -37,14 +38,7 @@ afterEach(() => {
   unstubSize();
 });
 
-const FIXTURE: DocumentDto = {
-  name: "take.wav",
-  path: "/home/user/take.wav",
-  sample_rate_hz: 48_000,
-  len_samples: 480_000,
-  dirty: false,
-  audio_rev: 1, sidecar_dirty: false, spectral_view: null, waveform_view: null, recovered: false,
-};
+const FIXTURE = docDto();
 
 interface SpectroCall {
   viewId: number;
@@ -65,22 +59,11 @@ function setupIpc(spectroRequests: SpectroCall[]): void {
         return undefined;
       }
       if (cmd === "record_get") {
-        return {
+        return recordStateDto({
           input_device: null,
-          input_channel: 1,
           input_status: "not_selected",
-          armed: false,
-          input_open: false,
           input_rate_hz: null,
-          recording: false,
-          finishing: false,
-          monitor: "off",
-          monitoring: false,
-          monitor_latency_us: null,
-          monitor_dropouts: 0,
-          dropout_count: 0,
-          disk_remaining_s: null,
-        } satisfies RecordStateDto;
+        });
       }
       return null;
     },
@@ -181,22 +164,10 @@ describe("SpectralView (T-207, SPEC-007 essential subset)", () => {
     const countBeforeRecording = spectroRequests.length;
     expect(countBeforeRecording).toBeGreaterThan(0);
 
-    await emit("record_state", {
-      input_device: "Mic",
-      input_channel: 1,
-      input_status: "healthy",
-      armed: true,
-      input_open: true,
-      input_rate_hz: 48_000,
-      recording: true,
-      finishing: false,
-      monitor: "off",
-      monitoring: true,
-      monitor_latency_us: null,
-      monitor_dropouts: 0,
-      dropout_count: 0,
-      disk_remaining_s: null,
-    } satisfies RecordStateDto);
+    await emit(
+      "record_state",
+      recordStateDto({ armed: true, input_open: true, recording: true, monitoring: true }),
+    );
     await settle();
 
     expect(target.querySelector('[data-testid="spectral-recording-overlay"]')).not.toBeNull();

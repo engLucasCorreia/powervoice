@@ -16,6 +16,7 @@
  * Commands it doesn't know return null, like the App shell tests.
  */
 import { mockIPC } from "@tauri-apps/api/mocks";
+import { docDto, rackSlotDto, rackStateDto, recordStateDto, settingsFixture, transportStateDto } from "../lib/test/fixtures";
 import type {
   AcxCheckReportDto,
   DevicesDto,
@@ -35,7 +36,6 @@ import type {
   Settings,
   StorageInfoDto,
   ThemePref,
-  TransportStateDto,
   UnitDto,
 } from "../lib/ipc/bindings";
 import { formatWithUnit } from "../lib/ui/units";
@@ -207,15 +207,12 @@ function vxtm(seq: number, flags: number, playhead: number, levels: [number, num
 
 function documentFixture(options: PreviewOptions): DocumentDto {
   const recording = options.scenes.includes("recording");
-  return {
+  return docDto({
     name: recording ? null : "chapter-03.wav",
     path: recording ? null : PREVIEW_PATH,
     sample_rate_hz: PREVIEW_RATE_HZ,
     len_samples: recording ? 0 : PREVIEW_LEN_SAMPLES,
     dirty: options.dialog === "unsaved",
-    audio_rev: 1,
-    sidecar_dirty: false,
-    spectral_view: null,
     waveform_view: recording
       ? null
       : {
@@ -224,28 +221,22 @@ function documentFixture(options: PreviewOptions): DocumentDto {
           selection: { start_sample: 19 * PREVIEW_RATE_HZ, end_sample: 25.4 * PREVIEW_RATE_HZ },
           cursor_samples: 19 * PREVIEW_RATE_HZ,
         },
-    recovered: false,
-  } as DocumentDto;
+  });
 }
 
 function recordFixture(options: PreviewOptions): RecordStateDto {
   const recording = options.scenes.includes("recording");
-  return {
+  return recordStateDto({
     input_device: "Scarlett Solo USB",
-    input_channel: 1,
-    input_status: "healthy",
     armed: recording,
     input_open: recording,
     input_rate_hz: PREVIEW_RATE_HZ,
     recording,
-    finishing: false,
     monitor: recording ? "dry" : "off",
     monitoring: recording,
     monitor_latency_us: recording ? 9_800 : null,
-    monitor_dropouts: 0,
-    dropout_count: 0,
     disk_remaining_s: options.dialog === "low-disk" ? 6 * 60 : 4 * 3600 + 12 * 60,
-  };
+  });
 }
 
 const MARKERS: MarkerDto[] = [
@@ -321,23 +312,15 @@ function slot(
   params: { info: ParamInfoDto; value: ParamValueDto }[],
   extra: Partial<RackSlotDto> = {},
 ): RackSlotDto {
-  return {
+  return rackSlotDto({
     uid,
     module: `${moduleId}@1.0.0`,
     module_id: moduleId,
     name,
-    bypass: false,
-    latency_samples: 0,
-    status: { kind: "active" },
     params: params.map((p) => p.info),
-    groups: [],
     values: params.map((p) => p.value),
-    noise_profile: null,
-    curve_handles: null,
-    telemetry: [],
-    sandboxed: false,
     ...extra,
-  } as RackSlotDto;
+  });
 }
 
 const GR = (max = 0, min = -24) => ({
@@ -398,7 +381,7 @@ function rackFixture(): RackStateDto {
     param(0, "ceiling_dbtp", "Ceiling", { kind: "dbtp" }, -12, 0, -3, 1),
     param(1, "release_ms", "Release", ms, 1, 500, 50, 0, true),
   ], { telemetry: [GR()], latency_samples: 64 });
-  return { slots: [eq, gate, comp, limiter], ab: false, latency_samples: 64 };
+  return rackStateDto([eq, gate, comp, limiter], false, 64);
 }
 
 const MODULES: ModuleDescriptorDto[] = [
@@ -544,8 +527,7 @@ type Sink = { onmessage: (message: ArrayBuffer) => void };
 export function installPreviewIpc(options: PreviewOptions): void {
   const { theme, scenes, dialog } = options;
   const hasScene = (name: string) => scenes.includes(name);
-  const settings: Settings = {
-    version: 1,
+  const settings: Settings = settingsFixture({
     device: {
       host: "pipewire",
       input_device: "Scarlett Solo USB",
@@ -554,24 +536,7 @@ export function installPreviewIpc(options: PreviewOptions): void {
       sample_rate_hz: null,
       buffer_size_frames: null,
     },
-    default_format: { sample_rate_hz: 48000, bit_depth: "24" },
-    monitor_mode: "off",
     monitor_hint_shown: true,
-    telemetry_rate_hz: 60,
-    memory_budget_mib: 2048,
-    normalize_dialog: { value: -1, unit: "db" },
-    recent_files: [],
-    spectral_defaults: {
-      freq_scale: "log",
-      colormap: "inferno",
-      display_floor_db: -120,
-      display_ceil_db: 0,
-      fft_size: null,
-    },
-    analyzer_visible: true,
-    analyzer_response: "medium",
-    analyzer_peak_hold: true,
-    multichannel_policy: "ask",
     renderer_preference: "canvas2d",
     layout: {
       markers_width_px: 240,
@@ -581,24 +546,11 @@ export function installPreviewIpc(options: PreviewOptions): void {
       rack_collapsed: false,
       dock_tab: hasScene("loudness") ? "loudness" : "meters",
     },
-    record: {
-      mode: "insert",
-      punch_on_selection: true,
-      preroll_s: 5,
-      postroll_s: 1,
-      preroll_at_cursor: false,
-      hear_original: false,
-      punch_xfade_ms: 10,
-    },
-    record_offsets: [],
-    save_dither: "tpdf",
     theme,
-    playhead_follow: true,
-    plugins: { custom_folders: [], disabled: [] },
-  };
+  });
 
   const doc = documentFixture(options);
-  const rack = hasScene("rack") ? rackFixture() : { slots: [], ab: false, latency_samples: 0 };
+  const rack = hasScene("rack") ? rackFixture() : rackStateDto();
   const spectro = new Map<number, Sink>();
   let documentOpens = 0;
   let seq = 0;
@@ -615,15 +567,12 @@ export function installPreviewIpc(options: PreviewOptions): void {
           return (args as { settings: Settings }).settings;
         case "transport_get": {
           const open = scenes.some((s) => s !== "rack") || dialog !== null;
-          const state: TransportStateDto = {
-            playing: false,
+          return transportStateDto({
             playhead_samples: open ? 23.4 * PREVIEW_RATE_HZ : 0,
-            play_start_samples: 0,
             doc_len_samples: open ? doc.len_samples : 0,
             doc_rate_hz: open ? PREVIEW_RATE_HZ : 0,
             can_play: true,
-          };
-          return state;
+          });
         }
         case "clock_now_ns":
           return 0;

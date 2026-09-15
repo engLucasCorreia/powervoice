@@ -2,7 +2,6 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetDocumentStateForTest, openDocument } from "../document/document.svelte";
-import type { DocumentDto } from "../ipc/bindings";
 import { clearActionHandlers, registerAction } from "../keymap";
 import type { ActionId } from "../keymap/actions";
 import { resetMarkersForTest, selectMarker } from "../markers/markers.svelte";
@@ -10,21 +9,11 @@ import { resetMenuBarForTest } from "../menu/menubar.svelte";
 import { resetEditForTest } from "../state/edit.svelte";
 import { applyRecordStateForTest, resetRecordForTest } from "../state/record.svelte";
 import { resetSelectionForTest, setSelectionFromResult } from "../state/selection.svelte";
+import { docDto } from "../test/fixtures";
 import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 import EditMenu from "./EditMenu.svelte";
 
-const DOC_FIXTURE: DocumentDto = {
-  name: "take.wav",
-  path: "/home/user/take.wav",
-  sample_rate_hz: 48_000,
-  len_samples: 480_000,
-  dirty: false,
-  audio_rev: 1,
-  sidecar_dirty: false,
-  spectral_view: null,
-  waveform_view: null,
-  recovered: false,
-};
+const DOC_FIXTURE = docDto();
 
 afterEach(() => {
   clearMocks();

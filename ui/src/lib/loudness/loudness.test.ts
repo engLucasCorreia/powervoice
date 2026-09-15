@@ -4,6 +4,7 @@ import type { DocumentDto, JobProgressDto, LoudnessReportDto } from "../ipc/bind
 import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import { clearNotices } from "../state/notices.svelte";
 import { resetSelectionForTest, setSelectionFromResult } from "../state/selection.svelte";
+import { docDto as doc } from "../test/fixtures";
 import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 import {
   applyLoudnessJobProgress,
@@ -15,20 +16,6 @@ import {
   setLoudnessSource,
   startLoudnessAnalyze,
 } from "./loudness.svelte";
-
-function doc(overrides: Partial<DocumentDto> = {}): DocumentDto {
-  return {
-    name: "take.wav",
-    path: "/home/user/take.wav",
-    sample_rate_hz: 48_000,
-    len_samples: 480_000,
-    dirty: false,
-    audio_rev: 1,
-    sidecar_dirty: false,
-    spectral_view: null, waveform_view: null, recovered: false,
-    ...overrides,
-  };
-}
 
 async function openFixture(overrides: Partial<DocumentDto> = {}): Promise<void> {
   mockIPC((cmd) => {

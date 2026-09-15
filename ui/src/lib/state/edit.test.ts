@@ -1,11 +1,12 @@
 import { emit } from "@tauri-apps/api/event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it } from "vitest";
-import type { ClipboardChangedDto, EditResultDto, HistoryStateDto } from "../ipc/bindings";
+import type { ClipboardChangedDto, EditResultDto } from "../ipc/bindings";
 import { clearActionHandlers } from "../keymap";
 import { clearNotices } from "./notices.svelte";
 import { editState, initEdit, paste, resetEditForTest } from "./edit.svelte";
 import { resetSelectionForTest, selectAllOf, selectionState } from "./selection.svelte";
+import { historyStateDto } from "../test/fixtures";
 import { resetTransportForTest } from "./transport.svelte";
 
 afterEach(() => {
@@ -22,14 +23,7 @@ describe("edit store (S2-01)", () => {
     mockIPC(() => null, { shouldMockEvents: true });
     const stop = await initEdit();
 
-    const history: HistoryStateDto = {
-      can_undo: true,
-      can_redo: false,
-      undo_label: "history.cut",
-      redo_label: null,
-      undo_label_params: {},
-      redo_label_params: {},
-    };
+    const history = historyStateDto({ can_undo: true, undo_label: "history.cut" });
     await emit("history_state", history);
     expect(editState().history).toEqual(history);
 

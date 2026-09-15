@@ -5,6 +5,7 @@ import type { RackSlotDto, RackStateDto } from "../ipc/bindings";
 import { loadRack, resetRackForTest } from "../rack/rack.svelte";
 import { clearNotices } from "../state/notices.svelte";
 import { resetSelectionForTest, setSelectionFromResult } from "../state/selection.svelte";
+import { paramInfoDto, rackSlotDto, rackStateDto } from "../test/fixtures";
 import ExportDialog from "./ExportDialog.svelte";
 import { exportState, openExportDialog, resetExportStateForTest } from "./export.svelte";
 
@@ -19,18 +20,13 @@ afterEach(() => {
 /** A live noise-reduction slot with "Output noise only" on (SPEC-014 §2.6), for the
  * confirmation-dialog test. */
 function noiseOnlySlot(): RackSlotDto {
-  const param = {
+  const param = paramInfoDto({
     id: 2,
     key: "noise_only",
     name: { text: "Output noise only", key: null },
-    group: null,
-    unit: { kind: "none" as const },
     min: 0,
     max: 1,
-    default: 0,
-    taper: { kind: "linear" as const },
     step: 1,
-    enum_labels: [],
     decimals: 0,
     smoothing_ms: 0,
     flags: {
@@ -41,27 +37,19 @@ function noiseOnlySlot(): RackSlotDto {
       hidden: false,
       bypass: false,
     },
-  };
-  return {
-    uid: 1,
+  });
+  return rackSlotDto({
     module: "org.powervoice.noise-reduction@1.0.0",
     module_id: "org.powervoice.noise-reduction",
     name: "Noise Reduction",
-    bypass: false,
-    latency_samples: 0,
-    status: { kind: "active" },
     params: [param],
-    groups: [],
     values: [{ id: 2, value: 1, normalized: 1, text: "On" }],
     noise_profile: "loaded",
-    curve_handles: null,
-    telemetry: [],
-    sandboxed: false,
-  };
+  });
 }
 
 async function seedRack(slots: RackSlotDto[]): Promise<void> {
-  const state: RackStateDto = { slots, ab: false, latency_samples: 0 };
+  const state: RackStateDto = rackStateDto(slots);
   mockIPC((cmd) => {
     if (cmd === "rack_list_modules") {
       return [];

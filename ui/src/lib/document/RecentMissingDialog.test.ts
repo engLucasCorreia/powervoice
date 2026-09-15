@@ -5,6 +5,7 @@ import { clearNotices } from "../state/notices.svelte";
 import { resetDocumentStateForTest } from "./document.svelte";
 import RecentMissingDialog from "./RecentMissingDialog.svelte";
 import { pickRecentFile, resetRecentFilesForTest } from "./recentFiles.svelte";
+import { docDto } from "../test/fixtures";
 import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 
 afterEach(() => {
@@ -89,18 +90,7 @@ describe("RecentMissingDialog (H-15, SPEC-018 §2.12 recent-files missing-file f
       }
       if (cmd === "document_open") {
         expect((args as { path: string }).path).toBe("/vo/found-elsewhere.wav");
-        return {
-          name: "found-elsewhere.wav",
-          path: "/vo/found-elsewhere.wav",
-          sample_rate_hz: 48_000,
-          len_samples: 1000,
-          dirty: false,
-          audio_rev: 1,
-          sidecar_dirty: false,
-          spectral_view: null,
-          waveform_view: null,
-          recovered: false,
-        };
+        return docDto({ name: "found-elsewhere.wav", path: "/vo/found-elsewhere.wav", len_samples: 1000 });
       }
       if (cmd === "recent_files_remove") {
         removed.push((args as { path: string }).path);

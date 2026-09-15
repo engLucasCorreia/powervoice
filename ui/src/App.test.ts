@@ -9,6 +9,7 @@ import { resetLayoutForTest } from "./lib/layout/layoutSettings.svelte";
 import { resetRackForTest } from "./lib/rack/rack.svelte";
 import { resetSettingsStateForTest } from "./lib/state/settings.svelte";
 import { resetTransportForTest } from "./lib/state/transport.svelte";
+import { rackStateDto, settingsFixture, transportStateDto } from "./lib/test/fixtures";
 
 const widthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
 const heightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
@@ -28,51 +29,7 @@ function unstubSize(): void {
 }
 
 function baseSettings(layout: LayoutPrefsDto): Settings {
-  return {
-    version: 1,
-    device: {
-      host: "pipewire",
-      input_device: null,
-      input_channel: 1,
-      output_device: null,
-      sample_rate_hz: null,
-      buffer_size_frames: null,
-    },
-    default_format: { sample_rate_hz: 48000, bit_depth: "24" },
-    monitor_mode: "off",
-    monitor_hint_shown: false,
-    telemetry_rate_hz: 60,
-    memory_budget_mib: 2048,
-    normalize_dialog: { value: -1, unit: "db" },
-    recent_files: [],
-    spectral_defaults: {
-      freq_scale: "log",
-      colormap: "inferno",
-      display_floor_db: -120,
-      display_ceil_db: 0,
-      fft_size: null,
-    },
-    analyzer_visible: true,
-    analyzer_response: "medium",
-    analyzer_peak_hold: true,
-    multichannel_policy: "ask",
-    renderer_preference: "auto",
-    layout,
-    record: {
-      mode: "insert",
-      punch_on_selection: true,
-      preroll_s: 5,
-      postroll_s: 1,
-      preroll_at_cursor: false,
-      hear_original: false,
-      punch_xfade_ms: 10,
-    },
-    record_offsets: [],
-    save_dither: "tpdf",
-    theme: "dark",
-    playhead_follow: true,
-    plugins: { custom_folders: [], disabled: [] },
-  };
+  return settingsFixture({ layout });
 }
 
 const DEFAULT_LAYOUT: LayoutPrefsDto = {
@@ -102,14 +59,7 @@ function mockAppIpc(options: {
       return settings;
     }
     if (cmd === "transport_get") {
-      return {
-        playing: false,
-        playhead_samples: 0,
-        play_start_samples: 0,
-        doc_len_samples: 0,
-        doc_rate_hz: 0,
-        can_play: false,
-      };
+      return transportStateDto();
     }
     if (cmd === "clock_now_ns") {
       return 0;
@@ -118,7 +68,7 @@ function mockAppIpc(options: {
       return [];
     }
     if (cmd === "rack_get") {
-      return { slots: [], ab: false, latency_samples: 0 };
+      return rackStateDto();
     }
     // telemetry_subscribe, event listeners, …
     return null;
@@ -150,54 +100,10 @@ describe("App shell", () => {
         return { name: "PowerVoice", version: "9.9.9" };
       }
       if (cmd === "settings_get") {
-        return {
-          version: 1,
-          device: {
-            host: "pipewire",
-            input_device: null,
-            input_channel: 1,
-            output_device: null,
-            sample_rate_hz: null,
-            buffer_size_frames: null,
-          },
-          default_format: { sample_rate_hz: 48000, bit_depth: "24" },
-          monitor_mode: "off",
-          monitor_hint_shown: false,
-          telemetry_rate_hz: 60,
-          memory_budget_mib: 2048,
-          normalize_dialog: { value: -1, unit: "db" },
-          recent_files: [],
-          spectral_defaults: {
-            freq_scale: "log",
-            colormap: "inferno",
-            display_floor_db: -120,
-            display_ceil_db: 0,
-            fft_size: null,
-          },
-          analyzer_visible: true,
-          analyzer_response: "medium",
-          analyzer_peak_hold: true,
-          multichannel_policy: "ask",
-          renderer_preference: "auto",
-          layout: {
-            markers_width_px: 240,
-            rack_width_px: 280,
-            dock_height_px: 240,
-            markers_collapsed: false,
-            rack_collapsed: false,
-            dock_tab: "meters",
-          },
-        };
+        return settingsFixture();
       }
       if (cmd === "transport_get") {
-        return {
-          playing: false,
-          playhead_samples: 0,
-          play_start_samples: 0,
-          doc_len_samples: 0,
-          doc_rate_hz: 0,
-          can_play: false,
-        };
+        return transportStateDto();
       }
       if (cmd === "clock_now_ns") {
         return 0;
@@ -206,7 +112,7 @@ describe("App shell", () => {
         return [];
       }
       if (cmd === "rack_get") {
-        return { slots: [], ab: false, latency_samples: 0 };
+        return rackStateDto();
       }
       // telemetry_subscribe, event listeners, …
       return null;

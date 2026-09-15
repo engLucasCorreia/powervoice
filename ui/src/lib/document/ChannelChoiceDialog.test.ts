@@ -3,6 +3,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
 import type { DocumentProbeDto } from "../ipc/bindings";
 import { clearNotices } from "../state/notices.svelte";
+import { docDto, documentProbeDto as stereoProbe } from "../test/fixtures";
 import ChannelChoiceDialog from "./ChannelChoiceDialog.svelte";
 import { documentState, openDocument, resetDocumentStateForTest } from "./document.svelte";
 
@@ -11,23 +12,6 @@ afterEach(() => {
   clearNotices();
   resetDocumentStateForTest();
 });
-
-function stereoProbe(overrides: Partial<DocumentProbeDto> = {}): DocumentProbeDto {
-  return {
-    container: "wav",
-    codec: "pcm",
-    sample_rate_hz: 48_000,
-    channels: [
-      { label: "Left", is_lfe: false },
-      { label: "Right", is_lfe: false },
-    ],
-    len_samples: 48_000,
-    channel_peaks_dbfs: [-6, -6],
-    identical_channels: false,
-    suggested_channel: null,
-    ...overrides,
-  };
-}
 
 /** Drives `document.svelte.ts`'s `openDocument`, which is what actually reacts to
  * `dialog.channel_choice` and opens the prompt this dialog renders — a raw `documentOpen` IPC
@@ -43,18 +27,7 @@ async function openPromptFor(probe: DocumentProbeDto): Promise<{ wait: Promise<b
           params: { probe: JSON.stringify(probe) },
         };
       }
-      return {
-        name: "stereo.wav",
-        path: "/home/user/stereo.wav",
-        sample_rate_hz: 48_000,
-        len_samples: 48_000,
-        dirty: false,
-        audio_rev: 1,
-        sidecar_dirty: false,
-        spectral_view: null,
-        waveform_view: null,
-        recovered: false,
-      };
+      return docDto({ name: "stereo.wav", path: "/home/user/stereo.wav", len_samples: 48_000 });
     }
     throw new Error(`unmocked command: ${cmd}`);
   });

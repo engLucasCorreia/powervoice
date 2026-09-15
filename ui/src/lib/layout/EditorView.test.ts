@@ -6,6 +6,7 @@ import type { DocumentDto } from "../ipc/bindings";
 import { clearActionHandlers } from "../keymap";
 import { resetSelectionForTest, selectionState } from "../state/selection.svelte";
 import { resetSpectralForTest, spectralState } from "../state/spectral.svelte";
+import { docDto, transportStateDto } from "../test/fixtures";
 import { resetWaveformViewForTest, waveformViewApi } from "../state/waveformView.svelte";
 import EditorView from "./EditorView.svelte";
 
@@ -26,18 +27,7 @@ function unstubSize(): void {
   }
 }
 
-const FIXTURE: DocumentDto = {
-  name: "take.wav",
-  path: "/home/user/take.wav",
-  sample_rate_hz: 48_000,
-  len_samples: 480_000,
-  dirty: false,
-  audio_rev: 1,
-  recovered: false,
-  sidecar_dirty: false,
-  spectral_view: null,
-  waveform_view: null,
-};
+const FIXTURE: DocumentDto = docDto();
 
 /** Header-only `VXPK` (no buckets) — enough for these layout/viewport smoke tests. */
 function headerOnlyVxpk(): ArrayBuffer {
@@ -65,14 +55,13 @@ function setupIpc(overrides: Partial<DocumentDto> = {}): void {
       // H-12: a restored `waveform_view.cursor_samples` is applied via `seek()` — a real
       // `transport_seek` always answers with a `TransportStateDto`, never `null`.
       const at = (args as { positionSamples: number }).positionSamples;
-      return {
-        playing: false,
+      return transportStateDto({
         playhead_samples: at,
         play_start_samples: at,
         doc_len_samples: doc.len_samples,
         doc_rate_hz: doc.sample_rate_hz,
         can_play: doc.len_samples > 0,
-      };
+      });
     }
     return null;
   });

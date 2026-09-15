@@ -1,7 +1,8 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
-import type { PresetEntryDto, RackSlotDto, RackStateDto } from "../ipc/bindings";
+import type { PresetEntryDto, RackSlotDto } from "../ipc/bindings";
+import { paramInfoDto, rackSlotDto, rackStateDto } from "../test/fixtures";
 import { resetRackForTest } from "./rack.svelte";
 import RackSlot from "./RackSlot.svelte";
 
@@ -9,49 +10,15 @@ import RackSlot from "./RackSlot.svelte";
  * Reset to Default — drives the right IPC commands with the right arguments. */
 
 function slotFixture(overrides: Partial<RackSlotDto> = {}): RackSlotDto {
-  const gainParam = {
-    id: 0,
-    key: "gain_db",
-    name: { text: "Gain", key: null },
-    group: null,
-    unit: { kind: "db" as const },
-    min: -60,
-    max: 24,
-    default: 0,
-    taper: { kind: "linear" as const },
-    step: null,
-    enum_labels: [],
-    decimals: 1,
-    smoothing_ms: 0,
-    flags: {
-      automatable: true,
-      stepped: false,
-      boolean: false,
-      read_only: false,
-      hidden: false,
-      bypass: false,
-    },
-  };
-  return {
-    uid: 1,
-    module: "org.powervoice.gain@1.0.0",
-    module_id: "org.powervoice.gain",
-    name: "Gain",
-    bypass: false,
-    latency_samples: 0,
-    status: { kind: "active" },
+  const gainParam = paramInfoDto({ max: 24, smoothing_ms: 0 });
+  return rackSlotDto({
     params: [gainParam],
-    groups: [],
     values: [{ id: 0, value: 0, normalized: 0.5, text: "0.0 dB" }],
-    noise_profile: null,
-    curve_handles: null,
-    telemetry: [],
-    sandboxed: false,
     ...overrides,
-  };
+  });
 }
 
-const emptyRack: RackStateDto = { slots: [], ab: false, latency_samples: 0 };
+const emptyRack = rackStateDto();
 
 afterEach(() => {
   clearMocks();

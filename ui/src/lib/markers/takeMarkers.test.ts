@@ -1,11 +1,12 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it } from "vitest";
-import type { MarkerDto, TransportStateDto } from "../ipc/bindings";
+import type { MarkerDto } from "../ipc/bindings";
 import { clearActionHandlers } from "../keymap";
 import { clearNotices } from "../state/notices.svelte";
 import { applyRecordStateForTest, resetRecordForTest } from "../state/record.svelte";
 import { resetSelectionForTest, selectAllOf } from "../state/selection.svelte";
 import { initTransport, onTelemetry, resetTransportForTest } from "../state/transport.svelte";
+import { transportStateDto } from "../test/fixtures";
 import { addMarker, isTakeMarker, markersState, resetMarkersForTest } from "./markers.svelte";
 
 /**
@@ -46,14 +47,7 @@ function buildVxtmFrame(playheadSample: number, playheadTimeNs: number, rate: nu
   return buf;
 }
 
-const STOPPED: TransportStateDto = {
-  playing: false,
-  playhead_samples: 0,
-  play_start_samples: 0,
-  doc_len_samples: 100_000,
-  doc_rate_hz: 48_000,
-  can_play: true,
-};
+const STOPPED = transportStateDto({ doc_len_samples: 100_000, can_play: true });
 
 describe("markers during a take or record operation (H-21, SPEC-022 AC-10)", () => {
   it("M adds a point at the heard position under the key press, past the old end, ignoring the selection", async () => {

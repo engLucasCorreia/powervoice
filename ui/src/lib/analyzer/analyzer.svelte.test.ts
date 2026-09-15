@@ -2,6 +2,7 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Settings } from "../ipc/bindings";
 import { loadSettings, resetSettingsStateForTest } from "../state/settings.svelte";
+import { settingsFixture } from "../test/fixtures";
 import {
   analyzerState,
   applyAnalyzerPrefs,
@@ -10,62 +11,6 @@ import {
   setAnalyzerResponse,
   setAnalyzerVisible,
 } from "./analyzer.svelte";
-
-function settingsFixture(overrides: Partial<Settings> = {}): Settings {
-  return {
-    version: 1,
-    device: {
-      host: "pipewire",
-      input_device: null,
-      input_channel: 1,
-      output_device: null,
-      sample_rate_hz: null,
-      buffer_size_frames: null,
-    },
-    default_format: { sample_rate_hz: 48_000, bit_depth: "24" },
-    monitor_mode: "off",
-    monitor_hint_shown: false,
-    telemetry_rate_hz: 60,
-    memory_budget_mib: 2048,
-    normalize_dialog: { value: -1, unit: "db" },
-    multichannel_policy: "ask",
-    renderer_preference: "auto",
-    layout: {
-      markers_width_px: 240,
-      rack_width_px: 280,
-      dock_height_px: 240,
-      markers_collapsed: false,
-      rack_collapsed: false,
-      dock_tab: "meters",
-    },
-    record: {
-      mode: "insert",
-      punch_on_selection: true,
-      preroll_s: 5,
-      postroll_s: 1,
-      preroll_at_cursor: false,
-      hear_original: false,
-      punch_xfade_ms: 10,
-    },
-    record_offsets: [],
-    save_dither: "tpdf",
-    theme: "dark",
-    playhead_follow: true,
-    plugins: { custom_folders: [], disabled: [] },
-    recent_files: [],
-    spectral_defaults: {
-      freq_scale: "log",
-      colormap: "inferno",
-      display_floor_db: -120,
-      display_ceil_db: 0,
-      fft_size: null,
-    },
-    analyzer_visible: true,
-    analyzer_response: "medium",
-    analyzer_peak_hold: true,
-    ...overrides,
-  };
-}
 
 afterEach(() => {
   clearMocks();

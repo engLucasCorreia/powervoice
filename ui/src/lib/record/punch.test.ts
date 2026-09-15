@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RecordOffsetDto, RecordPhaseDto, RecordStartedDto } from "../ipc/bindings";
+import { recordStateDto } from "../test/fixtures";
 import { bufferHint, formatClock, offsetReadout, parseOffsetText, phaseLabel } from "./punch";
 
 const offset = (patch: Partial<RecordOffsetDto>): RecordOffsetDto => ({
@@ -38,22 +39,7 @@ describe("punch helpers (T-304, SPEC-022)", () => {
       preroll_samples: 96_000,
       postroll_samples: 48_000,
       aligned: true,
-      state: {
-        input_device: "Mic",
-        input_channel: 1,
-        input_status: "healthy",
-        armed: true,
-        input_open: true,
-        input_rate_hz: 48_000,
-        recording: true,
-        finishing: false,
-        monitor: "off",
-        monitoring: false,
-        monitor_latency_us: null,
-        monitor_dropouts: 0,
-        dropout_count: 0,
-        disk_remaining_s: null,
-      },
+      state: recordStateDto({ armed: true, input_open: true, recording: true }),
     };
     const phase = (p: RecordPhaseDto["phase"]): RecordPhaseDto => ({
       take_id: 1,

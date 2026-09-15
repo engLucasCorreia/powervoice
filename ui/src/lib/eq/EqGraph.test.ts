@@ -9,6 +9,7 @@ import type {
   ResponseCurveDto,
 } from "../ipc/bindings";
 import { flushPendingPlainDrags, resetRackForTest } from "../rack/rack.svelte";
+import { rackSlotDto } from "../test/fixtures";
 import EqGraph from "./EqGraph.svelte";
 import { freqForX, xForFreq } from "./freqAxis";
 import { yForDb } from "./gainAxis";
@@ -72,22 +73,14 @@ function slotFixture(): RackSlotDto {
     param(32, "b1_gain_db", { unit: { kind: "db" }, min: -24, max: 24, default: 6 }),
     param(33, "b1_q", { unit: { kind: "none" }, min: 0.1, max: 30, default: 2 }),
   ];
-  return {
-    uid: 1,
+  return rackSlotDto({
     module: "org.powervoice.parametric-eq@1.0.0",
     module_id: "org.powervoice.parametric-eq",
     name: "Parametric EQ",
-    bypass: false,
-    latency_samples: 0,
-    status: { kind: "active" },
     params,
-    groups: [],
     values: params.map((p) => ({ id: p.id, value: p.default, normalized: 0.5, text: String(p.default) })),
-    noise_profile: null,
     curve_handles: handles,
-    telemetry: [],
-    sandboxed: false,
-  };
+  });
 }
 
 const EMPTY_CURVE: ResponseCurveDto = {

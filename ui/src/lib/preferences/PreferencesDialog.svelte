@@ -1,13 +1,14 @@
 <script lang="ts">
-  import type { RecordOffsetEntry } from "../ipc/bindings";
+  import type { MultichannelPolicy, RecordOffsetEntry, Settings } from "../ipc/bindings";
+  import { getSettingsDefaults } from "../ipc/commands";
   import { ROLL_MAX_S, XFADE_MAX_MS, offsetReadout } from "../record/punch";
   import { formatBytes } from "../recovery/format";
-  import { recordState, refreshOffset, setRecordPrefs } from "../state/record.svelte";
+  import { openCalibration, recordState, refreshOffset, setRecordPrefs } from "../state/record.svelte";
   import { saveSettings, settingsState } from "../state/settings.svelte";
   import { t, tDynamic } from "../i18n";
   import { chooseTheme } from "../theme/chooseTheme";
   import ThemePicker from "../theme/ThemePicker.svelte";
-  import { Button, Dialog, formatNumber } from "../ui";
+  import { Button, Dialog, Select, formatNumber } from "../ui";
   import { closePreferences, preferencesState } from "./preferences.svelte";
   import PluginFolders from "../plugins/PluginFolders.svelte";
   import { countPlugins } from "../plugins/pluginList";
@@ -15,17 +16,29 @@
 
   /**
    * H-17 item 5: a small, reusable Preferences dialog — Edit → Preferences… (File → Preferences…
-   * on macOS). A Storage section ("Memory for audio", SPEC-004 §2.4/§3: the backend already
-   * applies a change live, no restart); later tickets add their own `<section>` here rather than
-   * building a separate dialog.
+   * on macOS). T-703 (settings audit) fixed the section order/naming to a consistent taxonomy —
+   * Recording, Editing, Display/Appearance, Plugins, Advanced (no separate "Audio" section: every
+   * audio-category setting — devices/buffer, default format, monitor mode — already has a working
+   * home the spec names explicitly: the Audio Devices dialog off the transport bar, the New
+   * Recording dialog, and the record panel, respectively; see the T-703 report for the audit) —
+   * and added Reset to defaults (per section and for the whole dialog, H-26 confirm).
    *
    * H-21 item 6 (SPEC-022 §2.3, §2.13): the Recording section — the same Punch & pre-roll
    * preferences as the record panel (mode, punch on selection, pre-/post-roll, pre-roll at the
-   * cursor, hear original, crossfade), the current device setup's recording offset and the offsets
-   * stored per device setup (each can be forgotten). Locked while recording, like the panel.
+   * cursor, hear original, crossfade), the current device setup's recording offset (+ Calibrate,
+   * SPEC-022 §2.14) and the offsets stored per device setup (each can be forgotten). Locked while
+   * recording, like the panel.
+   *
+   * T-703: the Editing section — Multichannel files (SPEC-005 §2.4/§3 `multichannel_policy`,
+   * "Settings → Files") and Snap to Zero Crossing (SPEC-006 §2.10; mirrors the View menu toggle).
    *
    * T-809: the Plugins section — how many plugins are installed (and how many need attention),
-   * the user's own scan folders (add/remove, a rescan follows) and Manage plugins….
+   * the user's own scan folders (add/remove, a rescan follows) and Manage plugins…. No blanket
+   * reset here (folder add/remove already has its own rescan side effect a reset would bypass).
+   *
+   * T-703: the Advanced section — Memory for audio (renamed from "Storage", SPEC-004 §2.4/§3
+   * "Settings → Performance") and the playhead/meter update rate (SPEC-003 §3
+   * `telemetry_rate_hz`, "kept as a Settings option" — had no UI at all before this ticket).
    */
   const pref = preferencesState();
   // H-25/T-708: Appearance → Theme (a card per theme with a live preview) applies at once and
@@ -36,6 +49,20 @@
   const locked = $derived(rec.state.recording || rec.state.finishing);
   const offsets = $derived(settings.current?.record_offsets ?? []);
   const currentOffset = $derived(offsetReadout(rec.offset));
+  // T-703: Editing → Multichannel files (SPEC-005 §2.4/§3 "Settings → Files"; previously only
+  // settable in passing, via the "remember my choice" checkbox on the open-time dialog itself).
+  const multichannelPolicy = $derived(settings.current?.multichannel_policy ?? "ask");
+  // T-703: Advanced → playhead/meter update rate (SPEC-003 §3 `telemetry_rate_hz`, "kept as a
+  // Settings option" — had no UI at all before this ticket).
+  const telemetryRateHz = $derived(settings.current?.telemetry_rate_hz ?? 60);
+  const snapToZeroCrossing = $derived(settings.current?.snap_to_zero_crossing ?? false);
+  const multichannelPolicyOptions = $derived(
+    [
+      { value: "ask", label: t("preferences.multichannel_policy.ask") },
+      { value: "always_mix", label: t("preferences.multichannel_policy.always_mix") },
+      { value: "always_first_channel", label: t("preferences.multichannel_policy.always_first_channel") },
+    ] satisfies { value: MultichannelPolicy; label: string }[],
+  );
 
   $effect(() => {
     if (pref.open) {
@@ -58,6 +85,11 @@
   function managePlugins(): void {
     closePreferences();
     openPluginManager();
+  }
+
+  function calibrate(): void {
+    closePreferences();
+    openCalibration();
   }
 
   function numberFrom(event: Event, max: number): number | null {
@@ -111,42 +143,57 @@
       closePreferences();
     }
   }
+
+  // T-703 item 3: "Reset to defaults, per section and for everything". Scoped to exactly the
+  // fields this dialog lets you edit directly — record OFFSETS (per-entry "Remove" above),
+  // recent files, tours, the plugin scan folders (their own add/remove, which also triggers a
+  // rescan) and the rest of `Settings` are untouched by any reset here.
+  type ResetScope = "recording" | "editing" | "appearance" | "advanced";
+  const RESET_SECTION_FIELDS: Record<ResetScope, (keyof Settings)[]> = {
+    recording: ["record"],
+    editing: ["multichannel_policy", "snap_to_zero_crossing"],
+    appearance: ["theme"],
+    advanced: ["memory_budget_mib", "telemetry_rate_hz"],
+  };
+  let resetPrompt = $state<ResetScope | "all" | null>(null);
+  let resetBusy = $state(false);
+
+  async function confirmReset(): Promise<void> {
+    if (!resetPrompt) {
+      return;
+    }
+    resetBusy = true;
+    try {
+      const defaults = await getSettingsDefaults();
+      const scopes: ResetScope[] =
+        resetPrompt === "all" ? (Object.keys(RESET_SECTION_FIELDS) as ResetScope[]) : [resetPrompt];
+      const patch: Partial<Settings> = {};
+      for (const scope of scopes) {
+        for (const field of RESET_SECTION_FIELDS[scope]) {
+          (patch as Record<string, unknown>)[field] = defaults[field];
+        }
+      }
+      await saveSettings(patch);
+    } finally {
+      resetBusy = false;
+      resetPrompt = null;
+    }
+  }
 </script>
 
 {#if pref.open}
   <Dialog
-    actions={[{ label: t("preferences.close"), role: "primary", testid: "preferences-close", onclick: closePreferences }]} size="lg" title={t("preferences.title")} titleId="preferences-title" testid="preferences-dialog" onkeydown={onKeydown}>
-    <section data-testid="preferences-appearance">
-      <h3>{t("preferences.section.appearance")}</h3>
-      <span class="label">{t("preferences.theme")}</span>
-      <ThemePicker value={settings.current?.theme ?? "dark"} label={t("preferences.theme")} onchange={chooseTheme} />
-      <p class="hint">{t("preferences.theme.hint")}</p>
-    </section>
-    <section>
-      <h3>{t("preferences.section.storage")}</h3>
-      <div class="row">
-        <label for="preferences-memory-budget">{t("preferences.memory_budget")}</label>
-        <div class="range">
-          <input
-            id="preferences-memory-budget"
-            type="range"
-            min={MIN_MIB}
-            max={MAX_MIB}
-            step={STEP_MIB}
-            data-testid="preferences-memory-budget"
-            value={draftMib}
-            oninput={onInput}
-            onchange={onChange}
-          />
-          <span class="value" data-testid="preferences-memory-budget-value">
-            {formatBytes(draftMib * 1024 * 1024)}
-          </span>
-        </div>
-      </div>
-      <p class="hint">{t("preferences.memory_budget.hint")}</p>
-    </section>
+    actions={[
+      { label: t("preferences.reset_all"), role: "utility", testid: "preferences-reset-all", onclick: () => (resetPrompt = "all") },
+      { label: t("preferences.close"), role: "primary", testid: "preferences-close", onclick: closePreferences },
+    ]} size="lg" title={t("preferences.title")} titleId="preferences-title" testid="preferences-dialog" onkeydown={onKeydown}>
     <section data-testid="preferences-recording">
-      <h3>{t("preferences.section.recording")}</h3>
+      <div class="section-head">
+        <h3>{t("preferences.section.recording")}</h3>
+        <Button variant="ghost" size="sm" testid="preferences-reset-recording" onclick={() => (resetPrompt = "recording")}>
+          {t("preferences.reset_section")}
+        </Button>
+      </div>
       {#if locked}
         <p class="hint" data-testid="preferences-recording-locked">{t("preferences.recording.locked")}</p>
       {/if}
@@ -269,6 +316,15 @@
         <span class="value" data-testid="preferences-offset-current">
           {tDynamic(currentOffset.key, currentOffset.params)}
         </span>
+        <Button
+          variant="ghost"
+          size="sm"
+          testid="preferences-calibrate"
+          disabled={rec.offset?.available === false}
+          onclick={calibrate}
+        >
+          {t("record.offset.calibrate")}
+        </Button>
       </div>
       {#if offsets.length === 0}
         <p class="hint" data-testid="preferences-offsets-empty">{t("preferences.recording.offsets_empty")}</p>
@@ -308,6 +364,46 @@
         </ul>
       {/if}
     </section>
+    <section data-testid="preferences-editing">
+      <div class="section-head">
+        <h3>{t("preferences.section.editing")}</h3>
+        <Button variant="ghost" size="sm" testid="preferences-reset-editing" onclick={() => (resetPrompt = "editing")}>
+          {t("preferences.reset_section")}
+        </Button>
+      </div>
+      <div class="row">
+        <span class="label" id="preferences-multichannel-policy-label">{t("preferences.multichannel_policy")}</span>
+        <Select
+          label={t("preferences.multichannel_policy")}
+          hideLabel
+          testid="preferences-multichannel-policy"
+          options={multichannelPolicyOptions}
+          value={multichannelPolicy}
+          onchange={(value) => void saveSettings({ multichannel_policy: value })}
+        />
+      </div>
+      <p class="hint">{t("preferences.multichannel_policy.hint")}</p>
+      <label class="option">
+        <input
+          type="checkbox"
+          data-testid="preferences-snap-to-zero-crossing"
+          checked={snapToZeroCrossing}
+          onchange={(e) => void saveSettings({ snap_to_zero_crossing: e.currentTarget.checked })}
+        />
+        {t("menu.view.snap_to_zero_crossing")}
+      </label>
+    </section>
+    <section data-testid="preferences-appearance">
+      <div class="section-head">
+        <h3>{t("preferences.section.appearance")}</h3>
+        <Button variant="ghost" size="sm" testid="preferences-reset-appearance" onclick={() => (resetPrompt = "appearance")}>
+          {t("preferences.reset_section")}
+        </Button>
+      </div>
+      <span class="label">{t("preferences.theme")}</span>
+      <ThemePicker value={settings.current?.theme ?? "dark"} label={t("preferences.theme")} onchange={chooseTheme} />
+      <p class="hint">{t("preferences.theme.hint")}</p>
+    </section>
     <section data-testid="preferences-plugins">
       <h3>{t("preferences.section.plugins")}</h3>
       <div class="row">
@@ -321,6 +417,81 @@
       </div>
       <PluginFolders showStandard={false} />
     </section>
+    <section data-testid="preferences-advanced">
+      <div class="section-head">
+        <h3>{t("preferences.section.advanced")}</h3>
+        <Button variant="ghost" size="sm" testid="preferences-reset-advanced" onclick={() => (resetPrompt = "advanced")}>
+          {t("preferences.reset_section")}
+        </Button>
+      </div>
+      <div class="row">
+        <label for="preferences-memory-budget">{t("preferences.memory_budget")}</label>
+        <div class="range">
+          <input
+            id="preferences-memory-budget"
+            type="range"
+            min={MIN_MIB}
+            max={MAX_MIB}
+            step={STEP_MIB}
+            data-testid="preferences-memory-budget"
+            value={draftMib}
+            oninput={onInput}
+            onchange={onChange}
+          />
+          <span class="value" data-testid="preferences-memory-budget-value">
+            {formatBytes(draftMib * 1024 * 1024)}
+          </span>
+        </div>
+      </div>
+      <p class="hint">{t("preferences.memory_budget.hint")}</p>
+      <div class="row">
+        <span class="label" id="preferences-telemetry-rate-label">{t("preferences.telemetry_rate")}</span>
+        <Select
+          label={t("preferences.telemetry_rate")}
+          hideLabel
+          testid="preferences-telemetry-rate"
+          options={[
+            { value: 30, label: t("preferences.telemetry_rate.30") },
+            { value: 60, label: t("preferences.telemetry_rate.60") },
+          ]}
+          value={telemetryRateHz}
+          onchange={(value) => void saveSettings({ telemetry_rate_hz: value })}
+        />
+      </div>
+      <p class="hint">{t("preferences.telemetry_rate.hint")}</p>
+    </section>
+  </Dialog>
+{/if}
+
+{#if resetPrompt}
+  <Dialog
+    size="sm"
+    role="alertdialog"
+    title={tDynamic(`preferences.reset.${resetPrompt}.title`)}
+    testid="preferences-reset-dialog"
+    onkeydown={(e) => {
+      e.stopPropagation();
+      if (e.key === "Escape") resetPrompt = null;
+    }}
+    actions={[
+      {
+        label: t("preferences.reset.cancel"),
+        role: "cancel",
+        testid: "preferences-reset-cancel",
+        disabled: resetBusy,
+        onclick: () => (resetPrompt = null),
+      },
+      {
+        label: t("preferences.reset.confirm"),
+        role: "primary",
+        variant: "danger",
+        testid: "preferences-reset-confirm",
+        loading: resetBusy,
+        onclick: () => void confirmReset(),
+      },
+    ]}
+  >
+    <p data-testid="preferences-reset-message">{t("preferences.reset.message")}</p>
   </Dialog>
 {/if}
 
@@ -336,8 +507,20 @@
     border-top: var(--pv-border-width) solid var(--pv-border-subtle);
   }
 
-  section > h3:first-child {
+  section > h3:first-child,
+  section > .section-head:first-child h3 {
     margin-top: 0;
+  }
+
+  .section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--pv-space-3);
+  }
+
+  .section-head h3 {
+    margin: 0;
   }
 
   /* One setting per row: label on the left (fixed column), control on the right. */

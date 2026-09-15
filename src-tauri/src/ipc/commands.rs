@@ -3,6 +3,7 @@ use tauri::State;
 use crate::audio::AudioEngine;
 use crate::ipc::dto::AppInfo;
 use crate::ipc::error::IpcError;
+use crate::ipc::events::{Notice, NoticeLevel};
 use crate::settings::{Settings, SettingsStore};
 
 /// Returns basic app identity info (name + version). Tauri command handlers are always `async`
@@ -55,6 +56,27 @@ pub async fn settings_set(
 /// running engine (same pattern as `record_commands::apply_monitor_pref`).
 fn telemetry_rate_change(before: &Settings, next: &Settings) -> Option<u32> {
     (next.telemetry_rate_hz != before.telemetry_rate_hz).then_some(next.telemetry_rate_hz)
+}
+
+/// T-703 (settings file robustness): one-shot. `Some` exactly once per process, right after a
+/// corrupt settings file was detected at startup (backed up to `.bak`, defaults used in its
+/// place) — the frontend calls this once during init and shows the notice if present; every
+/// later call in the same run returns `None`, including on a completely healthy start.
+#[tauri::command]
+pub async fn settings_startup_notice_take(
+    store: State<'_, SettingsStore>,
+) -> Result<Option<Notice>, IpcError> {
+    Ok(store
+        .take_corrupt_notice()
+        .then(|| Notice::toast(NoticeLevel::Warning, "notice.settings.corrupt")))
+}
+
+/// T-703: the factory defaults, for Preferences' "Reset to defaults" (per-section and whole-
+/// dialog) — the frontend merges the relevant fields from this into a `settings_set` patch
+/// instead of hand-duplicating default values (which would drift from `Settings::default()`).
+#[tauri::command]
+pub async fn settings_defaults() -> Result<Settings, IpcError> {
+    Ok(Settings::default())
 }
 
 #[cfg(test)]

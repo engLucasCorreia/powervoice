@@ -23,6 +23,7 @@ import type {
   MarkerRangeKindDto,
   ModuleDescriptorDto,
   ModulePresetImportedDto,
+  Notice,
   NormalizeJobStartedDto,
   NrCaptureStartedDto,
   PeaksRequestDto,
@@ -65,6 +66,20 @@ export async function getSettings(): Promise<Settings> {
 /** T-104: replaces the settings file (atomic write) and returns the canonical saved value. */
 export async function setSettings(settings: Settings): Promise<Settings> {
   return invoke<Settings>("settings_set" satisfies CommandName, { settings });
+}
+
+/**
+ * T-703 (settings file robustness): one-shot. `null` on every call except the one right after a
+ * corrupt settings file was detected at startup (backed up to `.bak`, defaults used) — call this
+ * once during init and push the returned notice, if any.
+ */
+export async function settingsStartupNoticeTake(): Promise<Notice | null> {
+  return invoke<Notice | null>("settings_startup_notice_take" satisfies CommandName);
+}
+
+/** T-703: the factory defaults, for Preferences' "Reset to defaults". */
+export async function getSettingsDefaults(): Promise<Settings> {
+  return invoke<Settings>("settings_defaults" satisfies CommandName);
 }
 
 /** S1-01: the Audio Devices dialog's data (the engine's current device list). */

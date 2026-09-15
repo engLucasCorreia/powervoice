@@ -694,6 +694,11 @@ export function installPreviewIpc(options: PreviewOptions): void {
           return { job_id: 9 };
         case "settings_set":
           return (args as { settings: Settings }).settings;
+        case "settings_startup_notice_take":
+          // T-703: the preview never simulates a corrupt settings file.
+          return null;
+        case "settings_defaults":
+          return settingsFixture();
         case "transport_get":
           return transportSnapshot();
         case "transport_play":

@@ -776,41 +776,95 @@ pub fn save(path: &Path, settings: &Settings) -> Result<(), SettingsError> {
     Ok(())
 }
 
+/// Copies a corrupt/unreadable settings file to `<path>.bak` (T-703 "settings file robustness":
+/// a corrupt file is backed up, not silently discarded, before defaults replace it). Best-effort:
+/// a missing `path` is not an error (nothing to back up), and any I/O failure here is logged by
+/// the caller rather than turned into a load failure — losing the backup must never stop
+/// PowerVoice from starting with default settings. Same one-generation-backup shape as
+/// `vox_project::sidecar::backup_existing` (an existing `.bak` is overwritten).
+fn backup_corrupt_file(path: &Path) -> Result<(), SettingsError> {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(SettingsError::Io(e)),
+    };
+    let mut bak_name = path.file_name().unwrap_or_default().to_os_string();
+    bak_name.push(".bak");
+    let bak_path = path.with_file_name(bak_name);
+    let tmp_name = format!(
+        ".{}.tmp-{}",
+        bak_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("settings.json.bak"),
+        std::process::id()
+    );
+    let tmp_path = bak_path.with_file_name(tmp_name);
+    std::fs::write(&tmp_path, &bytes)?;
+    std::fs::rename(&tmp_path, &bak_path)?;
+    Ok(())
+}
+
+/// Loads settings from `path`, falling back to [`Settings::default`] when the file doesn't exist
+/// or fails to parse (logged, never a panic/crash). The `bool` is `true` only when the file
+/// *existed but was unreadable/invalid* (corrupt — not the normal "no file yet" first run); in
+/// that case the corrupt bytes are backed up to `<path>.bak` first (T-703; best-effort, logged on
+/// failure) so nothing is silently lost, mirroring the sidecar's `.bak` convention.
+fn load_or_default_reporting_corrupt(path: &Path) -> (Settings, bool) {
+    match std::fs::read(path) {
+        Ok(bytes) => match parse_and_migrate(&bytes) {
+            Ok(settings) => (settings, false),
+            Err(err) => {
+                tracing::warn!(error = %err, path = %path.display(), "settings file corrupt; backing up and using defaults");
+                if let Err(backup_err) = backup_corrupt_file(path) {
+                    tracing::warn!(error = %backup_err, path = %path.display(), "failed to back up corrupt settings file");
+                }
+                (Settings::default(), true)
+            }
+        },
+        Err(_) => (Settings::default(), false),
+    }
+}
+
 /// Loads settings from `path`, falling back to [`Settings::default`] when the file doesn't
 /// exist or fails to parse (logged, never a panic/crash).
 pub fn load_or_default(path: &Path) -> Settings {
-    match std::fs::read(path) {
-        Ok(bytes) => parse_and_migrate(&bytes).unwrap_or_else(|err| {
-            tracing::warn!(error = %err, path = %path.display(), "settings file unreadable; using defaults");
-            Settings::default()
-        }),
-        Err(_) => Settings::default(),
-    }
+    load_or_default_reporting_corrupt(path).0
 }
 
 /// In-memory settings cache backing the `settings_get`/`settings_set` commands, managed as Tauri
 /// state. Reads never touch disk; writes save (atomically) before updating the cache.
 pub struct SettingsStore {
     path: PathBuf,
+    /// Locked across both the disk write and the cache update in [`SettingsStore::set`] (T-703
+    /// "concurrent writes are atomic"): without this, two threads calling `set` at once would
+    /// both write the *same* `.tmp-<pid>` file concurrently (the temp name is only unique per
+    /// process, not per thread/call) and could interleave, corrupting the on-disk file even
+    /// though each individual `save` is itself an atomic rename.
     state: Mutex<Settings>,
+    /// `true` exactly once after a corrupt file was replaced by defaults at load time, until
+    /// [`SettingsStore::take_corrupt_notice`] consumes it (T-703).
+    corrupt_notice_pending: Mutex<bool>,
 }
 
 impl SettingsStore {
     pub fn load_default() -> Self {
         let path = settings_path();
-        let settings = load_or_default(&path);
+        let (settings, was_corrupt) = load_or_default_reporting_corrupt(&path);
         Self {
             path,
             state: Mutex::new(settings),
+            corrupt_notice_pending: Mutex::new(was_corrupt),
         }
     }
 
     #[cfg(test)]
     fn at_path(path: PathBuf) -> Self {
-        let settings = load_or_default(&path);
+        let (settings, was_corrupt) = load_or_default_reporting_corrupt(&path);
         Self {
             path,
             state: Mutex::new(settings),
+            corrupt_notice_pending: Mutex::new(was_corrupt),
         }
     }
 
@@ -820,9 +874,21 @@ impl SettingsStore {
 
     pub fn set(&self, mut settings: Settings) -> Result<Settings, SettingsError> {
         settings.version = CURRENT_SETTINGS_VERSION;
+        let mut guard = self.state.lock().expect("settings mutex poisoned");
         save(&self.path, &settings)?;
-        *self.state.lock().expect("settings mutex poisoned") = settings.clone();
+        *guard = settings.clone();
         Ok(settings)
+    }
+
+    /// Consumes the "settings file was corrupt at startup" flag: `true` the first time this is
+    /// called after a corrupt load, `false` every time after (and on a normal start). The
+    /// `settings_startup_notice_take` command calls this once during frontend init.
+    pub fn take_corrupt_notice(&self) -> bool {
+        let mut pending = self
+            .corrupt_notice_pending
+            .lock()
+            .expect("settings mutex poisoned");
+        std::mem::take(&mut *pending)
     }
 }
 
@@ -1440,6 +1506,140 @@ mod tests {
         let json = br#"{"version":1,"monitor_mode":"dry"}"#;
         assert!(parse_and_migrate(json).unwrap().tours.progress.is_empty());
         assert!(Settings::default().tours.progress.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- T-703: settings file robustness ---------------------------------------------------
+
+    /// One equality assertion covers every field's fallback at once (container-level
+    /// `#[serde(default)]`): a settings file that only has `version` (the shape an ancient/
+    /// partial file would have) must load to exactly `Settings::default()`. This is the "fails
+    /// if any `Settings` field lacks a default/fallback" test the ticket asks for — a field added
+    /// without a working `Default`/`#[serde(default)]` path shows up here without a bespoke
+    /// per-field test.
+    #[test]
+    fn every_settings_field_falls_back_to_default_on_an_empty_file() {
+        let json = br#"{"version":1}"#;
+        assert_eq!(parse_and_migrate(json).unwrap(), Settings::default());
+    }
+
+    /// A corrupt (unparseable) settings file is backed up to `.bak` and defaults are used
+    /// instead of a crash/panic (item 4 of the ticket: "verify it already works" — it did not;
+    /// `load_or_default` only logged a warning and never wrote a backup).
+    #[test]
+    fn corrupt_settings_file_is_backed_up_and_defaults_are_used() {
+        let dir = temp_dir("corrupt");
+        let path = dir.join("settings.json");
+        std::fs::write(&path, b"{ not json at all").unwrap();
+
+        let (settings, was_corrupt) = load_or_default_reporting_corrupt(&path);
+        assert_eq!(settings, Settings::default());
+        assert!(was_corrupt);
+
+        let bak = dir.join("settings.json.bak");
+        assert_eq!(std::fs::read(&bak).unwrap(), b"{ not json at all");
+        // No leftover temp file next to the backup.
+        let entries: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(entries.len(), 2, "settings.json + settings.json.bak only");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A structurally valid JSON file with one invalid field value (an unknown enum variant) is
+    /// just as "corrupt" as garbage bytes: the whole file fails to parse, so it's backed up and
+    /// defaults are used, same as the fully-garbage case above.
+    #[test]
+    fn a_file_with_one_invalid_field_value_is_treated_as_corrupt() {
+        let dir = temp_dir("invalid-value");
+        let path = dir.join("settings.json");
+        let bad = br#"{"version":1,"monitor_mode":"not_a_real_mode"}"#;
+        std::fs::write(&path, bad).unwrap();
+
+        let (settings, was_corrupt) = load_or_default_reporting_corrupt(&path);
+        assert_eq!(settings, Settings::default());
+        assert!(was_corrupt);
+        assert_eq!(std::fs::read(dir.join("settings.json.bak")).unwrap(), bad);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A settings file that simply doesn't exist yet (first run) is NOT reported as corrupt —
+    /// only an existing-but-unreadable file is.
+    #[test]
+    fn a_missing_file_is_not_reported_as_corrupt() {
+        let dir = temp_dir("missing");
+        let path = dir.join("settings.json");
+        let (settings, was_corrupt) = load_or_default_reporting_corrupt(&path);
+        assert_eq!(settings, Settings::default());
+        assert!(!was_corrupt);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `SettingsStore::take_corrupt_notice` is `true` exactly once after a corrupt load, then
+    /// `false` (the frontend's one-shot startup notice).
+    #[test]
+    fn settings_store_flags_corrupt_file_once() {
+        let dir = temp_dir("store-corrupt");
+        let path = dir.join("settings.json");
+        std::fs::write(&path, b"not json").unwrap();
+
+        let store = SettingsStore::at_path(path);
+        assert!(store.take_corrupt_notice());
+        assert!(!store.take_corrupt_notice());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A normal (non-corrupt) start never raises the notice.
+    #[test]
+    fn settings_store_does_not_flag_a_healthy_file() {
+        let dir = temp_dir("store-healthy");
+        let path = dir.join("settings.json");
+        save(&path, &Settings::default()).unwrap();
+
+        let store = SettingsStore::at_path(path);
+        assert!(!store.take_corrupt_notice());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// T-703 "concurrent writes are atomic": many threads calling `SettingsStore::set`
+    /// concurrently never leave the on-disk file corrupt (each write is a fully-formed JSON
+    /// object) and never panic; the store's mutex serializes the temp-file write + rename against
+    /// itself instead of racing on the same per-process temp filename.
+    #[test]
+    fn concurrent_settings_set_calls_never_corrupt_the_file() {
+        let dir = temp_dir("concurrent");
+        let path = dir.join("settings.json");
+        let store = std::sync::Arc::new(SettingsStore::at_path(path.clone()));
+
+        let handles: Vec<_> = (0..8u32)
+            .map(|i| {
+                let store = std::sync::Arc::clone(&store);
+                std::thread::spawn(move || {
+                    for rate in [30u32, 60u32] {
+                        let mut next = store.get();
+                        next.telemetry_rate_hz = rate;
+                        next.memory_budget_mib = 512 + i * 16;
+                        store.set(next).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // The file on disk must still be one well-formed JSON object (no interleaved/torn
+        // writes), and match the store's own final in-memory state.
+        let on_disk: Settings =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).expect("valid JSON on disk");
+        assert_eq!(on_disk, store.get());
 
         std::fs::remove_dir_all(&dir).ok();
     }

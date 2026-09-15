@@ -18,7 +18,7 @@
   import ShortcutsDialog from "./lib/help/ShortcutsDialog.svelte";
   import HelpMenu from "./lib/help/HelpMenu.svelte";
   import { t } from "./lib/i18n";
-  import { getAppInfo } from "./lib/ipc/commands";
+  import { getAppInfo, settingsStartupNoticeTake } from "./lib/ipc/commands";
   import { attachKeymap } from "./lib/shortcuts";
   import EditorView from "./lib/layout/EditorView.svelte";
   import {
@@ -68,7 +68,7 @@
   import { initEdit } from "./lib/state/edit.svelte";
   import { initNormalize } from "./lib/state/normalize.svelte";
   import { initNormalizeLufs } from "./lib/state/normalizeLufs.svelte";
-  import { initNotices } from "./lib/state/notices.svelte";
+  import { initNotices, pushNotice } from "./lib/state/notices.svelte";
   import { initRecord } from "./lib/state/record.svelte";
   import { applySpectralDefaults, initSpectral } from "./lib/state/spectral.svelte";
   import { loadSettings, settingsState } from "./lib/state/settings.svelte";
@@ -234,6 +234,16 @@
       applyLayoutPrefs(current.layout ?? DEFAULT_LAYOUT_PREFS);
       // T-709: the first-run Welcome tour offer (it waits for the crash-recovery check itself).
       armWelcomeOffer(current.tours);
+    });
+  });
+
+  // T-703 (settings file robustness): one-shot — `Some` only right after a corrupt settings
+  // file was replaced by defaults at startup.
+  onMount(() => {
+    void settingsStartupNoticeTake().then((notice) => {
+      if (notice) {
+        pushNotice(notice);
+      }
     });
   });
 

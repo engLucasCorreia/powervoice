@@ -238,6 +238,23 @@ describe("Preferences → Recording (H-21 item 6, SPEC-022 §2.3/§2.13)", () =>
     target.remove();
   });
 
+  it("opens the calibration wizard and closes Preferences (SPEC-022 §2.14)", async () => {
+    mockSettings(makeSettings());
+    openPreferences();
+    await settle();
+    const { target, app } = mountDialog();
+    await settle();
+
+    q<HTMLButtonElement>(target, "preferences-calibrate")!.click();
+    await settle();
+    const { recordState } = await import("../state/record.svelte");
+    expect(recordState().calibration?.stage).toBe("connect");
+    expect(preferencesState().open).toBe(false);
+
+    unmount(app);
+    target.remove();
+  });
+
   it("shows an empty offsets list and locks the controls while recording", async () => {
     mockSettings(makeSettings());
     openPreferences();
@@ -258,6 +275,174 @@ describe("Preferences → Recording (H-21 item 6, SPEC-022 §2.3/§2.13)", () =>
     ]) {
       expect(q<HTMLInputElement>(target, id)!.disabled).toBe(true);
     }
+
+    closePreferences();
+    unmount(app);
+    target.remove();
+  });
+});
+
+describe("Preferences → Editing (T-703)", () => {
+  it("changes the multichannel file policy (SPEC-005 §2.4/§3 `multichannel_policy`)", async () => {
+    const ipc = mockSettings(makeSettings({ multichannel_policy: "ask" }));
+    openPreferences();
+    await settle();
+    const { target, app } = mountDialog();
+    await settle();
+
+    const select = q<HTMLSelectElement>(target, "preferences-multichannel-policy")!;
+    expect(select.selectedOptions[0]?.textContent).toBe("Ask each time");
+
+    select.value = "1";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    expect(ipc.saved()?.multichannel_policy).toBe("always_mix");
+
+    closePreferences();
+    unmount(app);
+    target.remove();
+  });
+
+  it("toggles snap-to-zero-crossing (SPEC-006 §2.10), matching the View menu's setting", async () => {
+    const ipc = mockSettings(makeSettings({ snap_to_zero_crossing: false }));
+    openPreferences();
+    await settle();
+    const { target, app } = mountDialog();
+    await settle();
+
+    const checkbox = q<HTMLInputElement>(target, "preferences-snap-to-zero-crossing")!;
+    expect(checkbox.checked).toBe(false);
+    checkbox.click();
+    await settle();
+    expect(ipc.saved()?.snap_to_zero_crossing).toBe(true);
+
+    closePreferences();
+    unmount(app);
+    target.remove();
+  });
+});
+
+describe("Preferences → Advanced (T-703, SPEC-003 §3 `telemetry_rate_hz`)", () => {
+  it("shows and changes the playhead/meter update rate", async () => {
+    const ipc = mockSettings(makeSettings({ telemetry_rate_hz: 60 }));
+    openPreferences();
+    await settle();
+    const { target, app } = mountDialog();
+    await settle();
+
+    const select = q<HTMLSelectElement>(target, "preferences-telemetry-rate")!;
+    expect(select.selectedOptions[0]?.textContent).toBe("60 Hz");
+
+    select.value = "0";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    expect(ipc.saved()?.telemetry_rate_hz).toBe(30);
+
+    closePreferences();
+    unmount(app);
+    target.remove();
+  });
+});
+
+describe("Preferences → Reset to defaults (T-703 item 3)", () => {
+  function mockSettingsWithDefaults(initial: Settings): { saved: () => Settings | undefined } {
+    let lastSaved: Settings | undefined;
+    mockIPC((cmd, args) => {
+      if (cmd === "settings_get") return lastSaved ?? initial;
+      if (cmd === "settings_set") {
+        lastSaved = (args as { settings: Settings }).settings;
+        return lastSaved;
+      }
+      if (cmd === "settings_defaults") return makeSettings();
+      return null;
+    });
+    return { saved: () => lastSaved };
+  }
+
+  afterEach(() => {
+    resetRecordForTest();
+  });
+
+  it("resets only the Recording section's fields, leaving offsets and everything else alone", async () => {
+    const custom = offsetEntry("USB Mic", 3, "calibrated");
+    const initial = makeSettings({
+      record: { ...makeSettings().record, preroll_s: 9, mode: "overwrite" },
+      record_offsets: [custom],
+      theme: "light",
+    });
+    const ipc = mockSettingsWithDefaults(initial);
+    openPreferences();
+    await settle();
+    const { target, app } = mountDialog();
+    await settle();
+
+    q<HTMLButtonElement>(target, "preferences-reset-recording")!.click();
+    await settle();
+    expect(q(target, "preferences-reset-dialog")).not.toBeNull();
+    q<HTMLButtonElement>(target, "preferences-reset-confirm")!.click();
+    await settle();
+
+    const saved = ipc.saved();
+    expect(saved?.record).toEqual(makeSettings().record);
+    // Untouched by a Recording-scoped reset.
+    expect(saved?.record_offsets).toEqual([custom]);
+    expect(saved?.theme).toBe("light");
+    expect(q(target, "preferences-reset-dialog")).toBeNull();
+
+    closePreferences();
+    unmount(app);
+    target.remove();
+  });
+
+  it("Cancel leaves settings unchanged", async () => {
+    const initial = makeSettings({ theme: "light" });
+    const ipc = mockSettingsWithDefaults(initial);
+    openPreferences();
+    await settle();
+    const { target, app } = mountDialog();
+    await settle();
+
+    q<HTMLButtonElement>(target, "preferences-reset-appearance")!.click();
+    await settle();
+    q<HTMLButtonElement>(target, "preferences-reset-cancel")!.click();
+    await settle();
+
+    expect(ipc.saved()).toBeUndefined();
+    expect(q(target, "preferences-reset-dialog")).toBeNull();
+
+    closePreferences();
+    unmount(app);
+    target.remove();
+  });
+
+  it("Reset all to defaults resets every dialog-editable field at once", async () => {
+    const initial = makeSettings({
+      theme: "light",
+      memory_budget_mib: 4096,
+      telemetry_rate_hz: 30,
+      multichannel_policy: "always_mix",
+      snap_to_zero_crossing: true,
+      record: { ...makeSettings().record, preroll_s: 9 },
+    });
+    const ipc = mockSettingsWithDefaults(initial);
+    openPreferences();
+    await settle();
+    const { target, app } = mountDialog();
+    await settle();
+
+    q<HTMLButtonElement>(target, "preferences-reset-all")!.click();
+    await settle();
+    q<HTMLButtonElement>(target, "preferences-reset-confirm")!.click();
+    await settle();
+
+    const defaults = makeSettings();
+    const saved = ipc.saved();
+    expect(saved?.theme).toBe(defaults.theme);
+    expect(saved?.memory_budget_mib).toBe(defaults.memory_budget_mib);
+    expect(saved?.telemetry_rate_hz).toBe(defaults.telemetry_rate_hz);
+    expect(saved?.multichannel_policy).toBe(defaults.multichannel_policy);
+    expect(saved?.snap_to_zero_crossing).toBe(defaults.snap_to_zero_crossing);
+    expect(saved?.record).toEqual(defaults.record);
 
     closePreferences();
     unmount(app);

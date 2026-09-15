@@ -176,7 +176,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 |---|---|---|---|---|---|
 | T-701 | Shortcut map audit (Audition-compatible) | W1 | S | M6 | done |
 | T-702 | i18n audit | W1 | H | M6 | done |
-| T-703 | Settings audit | W1 | S | M6 | in progress |
+| T-703 | Settings audit | W1 | S | M6 | done |
 | T-704 | Performance tuning vs targets | W1 | O | M6 | todo |
 | T-705 | AppImage/deb, Win/mac build docs, README/user guide | W2 | S | T-701..T-704 | done (Win/mac installers documented, not built) |
 | T-706 | Complete architecture & developer docs (owner req.): docs hub, C4/crate/threading/sequence Mermaid diagrams, data/IPC/DSP/plugins/UI docs, contributing guide, ADR index, docs check script | W3 | O | T-809 | todo |
@@ -191,7 +191,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-802 | Sandbox process, watchdog, proxy module | W2 | O | T-801 | done |
 | T-803 | CLAP adapter (+ enumerate) | W3 | O | T-802 | done |
 | T-804 | Scanner orchestration, cache, blocklist | W3 | S | T-802 | done |
-| T-805 | Our modules as CLAP packages (clack-plugin) | W4 | O | T-803 | todo |
+| T-805 | Our modules as CLAP packages (clack-plugin) | W4 | O | T-803 | in progress |
 | T-806 | VST3 adapter (coupler vst3 + moduleinfo scan) | W4 | O | T-803, T-804 | done |
 | T-807 | LV2 adapter (livi) | W4 | O | T-803, T-804 | done |
 | T-808 | JSFX adapter (ysfx, sandbox-only) | W4 | O | T-803, T-804 | in progress |

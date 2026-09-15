@@ -104,6 +104,30 @@ fn rig_with(
     loopback: Option<Loopback>,
     mic_skew_ppm: f64,
 ) -> Rig {
+    let empty = vox_rack::RackModel { slots: Vec::new() };
+    rig_full(a, mic_source, loopback, mic_skew_ppm, empty)
+}
+
+/// `TestDelay(480)`: a pure-delay rack module reporting 10 ms of latency (AC-6, T-401).
+struct DelayFactory(vox_module_api::ModuleDescriptor);
+
+impl vox_module_api::ModuleFactory for DelayFactory {
+    fn descriptor(&self) -> &vox_module_api::ModuleDescriptor {
+        &self.0
+    }
+    fn create(&self) -> Result<Box<dyn vox_module_api::Module>, vox_module_api::ModuleError> {
+        Ok(Box::new(vox_module_api::test_util::TestDelay::new(480)))
+    }
+}
+
+/// [`rig_with`] playing through `rack` (the registry also holds `TestDelay(480)`).
+fn rig_full(
+    a: Vec<f32>,
+    mic_source: Option<fn(u64) -> f32>,
+    loopback: Option<Loopback>,
+    mic_skew_ppm: f64,
+    rack: vox_rack::RackModel,
+) -> Rig {
     assert!(alloc_checks_active());
     let fake = FakeBackend::new(7);
     fake.plug(
@@ -128,8 +152,15 @@ fn rig_with(
         Ok(()) => 0,
         Err(n) => n,
     });
-    let registry = Arc::new(Registry::with_factories(vox_modules::builtin_factories()).unwrap());
+    let delay: Arc<dyn vox_module_api::ModuleFactory> = Arc::new(DelayFactory(
+        vox_module_api::Module::descriptor(&vox_module_api::test_util::TestDelay::new(480)).clone(),
+    ));
+    let registry = Arc::new(
+        Registry::with_factories(vox_modules::builtin_factories().into_iter().chain([delay]))
+            .unwrap(),
+    );
     let mut cfg = EngineConfig::new(Arc::new(fake.clone()), registry);
+    cfg.rack = rack;
     cfg.prefs = DevicePrefs {
         input_device: Some("Mic".to_owned()),
         input_channel: 1,
@@ -366,6 +397,56 @@ fn loopback_punch_lands_sample_exactly_after_compensation() {
         );
         assert_eq!(r.fake.rt_violations(), 0, "a callback allocated");
     }
+}
+
+/// AC-6 / T-401 (SPEC-022 §2.13, SPEC-012 §2.5): a pure-delay rack module reporting 480 samples
+/// (10 ms) of latency, with Hear original through the rack, gives the same result as the empty
+/// rack: the rack latency is inside the heard position, so the punched interior still lands on
+/// `A` bit-exactly.
+#[test]
+fn ac6_a_rack_latency_is_compensated_like_the_device_latency() {
+    let rack = vox_rack::RackModel {
+        slots: vec![vox_rack::SlotModel::new(
+            &vox_module_api::ModuleRef {
+                id: vox_module_api::test_util::TestDelay::ID.into(),
+                version: vox_module_api::Version::new(1, 0, 0),
+            },
+            false,
+            &vox_module_api::ModuleState::new(1),
+        )],
+    };
+    let lb = Loopback::new(dac_key(), mic_key());
+    let mut r = rig_full(noise(1, L), None, Some(lb), 0.0, rack);
+    assert_eq!(r.eng.rack_snapshot().latency_samples, 480);
+    r.run_ms(50);
+    r.arm();
+    r.run_ms(100);
+    let plan = r.start(
+        Some((S, E)),
+        RecordPrefs {
+            hear_original: true,
+            ..prefs()
+        },
+    );
+    assert_eq!(plan.kind, RecordOpKind::Punch);
+    assert!(plan.aligned && plan.hear_original);
+    let res = r.result();
+    let op = res.op.unwrap();
+    assert_eq!(op.cancelled, None);
+    let (k0, k1) = op.window.unwrap();
+    assert_eq!(k1 - k0, E - S);
+    r.commit(&res).expect("one edit");
+    let out = r.doc();
+    assert_eq!(out.len(), L);
+    let (s, e) = (S as usize, E as usize);
+    assert_bits(&out[..s], &r.a[..s], "A′[0, S)");
+    assert_bits(&out[e..], &r.a[e..], "A′[E, L)");
+    assert_bits(
+        &out[s + 480..e - 480],
+        &r.a[s + 480..e - 480],
+        "interior through a 480-sample rack",
+    );
+    assert_eq!(r.fake.rt_violations(), 0, "a callback allocated");
 }
 
 /// AC-2 (engine side): Insert at the cursor with a free start: the take is the input captured

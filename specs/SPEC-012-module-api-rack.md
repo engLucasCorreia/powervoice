@@ -120,6 +120,35 @@ installed modules and external plugins later.
   - offline renders come out time-aligned with the input (§2.8). Offline alignment already applies in
     M1 through T-103's offline render.
 
+#### 2.5.1 Amendment (T-401, 2026-09-15): compensation as implemented
+Decided by T-401 as the conservative reading consistent with T-103's design (the audit found
+T-103's chain already met most of §2.5; T-401 filled the gaps marked *new*).
+- **Heard position.** The playhead, meters, waveform cursor and markers placed during playback use
+  ADR-002 §8's `heard_pos = p_in − L_rack`, with `L_rack` the installed chain's total
+  (`LiveRack::latency_samples`). On a latency change the offset switches at the swap that installs
+  the replacement, not at the end of its hold + crossfade, while the outgoing instance still
+  sounds. For that window (at most the new latency + 15 ms) the playhead may read up to |ΔL| off;
+  from then on it names the sample leaving the device (AC-8: "within 100 ms of the swap").
+- **Document end** (*new*). The transport reports the end (it stops, and the playhead goes to the end)
+  once the rack has drained its latency after the last sample, i.e. when that sample is heard, not
+  when it enters the rack. A Play, Seek or Stop during the drain reports the end at once; the
+  next start's rack reset still waits for the drain, so nothing is cut.
+- **No cross-slot compensation.** Slots run in series, so each slot's dry path matches only its own
+  latency (§2.3), and a latency change touches no other slot. A replacement's dry line is allocated
+  when it is built, on the control thread. The whole-rack A/B line is preallocated for
+  max(total, 100 ms); a larger one is built on the control thread and handed over with the chain
+  swap (history copied, the old line returned through the return ring). The audio thread never
+  allocates.
+- **A/B during a latency change.** With A/B on, the dry tap follows the new total at the swap with
+  the 15 ms crossfade (from the input delayed by the old total to the input delayed by the new
+  one). A swap that would change the tap during an A/B crossfade waits until the crossfade ends.
+- **Rapid successive changes.** A slot's next replacement waits until the previous one's crossfade
+  is done (T-103: held back until `ReplaceDone`) and is built from the latest committed value, so a
+  burst of changes converges on the last one without a click or a silent gap.
+- **Readouts** (*new* for monitoring). Every total change emits `LatencyChanged` → `rack_latency`
+  (the rack header) and marks the SPEC-002 §2.7 monitoring readout for a recompute on the same
+  control tick (≤ 16 ms, instead of the next 0.5 s refresh).
+
 ### 2.6 Generic parameter UI (M4, T-405), derived only from the schema
 - **Layout** (ADR-005 §13):
   - Ungrouped parameters come first, then groups in declaration order. One nesting level is rendered;

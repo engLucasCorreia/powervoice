@@ -1,7 +1,14 @@
+import { emit } from "@tauri-apps/api/event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
-import type { LocalizedTextDto, ModuleDescriptorDto, RackSlotDto, RackStateDto } from "../ipc/bindings";
+import type {
+  LocalizedTextDto,
+  ModuleDescriptorDto,
+  RackLatencyDto,
+  RackSlotDto,
+  RackStateDto,
+} from "../ipc/bindings";
 import { initTransport, resetTransportForTest } from "../state/transport.svelte";
 import { rackSlotDto, rackStateDto as rackFixture, transportStateDto } from "../test/fixtures";
 import { resetRackForTest } from "./rack.svelte";
@@ -200,6 +207,23 @@ describe("RackPanel", () => {
   it("shows the total latency readout when > 0", async () => {
     const { el, teardown } = await setup(rackFixture([slotFixture(1)], false, 480), []);
     expect(el("rack-latency")?.textContent).toBe("10.0 ms (480 samples)");
+    teardown();
+  });
+
+  it("the latency readout follows rack_latency events and hides at 0 (T-401)", async () => {
+    const { el, teardown } = await setup(rackFixture([slotFixture(1)], false, 480), []);
+    expect(el("rack-latency")?.textContent).toBe("10.0 ms (480 samples)");
+    for (const [samples, text] of [
+      [960, "20.0 ms (960 samples)"],
+      [64, "1.3 ms (64 samples)"],
+    ] as const) {
+      await emit("rack_latency", { latency_samples: samples } satisfies RackLatencyDto);
+      flushSync();
+      expect(el("rack-latency")?.textContent).toBe(text);
+    }
+    await emit("rack_latency", { latency_samples: 0 } satisfies RackLatencyDto);
+    flushSync();
+    expect(el("rack-latency")).toBeNull();
     teardown();
   });
 

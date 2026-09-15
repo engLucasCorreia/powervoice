@@ -886,6 +886,7 @@ impl Control {
     }
 
     /// Forwards rack notices (ADR-005 §7 mirror echoes, latency changes, failures, restarts),
+    /// marks the monitoring latency readout for a recompute on a latency change (T-401),
     /// keeps `rack_model` (the source of truth across output open/close) in sync, and — for a
     /// failure or a restart, which can bring a new schema the per-parameter notices don't cover
     /// (H-01 handoff) — emits a full [`EngineEvent::RackChanged`] snapshot built right here, on
@@ -905,6 +906,14 @@ impl Control {
                     | RackNotice::SlotLoaded { .. }
             )
         });
+        // T-401 (SPEC-012 §2.5, AC-8): a rack latency change reaches the monitoring readout within
+        // 100 ms — recomputed at this tick's end, not at the next 0.5 s refresh.
+        if notices
+            .iter()
+            .any(|n| matches!(n, RackNotice::LatencyChanged { .. }))
+        {
+            self.latency_dirty = true;
+        }
         for n in notices {
             (self.events)(EngineEvent::Rack(n));
         }

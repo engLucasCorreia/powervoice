@@ -73,6 +73,9 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-33 | Small fixes (H-22): `sanitize_preset_name` must never yield a leading `.` (hidden by `list_json_names` as an atomic temp file), de-flake `WelcomeOffer.test.ts` (full-suite-only failure) | S | done |
 | H-34 | Plugin polish (T-806): de-flake `sandbox/tests/teardown.rs::nothing_outlives_its_owner` (fd baseline after warm-up release), Linux Install Module wording for picking a file inside a `.vst3` bundle, rename scan cache to `plugin-scan.json` with migration | S | done |
 | H-35 | Zoom commands (T-701 found SPEC-006 §2.6 claims them but they don't exist): Zoom to Selection, Zoom Full, vertical amplitude zoom (Alt+= / Alt+-) with Audition bindings, View menu + toolbar entries | S | in progress |
+| H-36 | Fix flaky LV2 test `crates/sandbox/tests/lv2.rs::a_latency_change_goes_through_the_worker_and_asks_for_a_restart` (offline worker round trip fails 8/10 in isolation on main) | S | in progress |
+| H-37 | Loop playback (SPEC-003 AC-4; engine has none — found by T-401): loop region = selection, seamless wrap, playhead history across the wrap (ADR-002 §8), Loop transport button + shortcut | O | todo |
+| H-38 | Packaging (T-807, A-022): deb Recommends `liblilv-0-0`, Arch optdepends `lilv`, AppImage note; user-guide note that LV2 needs lilv | H | todo |
 | H-18 | Shared test factories for DTOs (`ui/src/lib/test/fixtures.ts` + Rust builders) so a new DTO field touches one helper, not 20 test literals (merge-friction fix) | H | done |
 | H-17 | Recovery follow-ups (T-301): dialog stays open for remaining sessions (A-015), AC-3/AC-11 timing on a real disk (test-big), compaction off the document lock, markers during an interrupted take, Memory-for-audio UI, `/tmp/vox-project-*` sweep | S | done |
 | H-15 | Sidecar follow-ups (T-306): recent-file-missing dialog, read-only folder matrix (AC-13), SIGKILL-during-sidecar-save test (AC-6), per-slot leniency for a malformed rack slot, perf budget (AC-18) | S | done |
@@ -136,7 +139,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
 | T-400 | M4 spec wave: SPEC-015 parametric EQ + SPEC-017 true-peak limiter (part 1); SPEC-013 noise gate + SPEC-016 dynamics (part 2) | W0 | O | M0 | done |
-| T-401 | Latency compensation, latency_changed re-activation, A/B dry delay | W1 | O | M3 | in progress |
+| T-401 | Latency compensation, latency_changed re-activation, A/B dry delay | W1 | O | M3 | done |
 | T-402 | Parametric EQ DSP + ResponseCurve | W1 | O | M3 | done (via S3-03) |
 | T-403 | Dynamics A: detector, compressor, limiter | W1 | O | M3 | done (via S3-02) |
 | T-404 | True-peak limiter | W1 | O | M3 | done (via S3-05 + H-03) |

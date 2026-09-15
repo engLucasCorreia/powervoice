@@ -6,7 +6,9 @@
 //! Through rack into the rack input with the playback, Dry after the rack; see `monitor`), writes
 //! the mono result to every device channel, meters the rack output and reports one
 //! [`RtEvent::Block`] (heard position, heard time, output latency, peak, energy) to the control
-//! thread. While the monitor feeds the rack, a transport restart skips the rack reset: the live
+//! thread. T-401 (SPEC-012 §2.5, SPEC-003 §2.2): the document end ([`RtEvent::Ended`]) is
+//! reported once the rack has drained its latency after the last sample, so the transport stops
+//! when that sample is heard, not when it enters the rack. While the monitor feeds the rack, a transport restart skips the rack reset: the live
 //! input keeps flowing through it, so a reset would cut the talent's monitored voice.
 //!
 //! T-304 (SPEC-022 §2.14, §4.7, §4.10): during a calibration run the preallocated sweep is mixed
@@ -104,6 +106,9 @@ struct State {
     /// Silent samples fed to the rack since the last audio. A rack reset waits until they cover
     /// the rack's latency, so the delayed end of a fade-out is heard, not cut.
     quiet: u64,
+    /// T-401: the document end `(epoch, pos)`, reported once `quiet` covers the rack's latency
+    /// (or at once when a transport command supersedes the drain).
+    pending_end: Option<(u32, u64)>,
     underrun: bool,
     rack_in: Vec<f32>,
     rack_out: Vec<f32>,
@@ -150,6 +155,13 @@ impl State {
     }
 
     fn command(&mut self, cmd: AudioCmd, parts: &mut OutputParts) {
+        if matches!(
+            cmd,
+            AudioCmd::Play { .. } | AudioCmd::Seek { .. } | AudioCmd::Stop
+        ) {
+            // The end of the previous pass comes first, whatever the rack still holds.
+            self.flush_end(parts, 0, true);
+        }
         match cmd {
             AudioCmd::Play { epoch, pos, reset } => self.start(epoch, pos, reset),
             AudioCmd::Seek { epoch, pos } => self.start(epoch, pos, true),
@@ -285,16 +297,23 @@ impl State {
         Next::Empty
     }
 
-    fn end_reached(&mut self, parts: &mut OutputParts) {
+    /// The document end entered the rack: go idle; [`flush_end`](Self::flush_end) reports it
+    /// once it has been heard.
+    fn end_reached(&mut self) {
         self.mode = Mode::Idle;
         self.has_cur = false;
-        emit(
-            parts,
-            RtEvent::Ended {
-                epoch: self.epoch,
-                pos: self.next_pos,
-            },
-        );
+        self.pending_end = Some((self.epoch, self.next_pos));
+    }
+
+    /// Reports a pending document end once the silence fed after it covers the rack's `latency`
+    /// (its last sample has left the rack), or at once when `force`d.
+    fn flush_end(&mut self, parts: &mut OutputParts, latency: u64, force: bool) {
+        if let Some((epoch, pos)) = self.pending_end
+            && (force || self.quiet >= latency)
+        {
+            self.pending_end = None;
+            emit(parts, RtEvent::Ended { epoch, pos });
+        }
     }
 
     /// The fade-out is over, or the document ended during it (`next_pos` = the end then).
@@ -333,7 +352,7 @@ impl State {
                         y
                     }
                     Next::End => {
-                        self.end_reached(parts);
+                        self.end_reached();
                         0.0
                     }
                     Next::Empty => {
@@ -424,6 +443,7 @@ impl OutputCb {
                 has_cur: false,
                 next_pos: 0,
                 quiet: u64::MAX,
+                pending_end: None,
                 underrun: false,
                 rack_in: vec![0.0; max_block],
                 rack_out: vec![0.0; max_block],
@@ -524,6 +544,7 @@ impl OutputCallback for OutputCb {
             parts.analyzer_tap.push(&st.rack_out[..n]);
             done += n;
         }
+        st.flush_end(parts, latency, false);
         if st.underrun {
             st.underrun = false;
             parts.counters.underruns.fetch_add(1, Ordering::Relaxed);

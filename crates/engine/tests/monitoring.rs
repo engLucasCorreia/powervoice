@@ -15,7 +15,7 @@ use vox_engine::backend::fake::{CallbackSizes, FakeBackend, FakeDevice, FakeDire
 use vox_engine::record::{MonitorMode, RecordState, RecordingResult};
 use vox_engine::{DevicePrefs, Direction, EngineConfig, HostId, ManualEngine, RackCommand};
 use vox_module_api::test_util::{
-    TestDelay, ZipperWindow, alloc_checks_active, analyze_zipper, no_alloc,
+    TestDelay, TestRestart, ZipperWindow, alloc_checks_active, analyze_zipper, no_alloc,
 };
 use vox_module_api::{Module, ModuleDescriptor, ModuleError, ModuleFactory};
 use vox_modules::Gain;
@@ -63,10 +63,30 @@ impl ModuleFactory for DelayFactory {
     }
 }
 
+/// `TestRestart`: a delay whose latency is its `latency_samples` parameter; a change restarts the
+/// instance with the new latency (T-401).
+struct RestartFactory(ModuleDescriptor);
+
+impl ModuleFactory for RestartFactory {
+    fn descriptor(&self) -> &ModuleDescriptor {
+        &self.0
+    }
+    fn create(&self) -> Result<Box<dyn Module>, ModuleError> {
+        Ok(Box::new(TestRestart::new(0)))
+    }
+}
+
 fn registry() -> Registry {
     let delay: Arc<dyn ModuleFactory> =
         Arc::new(DelayFactory(TestDelay::new(480).descriptor().clone()));
-    Registry::with_factories(vox_modules::builtin_factories().into_iter().chain([delay])).unwrap()
+    let restart: Arc<dyn ModuleFactory> =
+        Arc::new(RestartFactory(TestRestart::new(0).descriptor().clone()));
+    Registry::with_factories(
+        vox_modules::builtin_factories()
+            .into_iter()
+            .chain([delay, restart]),
+    )
+    .unwrap()
 }
 
 /// A mono mic at `rate` (true rate skewed by `skew_ppm`), fixed `frames` per callback, 5 ms
@@ -451,6 +471,56 @@ fn ac10_latency_readout_matches_the_measured_delay() {
 /// it came from (polynomial interpolation is exact on the linear ramps).
 const TRI_P: u64 = 96_000;
 const TRI_A: f64 = 0.5;
+
+/// T-401 (SPEC-012 AC-8, SPEC-002 §2.7): a rack latency change — a module restart with a new
+/// latency, monitoring through the rack — reaches the monitoring readout within 100 ms of the
+/// command, not at the next periodic recompute.
+#[test]
+fn t401_monitoring_readout_follows_a_rack_latency_change_within_100_ms() {
+    let mut r = rig(mic(RATE, 0.0, 256, |_, _, _| 0.0), dac(RATE, 0.0, 256));
+    r.run_ms(20);
+    r.set_mode(MonitorMode::ThroughRack);
+    r.arm();
+    r.add_module(TestRestart::ID);
+    let set = |r: &mut Rig, value: f64| {
+        r.eng
+            .rack_command(RackCommand::SetParamPlain {
+                index: 0,
+                id: TestRestart::LATENCY,
+                value,
+            })
+            .unwrap();
+    };
+    set(&mut r, 480.0);
+    r.run_ms(1_500);
+    let readout = |r: &Rig| i64::from(r.state().monitor_latency_us.expect("a readout"));
+    // 480 → 960 samples: +10 ms; 960 → 240: −15 ms.
+    for (value, delta_us) in [(960.0, 10_000i64), (240.0, -15_000)] {
+        let before = readout(&r);
+        set(&mut r, value);
+        let t0 = r.fake.now_ns();
+        let mut at = None;
+        for _ in 0..400 {
+            r.run_ms_step(1, 1);
+            if (readout(&r) - before - delta_us).abs() <= 100 {
+                at = Some(r.fake.now_ns() - t0);
+                break;
+            }
+        }
+        let at = at.unwrap_or_else(|| {
+            panic!(
+                "{value}: readout {} µs never reached {before} {delta_us:+} µs",
+                readout(&r)
+            )
+        });
+        assert!(
+            at <= 100 * MS,
+            "{value}: the readout followed after {} ms",
+            at / MS
+        );
+    }
+    assert_eq!(r.fake.rt_violations(), 0);
+}
 
 fn triangle(k: u64) -> f64 {
     let phi = (k % TRI_P) as f64 / TRI_P as f64;

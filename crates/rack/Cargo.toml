@@ -17,6 +17,14 @@ rtrb.workspace = true
 vox-module-api = { path = "../module-api", features = ["test-util"] }
 vox-modules = { path = "../modules" }
 vox-testkit = { path = "../testkit" }
+# T-110: the full voice rack's process() cost bench (`benches/full_rack.rs`).
+divan.workspace = true
+
+# T-110: the assembled 6-module voice rack's process() cost, 64..1024-frame blocks, against the
+# PROMPT §2 "< 20% of one core" target.
+[[bench]]
+name = "full_rack"
+harness = false
 
 [lints]
 workspace = true

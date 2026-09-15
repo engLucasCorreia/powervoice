@@ -39,5 +39,10 @@ vox-testkit = { path = "../testkit" }
 name = "list_devices"
 required-features = ["backend-cpal"]
 
+# T-110 (ADR-002 §2 follow-up): the callback-time histogram, `just bench-callback`.
+[[bench]]
+name = "callback_histogram"
+harness = false
+
 [lints]
 workspace = true

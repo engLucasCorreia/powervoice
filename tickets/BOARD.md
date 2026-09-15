@@ -109,7 +109,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-106 | Recording: crash-safe WAV, peaks stream, take → undoable edit | W3 | O | T-105 | → S1-04 (subset), rest hardening |
 | T-107 | Monitoring off/dry/through-rack, drift-corrected in→out ring | W3 | O | T-105 | done |
 | T-108 | IPC layer: M1 commands/events, VXTM/VXRP channels, binary decoders + golden fixtures, clock sync | W3 | S | T-104, T-105 | → S1-01/S1-03 (subset), rest hardening |
-| T-110 | Bench harness (divan, callback-time histogram) | W3 | S | T-105 | in progress |
+| T-110 | Bench harness (divan, callback-time histogram) | W3 | S | T-105 | done |
 | T-109 | UI: device settings, transport bar, meter bridge, live recording waveform | W4 | S | T-106, T-107, T-108 | → S1-01/S1-04 (subset), rest hardening |
 
 ## M2 — Editor view
@@ -177,7 +177,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-701 | Shortcut map audit (Audition-compatible) | W1 | S | M6 | done |
 | T-702 | i18n audit | W1 | H | M6 | done |
 | T-703 | Settings audit | W1 | S | M6 | done |
-| T-704 | Performance tuning vs targets | W1 | O | M6 | todo |
+| T-704 | Performance tuning vs targets | W1 | O | M6 | in progress |
 | T-705 | AppImage/deb, Win/mac build docs, README/user guide | W2 | S | T-701..T-704 | done (Win/mac installers documented, not built) |
 | T-706 | Complete architecture & developer docs (owner req.): docs hub, C4/crate/threading/sequence Mermaid diagrams, data/IPC/DSP/plugins/UI docs, contributing guide, ADR index, docs check script | W3 | O | T-809 | todo |
 | T-707 | Docs for everyone (owner req.): what-is / how-it-works with Mermaid, complete task-based user guide, FAQ, glossary with plain-language analogies, friendly README | W4 | S | T-706, T-708, T-709 | todo |

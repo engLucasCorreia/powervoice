@@ -13,10 +13,17 @@ vox-dsp = { path = "../dsp" }
 vox-module-api = { path = "../module-api", features = ["test-util"] }
 vox-testkit = { path = "../testkit" }
 serde_json.workspace = true
+# T-110: per-module `process()` cost benches (`benches/process_cost.rs`).
+divan.workspace = true
 
 # SPEC-017 AC-17: `just bench` (plain `main`, no bench framework dependency).
 [[bench]]
 name = "true_peak_limiter"
+harness = false
+
+# T-110: per-module process() cost, 64..1024-frame blocks (divan + a BENCH_RESULT report pass).
+[[bench]]
+name = "process_cost"
 harness = false
 
 [lints]

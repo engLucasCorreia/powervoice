@@ -56,6 +56,14 @@ vox-test-vst3 = { path = "../test-vst3" }
 # writes the bundle's `.ttl` files).
 vox-test-lv2 = { path = "../test-lv2" }
 serde_json.workspace = true
+# T-110: BENCH_RESULT report lines (`benches/clap_round_trip.rs`).
+vox-testkit = { path = "../testkit" }
+
+# T-110: the CLAP backend's per-block IPC round trip (`Module::process()` through a real
+# powervoice-sandbox process and the in-repo test CLAP plugin), against the block deadline.
+[[bench]]
+name = "clap_round_trip"
+harness = false
 
 [lints]
 workspace = true

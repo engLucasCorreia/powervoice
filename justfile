@@ -78,9 +78,18 @@ build:
     npm --prefix ui run tauri build
     python3 scripts/packaging/check_desktop_entry.py
 
-# Run benchmarks
+# Run benchmarks (T-110): `cargo bench --workspace`, then write target/bench/summary.md (each
+# metric against its PROMPT/SPEC target where one exists — not committed, T-704's baseline).
+# Never runs as part of `just check`.
 bench:
-    cargo bench --workspace
+    python3 scripts/bench/summary.py
+
+# T-110 (ADR-002 §2 follow-up): the callback-time histogram — drives the real output callback
+# path (FakeBackend + ManualEngine) with a typical voice rack for N seconds per realtime
+# sub-block size, reporting p50/p95/p99/max against the block deadline.
+# VOX_ENGINE_BENCH_SECONDS overrides the per-row duration (default 3 s).
+bench-callback:
+    cargo bench -p vox-engine --bench callback_histogram
 
 # Generate test fixtures into fixtures/generated/ (gitignored)
 fixtures:

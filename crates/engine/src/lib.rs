@@ -42,6 +42,9 @@ pub mod device_state;
 pub mod devices;
 mod drift;
 mod engine;
+// T-110: the callback-time histogram (ADR-002 §2 follow-up), used by
+// `benches/callback_histogram.rs`; public because a bench binary is a separate crate.
+pub mod histogram;
 mod input;
 mod monitor;
 mod output;

@@ -19,6 +19,23 @@ ebur128.workspace = true
 [dev-dependencies]
 # S4-01: cross-checking `loudness::measure` against known BS.1770 reference values (docs/references.md).
 vox-testkit = { path = "../testkit" }
+# T-110: loudness/resample/spectrogram throughput benches.
+divan.workspace = true
+
+# T-110: LUFS/true-peak measurement throughput.
+[[bench]]
+name = "loudness"
+harness = false
+
+# T-110: document -> device rate resampler throughput.
+[[bench]]
+name = "resample"
+harness = false
+
+# T-110: spectrogram tile FFT-frame compute cost.
+[[bench]]
+name = "spectro"
+harness = false
 
 [lints]
 workspace = true

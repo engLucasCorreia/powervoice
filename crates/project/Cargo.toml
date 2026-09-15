@@ -26,6 +26,18 @@ windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 vox-testkit = { path = "../testkit" }
+# T-110: chunk-store read/prefetch throughput bench.
+divan.workspace = true
+
+# T-110: SnapshotReader::read throughput (the playback-reader prefetch path, ADR-002 §5).
+[[bench]]
+name = "chunk_store"
+harness = false
+
+# T-110: peak-pyramid generation (ChunkPeaks::compute) and overview query throughput (ADR-004 §5).
+[[bench]]
+name = "peaks"
+harness = false
 
 [lints]
 workspace = true

@@ -23,6 +23,13 @@ symphonia.workspace = true
 [dev-dependencies]
 # ADR-001 §3 exception: testkit's own hound-based WAV I/O is an independent measuring stick.
 vox-testkit = { path = "../testkit" }
+# T-110: export encode throughput bench.
+divan.workspace = true
+
+# T-110: WAV/FLAC/MP3 encode throughput (MP3 skipped when no libmp3lame is present).
+[[bench]]
+name = "encode"
+harness = false
 
 [lints]
 workspace = true

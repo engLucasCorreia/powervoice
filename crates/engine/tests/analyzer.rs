@@ -443,3 +443,136 @@ fn ac19_silence_sets_silent_flag() {
     assert!(f.levels_db.iter().all(|v| !v.is_nan()));
     assert!(f.levels_db.iter().all(|&v| v == f32::NEG_INFINITY));
 }
+
+// --- H-42: voice diagnostics and Spectrum Inspector streams (SPEC-007 §8.3, §8.8) -----------
+
+use vox_dsp::diagnostics::{VoiceReport, WindowKind};
+use vox_engine::{InspectorConfig, InspectorFrame};
+
+impl Rig {
+    fn subscribe_voice(&mut self) -> (u32, Arc<Mutex<Vec<VoiceReport>>>) {
+        let out = Arc::new(Mutex::new(Vec::new()));
+        let o = out.clone();
+        let id = self
+            .eng
+            .analyzer_voice_subscribe(Box::new(move |r: &VoiceReport| {
+                o.lock().unwrap().push(r.clone())
+            }));
+        (id, out)
+    }
+
+    fn subscribe_inspector(
+        &mut self,
+        config: InspectorConfig,
+    ) -> (u32, Arc<Mutex<Vec<InspectorFrame>>>) {
+        let out = Arc::new(Mutex::new(Vec::new()));
+        let o = out.clone();
+        let id = self.eng.analyzer_inspector_subscribe(
+            Box::new(move |f: &InspectorFrame| o.lock().unwrap().push(f.clone())),
+            config,
+        );
+        (id, out)
+    }
+}
+
+/// H-42: a 200 Hz tone played through the rack reaches the voice tracker: its reports carry the
+/// F0 statistics, and the output callback still never allocates.
+#[test]
+fn h42_voice_reports_follow_the_output() {
+    let src = sine(200.0, -20.0, RATE, 3 * RATE as usize);
+    let mut r = rig(&src, RackModel { slots: Vec::new() });
+    let (_id, reports) = r.subscribe_voice();
+    r.run_ms(20);
+    r.eng.transport(TransportCommand::Play);
+    r.run_ms(1_500);
+    let reports = reports.lock().unwrap();
+    assert!(reports.len() > 10, "reports: {}", reports.len());
+    let f0 = reports.last().unwrap().f0.expect("f0");
+    assert!((f0.median_hz - 200.0).abs() < 1.0, "{f0:?}");
+    assert!(f0.current_hz.is_some());
+    assert_eq!(r.fake.rt_violations(), 0);
+}
+
+/// H-42: silence changes nothing, so nothing new is sent (idle costs the UI nothing).
+#[test]
+fn h42_unchanged_voice_reports_are_not_resent() {
+    let src = vec![0.0f32; RATE as usize];
+    let mut r = rig(&src, RackModel { slots: Vec::new() });
+    let (_id, reports) = r.subscribe_voice();
+    r.run_ms(1_000);
+    assert_eq!(
+        reports.lock().unwrap().len(),
+        1,
+        "only the first (empty) report"
+    );
+}
+
+/// H-42: an Inspector stream at a chosen FFT size and window reads a bin-centred tone at its
+/// level; reconfiguring changes the bin count; unsubscribing stops it.
+#[test]
+fn h42_inspector_stream_resolution_and_level() {
+    let fft = 4096u32;
+    let freq = 85.0 * f64::from(RATE) / f64::from(fft);
+    let src = sine(freq, -20.0, RATE, 4 * RATE as usize);
+    let mut r = rig(&src, RackModel { slots: Vec::new() });
+    let config = InspectorConfig {
+        fft_size: fft,
+        window: WindowKind::FlatTop,
+        response: AnalyzerResponse::Fast,
+    };
+    let (id, frames) = r.subscribe_inspector(config);
+    r.run_ms(20);
+    r.eng.transport(TransportCommand::Play);
+    r.run_ms(1_000);
+    {
+        let f = frames.lock().unwrap().last().unwrap().clone();
+        assert_eq!(f.fft_size, fft);
+        assert_eq!(f.levels_db.len(), fft as usize / 2 + 1);
+        assert_eq!(f.window, WindowKind::FlatTop);
+        let peak = (0..f.levels_db.len())
+            .max_by(|&a, &b| f.levels_db[a].total_cmp(&f.levels_db[b]))
+            .unwrap();
+        assert_eq!(peak, 85);
+        assert!((f.levels_db[85] + 20.0).abs() < 0.1, "{}", f.levels_db[85]);
+        let bytes = f.encode();
+        assert_eq!(&bytes[..4], b"VXIS");
+        assert_eq!(bytes.len(), 40 + 4 * f.levels_db.len());
+    }
+    // Every INSPECTOR_EVERY-th tick (30 Hz at 60 Hz).
+    let n = frames.lock().unwrap().len();
+    assert!((495..=512).contains(&n), "frames: {n}");
+
+    r.eng.analyzer_inspector_configure(
+        id,
+        InspectorConfig {
+            fft_size: 1024,
+            ..config
+        },
+    );
+    r.run_ms(10);
+    let f = frames.lock().unwrap().last().unwrap().clone();
+    assert_eq!(f.levels_db.len(), 513);
+
+    r.eng.analyzer_unsubscribe(id);
+    let n = frames.lock().unwrap().len();
+    r.run_ms(100);
+    assert_eq!(frames.lock().unwrap().len(), n);
+    assert_eq!(r.fake.rt_violations(), 0);
+}
+
+/// H-42: a silent output sends one Inspector frame (the floor), then nothing until sound comes.
+#[test]
+fn h42_inspector_goes_idle_on_silence() {
+    let src = vec![0.0f32; RATE as usize];
+    let mut r = rig(&src, RackModel { slots: Vec::new() });
+    let (_id, frames) = r.subscribe_inspector(InspectorConfig {
+        fft_size: 2048,
+        window: WindowKind::Hann,
+        response: AnalyzerResponse::Medium,
+    });
+    r.run_ms(500);
+    let frames = frames.lock().unwrap();
+    assert_eq!(frames.len(), 1);
+    assert!(frames[0].silent);
+    assert!(frames[0].levels_db.iter().all(|&v| v == f32::NEG_INFINITY));
+}

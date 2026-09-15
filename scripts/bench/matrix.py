@@ -110,6 +110,20 @@ GROUPS: list[tuple[str, str, str, list[str]]] = [
         [f"full_rack_process_{b}f_pct_core" for b in (64, 128, 256, 512, 1024)],
     ),
     (
+        "SPEC-007 AC-18 / H-42 §8.11 — live analyzer diagnostics ≤ 2 % of one core at 60 Hz "
+        "(≤ 333 µs per analyzer frame)",
+        "`vox-dsp` `diagnostics`: the live voice tracker fed one 60 Hz control tick (800 samples at "
+        "48 kHz) per frame, a report every 6th frame, 20 s of speech-like signal, best of 3; one "
+        "Spectrum Inspector frame per FFT size (30 Hz); the long-term average job (FFT 16 384 + "
+        "diagnostics) as a realtime factor.",
+        "just bench",
+        [
+            "diagnostics_live_per_frame",
+            *[f"inspector_frame_fft{n}" for n in (1024, 4096, 16384, 32768)],
+            "ltas_offline_realtime_factor",
+        ],
+    ),
+    (
         "PROMPT §2 — noise-reduction latency ≤ 50 ms",
         "`vox-modules` `spec_budgets`: the default instance's `latency_samples()` (N = 2048).",
         "just bench",

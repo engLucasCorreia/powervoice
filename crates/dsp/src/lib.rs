@@ -12,6 +12,9 @@
 //!   analysis runs on a job worker).
 //! - [`capture_resample`]: push-based streaming resampling for the capture-writer thread (H-06,
 //!   device rate → document rate) — off the audio thread only, never the RT input callback.
+//! - [`diagnostics`]: analyzer diagnostics (H-42, SPEC-007 §8): configurable-window power spectra,
+//!   the long-term average spectrum, YIN pitch, tone balance / sibilance / hum / rumble, noise floor
+//!   and SNR — off the audio thread only (the engine's analyzer publisher and job threads).
 //! - [`eq`]: parametric-EQ biquads, Butterworth cascades and smoothed bands (SPEC-015).
 //! - [`loudness`]: BS.1770/EBU R128 integrated/short-term/momentary loudness, LRA, sample and
 //!   true peak (S4-01) — off the audio thread only (job/edit-op code, not `process()`).
@@ -27,6 +30,7 @@ pub mod analyzer;
 pub mod async_resample;
 pub mod calibration;
 pub mod capture_resample;
+pub mod diagnostics;
 pub mod dither;
 pub mod dynamics;
 pub mod eq;

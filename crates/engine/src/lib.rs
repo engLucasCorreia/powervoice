@@ -58,7 +58,10 @@ pub mod spectro;
 pub mod telemetry;
 pub mod transport;
 
-pub use analyzer::{AnalyzerFrame, AnalyzerResponse, AnalyzerSink};
+pub use analyzer::{
+    AnalyzerFrame, AnalyzerResponse, AnalyzerSink, InspectorConfig, InspectorFrame, InspectorSink,
+    VoiceSink,
+};
 pub use backend::{
     Backend, BackendError, BufferRequest, DeviceInfo, DeviceKey, DeviceSnapshot, Direction,
     DirectionCaps, Enumerate, HostId, InputCallback, InputTimestamp, OutputCallback,

@@ -24,7 +24,8 @@ crate::ipc_events!(
     record_finished,
     calibration_result,
     import_started,
-    plugin_scan_progress
+    plugin_scan_progress,
+    spectrum_report
 );
 
 /// A user-facing notice (ADR-003 `notice` event). Two shapes, distinguished by `persistent`:
@@ -153,6 +154,10 @@ pub enum JobKind {
     /// whole file; a successful commit arrives as `document_changed`/`history_state` plus a
     /// `notice.bake.done` toast.
     Bake,
+    /// H-42 (SPEC-007 §8.5): the long-term average spectrum job (`spectrum_analyze_start`) —
+    /// its diagnostics arrive as a `spectrum_report` event, its curves via
+    /// `spectrum_analyze_curve`.
+    SpectrumAnalyze,
 }
 
 /// `job_progress`'s lifecycle. `Running` fractions are monotonically non-decreasing in `[0, 1]`;
@@ -221,6 +226,15 @@ pub fn emit_loudness_report<R: tauri::Runtime>(
 ) -> tauri::Result<()> {
     use tauri::Emitter as _;
     app.emit(EventName::loudness_report.as_str(), report)
+}
+
+/// Emits a `spectrum_report` event (H-42): a finished long-term average job's diagnostics.
+pub fn emit_spectrum_report<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    report: crate::ipc::spectrum_dto::SpectrumReportDto,
+) -> tauri::Result<()> {
+    use tauri::Emitter as _;
+    app.emit(EventName::spectrum_report.as_str(), report)
 }
 
 /// Emits a `normalize_result` event (H-09): a finished normalize job's edit result, once its

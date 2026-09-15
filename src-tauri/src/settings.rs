@@ -147,6 +147,75 @@ pub enum AnalyzerResponsePref {
     Slow,
 }
 
+// --- Analyzer diagnostics & Spectrum Inspector (H-42, SPEC-007 §8) -----------------------------
+
+/// The Spectrum Inspector's analysis window (mirrors `vox_dsp::diagnostics::WindowKind`; its
+/// own type so `settings` doesn't depend on `ipc`, like [`AnalyzerResponsePref`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum SpectrumWindowPref {
+    #[default]
+    Hann,
+    BlackmanHarris,
+    FlatTop,
+    Rectangular,
+}
+
+/// Fractional-octave smoothing of the Inspector's curve (SPEC-007 §8.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum SpectrumSmoothingPref {
+    #[default]
+    None,
+    Third,
+    Sixth,
+    Twelfth,
+}
+
+/// The Inspector's frequency axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum SpectrumScalePref {
+    #[default]
+    Log,
+    Linear,
+}
+
+/// H-42 (SPEC-007 §8): the analyzer's diagnostics overlays and the Spectrum Inspector's last
+/// settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(default)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct AnalyzerDiagnosticsPrefsDto {
+    /// Peak labels and the crosshair readout on the graph (on by default).
+    pub peak_labels: bool,
+    /// The diagnostics side panel (off by default — the analyzer keeps its look).
+    pub panel_visible: bool,
+    /// Spectrum Inspector FFT size (1 024 … 32 768).
+    pub inspector_fft_size: u32,
+    pub inspector_window: SpectrumWindowPref,
+    pub inspector_smoothing: SpectrumSmoothingPref,
+    pub inspector_scale: SpectrumScalePref,
+    pub inspector_response: AnalyzerResponsePref,
+}
+
+impl Default for AnalyzerDiagnosticsPrefsDto {
+    fn default() -> Self {
+        Self {
+            peak_labels: true,
+            panel_visible: false,
+            inspector_fft_size: 16_384,
+            inspector_window: SpectrumWindowPref::default(),
+            inspector_smoothing: SpectrumSmoothingPref::default(),
+            inspector_scale: SpectrumScalePref::default(),
+            inspector_response: AnalyzerResponsePref::default(),
+        }
+    }
+}
+
 // --- Normalize dialog memory (SPEC-010 §2.4, H-09) ----------------------------------------------
 
 /// The Normalize… dialog's unit toggle (SPEC-010 §2.4).
@@ -632,6 +701,9 @@ pub struct Settings {
     /// read by the engine. Default off (SPEC-006 §2.10). Additive field — the settings version
     /// stays 1.
     pub snap_to_zero_crossing: bool,
+    /// H-42 (SPEC-007 §8): analyzer peak labels / diagnostics panel / Spectrum Inspector
+    /// settings. Additive field — the settings version stays 1.
+    pub analyzer_diagnostics: AnalyzerDiagnosticsPrefsDto,
     #[serde(flatten)]
     #[ts(skip)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -664,6 +736,7 @@ impl Default for Settings {
             plugins: PluginsSettingsDto::default(),
             tours: ToursSettingsDto::default(),
             snap_to_zero_crossing: false,
+            analyzer_diagnostics: AnalyzerDiagnosticsPrefsDto::default(),
             extra: serde_json::Map::new(),
         }
     }

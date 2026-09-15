@@ -23,6 +23,24 @@ export type AcxRuleDto = { measured_db: number | null, status: AcxRuleStatusDto,
 export type AcxRuleStatusDto = "pass" | "too_low" | "too_high" | "invalid" | "too_short";
 
 /**
+ * H-42 (SPEC-007 §8): the analyzer's diagnostics overlays and the Spectrum Inspector's last
+ * settings.
+ */
+export type AnalyzerDiagnosticsPrefsDto = { 
+/**
+ * Peak labels and the crosshair readout on the graph (on by default).
+ */
+peak_labels: boolean, 
+/**
+ * The diagnostics side panel (off by default — the analyzer keeps its look).
+ */
+panel_visible: boolean, 
+/**
+ * Spectrum Inspector FFT size (1 024 … 32 768).
+ */
+inspector_fft_size: number, inspector_window: SpectrumWindowPref, inspector_smoothing: SpectrumSmoothingPref, inspector_scale: SpectrumScalePref, inspector_response: AnalyzerResponsePref, };
+
+/**
  * Analyzer averaging response (Fast/Medium/Slow, SPEC-007 §2.9), exponential averaging in the
  * power domain with τ = 50 / 150 / 500 ms.
  */
@@ -78,7 +96,7 @@ peak_dbfs: number | null, clipped: boolean, weak: boolean, accepted: boolean, re
  */
 export type ClipboardChangedDto = { len_samples: number | null, sample_rate_hz: number | null, };
 
-export type CommandName = "app_info" | "settings_get" | "settings_set" | "settings_startup_notice_take" | "settings_defaults" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "transport_set_loop" | "transport_set_selection" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "module_telemetry_subscribe" | "module_presets_list" | "module_preset_save" | "module_preset_load" | "module_preset_rename" | "module_preset_delete" | "module_preset_export" | "module_preset_import" | "module_reset_default" | "rack_presets_list" | "rack_preset_save" | "rack_preset_load" | "rack_preset_rename" | "rack_preset_delete" | "rack_preset_export" | "rack_preset_import" | "analyzer_subscribe" | "analyzer_set_response" | "analyzer_unsubscribe" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_open_cancel" | "document_probe" | "document_save" | "document_save_as" | "document_close" | "sidecar_view_set_spectral" | "sidecar_view_set_waveform" | "recent_files_get" | "recent_files_remove" | "recent_files_clear" | "recovery_list" | "recovery_recover" | "recovery_discard" | "storage_info" | "peaks_get" | "spectro_attach" | "spectro_detach" | "spectro_request" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "edit_bake_start" | "edit_bake_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check" | "record_start_at" | "record_offset_get" | "record_offset_set" | "calibration_run" | "calibration_cancel" | "plugins_list" | "plugins_rescan" | "plugins_set_enabled" | "plugins_block" | "plugins_unblock" | "plugins_add_folder" | "plugins_remove_folder" | "plugins_clear_flag" | "plugins_folders" | "plugins_install" | "plugins_reveal" | "plugins_uninstall";
+export type CommandName = "app_info" | "settings_get" | "settings_set" | "settings_startup_notice_take" | "settings_defaults" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "transport_set_loop" | "transport_set_selection" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "module_telemetry_subscribe" | "module_presets_list" | "module_preset_save" | "module_preset_load" | "module_preset_rename" | "module_preset_delete" | "module_preset_export" | "module_preset_import" | "module_reset_default" | "rack_presets_list" | "rack_preset_save" | "rack_preset_load" | "rack_preset_rename" | "rack_preset_delete" | "rack_preset_export" | "rack_preset_import" | "analyzer_subscribe" | "analyzer_set_response" | "analyzer_unsubscribe" | "analyzer_voice_subscribe" | "analyzer_inspector_subscribe" | "analyzer_inspector_configure" | "spectrum_analyze_start" | "spectrum_analyze_cancel" | "spectrum_analyze_curve" | "spectrum_export_csv" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_open_cancel" | "document_probe" | "document_save" | "document_save_as" | "document_close" | "sidecar_view_set_spectral" | "sidecar_view_set_waveform" | "recent_files_get" | "recent_files_remove" | "recent_files_clear" | "recovery_list" | "recovery_recover" | "recovery_discard" | "storage_info" | "peaks_get" | "spectro_attach" | "spectro_detach" | "spectro_request" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "edit_bake_start" | "edit_bake_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check" | "record_start_at" | "record_offset_get" | "record_offset_set" | "calibration_run" | "calibration_cancel" | "plugins_list" | "plugins_rescan" | "plugins_set_enabled" | "plugins_block" | "plugins_unblock" | "plugins_add_folder" | "plugins_remove_folder" | "plugins_clear_flag" | "plugins_folders" | "plugins_install" | "plugins_reveal" | "plugins_uninstall";
 
 /**
  * One draggable EQ-graph node (S3-07, SPEC-015 §3 "ResponseCurve components"): the band's
@@ -244,7 +262,7 @@ selection: [number, number] | null, playhead_samples: number, };
  */
 export type EditTargetDto = { "kind": "cursor", at_samples: number, } | { "kind": "range", start_samples: number, end_samples: number, };
 
-export type EventName = "notice" | "transport_state" | "devices_changed" | "rack_changed" | "param_changed" | "rack_latency" | "record_state" | "document_changed" | "history_state" | "clipboard_changed" | "job_progress" | "loudness_report" | "normalize_result" | "recent_files_changed" | "record_phase" | "record_finished" | "calibration_result" | "import_started" | "plugin_scan_progress";
+export type EventName = "notice" | "transport_state" | "devices_changed" | "rack_changed" | "param_changed" | "rack_latency" | "record_state" | "document_changed" | "history_state" | "clipboard_changed" | "job_progress" | "loudness_report" | "normalize_result" | "recent_files_changed" | "record_phase" | "record_finished" | "calibration_result" | "import_started" | "plugin_scan_progress" | "spectrum_report";
 
 /**
  * Export output format and its per-format settings. FLAC's `bits` rejects `"32f"` (FLAC has no
@@ -275,6 +293,27 @@ export type ExportRequestDto = { path: string, format: ExportFormatDto, sample_r
 export type ExportStartedDto = { job_id: number, };
 
 /**
+ * F0 statistics (Hz), SPEC-007 §8.6.
+ */
+export type F0StatsDto = { 
+/**
+ * Live only: the last 0.3 s of voiced frames; `null` between phrases and offline.
+ */
+current_hz: number | null, median_hz: number, 
+/**
+ * 10th percentile.
+ */
+low_hz: number, 
+/**
+ * 90th percentile.
+ */
+high_hz: number, 
+/**
+ * 0 … 1.
+ */
+voiced_fraction: number, };
+
+/**
  * S2-01: the Edit menu's Undo/Redo state (`history_state` event). Labels are i18n keys
  * (`history.cut`, …, CLAUDE.md), `null` when there's nothing to undo/redo.
  */
@@ -284,6 +323,19 @@ export type HistoryStateDto = { can_undo: boolean, can_redo: boolean, undo_label
  * "Normalize to {target} dB"); empty when it has none.
  */
 undo_label_params: { [key in string]: string }, redo_label_params: { [key in string]: string }, };
+
+/**
+ * SPEC-007 §8.7.
+ */
+export type HumDto = { 
+/**
+ * 50 or 60.
+ */
+mains_hz: number, 
+/**
+ * The harmonics that stand out (1 = the fundamental), ascending.
+ */
+harmonics: Array<number>, strongest_hz: number, prominence_db: number, level_db: number, };
 
 /**
  * H-20 (SPEC-005 §2.3): the import job's document shell — file name, rate and (when the container
@@ -297,6 +349,15 @@ export type ImportStartedDto = { job_id: number, name: string, sample_rate_hz: n
  * formats without a sample count" — the UI shows an indeterminate shell then).
  */
 len_samples: number | null, };
+
+/**
+ * H-42: `analyzer_inspector_subscribe`/`analyzer_inspector_configure`'s settings.
+ */
+export type InspectorConfigDto = { 
+/**
+ * A power of two, 1 024 … 32 768.
+ */
+fft_size: number, window: SpectrumWindowDto, response: AnalyzerResponseDto, };
 
 /**
  * Why "Install module…" didn't install (T-809). The UI words each one; `detail` carries the
@@ -329,7 +390,7 @@ export type IpcErrorCode = "internal" | "invalid_argument" | "not_found" | "not_
  * job kinds add a variant here rather than a new event, so the frontend has one progress/cancel
  * pattern for every job.
  */
-export type JobKind = "export" | "import" | "nr_capture" | "loudness_analyze" | "normalize_peak" | "normalize_lufs" | "calibration" | "bake";
+export type JobKind = "export" | "import" | "nr_capture" | "loudness_analyze" | "normalize_peak" | "normalize_lufs" | "calibration" | "bake" | "spectrum_analyze";
 
 /**
  * `job_progress` event payload (ADR-003; ≤ 10 Hz per job). `job_id` distinguishes overlapping or
@@ -1107,7 +1168,25 @@ tours: ToursSettingsDto,
  * read by the engine. Default off (SPEC-006 §2.10). Additive field — the settings version
  * stays 1.
  */
-snap_to_zero_crossing: boolean, };
+snap_to_zero_crossing: boolean, 
+/**
+ * H-42 (SPEC-007 §8): analyzer peak labels / diagnostics panel / Spectrum Inspector
+ * settings. Additive field — the settings version stays 1.
+ */
+analyzer_diagnostics: AnalyzerDiagnosticsPrefsDto, };
+
+/**
+ * SPEC-007 §8.7.
+ */
+export type SibilanceDto = { 
+/**
+ * 4–10 kHz relative to the overall level (dB).
+ */
+ratio_db: number, 
+/**
+ * The de-esser target (Hz).
+ */
+centre_hz: number, };
 
 /**
  * Slot status (SPEC-012 §2.2, §2.9; T-802: `restarting` for a sandboxed plugin whose automatic
@@ -1143,6 +1222,69 @@ export type SpectralViewDto = { visible: boolean, split_ratio: number, fft_size:
  * to 64 tile indices, visible tiles first.
  */
 export type SpectroRequestDto = { request_id: number, audio_rev: number, fft_size: number, hop: number, window: number, tiles: Array<number>, };
+
+/**
+ * `spectrum_analyze_start`'s argument.
+ */
+export type SpectrumAnalyzeRequestDto = { 
+/**
+ * `[start, end)`; both `null` = the whole document.
+ */
+start_sample: number | null, end_sample: number | null, 
+/**
+ * The signals to analyse, in order — `["source", "processed"]` for the comparison.
+ */
+sources: Array<LoudnessSourceDto>, 
+/**
+ * A power of two, 1 024 … 32 768.
+ */
+fft_size: number, window: SpectrumWindowDto, };
+
+/**
+ * `spectrum_analyze_start`'s result.
+ */
+export type SpectrumAnalyzeStartedDto = { job_id: number, };
+
+/**
+ * The `spectrum_report` event: a finished long-term average job. Fetch result `i`'s curve with
+ * `spectrum_analyze_curve(job_id, i)`.
+ */
+export type SpectrumReportDto = { job_id: number, sample_rate_hz: number, fft_size: number, window: SpectrumWindowDto, start_sample: number, end_sample: number, results: Array<SpectrumResultDto>, };
+
+/**
+ * One analysed signal of a `spectrum_report`.
+ */
+export type SpectrumResultDto = { source: LoudnessSourceDto, 
+/**
+ * Frames averaged into the curve.
+ */
+frames: number, 
+/**
+ * Whether the `VXLT` curve carries a room-tone (quiet-frame) spectrum too.
+ */
+has_noise: boolean, report: VoiceReportDto, };
+
+/**
+ * The Inspector's frequency axis.
+ */
+export type SpectrumScalePref = "log" | "linear";
+
+/**
+ * Fractional-octave smoothing of the Inspector's curve (SPEC-007 §8.3).
+ */
+export type SpectrumSmoothingPref = "none" | "third" | "sixth" | "twelfth";
+
+/**
+ * H-42 (SPEC-007 §8.3): a spectral-analysis window for the Spectrum Inspector and the
+ * long-term average job. Mirrors [`WindowKind`].
+ */
+export type SpectrumWindowDto = "hann" | "blackman_harris" | "flat_top" | "rectangular";
+
+/**
+ * The Spectrum Inspector's analysis window (mirrors `vox_dsp::diagnostics::WindowKind`; its
+ * own type so `settings` doesn't depend on `ipc`, like [`AnalyzerResponsePref`]).
+ */
+export type SpectrumWindowPref = "hann" | "blackman_harris" | "flat_top" | "rectangular";
 
 /**
  * Settings → Recovery & storage (SPEC-004 §2.5, §2.8): the open document's session storage
@@ -1200,6 +1342,11 @@ export type ThemePref = "dark" | "light" | "system" | "high_contrast";
 export type TimeRulerFormatDto = "timecode" | "samples" | "seconds";
 
 /**
+ * Per-octave densities relative to the 1 kHz octave (dB), SPEC-007 §8.7.
+ */
+export type ToneBalanceDto = { mud_db: number, presence_db: number | null, air_db: number | null, };
+
+/**
  * How a tour last ended for this user.
  */
 export type TourOutcome = "completed" | "skipped" | "dismissed";
@@ -1244,6 +1391,16 @@ loop_range: [number, number] | null, };
  * Display unit ([`Unit`]); `Custom` carries the adapter-provided label.
  */
 export type UnitDto = { "kind": "none" } | { "kind": "db" } | { "kind": "dbfs" } | { "kind": "dbtp" } | { "kind": "lufs" } | { "kind": "hz" } | { "kind": "ms" } | { "kind": "seconds" } | { "kind": "percent" } | { "kind": "ratio" } | { "kind": "samples" } | { "kind": "custom", label: string, };
+
+/**
+ * The voice diagnostics (SPEC-007 §8.6–§8.8), live (`analyzer_voice_subscribe`) or from the
+ * long-term average job (`spectrum_report`). `null` = not measurable.
+ */
+export type VoiceReportDto = { f0: F0StatsDto | null, tone: ToneBalanceDto | null, sibilance: SibilanceDto | null, hum: HumDto | null, rumble_db: number | null, noise_floor_dbfs: number | null, active_level_dbfs: number | null, snr_db: number | null, 
+/**
+ * Seconds of non-silent audio the statistics cover.
+ */
+span_s: number, };
 
 /**
  * `[start_sample, end_sample)` document samples (SPEC-006 §2.2's selection shape).

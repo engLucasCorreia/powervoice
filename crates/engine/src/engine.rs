@@ -18,7 +18,7 @@ use std::thread::JoinHandle;
 use vox_project::{ChunkStore, DocSnapshot, FreeSpaceProvider, SystemFreeSpace, TakeCapture};
 use vox_rack::{ModuleDescriptor, ModulePreset, ModuleState, RackModel, RackNotice, Registry};
 
-use crate::analyzer::{AnalyzerResponse, AnalyzerSink};
+use crate::analyzer::{AnalyzerResponse, AnalyzerSink, InspectorConfig, InspectorSink, VoiceSink};
 use crate::backend::{Backend, BufferRequest, DeviceSnapshot, HostId, app_now_ns};
 use crate::control::{self, Control, ControlMsg};
 use crate::device_state::DeviceStatus;
@@ -298,9 +298,34 @@ impl EngineHandle {
         let _ = self.call(move |c| c.analyzer_set_response(id, response));
     }
 
-    /// Removes a subscriber; the tap turns off once none remain.
+    /// Removes a subscriber of any kind (`VXSA`, voice, Inspector); the tap turns off once none
+    /// remain.
     pub fn analyzer_unsubscribe(&self, id: u32) {
         let _ = self.call(move |c| c.analyzer_unsubscribe(id));
+    }
+
+    /// H-42 (SPEC-007 §8.8): subscribes to live voice diagnostics — a
+    /// [`vox_dsp::diagnostics::VoiceReport`] about 10 times a second, only when it changed.
+    /// Unsubscribe with [`Self::analyzer_unsubscribe`].
+    pub fn analyzer_voice_subscribe(&self, sink: VoiceSink) -> u32 {
+        self.call(move |c| c.analyzer_voice_subscribe(sink))
+            .unwrap_or(0)
+    }
+
+    /// H-42 (SPEC-007 §8.3): subscribes a Spectrum Inspector stream (`VXIS`) at `config`.
+    /// Unsubscribe with [`Self::analyzer_unsubscribe`].
+    pub fn analyzer_inspector_subscribe(
+        &self,
+        sink: InspectorSink,
+        config: InspectorConfig,
+    ) -> u32 {
+        self.call(move |c| c.analyzer_inspector_subscribe(sink, config))
+            .unwrap_or(0)
+    }
+
+    /// H-42: changes an Inspector stream's FFT size / window / response.
+    pub fn analyzer_inspector_configure(&self, id: u32, config: InspectorConfig) {
+        let _ = self.call(move |c| c.analyzer_inspector_configure(id, config));
     }
 
     /// The registered modules (the Add-module menu; S3-01).
@@ -562,6 +587,25 @@ impl ManualEngine {
     /// See [`EngineHandle::analyzer_unsubscribe`].
     pub fn analyzer_unsubscribe(&mut self, id: u32) {
         self.control.analyzer_unsubscribe(id);
+    }
+
+    /// See [`EngineHandle::analyzer_voice_subscribe`].
+    pub fn analyzer_voice_subscribe(&mut self, sink: VoiceSink) -> u32 {
+        self.control.analyzer_voice_subscribe(sink)
+    }
+
+    /// See [`EngineHandle::analyzer_inspector_subscribe`].
+    pub fn analyzer_inspector_subscribe(
+        &mut self,
+        sink: InspectorSink,
+        config: InspectorConfig,
+    ) -> u32 {
+        self.control.analyzer_inspector_subscribe(sink, config)
+    }
+
+    /// See [`EngineHandle::analyzer_inspector_configure`].
+    pub fn analyzer_inspector_configure(&mut self, id: u32, config: InspectorConfig) {
+        self.control.analyzer_inspector_configure(id, config);
     }
 
     /// See [`EngineHandle::rack_registry`].

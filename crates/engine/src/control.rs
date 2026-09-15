@@ -24,6 +24,7 @@ use vox_rack::{
 
 use crate::analyzer::{
     ANALYZER_RING_FRAMES, AnalyzerPublisher, AnalyzerResponse, AnalyzerSink, AnalyzerTap,
+    InspectorConfig, InspectorSink, VoiceSink,
 };
 use crate::backend::{
     Backend, BackendError, BufferRequest, Direction, Enumerate, HostId, StallDetector,
@@ -3238,6 +3239,25 @@ impl Control {
     /// Removes a subscriber; the tap turns off once none remain (`ANALYZER_ON` clear).
     pub(crate) fn analyzer_unsubscribe(&mut self, id: u32) {
         self.analyzer.unsubscribe(id);
+    }
+
+    /// H-42: registers a voice-diagnostics subscriber; returns its id.
+    pub(crate) fn analyzer_voice_subscribe(&mut self, sink: VoiceSink) -> u32 {
+        self.analyzer.subscribe_voice(sink)
+    }
+
+    /// H-42: registers a Spectrum Inspector subscriber; returns its id.
+    pub(crate) fn analyzer_inspector_subscribe(
+        &mut self,
+        sink: InspectorSink,
+        config: InspectorConfig,
+    ) -> u32 {
+        self.analyzer.subscribe_inspector(sink, config)
+    }
+
+    /// H-42: reconfigures an Inspector subscriber.
+    pub(crate) fn analyzer_inspector_configure(&mut self, id: u32, config: InspectorConfig) {
+        self.analyzer.configure_inspector(id, config);
     }
 }
 

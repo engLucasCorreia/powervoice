@@ -88,6 +88,15 @@ export function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     plugins: { custom_folders: [], disabled: [] },
     tours: { progress: [] },
     snap_to_zero_crossing: false,
+    analyzer_diagnostics: {
+      peak_labels: true,
+      panel_visible: false,
+      inspector_fft_size: 16_384,
+      inspector_window: "hann",
+      inspector_smoothing: "none",
+      inspector_scale: "log",
+      inspector_response: "medium",
+    },
     ...overrides,
   };
 }

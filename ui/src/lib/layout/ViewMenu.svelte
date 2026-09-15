@@ -1,5 +1,6 @@
 <script lang="ts">
   import { analyzerState, setAnalyzerVisible } from "../analyzer/analyzer.svelte";
+  import { diagnosticsState, setInspectorOpen } from "../analyzer/diagnostics.svelte";
   import { documentState, hasDocument } from "../document/document.svelte";
   import { t, tDynamic } from "../i18n";
   import { dispatchAction } from "../shortcuts";
@@ -36,6 +37,7 @@
    * §2.4).
    */
   const analyzer = analyzerState();
+  const diagnostics = diagnosticsState();
   const spectral = spectralState();
   const renderer = rendererPref();
   const theme = themeState();
@@ -91,6 +93,15 @@
       checked: analyzer.visible,
       testid: "menu-view-analyzer",
       onselect: () => setAnalyzerVisible(!analyzer.visible),
+    },
+    {
+      // H-42 (SPEC-007 §8.3): the Spectrum Inspector window.
+      kind: "checkbox",
+      id: "spectrum-inspector",
+      label: t("menu.view.spectrum_inspector"),
+      checked: diagnostics.inspectorOpen,
+      testid: "menu-view-spectrum-inspector",
+      onselect: () => setInspectorOpen(!diagnostics.inspectorOpen),
     },
     {
       kind: "checkbox",

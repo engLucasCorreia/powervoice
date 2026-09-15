@@ -1,93 +1,112 @@
 <script lang="ts">
-  import { estimateLabelWidthPx, fitAxisLabels } from "../ui/axisLabels";
+  import { untrack } from "svelte";
+  import { Button, SegmentedControl, Toggle, ToggleButton, IconButton, formatWithUnit, type SegmentOption } from "../ui";
   import { formatNumber } from "../ui/units";
-  import { SegmentedControl, Toggle, formatWithUnit, type SegmentOption } from "../ui";
   import { t } from "../i18n";
-  import type { AnalyzerResponseDto } from "../ipc/bindings";
+  import type { AnalyzerResponseDto, LoudnessSourceDto } from "../ipc/bindings";
   import {
-    fullFreqRange,
-    frequencyTicks,
-    formatHoverFreqHz,
-    uForFreq,
-    freqForU,
-    zoomFreqRange,
-    panFreqRange,
-  } from "../spectrum/freqAxis";
-  import { ANALYZER_CEIL_OPTIONS_DB, ANALYZER_FLOOR_OPTIONS_DB, dbAxisTicks, DEFAULT_ANALYZER_CEIL_DB, DEFAULT_ANALYZER_FLOOR_DB, nearestAnalyzerBand, yForAnalyzerDb } from "./analyzerMath";
+    ANALYZER_CEIL_OPTIONS_DB,
+    ANALYZER_FLOOR_OPTIONS_DB,
+    DEFAULT_ANALYZER_CEIL_DB,
+    DEFAULT_ANALYZER_FLOOR_DB,
+  } from "./analyzerMath";
   import { analyzerState, initAnalyzer, setAnalyzerResponse } from "./analyzer.svelte";
   import { initOutputDeviceStatus, outputDeviceStatus } from "./outputDeviceStatus.svelte";
-  import { createPeakHold, resetPeakHold, updatePeakHold, type PeakHoldBand } from "./peakHold";
-  import { themeColors } from "../theme/themeColors";
+  import {
+    acquireLiveVoice,
+    averageScope,
+    cancelAverage,
+    clearSnapshots,
+    diagnosticsState,
+    freezeSnapshot,
+    setAnalyzerMode,
+    setAverageSource,
+    setDiagnosticsPanelVisible,
+    setInspectorOpen,
+    setPeakLabels,
+    startAverage,
+    startSourceVsProcessed,
+    type AnalyzerMode,
+    type SnapshotSlot,
+  } from "./diagnostics.svelte";
+  import SpectrumPlot from "./SpectrumPlot.svelte";
+  import DiagnosticsPanel from "./DiagnosticsPanel.svelte";
+  import type { PlotCurve, PlotOverlay } from "./plotGeometry";
 
   /**
-   * The live output analyzer panel (T-208/H-16, SPEC-007 §2.9): a filled spectrum curve on a log
-   * frequency axis (20 Hz .. min(Nyquist, 24 kHz), zoomable/pannable — wheel to zoom around the
-   * pointer, drag to pan, double-click to reset), a floor/ceiling picker, a Fast/Medium/Slow
-   * response selector and a peak-hold toggle. Canvas2D (SPEC-007 §4.1: the panel is small, ≤ 246
-   * points at 60 Hz). Renders in the bottom dock, to the right of the meter bridge.
+   * The live output analyzer panel (T-208/H-16, SPEC-007 §2.9) — its look unchanged — with the
+   * H-42 diagnostics (SPEC-007 §8), all optional:
+   * - **Peaks**: labels on the strongest peaks (frequency, note ± cents, level) and a hover
+   *   crosshair with the note;
+   * - **Live / Average / Compare**: the live curve; the long-term average of the selection or the
+   *   whole file (a Rust job with progress and cancel) with its room-tone curve; A/B snapshots
+   *   over the live curve, including Source vs Processed;
+   * - **Diagnostics**: the voice statistics panel beside the graph;
+   * - the Spectrum Inspector (a larger window, View → Spectrum Inspector).
+   * The plot itself is `SpectrumPlot.svelte` (shared with the Inspector; draws on demand).
    */
 
   const RESPONSES: AnalyzerResponseDto[] = ["fast", "medium", "slow"];
+  const MODES: AnalyzerMode[] = ["live", "average", "compare"];
+  const SOURCES: LoudnessSourceDto[] = ["processed", "source"];
 
-  let canvasEl: HTMLCanvasElement | undefined = $state();
-  let width = $state(0);
-  let height = $state(0);
-  let peaks: PeakHoldBand[] = [];
-  let hover: { x: number; y: number } | null = $state(null);
   let floorDb = $state<number>(DEFAULT_ANALYZER_FLOOR_DB);
   let ceilDb = $state<number>(DEFAULT_ANALYZER_CEIL_DB);
   /** `null` = full range (follows the device's Nyquist rate); set once the user zooms/pans. */
   let zoomRange: [number, number] | null = $state(null);
-  let dragStartX: number | null = null;
-  let dragStartRange: [number, number] | null = null;
-  let dragMoved = false;
+  let resetKey = $state(0);
 
   const analyzer = analyzerState();
+  const diag = diagnosticsState();
+  const device = outputDeviceStatus();
   // H-25: Fast / Medium / Slow as the kit's small segmented control.
   const responseOptions: SegmentOption<AnalyzerResponseDto>[] = RESPONSES.map((r) => ({
     value: r,
     label: t(`analyzer.response.${r}` as `analyzer.response.${AnalyzerResponseDto}`),
   }));
-  const device = outputDeviceStatus();
+  const modeOptions: SegmentOption<AnalyzerMode>[] = MODES.map((m) => ({
+    value: m,
+    label: t(`analyzer.mode.${m}` as `analyzer.mode.${AnalyzerMode}`),
+  }));
+  const sourceOptions: SegmentOption<LoudnessSourceDto>[] = SOURCES.map((s) => ({
+    value: s,
+    label: t(`analyzer.average.${s}` as `analyzer.average.${LoudnessSourceDto}`),
+  }));
+
   const frame = $derived(analyzer.frame);
   const nyquistHz = $derived(frame ? frame.sampleRateHz / 2 : 24_000);
-  const fullRange = $derived(fullFreqRange("log", Math.min(nyquistHz, 24_000)));
-  const displayRange = $derived(zoomRange ?? fullRange);
-  const noOutputDevice = $derived(
-    device.current === "not_selected" || device.current === "lost",
-  );
+  const noOutputDevice = $derived(device.current === "not_selected" || device.current === "lost");
 
-  // H-24 item 5: persistent frequency (bottom) and dB (left gutter) axis labels — the analyzer
-  // used to draw grid lines with no labels at all. `frequencyTicks` walks a *vertical* axis
-  // (SPEC-007 §2.4/§4.7); this pane is horizontal, so only its `freqHz`/`label` are used and the
-  // x position is recomputed with `xForFreq` (`draw()` already does this for the grid lines).
-  const freqAxisTicks = $derived.by(() => {
-    if (width <= 0) {
-      return [];
+  let bandFreqs = new Float64Array(0);
+  function bandFrequencies(count: number, f0Hz: number, bandsPerOctave: number): Float64Array {
+    if (bandFreqs.length !== count || bandFreqs[0] !== f0Hz) {
+      bandFreqs = Float64Array.from({ length: count }, (_, k) => f0Hz * 2 ** (k / bandsPerOctave));
     }
-    const [fLo, fHi] = displayRange;
-    return frequencyTicks(fLo, fHi, "log", width, 40).map((tick) => {
-      const x = xForFreq(tick.freqHz);
-      return { freqHz: tick.freqHz, x, label: tick.label };
-    });
+    return bandFreqs;
+  }
+
+  const liveCurve = $derived.by((): PlotCurve | null => {
+    const f = frame;
+    if (!f || f.levelsDb.length === 0) {
+      return null;
+    }
+    return {
+      freqsHz: bandFrequencies(f.levelsDb.length, f.f0Hz, f.bandsPerOctave),
+      levelsDb: f.levelsDb,
+      resolution: "bands",
+    };
   });
 
-  const dbTicks = $derived.by(() => (height > 0 ? dbAxisTicks(floorDb, ceilDb, height, 22) : []));
-
-  // H-26: the labels that fit (`ui/axisLabels.ts`): inside the axis, edge-aligned at its ends,
-  // clear of each other. The units live in their own cells, so no tick ever sits on one.
-  const dbLabels = $derived(
-    fitAxisLabels(
-      dbTicks.map((tick) => ({ ...tick, pos: tick.y, size: 12 })),
-      { length: height },
-    ),
-  );
-  const freqLabels = $derived(
-    fitAxisLabels(
-      freqAxisTicks.map((tick) => ({ ...tick, pos: tick.x, size: estimateLabelWidthPx(tick.label, 10) })),
-      { length: width, gapPx: 4 },
-    ),
-  );
+  // A device reopen/rate change clears the hold and invalidates a zoom picked against the old
+  // Nyquist rate (SPEC-007 §4.8.6).
+  $effect(() => {
+    if (frame?.reset) {
+      untrack(() => {
+        resetKey += 1;
+        zoomRange = null;
+      });
+    }
+  });
 
   $effect(() => {
     let cleanup: (() => void) | undefined;
@@ -121,252 +140,119 @@
     };
   });
 
+  // The live voice statistics only run while the diagnostics panel shows them.
   $effect(() => {
-    const el = canvasEl;
-    if (!el) {
-      width = 0;
-      height = 0;
-      return;
+    if (diag.prefs.panel_visible) {
+      return acquireLiveVoice();
     }
-    width = el.clientWidth;
-    height = el.clientHeight;
-    if (typeof ResizeObserver === "undefined") {
-      return;
-    }
-    const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        width = Math.max(0, Math.round(entry.contentRect.width));
-        height = Math.max(0, Math.round(entry.contentRect.height));
-      }
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
   });
 
-  // Peak-hold ballistics run per animation frame (SPEC-007 §4.8 step 7), decoupled from the
-  // ~60 Hz frame arrival rate.
-  $effect(() => {
-    let raf = 0;
-    let last = performance.now();
-    const tick = (now: number) => {
-      const dtS = Math.max(0, Math.min(0.25, (now - last) / 1000));
-      last = now;
-      try {
-        const f = frame;
-        if (f) {
-          if (f.reset) {
-            resetPeakHold(peaks);
-            // A device reopen/rate change invalidates a manual zoom picked against the old
-            // Nyquist rate (SPEC-007 §4.8.6 treats this exactly like the analyzer's own reset).
-            zoomRange = null;
-          }
-          if (peaks.length !== f.levelsDb.length) {
-            peaks = createPeakHold(f.levelsDb.length);
-          }
-          if (analyzer.peakHold) {
-            peaks = updatePeakHold(peaks, f.levelsDb, dtS);
-          }
-        }
-        draw();
-      } finally {
-        // H-32: reschedule unconditionally — a transient bad read must never stop this loop from
-        // trying again next frame (same shared cause as the EQ graph: a corrupted `transport`
-        // store, fixed at the source in `transport.svelte.ts`, but this loop shouldn't depend on
-        // every future reader being exception-free to keep animating).
-        raf = requestAnimationFrame(tick);
+  const scope = $derived(averageScope());
+  const jobRunning = $derived(diag.job?.state === "running");
+  const jobPct = $derived(Math.round((diag.job?.fraction ?? 0) * 100));
+  const average = $derived(
+    diag.averages.find((a) => a.source === diag.averageSource) ?? diag.averages[0] ?? null,
+  );
+  const primary = $derived(diag.mode === "average" ? (average?.curve ?? null) : liveCurve);
+  const maxHz = $derived(
+    Math.min(diag.mode === "average" && diag.averageReport ? diag.averageReport.sample_rate_hz / 2 : nyquistHz, 24_000),
+  );
+
+  const overlays = $derived.by((): PlotOverlay[] => {
+    if (diag.mode === "average") {
+      return average?.noise ? [{ key: "noise", curve: average.noise, tone: "noise", dashed: true }] : [];
+    }
+    if (diag.mode === "compare") {
+      const out: PlotOverlay[] = [];
+      if (diag.snapshots.a) {
+        out.push({ key: "a", curve: diag.snapshots.a.curve, tone: "a" });
       }
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+      if (diag.snapshots.b) {
+        out.push({ key: "b", curve: diag.snapshots.b.curve, tone: "b" });
+      }
+      return out;
+    }
+    return [];
   });
 
-  function yForDb(db: number): number {
-    return yForAnalyzerDb(db, floorDb, ceilDb, height);
-  }
-
-  function xForFreq(freqHz: number): number {
-    const [fLo, fHi] = displayRange;
-    return uForFreq(freqHz, fLo, fHi, "log") * width;
-  }
-
-  function draw(): void {
-    if (!canvasEl || width <= 0 || height <= 0) {
-      return;
-    }
-    const ctx = canvasEl.getContext("2d");
-    if (!ctx) {
-      return; // jsdom in tests, or a browser with no 2D canvas support
-    }
-    const dpr = window.devicePixelRatio || 1;
-    const backingW = Math.max(1, Math.round(width * dpr));
-    const backingH = Math.max(1, Math.round(height * dpr));
-    if (canvasEl.width !== backingW || canvasEl.height !== backingH) {
-      canvasEl.width = backingW;
-      canvasEl.height = backingH;
-    }
-    ctx.save();
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = themeColors().analyzer.bg.css;
-    ctx.fillRect(0, 0, width, height);
-
-    const gridColor = themeColors().analyzer.grid.css;
-    ctx.strokeStyle = gridColor;
-    ctx.lineWidth = 1;
-    ctx.globalAlpha = 0.6;
-    // H-24 item 5: the grid lines sit exactly at the labeled dB/Hz ticks (10 dB/20 dB and the
-    // log-frequency ladder), not an independent 12 dB spacing — so a line always has a label.
-    for (const tick of dbTicks) {
-      const y = Math.round(tick.y) + 0.5;
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(width, y);
-      ctx.stroke();
-    }
-    for (const tick of freqAxisTicks) {
-      const x = Math.round(tick.x) + 0.5;
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, height);
-      ctx.stroke();
-    }
-    ctx.globalAlpha = 1;
-
-    const f = frame;
-    if (f && f.levelsDb.length > 0) {
-      const bottomY = yForDb(floorDb);
-      ctx.beginPath();
-      f.levelsDb.forEach((db, k) => {
-        const x = xForFreq(bandCenterHzLocal(k, f.f0Hz, f.bandsPerOctave));
-        const y = yForDb(Number.isFinite(db) ? db : floorDb);
-        if (k === 0) {
-          ctx.moveTo(x, y);
-        } else {
-          ctx.lineTo(x, y);
-        }
-      });
-      const lastX = xForFreq(
-        bandCenterHzLocal(f.levelsDb.length - 1, f.f0Hz, f.bandsPerOctave),
-      );
-      ctx.lineTo(lastX, bottomY);
-      ctx.lineTo(xForFreq(bandCenterHzLocal(0, f.f0Hz, f.bandsPerOctave)), bottomY);
-      ctx.closePath();
-      ctx.fillStyle = themeColors().analyzer.fill.css;
-      ctx.fill();
-
-      if (analyzer.peakHold && peaks.length === f.levelsDb.length) {
-        ctx.strokeStyle = themeColors().analyzer.peak.css;
-        ctx.lineWidth = themeColors().strokePx;
-        ctx.beginPath();
-        peaks.forEach((band, k) => {
-          if (!Number.isFinite(band.value)) {
-            return;
-          }
-          const x = xForFreq(bandCenterHzLocal(k, f.f0Hz, f.bandsPerOctave));
-          const y = yForDb(band.value);
-          ctx.moveTo(x - 2, y);
-          ctx.lineTo(x + 2, y);
-        });
-        ctx.stroke();
+  const noDataText = $derived.by(() => {
+    if (diag.mode === "average") {
+      if (average) {
+        return null;
       }
+      return scope ? t("analyzer.average.empty") : t("analyzer.average.no_document");
     }
-    ctx.restore();
-  }
+    return noOutputDevice ? t("analyzer.no_device") : null;
+  });
 
-  function bandCenterHzLocal(k: number, f0Hz: number, bandsPerOctave: number): number {
-    return f0Hz * 2 ** (k / bandsPerOctave);
-  }
+  const report = $derived(diag.mode === "average" ? (average?.report ?? null) : diag.liveReport);
+  const scopeText = $derived(
+    t(diag.mode === "average" ? "analyzer.diag.average_scope" : "analyzer.diag.live_scope", {
+      seconds: formatNumber(report?.span_s ?? 0, 1),
+    }),
+  );
 
-  function handleClick(): void {
-    if (dragMoved) {
-      // The mouseup that ends a pan also fires a click; don't reset the hold on top of it.
-      dragMoved = false;
-      return;
-    }
-    resetPeakHold(peaks);
-  }
-
-  function handleDoubleClick(): void {
-    zoomRange = null;
-  }
-
-  function handleWheel(e: WheelEvent): void {
-    const rect = canvasEl?.getBoundingClientRect();
-    if (!rect || width <= 0) {
-      return;
-    }
-    e.preventDefault();
-    const [lo, hi] = displayRange;
-    const u = (e.clientX - rect.left) / width;
-    const anchorHz = freqForU(u, lo, hi, "log");
-    // SPEC-007 §2.4's wheel-zoom convention: scrolling down (deltaY > 0) zooms out.
-    const factor = e.deltaY > 0 ? Math.SQRT2 : Math.SQRT1_2;
-    zoomRange = zoomFreqRange(lo, hi, "log", anchorHz, factor, nyquistHz);
-  }
-
-  function handleMouseDown(e: MouseEvent): void {
-    dragStartX = e.clientX;
-    dragStartRange = displayRange;
-    dragMoved = false;
-  }
-
-  function handleMouseMove(e: MouseEvent): void {
-    const rect = canvasEl?.getBoundingClientRect();
-    if (!rect) {
-      return;
-    }
-    hover = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-    if (dragStartX !== null && dragStartRange && width > 0) {
-      if (Math.abs(e.clientX - dragStartX) > 2) {
-        dragMoved = true;
-      }
-      const deltaFrac = -(e.clientX - dragStartX) / width;
-      zoomRange = panFreqRange(dragStartRange[0], dragStartRange[1], "log", deltaFrac, nyquistHz);
-    }
-  }
-
-  function endDrag(): void {
-    dragStartX = null;
-    dragStartRange = null;
-  }
-
-  function handleMouseLeave(): void {
-    hover = null;
-    endDrag();
-  }
-
-  const hoverText = $derived.by(() => {
-    if (!hover || width <= 0) {
+  const averageSummary = $derived.by(() => {
+    const r = diag.averageReport;
+    if (!r || r.sample_rate_hz <= 0) {
       return null;
     }
-    const [fLo, fHi] = displayRange;
-    const freqHz = freqForU(hover.x / width, fLo, fHi, "log");
-    const f = frame;
-    let dbText = t("meter.silence");
-    if (f && f.levelsDb.length > 0) {
-      const band = nearestAnalyzerBand(freqHz, f.f0Hz, f.bandsPerOctave, f.levelsDb.length);
-      const db = f.levelsDb[band];
-      if (db !== undefined && Number.isFinite(db)) {
-        dbText = formatNumber(db, 1);
-      }
-    }
-    return t("analyzer.hover", { freq: formatHoverFreqHz(freqHz), db: dbText });
+    const whole = scope ? !scope.selection : false;
+    return t("analyzer.average.summary", {
+      scope: t(whole ? "analyzer.average.scope_file" : "analyzer.average.scope_selection"),
+      duration: formatWithUnit((r.end_sample - r.start_sample) / r.sample_rate_hz, "s", 1),
+    });
   });
+
+  function freeze(slot: SnapshotSlot): void {
+    const c = liveCurve;
+    if (c) {
+      freezeSnapshot(slot, "live", c);
+    }
+  }
 
   async function chooseResponse(r: AnalyzerResponseDto): Promise<void> {
     await setAnalyzerResponse(r);
   }
 </script>
 
+{#snippet legend()}
+  {#each overlays as o (o.key)}
+    <span class="legend-chip" data-tone={o.tone}>
+      <span class="swatch" data-tone={o.tone}></span>
+      {#if o.tone === "noise"}
+        {t("analyzer.average.room_tone")}
+      {:else}
+        {@const snap = o.tone === "a" ? diag.snapshots.a : diag.snapshots.b}
+        {t("analyzer.snapshot.legend", {
+          slot: o.tone.toUpperCase(),
+          name: snap ? t(`analyzer.snapshot.${snap.origin}` as `analyzer.snapshot.${typeof snap.origin}`) : "",
+        })}
+      {/if}
+    </span>
+  {/each}
+{/snippet}
+
 <section class="analyzer-panel" data-testid="analyzer-panel">
   <div class="header">
     <span class="title">{t("panel.analyzer.title")}</span>
     <SegmentedControl
-      options={responseOptions}
-      value={analyzer.response}
-      label={t("panel.analyzer.title")}
+      options={modeOptions}
+      value={diag.mode}
+      label={t("analyzer.mode.label")}
       size="sm"
-      onchange={chooseResponse}
+      testid="analyzer-mode"
+      onchange={setAnalyzerMode}
     />
+    {#if diag.mode !== "average"}
+      <SegmentedControl
+        options={responseOptions}
+        value={analyzer.response}
+        label={t("panel.analyzer.title")}
+        size="sm"
+        onchange={chooseResponse}
+      />
+    {/if}
     <label class="axis-picker">
       <span>{t("analyzer.floor")}</span>
       <select data-testid="analyzer-floor" bind:value={floorDb}>
@@ -384,46 +270,129 @@
       </select>
     </label>
     <span class="spacer"></span>
-    <Toggle bind:checked={analyzer.peakHold} label={t("analyzer.peak_hold")} size="sm" />
+    <ToggleButton
+      size="sm"
+      icon="marker"
+      pressed={diag.prefs.peak_labels}
+      testid="analyzer-peaks-toggle"
+      onchange={setPeakLabels}
+    >
+      {t("analyzer.peaks")}
+    </ToggleButton>
+    {#if diag.mode !== "average"}
+      <Toggle bind:checked={analyzer.peakHold} label={t("analyzer.peak_hold")} size="sm" />
+    {/if}
+    <ToggleButton
+      size="sm"
+      icon="info"
+      pressed={diag.prefs.panel_visible}
+      testid="analyzer-diagnostics-toggle"
+      onchange={setDiagnosticsPanelVisible}
+    >
+      {t("analyzer.diagnostics")}
+    </ToggleButton>
+    <IconButton
+      icon="analyzer"
+      size="sm"
+      label={t("analyzer.inspector_open")}
+      pressed={diag.inspectorOpen}
+      testid="analyzer-open-inspector"
+      onclick={() => setInspectorOpen(!diag.inspectorOpen)}
+    />
   </div>
-  <div class="body">
-    <!-- H-26: the dB gutter is a column of three cells — the axis title ("dBFS") in a band above
-         the plot, the tick labels beside it, and the frequency unit in the corner under it — so
-         no unit ever sits on a tick label. -->
-    <div class="db-axis" data-testid="analyzer-db-axis">
-      <span class="axis-title" data-testid="analyzer-db-unit">{t("analyzer.unit_dbfs")}</span>
-      <div class="db-ticks">
-        {#each dbLabels as tick (tick.db)}
-          <span class="tick" data-align={tick.align} style={`top: ${tick.y}px`}>{tick.label}</span>
-        {/each}
-      </div>
-      <span class="corner-unit" data-testid="analyzer-freq-unit">{t("spectral.freq_unit")}</span>
-    </div>
-    <div class="plot">
-      <div class="title-band" aria-hidden="true"></div>
-      <div class="canvas-wrap">
-        <canvas
-          bind:this={canvasEl}
-          onclick={handleClick}
-          ondblclick={handleDoubleClick}
-          onwheel={handleWheel}
-          onmousedown={handleMouseDown}
-          onmousemove={handleMouseMove}
-          onmouseup={endDrag}
-          onmouseleave={handleMouseLeave}
-        ></canvas>
-        {#if noOutputDevice}
-          <div class="overlay">{t("analyzer.no_device")}</div>
-        {:else if hoverText}
-          <div class="hover" style:left="{hover?.x ?? 0}px">{hoverText}</div>
+
+  {#if diag.mode === "average"}
+    <div class="mode-bar" data-testid="analyzer-average-bar">
+      <SegmentedControl
+        options={sourceOptions}
+        value={diag.averageSource}
+        label={t("analyzer.average.signal")}
+        size="sm"
+        disabled={jobRunning}
+        onchange={setAverageSource}
+      />
+      {#if jobRunning}
+        <div
+          class="progress"
+          role="progressbar"
+          aria-label={t("analyzer.average.progress", { pct: jobPct })}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={jobPct}
+          data-testid="analyzer-average-progress"
+        >
+          <span class="progress-fill" style:width="{jobPct}%"></span>
+        </div>
+        <span class="muted">{t("analyzer.average.progress", { pct: jobPct })}</span>
+        <Button size="sm" variant="ghost" testid="analyzer-average-cancel" onclick={cancelAverage}>
+          {t("analyzer.average.cancel")}
+        </Button>
+      {:else}
+        <Button size="sm" icon="analyzer" disabled={!scope} testid="analyzer-average-analyze" onclick={() => void startAverage()}>
+          {average ? t("analyzer.average.reanalyze") : t("analyzer.average.analyze")}
+        </Button>
+        {#if averageSummary}
+          <span class="muted">{averageSummary}</span>
         {/if}
-      </div>
-      <div class="freq-axis" data-testid="analyzer-freq-axis">
-        {#each freqLabels as tick (tick.freqHz)}
-          <span class="tick" data-align={tick.align} style={`left: ${tick.x}px`}>{tick.label}</span>
-        {/each}
-      </div>
+      {/if}
     </div>
+  {:else if diag.mode === "compare"}
+    <div class="mode-bar" data-testid="analyzer-compare-bar">
+      <Button size="sm" disabled={!liveCurve} testid="analyzer-freeze-a" title={t("analyzer.compare.freeze_a_tooltip")} onclick={() => freeze("a")}>
+        {t("analyzer.compare.freeze_a")}
+      </Button>
+      <Button size="sm" disabled={!liveCurve} testid="analyzer-freeze-b" title={t("analyzer.compare.freeze_b_tooltip")} onclick={() => freeze("b")}>
+        {t("analyzer.compare.freeze_b")}
+      </Button>
+      <Button
+        size="sm"
+        disabled={!scope || jobRunning}
+        testid="analyzer-source-vs-processed"
+        title={t("analyzer.compare.source_vs_processed_tooltip")}
+        onclick={() => void startSourceVsProcessed()}
+      >
+        {t("analyzer.compare.source_vs_processed")}
+      </Button>
+      {#if jobRunning}
+        <div class="progress" role="progressbar" aria-label={t("analyzer.average.progress", { pct: jobPct })} aria-valuemin={0} aria-valuemax={100} aria-valuenow={jobPct}>
+          <span class="progress-fill" style:width="{jobPct}%"></span>
+        </div>
+        <Button size="sm" variant="ghost" onclick={cancelAverage}>{t("analyzer.average.cancel")}</Button>
+      {/if}
+      <span class="spacer"></span>
+      <Button size="sm" variant="ghost" disabled={!diag.snapshots.a && !diag.snapshots.b} testid="analyzer-compare-clear" onclick={clearSnapshots}>
+        {t("analyzer.compare.clear")}
+      </Button>
+    </div>
+  {/if}
+
+  <div class="body">
+    <SpectrumPlot
+      curve={primary}
+      {overlays}
+      {maxHz}
+      {floorDb}
+      {ceilDb}
+      peakHold={diag.mode !== "average" && analyzer.peakHold}
+      peakLabels={diag.prefs.peak_labels}
+      diffAB={diag.mode === "compare"}
+      {resetKey}
+      {noDataText}
+      testid="analyzer"
+      bind:zoom={zoomRange}
+      {legend}
+    />
+    {#if diag.prefs.panel_visible}
+      <div class="side">
+        <DiagnosticsPanel
+          {report}
+          {scopeText}
+          emptyText={diag.mode === "average" ? t("analyzer.diag.no_report") : t("analyzer.diag.waiting")}
+          testid="analyzer-diagnostics"
+          onclose={() => setDiagnosticsPanelVisible(false)}
+        />
+      </div>
+    {/if}
   </div>
 </section>
 
@@ -441,7 +410,8 @@
   }
 
   /* H-25: the analyzer's header follows the panel-header anatomy (32 px, sm kit controls). */
-  .header {
+  .header,
+  .mode-bar {
     display: flex;
     flex: none;
     flex-wrap: wrap;
@@ -449,6 +419,12 @@
     gap: var(--pv-space-2) var(--pv-space-3);
     min-height: var(--pv-panel-header-h);
     padding: var(--pv-space-1) var(--pv-space-3);
+  }
+
+  .mode-bar {
+    gap: var(--pv-space-2);
+    border-top: var(--pv-border-width) solid var(--pv-border-subtle);
+    font-size: var(--pv-text-xs);
   }
 
   .title {
@@ -485,150 +461,68 @@
     flex: 1;
   }
 
-  /* H-24 item 5: a left dB gutter (SPEC-007 §2.9's floor/ceiling axis) and a bottom frequency
-   * axis (SPEC-007 §2.4) — persistent labels, unlike the old grid-lines-with-no-text. Both are
-   * plain DOM overlays (not canvas-drawn text) positioned from the same pure-math tick lists the
-   * grid lines already use, so they never fight the canvas's own draw loop (item 4: no container
-   * is ever sized from its own content — these are siblings with their own fixed CSS size). */
+  .muted {
+    color: var(--pv-text-tertiary);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .progress {
+    position: relative;
+    width: 120px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--pv-bg-inset);
+    overflow: hidden;
+  }
+
+  .progress-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    background: var(--pv-accent);
+  }
+
+  /* H-24 item 5 / H-42: the plot (with its own axes) and, optionally, the diagnostics beside
+     it — both definite-size flex children, never sized from their content. */
   .body {
     display: flex;
     flex: 1;
     min-height: 0;
   }
 
-  /* H-26: three stacked cells — title band, ticks, corner — matching the plot column's title
-     band, canvas and frequency strip row for row. */
-  .db-axis {
+  .side {
     display: flex;
-    flex-direction: column;
-    width: 34px;
-    flex: none;
-  }
-
-  .axis-title,
-  .title-band {
-    flex: none;
-    height: 14px;
-  }
-
-  .axis-title,
-  .corner-unit {
-    padding-right: 3px;
-    color: var(--pv-text-tertiary);
-    font-size: 10px;
-    line-height: 12px;
-    text-align: right;
-    white-space: nowrap;
-  }
-
-  .axis-title {
-    padding-top: 1px;
-  }
-
-  .corner-unit {
-    flex: none;
-    height: 14px;
-    border-top: 1px solid transparent;
-    padding-top: 1px;
-  }
-
-  .db-ticks {
-    position: relative;
-    flex: 1;
+    flex: 0 1 288px;
+    min-width: 220px;
     min-height: 0;
-    border-right: 1px solid var(--analyzer-grid);
-    overflow: hidden;
+    border-left: var(--pv-border-width) solid var(--pv-border-subtle);
   }
 
-  .db-ticks .tick {
-    position: absolute;
-    right: 3px;
-    transform: translateY(-50%);
-    line-height: 12px;
-    font-size: 10px;
-    color: var(--pv-text-tertiary);
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-  }
-
-  .db-ticks .tick[data-align="start"] {
-    transform: translateY(0);
-  }
-
-  .db-ticks .tick[data-align="end"] {
-    transform: translateY(-100%);
-  }
-
-  .plot {
-    display: flex;
-    flex-direction: column;
+  .side > :global(*) {
     flex: 1;
-    min-width: 0;
-    min-height: 0;
   }
 
-  .canvas-wrap {
-    position: relative;
-    flex: 1;
-    min-height: 2.5rem;
-  }
-
-  canvas {
-    display: block;
-    width: 100%;
-    height: 100%;
-  }
-
-  .freq-axis {
-    position: relative;
-    flex: none;
-    height: 14px;
-    border-top: 1px solid var(--analyzer-grid);
-    overflow: hidden;
-  }
-
-  .freq-axis .tick {
-    position: absolute;
-    top: 1px;
-    transform: translateX(-50%);
-    font-size: 10px;
-    line-height: 12px;
-    color: var(--pv-text-tertiary);
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-  }
-
-  .freq-axis .tick[data-align="start"] {
-    transform: translateX(1px);
-  }
-
-  .freq-axis .tick[data-align="end"] {
-    transform: translateX(calc(-100% - 1px));
-  }
-
-  .overlay {
-    position: absolute;
-    inset: 0;
-    display: flex;
+  .legend-chip {
+    display: inline-flex;
     align-items: center;
-    justify-content: center;
+    gap: 4px;
     color: var(--pv-text-tertiary);
-    pointer-events: none;
+    font-size: 10px;
+    line-height: 12px;
+    white-space: nowrap;
   }
 
-  .hover {
-    position: absolute;
-    top: 2px;
-    transform: translateX(-50%);
-    padding: var(--pv-space-half) var(--pv-space-2);
-    border: var(--pv-border-width) solid var(--pv-border);
-    border-radius: var(--pv-radius-sm);
-    background: var(--pv-bg-overlay);
-    box-shadow: var(--pv-shadow-1);
-    color: var(--pv-text-primary);
-    font-size: var(--pv-text-xs);
-    font-variant-numeric: tabular-nums;
-    pointer-events: none;
-    white-space: nowrap;
+  .swatch {
+    width: 12px;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--analyzer-compare-a);
+  }
+
+  .swatch[data-tone="b"] {
+    background: var(--analyzer-compare-b);
+  }
+
+  .swatch[data-tone="noise"] {
+    background: var(--analyzer-noise);
   }
 </style>

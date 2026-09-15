@@ -35,6 +35,17 @@
  * just this file's own dev console.
  */
 import { mockIPC } from "@tauri-apps/api/mocks";
+import { emit } from "@tauri-apps/api/event";
+import {
+  PREVIEW_AVERAGE_REPORTS,
+  PREVIEW_VOICE_REPORT,
+  roomToneBins,
+  voiceBands,
+  voiceBinsCached,
+  vxisFrame,
+  vxltFrame,
+  vxsaFrame,
+} from "./previewSpectrum";
 import { docDto, rackSlotDto, rackStateDto, recordStateDto, settingsFixture, transportStateDto } from "../lib/test/fixtures";
 import type {
   AcxCheckReportDto,
@@ -759,6 +770,8 @@ type Sink = { onmessage: (message: ArrayBuffer) => void };
 export function installPreviewIpc(options: PreviewOptions): void {
   const { theme, scenes, dialog } = options;
   const hasScene = (name: string) => scenes.includes(name);
+  const analyzerScene = scenes.some((s) => s.startsWith("analyzer"));
+  const inspectorConfig = { fft: 16_384, window: 0, response: 1 };
   const settings: Settings = settingsFixture({
     device: {
       host: "pipewire",
@@ -773,12 +786,18 @@ export function installPreviewIpc(options: PreviewOptions): void {
     layout: {
       markers_width_px: 240,
       rack_width_px: 300,
-      dock_height_px: 240,
+      dock_height_px: analyzerScene ? 300 : 240,
       markers_collapsed: false,
       rack_collapsed: false,
       dock_tab: hasScene("loudness") ? "loudness" : "meters",
     },
     theme,
+    // H-42: `&scene=analyzer` streams a synthetic voice into the analyzer; `analyzer-diag` shows
+    // the diagnostics panel; the dock gets a little taller so the details read.
+    analyzer_diagnostics: {
+      ...settingsFixture().analyzer_diagnostics,
+      panel_visible: hasScene("analyzer-diag"),
+    },
     // T-709: the Welcome offer only in `&dialog=tour-offer`; everywhere else it's been answered.
     tours: { progress: dialog === "tour-offer" ? [] : [{ id: "welcome", version: 1, outcome: "dismissed" }] },
   });
@@ -789,6 +808,7 @@ export function installPreviewIpc(options: PreviewOptions): void {
   const rack = hasScene("rack") ? rackFixture(pluginsScene) : rackStateDto();
   const spectro = new Map<number, Sink>();
   let documentOpens = 0;
+  let lastSpectrumSources: Array<"source" | "processed"> = ["processed"];
   let seq = 0;
 
   // H-37: the Loop toggle and the synced selection (the loop region while loop is on).
@@ -919,9 +939,8 @@ export function installPreviewIpc(options: PreviewOptions): void {
           return vxpk(0, 0, start * LIVE_PEAKS_SPB, LIVE_PEAKS_SPB, count, false, bucketPeaks(start * LIVE_PEAKS_SPB, LIVE_PEAKS_SPB, count));
         }
         // T-704: fire-and-forget subscriptions and view persistence the frame-time sweep hits
-        // (the default case would log an error for each).
-        case "analyzer_subscribe":
-          return 1;
+        // (the default case would log an error for each). `analyzer_subscribe` is with the H-42
+        // analyzer cases below (it only streams in `&scene=analyzer…`).
         case "module_telemetry_subscribe":
         case "sidecar_view_set_waveform":
         case "sidecar_view_set_spectral":
@@ -970,6 +989,80 @@ export function installPreviewIpc(options: PreviewOptions): void {
           return null;
         case "loudness_analyze_start":
           return { job_id: 7 };
+        // H-42: the analyzer streams (synthetic voice) and the long-term average job.
+        case "analyzer_subscribe": {
+          if (analyzerScene) {
+            const sink = a.channel as Sink;
+            let n = 0;
+            setTimeout(() => setInterval(() => sink.onmessage(vxsaFrame(++n, PREVIEW_RATE_HZ, voiceBands(PREVIEW_RATE_HZ, n))), 100), 400);
+          }
+          return 1;
+        }
+        case "analyzer_set_response":
+        case "analyzer_unsubscribe":
+        case "analyzer_inspector_configure":
+        case "spectrum_analyze_cancel":
+          if (cmd === "analyzer_inspector_configure") {
+            const c = a.config as { fft_size: number; response: string };
+            inspectorConfig.fft = c.fft_size;
+            inspectorConfig.response = ["fast", "medium", "slow"].indexOf(c.response);
+          }
+          return null;
+        case "analyzer_voice_subscribe": {
+          if (analyzerScene) {
+            const sink = a.channel as unknown as { onmessage: (m: unknown) => void };
+            setTimeout(() => sink.onmessage(PREVIEW_VOICE_REPORT), 500);
+          }
+          return 2;
+        }
+        case "analyzer_inspector_subscribe": {
+          if (analyzerScene) {
+            const sink = a.channel as Sink;
+            let n = 0;
+            const send = () => {
+              const levels = voiceBinsCached(inspectorConfig.fft, PREVIEW_RATE_HZ);
+              sink.onmessage(vxisFrame(++n, PREVIEW_RATE_HZ, inspectorConfig.fft, inspectorConfig.window, inspectorConfig.response, levels));
+            };
+            setTimeout(send, 300);
+            setTimeout(() => setInterval(send, 250), 400);
+          }
+          return 3;
+        }
+        case "spectrum_analyze_start": {
+          const request = a.request as { sources: Array<"source" | "processed">; fft_size: number; window: string };
+          const jobId = 11;
+          const fft = request.fft_size;
+          const progress = (fraction: number, state: string) =>
+            void emit("job_progress", { job_id: jobId, kind: "spectrum_analyze", state, fraction });
+          setTimeout(() => progress(0.35, "running"), 150);
+          setTimeout(() => {
+            progress(1, "done");
+            void emit("spectrum_report", {
+              job_id: jobId,
+              sample_rate_hz: PREVIEW_RATE_HZ,
+              fft_size: fft,
+              window: request.window,
+              start_sample: 0,
+              end_sample: doc.len_samples,
+              results: request.sources.map((source) => ({
+                source,
+                frames: 560,
+                has_noise: true,
+                report: PREVIEW_AVERAGE_REPORTS[source],
+              })),
+            });
+          }, 400);
+          lastSpectrumSources = request.sources;
+          return { job_id: jobId };
+        }
+        case "spectrum_analyze_curve": {
+          const index = a.index as number;
+          const source = lastSpectrumSources[index] ?? "processed";
+          const fft = 16_384;
+          return vxltFrame(11, index, PREVIEW_RATE_HZ, fft, voiceBinsCached(fft, PREVIEW_RATE_HZ, source), roomToneBins(fft, PREVIEW_RATE_HZ));
+        }
+        case "spectrum_export_csv":
+          return a.path as string;
         case "acx_check":
           return ACX;
         case "export_formats":
@@ -1003,4 +1096,23 @@ export function installPreviewIpc(options: PreviewOptions): void {
     },
     { shouldMockEvents: true },
   );
+
+  // H-42: `&scene=analyzer-average|analyzer-compare` switch the analyzer's mode (and run the
+  // average job / freeze A and B); `&dialog=inspector` opens the Spectrum Inspector.
+  if (analyzerScene || dialog === "inspector") {
+    void import("../lib/analyzer/diagnostics.svelte").then(async (d) => {
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      if (dialog === "inspector") {
+        d.setInspectorOpen(true);
+      }
+      if (hasScene("analyzer-average")) {
+        d.setAnalyzerMode("average");
+        await d.startAverage();
+      }
+      if (hasScene("analyzer-compare")) {
+        d.setAnalyzerMode("compare");
+        await d.startSourceVsProcessed();
+      }
+    });
+  }
 }

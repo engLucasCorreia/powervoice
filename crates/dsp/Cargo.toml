@@ -39,3 +39,8 @@ harness = false
 
 [lints]
 workspace = true
+
+# H-42: live diagnostics (voice tracker) and Spectrum Inspector cost per analyzer frame.
+[[bench]]
+name = "diagnostics"
+harness = false

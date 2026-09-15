@@ -2,6 +2,8 @@
   import { onMount } from "svelte";
   import AnalyzerPanel from "./lib/analyzer/AnalyzerPanel.svelte";
   import { analyzerState, applyAnalyzerPrefs } from "./lib/analyzer/analyzer.svelte";
+  import { applyDiagnosticsPrefs } from "./lib/analyzer/diagnostics.svelte";
+  import SpectrumInspector from "./lib/analyzer/SpectrumInspector.svelte";
   import ChannelChoiceDialog from "./lib/document/ChannelChoiceDialog.svelte";
   import ClipPromptDialog from "./lib/document/ClipPromptDialog.svelte";
   import ConfirmDialog from "./lib/document/ConfirmDialog.svelte";
@@ -223,6 +225,8 @@
         response: current.analyzer_response,
         peakHold: current.analyzer_peak_hold,
       });
+      // H-42 (SPEC-007 §8): peak labels, diagnostics panel, Spectrum Inspector settings.
+      applyDiagnosticsPrefs(current.analyzer_diagnostics);
       // H-19 (ADR-009 §4): View → Renderer's persisted choice, seeded before any waveform/
       // spectral view mounts. `?? "auto"` tolerates a mocked/pre-H-19 settings object in tests.
       setRendererPreference(current.renderer_preference ?? "auto");
@@ -499,6 +503,7 @@
 <AboutDialog {version} />
 <ShortcutsDialog />
 <CalibrationDialog />
+<SpectrumInspector />
 <WelcomeOffer />
 <TourOverlay />
 

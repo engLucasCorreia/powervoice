@@ -54,6 +54,12 @@ export interface ThemeColors {
     readonly fill: ThemeColor;
     readonly peak: ThemeColor;
     readonly grid: ThemeColor;
+    /** H-42: frozen A/B snapshots, the room-tone curve, the hover crosshair, peak markers. */
+    readonly compareA: ThemeColor;
+    readonly compareB: ThemeColor;
+    readonly noise: ThemeColor;
+    readonly crosshair: ThemeColor;
+    readonly marker: ThemeColor;
   };
   readonly eq: {
     readonly grid: ThemeColor;
@@ -133,6 +139,11 @@ export function readThemeColors(theme: ResolvedTheme): ThemeColors {
       fill: color("--analyzer-fill"),
       peak: color("--analyzer-peak"),
       grid: color("--analyzer-grid"),
+      compareA: color("--analyzer-compare-a"),
+      compareB: color("--analyzer-compare-b"),
+      noise: color("--analyzer-noise"),
+      crosshair: color("--analyzer-crosshair"),
+      marker: color("--analyzer-marker"),
     },
     eq: {
       grid: color("--eq-grid"),

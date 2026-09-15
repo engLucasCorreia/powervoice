@@ -45,6 +45,8 @@ mod recovery_commands;
 mod recovery_dto;
 mod spectro_commands;
 mod spectro_dto;
+mod spectrum_commands;
+pub mod spectrum_dto;
 
 // A glob import, not a named one: `#[tauri::command]` also generates a hidden macro alongside
 // each command function (in the macro namespace), and `tauri::generate_handler!` below needs
@@ -52,7 +54,10 @@ mod spectro_dto;
 pub use acx_commands::*;
 pub use acx_dto::{AcxCheckReportDto, AcxCheckRequestDto, AcxRuleDto, AcxRuleStatusDto};
 pub use analyzer_commands::*;
-pub use analyzer_dto::AnalyzerResponseDto;
+pub use analyzer_dto::{
+    AnalyzerResponseDto, F0StatsDto, HumDto, InspectorConfigDto, SibilanceDto, SpectrumWindowDto,
+    ToneBalanceDto, VoiceReportDto,
+};
 pub use audio_commands::*;
 pub use audio_dto::{
     DeviceDto, DeviceStatusDto, DevicesDto, TransportStateDto, notice_from_device,
@@ -73,7 +78,7 @@ pub use events::{
     EVENT_NAME_VARIANTS, EVENT_NAMES, EventName, ImportStartedDto, JobKind, JobProgressDto,
     JobState, Notice, NoticeLevel, PluginScanProgressDto, PluginScanSummaryDto,
     emit_import_started, emit_job_progress, emit_loudness_report, emit_normalize_result,
-    emit_notice, emit_plugin_scan_progress, emit_plugin_scan_summary,
+    emit_notice, emit_plugin_scan_progress, emit_plugin_scan_summary, emit_spectrum_report,
 };
 pub use export_commands::*;
 pub use export_dto::{
@@ -113,6 +118,10 @@ pub use recovery_dto::{
 };
 pub use spectro_commands::*;
 pub use spectro_dto::SpectroRequestDto;
+pub use spectrum_commands::*;
+pub use spectrum_dto::{
+    SpectrumAnalyzeRequestDto, SpectrumAnalyzeStartedDto, SpectrumReportDto, SpectrumResultDto,
+};
 
 // T-007 / ADR-009: the dev-only platform spike registers its commands here too (rather than
 // duplicating `ipc_commands!`/`invoke_handler` machinery) only when built with `--features
@@ -172,6 +181,13 @@ crate::ipc_commands!(
     analyzer_subscribe,
     analyzer_set_response,
     analyzer_unsubscribe,
+    analyzer_voice_subscribe,
+    analyzer_inspector_subscribe,
+    analyzer_inspector_configure,
+    spectrum_analyze_start,
+    spectrum_analyze_cancel,
+    spectrum_analyze_curve,
+    spectrum_export_csv,
     record_get,
     record_arm,
     record_start,
@@ -294,6 +310,13 @@ crate::ipc_commands!(
     analyzer_subscribe,
     analyzer_set_response,
     analyzer_unsubscribe,
+    analyzer_voice_subscribe,
+    analyzer_inspector_subscribe,
+    analyzer_inspector_configure,
+    spectrum_analyze_start,
+    spectrum_analyze_cancel,
+    spectrum_analyze_curve,
+    spectrum_export_csv,
     record_get,
     record_arm,
     record_start,

@@ -5,6 +5,10 @@ import type {
   AcxCheckRequestDto,
   AnalyzerResponseDto,
   AppInfo,
+  InspectorConfigDto,
+  SpectrumAnalyzeRequestDto,
+  SpectrumAnalyzeStartedDto,
+  VoiceReportDto,
   BitDepth,
   CommandName,
   DevicePrefsDto,
@@ -163,6 +167,49 @@ export async function analyzerSetResponse(
 /** T-208: removes a subscriber; the tap turns off once none remain. */
 export async function analyzerUnsubscribe(id: number): Promise<void> {
   return invoke<void>("analyzer_unsubscribe" satisfies CommandName, { id });
+}
+
+/** H-42 (SPEC-007 §8.8): live voice diagnostics — a JSON `VoiceReportDto` on `channel` about
+ * 10 times a second, only when it changed. Unsubscribe with {@link analyzerUnsubscribe}. */
+export async function analyzerVoiceSubscribe(channel: Channel<VoiceReportDto>): Promise<number> {
+  return invoke<number>("analyzer_voice_subscribe" satisfies CommandName, { channel });
+}
+
+/** H-42 (SPEC-007 §8.3/§8.9): a Spectrum Inspector stream — binary `VXIS` frames on `channel`.
+ * Unsubscribe with {@link analyzerUnsubscribe}. */
+export async function analyzerInspectorSubscribe(
+  channel: Channel<ArrayBuffer>,
+  config: InspectorConfigDto,
+): Promise<number> {
+  return invoke<number>("analyzer_inspector_subscribe" satisfies CommandName, { channel, config });
+}
+
+/** H-42: changes an Inspector stream's FFT size, window or response. */
+export async function analyzerInspectorConfigure(id: number, config: InspectorConfigDto): Promise<void> {
+  return invoke<void>("analyzer_inspector_configure" satisfies CommandName, { id, config });
+}
+
+/** H-42 (SPEC-007 §8.5): starts a long-term average spectrum job (`job_progress` +
+ * `spectrum_report` events follow). */
+export async function spectrumAnalyzeStart(
+  request: SpectrumAnalyzeRequestDto,
+): Promise<SpectrumAnalyzeStartedDto> {
+  return invoke<SpectrumAnalyzeStartedDto>("spectrum_analyze_start" satisfies CommandName, { request });
+}
+
+/** H-42: cancels a long-term average job. */
+export async function spectrumAnalyzeCancel(jobId: number): Promise<void> {
+  return invoke<void>("spectrum_analyze_cancel" satisfies CommandName, { jobId });
+}
+
+/** H-42: one finished job's curve, as a binary `VXLT` frame. */
+export async function spectrumAnalyzeCurve(jobId: number, index: number): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>("spectrum_analyze_curve" satisfies CommandName, { jobId, index });
+}
+
+/** H-42: writes the Inspector's CSV export; returns the path written. */
+export async function spectrumExportCsv(path: string, contents: string): Promise<string> {
+  return invoke<string>("spectrum_export_csv" satisfies CommandName, { path, contents });
 }
 
 /** S1-01: the engine's app clock in ns (clock sync, ADR-003 §3). */

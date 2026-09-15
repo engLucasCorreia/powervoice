@@ -20,6 +20,7 @@ pub mod plugins;
 pub mod presets;
 pub mod recording;
 pub mod settings;
+pub mod spectrum;
 #[cfg(feature = "spike")]
 pub mod spike;
 #[cfg(test)]
@@ -110,6 +111,12 @@ pub fn run() {
                 documents.clone(),
                 engine.handle().clone(),
             )?;
+            // H-42: the long-term average spectrum job service (same render path as loudness).
+            let spectrum = spectrum::start(
+                app.handle().clone(),
+                documents.clone(),
+                engine.handle().clone(),
+            )?;
             // H-09: the normalize job service (peak + LUFS) — no engine handle needed, unlike
             // export/nr_capture/loudness (SPEC-010 never touches the rack).
             let normalize = normalize::start(app.handle().clone(), documents.clone())?;
@@ -131,6 +138,7 @@ pub fn run() {
             app.manage(export);
             app.manage(nr_capture);
             app.manage(loudness);
+            app.manage(spectrum);
             app.manage(normalize);
             app.manage(bake);
             // T-301: rack/view state journaling (2 s) and the disk budget check (10 s / after

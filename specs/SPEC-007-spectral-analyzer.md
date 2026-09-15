@@ -599,3 +599,203 @@ frames come from `gen_ipc_fixtures` (ADR-003 §4). No audio files are committed.
   meters.
 - **M4 items:** the EQ graph's layout, handles and per-slot tap (M4 EQ spec, T-409); an ADR amendment
   if a per-slot tap is needed.
+
+## 8. Amendment H-42 (2026-09-15) — analyzer diagnostics
+- **Status:** approved (owner request H-42, "be creative"). Where the ticket is silent, the values
+  below are engineering defaults chosen for voice-over (marked *default*), not standards.
+- **Supersedes** §7's exclusion of "analyzer freeze, snapshot or reference-curve comparison".
+- **Look:** §2.9's analyzer is unchanged. Everything added here is an overlay or a panel that can be
+  turned off (peak labels default on, diagnostics panel default off).
+
+### 8.1 Where it lives
+- **Analyzer header** (dock): a **Live / Average / Compare** segmented control (default Live, not
+  persisted); a **Peaks** toggle (labels, markers, note in the crosshair; default on); a
+  **Diagnostics** toggle (the voice-statistics panel; default off); a button that opens the Spectrum
+  Inspector. Fast/Medium/Slow and Peak hold are hidden in Average mode. Both toggles and the
+  Inspector settings persist in `Settings.analyzer_diagnostics` (additive, settings version 1).
+- **Mode bar** under the header: Average — signal (Processed *default* / Source), Analyze / Analyze
+  again, progress + Cancel, "Selection · 12.3 s"; Compare — Freeze A, Freeze B, Source vs Processed,
+  Clear. A legend (A / B / room tone) sits in the band above the plot.
+- **Diagnostics panel:** to the right of the plot inside the analyzer panel (288 px, min 220 px),
+  scrolling; also in the Inspector.
+
+### 8.2 Peak labels, markers, crosshair
+- Picked on the displayed curve, power-smoothed with τ = 0.4 s (*default*) so labels stay readable,
+  re-picked at most every 100 ms.
+- A peak is a local maximum ≥ display floor + 6 dB, within 20 Hz … the visible upper edge, with a
+  **prominence** ≥ 6 dB (its level minus the higher of the lowest points within ±1/3 octave on either
+  side), at least **1/6 octave** from every louder peak kept. The **5** loudest are labelled
+  (*defaults*). Frequency and level come from parabolic interpolation of the three points around the
+  maximum (geometric in frequency).
+- Label: two lines — frequency ("220 Hz", "6.31 kHz"), then the **note with cents** and the level
+  ("A3 +12¢ · −18.4 dB"). Notes: equal temperament, A4 = 440 Hz, scientific pitch notation (C4 =
+  261.63 Hz), sharps, cents in −50 … +50.
+- **Placement:** above, above-right, above-left, right, left, then below the marker — the first spot
+  inside the plot that is ≥ 3 px clear of every placed label and of the hover readout. Labels are
+  placed loudest first; one that fits nowhere is dropped (its marker still shows).
+- **Markers:** a dot on each labelled peak, and a tick that holds each peak's level for 1.5 s, then
+  falls at 6 dB/s (*defaults*; independent of §2.9's per-band peak hold).
+- **Crosshair:** vertical and horizontal lines at the pointer; the readout adds the note
+  ("1 007.8 Hz · −23.4 dB · B5 −12¢"), and in Compare "B − A +2.1 dB".
+- **Resolution:** Live draws the 1/24-octave bands, so its peak frequencies are band estimates
+  (≈ ±15 cents). The Average curve and the Inspector are FFT bins (bin-accurate after interpolation).
+- **Keyboard:** the plot is focusable (`role="application"`): ←/→ pan 10 %, +/− zoom by √2, 0/Home
+  reset. Its accessible name lists the labelled peaks.
+
+### 8.3 Spectrum Inspector
+- **Open:** View → Spectrum Inspector (checkbox), or the analyzer's button. A non-modal floating
+  window (`role="dialog"`, `aria-modal="false"`: app shortcuts keep working): drag by the title bar,
+  resize from the corner (min 560 × 360 px), Escape closes. First opened centred, ≤ 980 × 600 px.
+- **Sources:** Live, Average, Snapshot A, Snapshot B. Other snapshots and the room tone draw over the
+  chosen source.
+- **Controls** (persisted): FFT size 1 024 … 32 768 (default 16 384); window Hann (default),
+  Blackman-Harris 4-term (SPEC-012 §4.3), flat-top (SR785 / MATLAB `flattopwin`), rectangular;
+  **smoothing** none (default), 1/3, 1/6, 1/12 octave — the power mean over a rectangular 1/n-octave
+  window; **axis** log (default) or linear; response Fast/Medium/Slow (Live); Peaks. Zoom: wheel,
+  drag to pan, **Shift-drag to zoom to a range**, double-click or "Reset zoom". dB axis −140 … 0.
+  The title bar shows the resolution ("2.93 Hz per bin · 341 ms window").
+- **Peak table:** the labelled peaks (frequency to 0.1 Hz / 1 Hz, note, level).
+- **Freeze A / Freeze B** from whatever is shown.
+- **Export CSV…:** the displayed curve (after smoothing) inside the visible range; header
+  `frequency_hz,level_db`, one row per point, "." decimals, ASCII "-", an empty level cell for −∞;
+  written through `spectrum_export_csv` (atomic, `.csv` added when missing, ≤ 64 MiB).
+- **Live stream:** its own engine subscription (`VXIS`, §8.9) at the chosen FFT size / window /
+  response, only while the Inspector is open on Live. Frames every 2nd publish (30 Hz at 60 Hz),
+  power EMA with the response's τ. After a silent window's average falls below −150 dB the stream
+  sends one last frame and then nothing until sound returns.
+
+### 8.4 Spectrum conventions (normative)
+- Every H-42 spectrum is **sine-normalized**: `P[k] = |X[k]|² / (Σw/2)²`, so a bin-centred full-scale
+  sine reads 0 dB with every window.
+- **Band power** = `Σ P[k] / ENBW` over the bins whose centre lies in `[lo, hi)`: a sine of amplitude
+  `A` reads `A²`, noise of RMS `σ` reads `2σ²` (its RMS dBFS + 3.01 dB). ENBW (periodic windows):
+  Hann 1.5, Blackman-Harris 2.004, flat-top 3.770, rectangular 1.0 bins. Every diagnostic is a ratio
+  of band powers, hence independent of FFT size and window.
+- White noise per bin reads `σ_dB + 10·log10(4·ENBW/N)` (generalizes §4.8.5).
+
+### 8.5 Long-term average (Average mode, the Inspector's Average source)
+- **Scope:** the selection, else the whole file. **Signal:** processed (the live rack, rendered like the
+  loudness job, S4-01) or source. Compare's **Source vs Processed** analyses both in one job and
+  freezes them as A (source) and B (processed).
+- **Job:** `spectrum_analyze_start` → a Rust thread, off the audio thread; `job_progress`
+  (`spectrum_analyze`, ≤ 10 Hz), `spectrum_analyze_cancel`; the error notice precedes a terminal
+  `failed` (H-30); a `spectrum_report` event carries each signal's diagnostics; curves are then
+  fetched as binary `VXLT` frames (`spectrum_analyze_curve(job_id, index)`; the last 4 jobs kept).
+- **LTAS** = the mean sine-normalized power over Welch frames (the Inspector's FFT size and window,
+  hop N/2). A selection shorter than N is analysed as one zero-padded frame. The **room-tone curve** is
+  the same mean over the quiet frames (§8.7 gating), drawn dashed.
+
+### 8.6 Fundamental frequency (F0)
+- **YIN** (de Cheveigné & Kawahara 2002) with the difference function from an FFT cross-correlation:
+  50 … 1 000 Hz, integration window W = τ_max = fs / 50, absolute threshold 0.15, parabolic
+  interpolation of d′. Unvoiced when the frame RMS < −60 dBFS or the aperiodicity d′(τ*) > 0.35.
+- Live: every 10 ms; offline: every 20 ms. Statistics over the voiced frames: **median**, **10th–90th
+  percentile** (the "range"), **voiced fraction** (voiced / frames above the energy gate). Live
+  statistics cover the last **10 s**; "now" is the median of the voiced frames of the last 0.3 s
+  (shown only while voiced). Shown as note and Hz; descriptive only — no voice-type labels.
+
+### 8.7 Spectral diagnostics
+- **Diagnostics spectrum** (independent of the display settings): Hann, FFT = the power of two
+  nearest 0.34 s, clamped to 8 192 … 32 768 (16 384 at 44.1/48 kHz: 2.9 Hz bins, enough to tell 50
+  from 60 Hz hum). Live: one frame per 100 ms of new audio; offline: hop N/2.
+- **Gating** by the frame's RMS: ≥ noise floor + 15.9 dB → the **voice** spectrum; ≤ noise floor +
+  6 dB → the **room-tone** spectrum; digital silence → neither. Live averages have τ = 3 s (a running
+  mean until then); the room-tone average restarts when the noise floor drops by > 3 dB (before the
+  first pause the "floor" is the quietest stretch of the voice). Offline: plain means.
+- **Tone balance** (voice spectrum): per-octave density relative to the 1 kHz octave (707–1 414 Hz),
+  pink noise = 0 dB — **mud/boxiness 200–500 Hz**, **presence 2–5 kHz**, **air 10–16 kHz** (a band
+  needs at least half an octave below Nyquist).
+- **Sibilance** (voice spectrum): **4–10 kHz** relative to the overall level (20 Hz … min(20 kHz,
+  Nyquist)). **De-esser target** = the geometric centre of the −3 dB span around the maximum of the
+  1/3-octave-smoothed spectrum within 4–10 kHz (1/48-octave grid).
+- **Rumble** (voice spectrum): **20–80 Hz** relative to the overall level.
+- **Hum** (room-tone spectrum; needs bins ≤ 4 Hz): harmonics 1–8 of **50 and 60 Hz**. A line's level
+  is the band power within ±max(2 bins, 0.6 %); its **prominence** is its peak bin over the median of
+  the bins 0.2–0.5 × mains away on either side. Prominent at ≥ 10 dB; hum when ≥ 2 harmonics are
+  prominent, or one of the first three is ≥ 20 dB. The mains frequency with the larger summed
+  prominence wins; the "strongest" line is the most prominent one (where the notch goes).
+- Relative values are clamped to ±60 dB; below −90 dB overall nothing is diagnosed.
+
+### 8.8 Levels, noise floor, SNR
+- 10 ms blocks of mean square; blocks of exact digital silence are ignored.
+- **Noise floor** = the ACX definition (the RMS of the quietest 500 ms window, unweighted), evaluated
+  on the 10 ms grid; live over the last **30 s**.
+- **Active level** = the power mean of the blocks ≥ noise floor + 15.9 dB (ITU-T P.56's margin,
+  simplified: no hangover). **SNR** = active level − noise floor.
+- `span_s` = seconds of non-silent audio covered (live: within the last 10 s) — constant during
+  silence, so an idle report doesn't change.
+
+### 8.9 Wire formats, commands, events
+- `VXIS` (Inspector frame, little-endian): `"VXIS"`, u16 version 1, u16 header_len 40, u32 seq, u32
+  flags (bit0 RESET, bit1 SILENT), u32 sample_rate_hz, u32 fft_size, u32 window (0 Hann,
+  1 Blackman-Harris, 2 flat-top, 3 rectangular), u32 bin_count, u32 response (0/1/2), u32 reserved,
+  then `f32[bin_count]` averaged levels (dB, −∞ allowed, never NaN). Bin k at k·fs/fft_size.
+- `VXLT` (long-term average curve): `"VXLT"`, u16 version 1, u16 header_len 36, u32 job_id, u32
+  index, u32 sample_rate_hz, u32 fft_size, u32 window, u32 bin_count, u32 flags (bit0 HAS_NOISE),
+  then `f32[bin_count]` levels and, with HAS_NOISE, `f32[bin_count]` room-tone levels.
+- Golden fixtures `vxis_fixture.ts` / `vxlt_fixture.ts` are generated by `just gen-types` (SPEC-000
+  AC-7 contract).
+- Commands: `analyzer_voice_subscribe(channel)` → id (JSON `VoiceReportDto` ≈ 10 Hz, only when
+  changed); `analyzer_inspector_subscribe(channel, config)` → id; `analyzer_inspector_configure(id,
+  config)`; `analyzer_unsubscribe(id)` removes a subscriber of any kind (`ANALYZER_ON` stays set
+  while any exists); `spectrum_analyze_start(request)` → `{job_id}`; `spectrum_analyze_cancel`;
+  `spectrum_analyze_curve(job_id, index)` → `VXLT`; `spectrum_export_csv(path, contents)` → path.
+- Event `spectrum_report` (`SpectrumReportDto`); `JobKind::SpectrumAnalyze`.
+
+### 8.10 Findings and "Add EQ band here"
+- Hints (plain language, i18n) and severities (ok / info / warn, each with a labelled status dot —
+  never colour alone):
+
+  | Finding | Measure | Threshold (*default*) | EQ move offered |
+  |---|---|---|---|
+  | Mud | tone mud | > +9 dB warn "a bit boomy", > +6 info, < −6 info "thin" | peak cut 300 Hz, −3 dB, Q 1.4 |
+  | Presence | tone presence | < −14 warn "dull", > −2 warn "forward/harsh" | boost 3.5 kHz +2.5 dB Q 1 / cut 3.5 kHz −3 dB Q 2 |
+  | Air | tone air | < −35 info "little air", > −12 info "bright" | boost 12 kHz +3 dB Q 0.7 (low air) |
+  | Sibilance | 4–10 kHz vs overall | > −12 warn, > −22 info | copies the de-esser target (no de-esser module yet) |
+  | Hum | §8.7 | detected → warn | notch at the strongest line, −20 dB, Q 20 |
+  | Rumble | 20–80 Hz vs overall | > −25 dB warn | high-pass 80 Hz |
+  | Noise floor | §8.8 | > −60 dBFS warn (ACX) | — |
+  | SNR | §8.8 | < 30 warn, < 40 info | — |
+
+  A typical voice reads about +3 (mud), −7 (presence), −22 dB (air), −15 … −25 dB sibilance.
+- **Add EQ band here** goes through the normal rack commands (rack changes are outside the undo
+  history, SPEC-004 OD-1 — the user undoes it in the rack): the first `org.powervoice.parametric-eq`
+  slot, or a new one appended with `rack_add`; then `param_set_plain` per parameter (SPEC-015 §3
+  ids) in the order frequency, Q, gain, on. High-pass → the HP band (on, frequency). Notch/cut/boost →
+  a **free** peak band (gain within 0.05 dB of 0), the one whose frequency is nearest the target; with
+  no free band nothing changes and a notice says so. A notice confirms the band used.
+- The de-esser action copies the rounded frequency in Hz to the clipboard.
+
+### 8.11 Performance and idle behaviour
+- Live diagnostics run on the engine's control tick beside the analyzer, only while a voice subscriber
+  exists; during silence YIN stops at its energy gate and silent spectrum frames skip the FFT; reports
+  go out only when they changed. Bench (`crates/dsp/benches/diagnostics.rs`, T-110 convention):
+  `diagnostics_live_per_frame` ≤ 333 µs per 60 Hz frame (AC-18's 2 % of a core), plus informational
+  `inspector_frame_fft{N}` and `ltas_offline_realtime_factor`.
+- The plot draws **on demand** (one animation frame per changed input: new curve, hover, zoom, toggle,
+  resize, theme), keeps animating only while the peak hold or markers are falling, and skips silent
+  curves that are already off the axis. `SpectrumPlot.requestDraw()` is the hook for H-43's scheduler.
+
+### 8.12 Acceptance criteria (H-42)
+- **AC-H42-1** Peak picking finds synthetic multi-sine peaks within 0.05 Hz / 0.01 dB (interpolated),
+  loudest first, respects the 1/6-octave spacing and the count (`peaks.test.ts`).
+- **AC-H42-2** Note naming: 440 Hz = A4 ±0¢, 220·2^(12/1200) = A3 +12¢, cents stay in ±50
+  (`notes.test.ts`).
+- **AC-H42-3** F0 within 2 cents on sines (44.1/48/96 kHz), 3 cents on harmonics 2–8 of 200 Hz
+  (missing fundamental), 25 cents median on a formant-shaped voice with vibrato, no octave errors
+  (`pitch.rs`).
+- **AC-H42-4** Sibilance centre within 1/6 octave of 6.32 kHz on 5–8 kHz band-limited noise and
+  1/12 octave of 7 kHz on a narrow band (`features.rs`).
+- **AC-H42-5** Hum at 50 and 60 Hz with harmonics is detected with the right mains frequency,
+  harmonic mask and line level (±1 dB); noise and a 440 Hz tone are not hum; 5.9 Hz bins refuse
+  (`features.rs`); from a voice session, hum is found in the pauses, live and offline (`voice.rs`).
+- **AC-H42-6** LTAS equals the average of its frames bit-for-bit, reads −3.01 dB for a tone present
+  half the time, and white noise sits at σ + 10·log10(4·ENBW/N) ± 0.2 dB (`spectrum.rs`).
+- **AC-H42-7** "Add EQ band here" issues `rack_add` (when needed) then `param_set_plain` with the
+  SPEC-015 ids and values (`eqSuggest.test.ts`, `DiagnosticsPanel.test.ts`).
+- **AC-H42-8** Toggles, keyboard (plot pan/zoom/reset, Inspector Escape) and label collision
+  (`SpectrumPlot.test.ts`, `peakLabels.test.ts`, `AnalyzerPanel.test.ts`, `SpectrumInspector.test.ts`).
+- **AC-H42-9** Engine: voice reports follow the output (F0 of a 200 Hz tone ±1 Hz), unchanged
+  reports are not resent, Inspector frames read a bin-centred flat-top tone within 0.1 dB, reconfigure
+  and unsubscribe work, silence idles the stream, and the output callback never allocates
+  (`crates/engine/tests/analyzer.rs`).

@@ -229,7 +229,11 @@ fn notice_from_error(err: &IpcError) -> Notice {
 
 /// The same "whole buffer in RAM" read `export.rs::read_range` uses (H-02 backlog item to stream
 /// it — shared with export, not duplicated fresh here).
-fn read_range(source: &ExportSource, start: u64, end: u64) -> Result<Vec<f32>, IpcError> {
+pub(crate) fn read_range(
+    source: &ExportSource,
+    start: u64,
+    end: u64,
+) -> Result<Vec<f32>, IpcError> {
     let mut reader = SnapshotReader::new(Arc::clone(&source.store), Arc::clone(&source.snapshot));
     let mut samples = Vec::with_capacity((end - start) as usize);
     let mut buf = vec![0.0f32; CHUNK_SAMPLES];
@@ -381,7 +385,7 @@ fn analyze_processed(
 /// Renders `samples` through `model` (same time-aligned offline chain as `vox_rack::offline`,
 /// SPEC-012 §2.8) into a single `Vec<f32>` — used by the ACX check (S4-03), which needs the whole
 /// rendered waveform for RMS/noise-floor measurement rather than a streamed loudness meter.
-fn render_processed_to_buffer(
+pub(crate) fn render_processed_to_buffer(
     registry: &Registry,
     model: &RackModel,
     sample_rate_hz: u32,

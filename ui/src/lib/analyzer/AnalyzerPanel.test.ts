@@ -95,3 +95,84 @@ describe("AnalyzerPanel axes (H-24 item 5)", () => {
     target.remove();
   });
 });
+
+// --- H-42: modes, toggles, diagnostics panel (SPEC-007 §8) --------------------------------------
+
+import { diagnosticsState, resetDiagnosticsForTest } from "./diagnostics.svelte";
+
+describe("AnalyzerPanel diagnostics (H-42)", () => {
+  afterEach(() => {
+    resetDiagnosticsForTest();
+    document.body.innerHTML = "";
+  });
+
+  function recordCalls(): Array<[string, Record<string, unknown>]> {
+    const calls: Array<[string, Record<string, unknown>]> = [];
+    mockIPC((cmd, args) => {
+      calls.push([cmd, (args ?? {}) as Record<string, unknown>]);
+      return cmd === "analyzer_voice_subscribe" ? 77 : null;
+    });
+    return calls;
+  }
+
+  function segment(target: HTMLElement, testid: string, label: string): HTMLElement {
+    return [...target.querySelectorAll<HTMLElement>(`[data-testid="${testid}"] [role="radio"], [data-testid="${testid}"] button`)].find(
+      (el) => el.textContent?.trim() === label,
+    )!;
+  }
+
+  it("keeps the live look by default: peaks on, diagnostics hidden, no extra bars", async () => {
+    recordCalls();
+    stubSize(600, 150);
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(AnalyzerPanel, { target });
+    await settle();
+    expect(target.querySelector('[data-testid="analyzer-peaks-toggle"]')!.getAttribute("aria-pressed")).toBe("true");
+    expect(target.querySelector('[data-testid="analyzer-diagnostics-toggle"]')!.getAttribute("aria-pressed")).toBe("false");
+    expect(target.querySelector('[data-testid="analyzer-diagnostics"]')).toBeNull();
+    expect(target.querySelector('[data-testid="analyzer-average-bar"]')).toBeNull();
+    expect(target.querySelector('[data-testid="analyzer-compare-bar"]')).toBeNull();
+    unmount(app);
+  });
+
+  it("the Diagnostics toggle shows the panel and holds the live voice stream only while shown", async () => {
+    const calls = recordCalls();
+    stubSize(900, 180);
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(AnalyzerPanel, { target });
+    await settle();
+    target.querySelector<HTMLButtonElement>('[data-testid="analyzer-diagnostics-toggle"]')!.click();
+    await settle();
+    await settle();
+    expect(target.querySelector('[data-testid="analyzer-diagnostics"]')).not.toBeNull();
+    expect(calls.filter(([c]) => c === "analyzer_voice_subscribe").length).toBe(1);
+    target.querySelector<HTMLButtonElement>('[data-testid="analyzer-diagnostics-close"]')!.click();
+    await settle();
+    expect(target.querySelector('[data-testid="analyzer-diagnostics"]')).toBeNull();
+    expect(calls.filter(([c]) => c === "analyzer_unsubscribe").map(([, a]) => a.id)).toContain(77);
+    unmount(app);
+  });
+
+  it("Average and Compare modes show their bars; Analyze needs something to analyze", async () => {
+    recordCalls();
+    stubSize(900, 180);
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(AnalyzerPanel, { target });
+    await settle();
+    segment(target, "analyzer-mode", "Average").click();
+    await settle();
+    expect(diagnosticsState().mode).toBe("average");
+    expect(target.querySelector('[data-testid="analyzer-average-bar"]')).not.toBeNull();
+    expect(target.querySelector<HTMLButtonElement>('[data-testid="analyzer-average-analyze"]')!.disabled).toBe(true);
+    expect(target.querySelector('[data-testid="analyzer-plot"]')!.textContent).toContain("Open a file");
+    segment(target, "analyzer-mode", "Compare").click();
+    await settle();
+    expect(target.querySelector('[data-testid="analyzer-compare-bar"]')).not.toBeNull();
+    // No live frame yet: nothing to freeze.
+    expect(target.querySelector<HTMLButtonElement>('[data-testid="analyzer-freeze-a"]')!.disabled).toBe(true);
+    unmount(app);
+  });
+});

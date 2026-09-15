@@ -16,6 +16,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use rtrb::{Consumer, Producer};
 use vox_dsp::analyzer::{Analyzer as DspAnalyzer, Response, auto_fft_size};
+use vox_dsp::diagnostics::spectrum::{MAX_FFT_SIZE, is_valid_fft_size, power_db};
+use vox_dsp::diagnostics::{PowerSpectrum, VoiceReport, VoiceTracker, WindowKind};
 
 /// RT tap ring capacity (SPEC-007 §3 `an_ring_samples`, ≈ 0.68 s at 48 kHz).
 pub(crate) const ANALYZER_RING_FRAMES: usize = 32_768;
@@ -126,6 +128,92 @@ impl History {
 /// One subscriber's sink + its chosen response.
 pub type AnalyzerSink = Box<dyn FnMut(&AnalyzerFrame) + Send>;
 
+/// H-42: a voice-diagnostics subscriber (SPEC-007 §8.8) — called with a fresh
+/// [`VoiceReport`] about [`VOICE_REPORT_HZ`] times a second, only when it changed.
+pub type VoiceSink = Box<dyn FnMut(&VoiceReport) + Send>;
+
+/// H-42: a Spectrum Inspector subscriber (SPEC-007 §8.3) — called with one [`InspectorFrame`]
+/// every [`INSPECTOR_EVERY`] publishes while there is something to show.
+pub type InspectorSink = Box<dyn FnMut(&InspectorFrame) + Send>;
+
+/// Voice reports go out at most this often (Hz).
+pub const VOICE_REPORT_HZ: f64 = 10.0;
+/// Inspector frames go out every this many publishes (30 Hz at the default 60 Hz rate).
+pub const INSPECTOR_EVERY: u32 = 2;
+/// Below this averaged power (−150 dB) over a silent window, an Inspector stream goes idle:
+/// one last frame, then nothing until sound returns (the UI then has nothing to redraw).
+const INSPECTOR_IDLE_POWER: f64 = 1e-15;
+
+/// One Spectrum Inspector subscription's analysis settings (SPEC-007 §8.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InspectorConfig {
+    /// A power of two, 1 024 … 32 768 (clamped into range when invalid).
+    pub fft_size: u32,
+    pub window: WindowKind,
+    pub response: Response,
+}
+
+impl InspectorConfig {
+    fn sanitized(self) -> Self {
+        let fft_size = if is_valid_fft_size(self.fft_size) {
+            self.fft_size
+        } else {
+            vox_dsp::diagnostics::spectrum::DEFAULT_FFT_SIZE
+        };
+        Self { fft_size, ..self }
+    }
+}
+
+struct InspectorSub {
+    sink: InspectorSink,
+    config: InspectorConfig,
+    spectrum: PowerSpectrum,
+    power: Vec<f64>,
+    ema: Vec<f64>,
+    frames: u64,
+    idle: bool,
+    pending_reset: bool,
+}
+
+impl InspectorSub {
+    fn new(sink: InspectorSink, config: InspectorConfig) -> Self {
+        let config = config.sanitized();
+        let spectrum = PowerSpectrum::new(config.fft_size as usize, config.window);
+        let bins = spectrum.bins();
+        Self {
+            sink,
+            config,
+            spectrum,
+            power: vec![0.0; bins],
+            ema: vec![0.0; bins],
+            frames: 0,
+            idle: false,
+            pending_reset: true,
+        }
+    }
+
+    fn reconfigure(&mut self, config: InspectorConfig) {
+        let config = config.sanitized();
+        if config.fft_size != self.config.fft_size || config.window != self.config.window {
+            self.spectrum = PowerSpectrum::new(config.fft_size as usize, config.window);
+            let bins = self.spectrum.bins();
+            self.power = vec![0.0; bins];
+            self.ema = vec![0.0; bins];
+            self.frames = 0;
+            self.pending_reset = true;
+        }
+        self.idle = false;
+        self.config = config;
+    }
+
+    fn reset(&mut self) {
+        self.ema.fill(0.0);
+        self.frames = 0;
+        self.idle = false;
+        self.pending_reset = true;
+    }
+}
+
 struct Subscription {
     sink: AnalyzerSink,
     response: Response,
@@ -151,6 +239,17 @@ pub(crate) struct AnalyzerPublisher {
     next_id: u32,
     seq: u32,
     pending_reset: bool,
+    /// H-42: live voice statistics, only while a voice subscriber exists.
+    voice: Option<VoiceTracker>,
+    voice_subs: HashMap<u32, VoiceSink>,
+    voice_countdown: u32,
+    last_voice: Option<VoiceReport>,
+    /// H-42: Spectrum Inspector subscribers and their (longer) sample history.
+    inspector_subs: HashMap<u32, InspectorSub>,
+    inspector_history: History,
+    inspector_window: Vec<f32>,
+    inspector_countdown: u32,
+    inspector_seq: u32,
 }
 
 const DEFAULT_SAMPLE_RATE_HZ: u32 = 48_000;
@@ -174,6 +273,15 @@ impl Default for AnalyzerPublisher {
             next_id: 1,
             seq: 0,
             pending_reset: false,
+            voice: None,
+            voice_subs: HashMap::new(),
+            voice_countdown: 0,
+            last_voice: None,
+            inspector_subs: HashMap::new(),
+            inspector_history: History::new(0),
+            inspector_window: Vec::new(),
+            inspector_countdown: 0,
+            inspector_seq: 0,
         }
     }
 }
@@ -208,6 +316,9 @@ impl AnalyzerPublisher {
         self.history.resize(fft_size as usize);
         self.window.resize(fft_size as usize, 0.0);
         self.analyzer = DspAnalyzer::new(fft_size, sample_rate_hz, self.rate_hz);
+        if !self.inspector_subs.is_empty() {
+            self.inspector_history.resize(MAX_FFT_SIZE as usize);
+        }
     }
 
     /// Recomputes averaging time constants for a new `TELEMETRY_RATE` (H-16: driven by
@@ -233,27 +344,82 @@ impl AnalyzerPublisher {
         }
     }
 
+    /// Removes a subscriber of any kind (`VXSA`, voice, Inspector).
     pub(crate) fn unsubscribe(&mut self, id: u32) {
         self.subs.remove(&id);
+        if self.voice_subs.remove(&id).is_some() && self.voice_subs.is_empty() {
+            self.voice = None;
+            self.last_voice = None;
+        }
+        if self.inspector_subs.remove(&id).is_some() && self.inspector_subs.is_empty() {
+            self.inspector_history = History::new(0);
+            self.inspector_window = Vec::new();
+        }
         self.update_gate();
     }
 
+    fn take_id(&mut self) -> u32 {
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1).max(1);
+        id
+    }
+
+    /// H-42: registers a voice-diagnostics subscriber (SPEC-007 §8.8). The statistics start
+    /// with the first subscriber and are dropped with the last.
+    pub(crate) fn subscribe_voice(&mut self, sink: VoiceSink) -> u32 {
+        let id = self.take_id();
+        self.voice_subs.insert(id, sink);
+        // The newcomer gets the next report even if nothing changed.
+        self.last_voice = None;
+        self.voice_countdown = 0;
+        self.update_gate();
+        id
+    }
+
+    /// H-42: registers a Spectrum Inspector subscriber (SPEC-007 §8.3).
+    pub(crate) fn subscribe_inspector(
+        &mut self,
+        sink: InspectorSink,
+        config: InspectorConfig,
+    ) -> u32 {
+        let id = self.take_id();
+        if self.inspector_subs.is_empty() {
+            self.inspector_history = History::new(MAX_FFT_SIZE as usize);
+            self.inspector_window = vec![0.0; MAX_FFT_SIZE as usize];
+        }
+        self.inspector_subs
+            .insert(id, InspectorSub::new(sink, config));
+        self.update_gate();
+        id
+    }
+
+    /// H-42: changes an Inspector subscriber's FFT size / window / response.
+    pub(crate) fn configure_inspector(&mut self, id: u32, config: InspectorConfig) {
+        if let Some(sub) = self.inspector_subs.get_mut(&id) {
+            sub.reconfigure(config);
+        }
+    }
+
+    fn has_subscribers(&self) -> bool {
+        !self.subs.is_empty() || !self.voice_subs.is_empty() || !self.inspector_subs.is_empty()
+    }
+
     fn update_gate(&self) {
-        self.on.store(!self.subs.is_empty(), Ordering::Relaxed);
+        self.on.store(self.has_subscribers(), Ordering::Relaxed);
     }
 
     /// Drains the ring, runs one FFT + band reduction + EMA update, and sends every subscriber
     /// its own frame — only while at least one subscriber exists (SPEC-007 §4.8 step 2).
     pub(crate) fn publish(&mut self, now_ns: u64) {
-        if self.subs.is_empty() {
+        if !self.has_subscribers() {
             return;
         }
         let Some(consumer) = self.consumer.as_mut() else {
             return;
         };
         let avail = consumer.slots();
+        self.scratch.clear();
         if avail > 0 {
-            self.scratch.clear();
             if let Ok(chunk) = consumer.read_chunk(avail) {
                 let (a, b) = chunk.as_slices();
                 self.scratch.extend_from_slice(a);
@@ -262,6 +428,14 @@ impl AnalyzerPublisher {
             }
             self.history.push_slice(&self.scratch);
         }
+        let reset = self.pending_reset;
+        self.pending_reset = false;
+        self.publish_voice(reset);
+        self.publish_inspector(reset);
+        if self.subs.is_empty() {
+            return;
+        }
+
         self.history.linearize(&mut self.window);
         let silent = self.analyzer.process(&self.window);
 
@@ -269,8 +443,6 @@ impl AnalyzerPublisher {
         let dropped = dropped_now != self.dropped_seen;
         self.dropped_seen = dropped_now;
 
-        let reset = self.pending_reset;
-        self.pending_reset = false;
         if reset {
             self.analyzer.reset();
         }
@@ -317,6 +489,151 @@ impl AnalyzerPublisher {
             };
             (sub.sink)(&frame);
         }
+    }
+
+    /// H-42: feeds the new tap samples to the voice tracker; about [`VOICE_REPORT_HZ`] times a
+    /// second, sends its report — only when it changed (silence sends nothing new).
+    fn publish_voice(&mut self, reset: bool) {
+        if self.voice_subs.is_empty() {
+            return;
+        }
+        let rate = self.sample_rate_hz;
+        let tracker = self.voice.get_or_insert_with(|| VoiceTracker::new(rate));
+        if reset || tracker.sample_rate_hz() != rate {
+            *tracker = VoiceTracker::new(rate);
+            self.last_voice = None;
+        }
+        tracker.push(&self.scratch);
+        if self.voice_countdown > 0 {
+            self.voice_countdown -= 1;
+            return;
+        }
+        self.voice_countdown = ((self.rate_hz / VOICE_REPORT_HZ).round() as u32).max(1) - 1;
+        let report = tracker.report();
+        if self.last_voice.as_ref() == Some(&report) {
+            return;
+        }
+        for sink in self.voice_subs.values_mut() {
+            sink(&report);
+        }
+        self.last_voice = Some(report);
+    }
+
+    /// H-42: one windowed FFT per Inspector subscriber every [`INSPECTOR_EVERY`] publishes,
+    /// power-averaged with the subscriber's response; idle (no frames) once a silent window has
+    /// decayed below −150 dB.
+    fn publish_inspector(&mut self, reset: bool) {
+        if self.inspector_subs.is_empty() {
+            return;
+        }
+        self.inspector_history.push_slice(&self.scratch);
+        if reset {
+            self.inspector_subs
+                .values_mut()
+                .for_each(InspectorSub::reset);
+        }
+        if self.inspector_countdown > 0 {
+            self.inspector_countdown -= 1;
+            return;
+        }
+        self.inspector_countdown = INSPECTOR_EVERY - 1;
+        self.inspector_history.linearize(&mut self.inspector_window);
+        self.inspector_seq = self.inspector_seq.wrapping_add(1);
+        let update_rate_hz = self.rate_hz / f64::from(INSPECTOR_EVERY);
+        let len = self.inspector_window.len();
+        for sub in self.inspector_subs.values_mut() {
+            let n = sub.spectrum.fft_size().min(len);
+            let window = &self.inspector_window[len - n..];
+            let silent = window.iter().all(|&s| s == 0.0);
+            if silent && sub.ema.iter().all(|&p| p < INSPECTOR_IDLE_POWER) {
+                if sub.idle {
+                    continue;
+                }
+                sub.idle = true;
+            } else {
+                sub.idle = false;
+            }
+            if silent {
+                sub.power.fill(0.0);
+            } else {
+                sub.spectrum.power(window, &mut sub.power);
+            }
+            let tau = sub.config.response.tau_s();
+            let alpha =
+                (1.0 - (-(1.0 / update_rate_hz) / tau).exp()).max(1.0 / (sub.frames + 1) as f64);
+            for (e, &p) in sub.ema.iter_mut().zip(&sub.power) {
+                *e += alpha * (p - *e);
+            }
+            sub.frames += 1;
+            let frame = InspectorFrame {
+                seq: self.inspector_seq,
+                reset: std::mem::take(&mut sub.pending_reset),
+                silent,
+                sample_rate_hz: self.sample_rate_hz,
+                fft_size: sub.config.fft_size,
+                window: sub.config.window,
+                response: sub.config.response,
+                levels_db: sub.ema.iter().map(|&p| power_db(p) as f32).collect(),
+            };
+            (sub.sink)(&frame);
+        }
+    }
+}
+
+/// `VXIS` v1 header length (H-42, SPEC-007 §8.9).
+pub const VXIS_HEADER_LEN: usize = 40;
+
+/// `VXIS` flag bits (SPEC-007 §8.9).
+pub mod vxis_flags {
+    /// Averaging restarted (subscribe, reconfigure, device reopen or rate change).
+    pub const RESET: u32 = 1 << 0;
+    /// The analysis window is digital silence.
+    pub const SILENT: u32 = 1 << 1;
+}
+
+/// One Spectrum Inspector frame (`VXIS`, SPEC-007 §8.9): the averaged power of every FFT bin
+/// `k = 0 … fft_size/2` at `k · fs / fft_size` Hz, in sine-normalized dB.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InspectorFrame {
+    pub seq: u32,
+    pub reset: bool,
+    pub silent: bool,
+    pub sample_rate_hz: u32,
+    pub fft_size: u32,
+    pub window: WindowKind,
+    pub response: Response,
+    /// `fft_size / 2 + 1` levels, dB (`-inf` allowed, never NaN).
+    pub levels_db: Vec<f32>,
+}
+
+impl InspectorFrame {
+    /// Little-endian `VXIS` v1: `"VXIS"`, u16 version 1, u16 header_len 40, u32 seq, u32 flags,
+    /// u32 sample_rate_hz, u32 fft_size, u32 window, u32 bin_count, u32 response, u32 reserved,
+    /// then `f32[bin_count]`.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut b = Vec::with_capacity(VXIS_HEADER_LEN + 4 * self.levels_db.len());
+        b.extend_from_slice(b"VXIS");
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&(VXIS_HEADER_LEN as u16).to_le_bytes());
+        b.extend_from_slice(&self.seq.to_le_bytes());
+        let mut flags = 0u32;
+        if self.reset {
+            flags |= vxis_flags::RESET;
+        }
+        if self.silent {
+            flags |= vxis_flags::SILENT;
+        }
+        b.extend_from_slice(&flags.to_le_bytes());
+        b.extend_from_slice(&self.sample_rate_hz.to_le_bytes());
+        b.extend_from_slice(&self.fft_size.to_le_bytes());
+        b.extend_from_slice(&self.window.code().to_le_bytes());
+        b.extend_from_slice(&(self.levels_db.len() as u32).to_le_bytes());
+        b.extend_from_slice(&self.response.code().to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes());
+        for v in &self.levels_db {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        b
     }
 }
 

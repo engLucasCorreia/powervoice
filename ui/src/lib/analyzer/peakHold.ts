@@ -37,7 +37,7 @@ export function resetPeakHold(state: readonly PeakHoldBand[]): void {
  */
 export function updatePeakHold(
   state: PeakHoldBand[],
-  levelsDb: readonly number[],
+  levelsDb: ArrayLike<number>,
   dtS: number,
 ): PeakHoldBand[] {
   if (state.length !== levelsDb.length) {

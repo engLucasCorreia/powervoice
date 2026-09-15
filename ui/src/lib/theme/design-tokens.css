@@ -136,6 +136,11 @@
   --analyzer-fill: rgba(127, 200, 255, 0.28);
   --analyzer-peak: #ffb454;
   --analyzer-grid: #34373d;
+  --analyzer-compare-a: #5ad1c8; /* H-42: frozen snapshot A */
+  --analyzer-compare-b: #f28cc4; /* H-42: frozen snapshot B */
+  --analyzer-noise: #8b909a; /* H-42: room-tone spectrum (dashed) */
+  --analyzer-crosshair: rgba(230, 231, 234, 0.4);
+  --analyzer-marker: #ffd08a; /* H-42: peak markers */
 
   /* EQ graph (SPEC-015 §2.6.3): band colours follow the HP…LP processing order. */
   --eq-curve: #e6e7ea;
@@ -262,6 +267,11 @@
   --analyzer-fill: rgba(31, 111, 224, 0.22);
   --analyzer-peak: #b35f00;
   --analyzer-grid: #c3c8d0;
+  --analyzer-compare-a: #0b8a80;
+  --analyzer-compare-b: #b8327c;
+  --analyzer-noise: #6f7680;
+  --analyzer-crosshair: rgba(30, 33, 38, 0.4);
+  --analyzer-marker: #9a4f00;
 
   --eq-curve: #1a1d22;
   --eq-fill: rgba(26, 29, 34, 0.1);
@@ -387,6 +397,11 @@
   --analyzer-fill: rgba(159, 214, 255, 0.4);
   --analyzer-peak: #ffc14d;
   --analyzer-grid: #4a5059;
+  --analyzer-compare-a: #5ff5e8;
+  --analyzer-compare-b: #ff9ad5;
+  --analyzer-noise: #c9ced6;
+  --analyzer-crosshair: rgba(255, 255, 255, 0.7);
+  --analyzer-marker: #ffe066;
 
   --eq-curve: #ffffff;
   --eq-fill: rgba(255, 255, 255, 0.18);

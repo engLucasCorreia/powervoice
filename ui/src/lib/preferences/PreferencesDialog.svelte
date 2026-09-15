@@ -5,9 +5,9 @@
   import { recordState, refreshOffset, setRecordPrefs } from "../state/record.svelte";
   import { saveSettings, settingsState } from "../state/settings.svelte";
   import { t, tDynamic } from "../i18n";
-  import type { ThemePref } from "../ipc/bindings";
-  import { applyThemePref } from "../theme/theme.svelte";
-  import { Button, Dialog, formatNumber, SegmentedControl, type SegmentOption } from "../ui";
+  import { chooseTheme } from "../theme/chooseTheme";
+  import ThemePicker from "../theme/ThemePicker.svelte";
+  import { Button, Dialog, formatNumber } from "../ui";
   import { closePreferences, preferencesState } from "./preferences.svelte";
   import PluginFolders from "../plugins/PluginFolders.svelte";
   import { countPlugins } from "../plugins/pluginList";
@@ -28,17 +28,8 @@
    * the user's own scan folders (add/remove, a rescan follows) and Manage plugins….
    */
   const pref = preferencesState();
-  // H-25: Appearance → Theme applies at once and persists in Settings.
-  const THEMES: SegmentOption<ThemePref>[] = [
-    { value: "dark", label: t("preferences.theme.dark"), testid: "preferences-theme-dark" },
-    { value: "light", label: t("preferences.theme.light"), testid: "preferences-theme-light" },
-    { value: "system", label: t("preferences.theme.system"), testid: "preferences-theme-system" },
-  ];
-
-  function chooseTheme(theme: ThemePref): void {
-    applyThemePref(theme);
-    void saveSettings({ theme });
-  }
+  // H-25/T-708: Appearance → Theme (a card per theme with a live preview) applies at once and
+  // persists in Settings — the same `chooseTheme` as View → Theme ▸.
   const settings = settingsState();
   const rec = recordState();
   const prefs = $derived(rec.prefs);
@@ -127,16 +118,8 @@
     actions={[{ label: t("preferences.close"), role: "primary", testid: "preferences-close", onclick: closePreferences }]} size="lg" title={t("preferences.title")} titleId="preferences-title" testid="preferences-dialog" onkeydown={onKeydown}>
     <section data-testid="preferences-appearance">
       <h3>{t("preferences.section.appearance")}</h3>
-      <div class="row">
-        <span class="label">{t("preferences.theme")}</span>
-        <SegmentedControl
-          options={THEMES}
-          value={settings.current?.theme ?? "dark"}
-          label={t("preferences.theme")}
-          size="sm"
-          onchange={chooseTheme}
-        />
-      </div>
+      <span class="label">{t("preferences.theme")}</span>
+      <ThemePicker value={settings.current?.theme ?? "dark"} label={t("preferences.theme")} onchange={chooseTheme} />
       <p class="hint">{t("preferences.theme.hint")}</p>
     </section>
     <section>
@@ -367,7 +350,7 @@
   }
 
   .row > label,
-  .row > .label {
+  .label {
     color: var(--pv-text-secondary);
     font-size: var(--pv-text-sm);
   }

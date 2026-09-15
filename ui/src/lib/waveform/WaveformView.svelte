@@ -44,7 +44,8 @@
   } from "./coords";
   import { GlContextHost } from "../render/glContext";
   import { buildOverlayBatch } from "../render/overlayGeometry";
-  import { cssColorToRgba, hexToRgba, QuadBatch } from "../render/quads";
+  import { QuadBatch } from "../render/quads";
+  import { crispOffset, themeColors } from "../theme/themeColors";
   import { pushNotice } from "../state/notices.svelte";
   import { rendererPref } from "../state/rendererPref.svelte";
   import { decodeVxpk } from "./vxpk";
@@ -354,14 +355,6 @@
   });
 
 
-  function colorToken(name: string, fallback: string): string {
-    if (!canvasEl) {
-      return fallback;
-    }
-    const value = getComputedStyle(canvasEl).getPropertyValue(name).trim();
-    return value || fallback;
-  }
-
   // H-13 (ADR-009 §2/§4): WebGL2 primary renderer, Canvas2D automatic fallback (context creation
   // failure, `webglcontextlost`, or the `rendererPref` setting). Owns the canvas's context choice
   // for its whole lifetime — re-created only when the canvas element itself is re-created (the
@@ -427,8 +420,8 @@
    * pixel math, so the two renderers agree by construction. */
   function drawWebgl2(renderer: WaveformGlRenderer, dpr: number, backingW: number, backingH: number): void {
     const centerY = heightPx / 2;
-    const bgColor = hexToRgba(colorToken("--wave-bg", "#16171a"));
-    const fillColor = hexToRgba(colorToken("--wave-fill", "#7fc8ff"));
+    const bgColor = themeColors().wave.bg.rgba;
+    const fillColor = themeColors().wave.fill.rgba;
     const overlay = new QuadBatch();
     let content: WaveformGlContent | null = null;
 
@@ -437,24 +430,24 @@
         const columns = reduceColumns(liveBuckets, liveStartSample, liveSpb, startSample, samplesPerPixel, Math.ceil(viewportPx));
         content = { mode: "columns", vertices: buildColumnQuads(columns, centerY, fillColor).toFloat32Array() };
       }
-      const recordHeadColor = hexToRgba(colorToken("--wave-record-head", "#ff5c5c"));
+      const recordHeadColor = themeColors().wave.recordHead.rgba;
       const px = pixelAtSample(rec.elapsedSamples, startSample, samplesPerPixel);
-      overlay.vLine(px, 0, heightPx, recordHeadColor);
+      overlay.vLine(px, 0, heightPx, recordHeadColor, themeColors().strokePx);
     } else if (layout) {
       // H-21: the operation view — the existing audio (Insert: shifted past `at`) plus the live
       // take at `at` in the record colour, the punch region, the record head.
       const cols = opViewColumns(layout);
       const quads = buildColumnQuads(cols.base, centerY, fillColor);
-      quads.append(buildColumnQuads(cols.take, centerY, hexToRgba(colorToken("--wave-record", "#ff5c5c"))));
+      quads.append(buildColumnQuads(cols.take, centerY, themeColors().wave.record.rgba));
       content = { mode: "columns", vertices: quads.toFloat32Array() };
       if (layout.punchEnd !== null) {
         const x0 = Math.max(0, pixelAtSample(layout.at, startSample, samplesPerPixel));
         const x1 = Math.min(viewportPx, pixelAtSample(layout.punchEnd, startSample, samplesPerPixel));
-        overlay.rect(x0, 0, x1, heightPx, cssColorToRgba(colorToken("--wave-punch-region", "rgba(255, 92, 92, 0.12)")));
+        overlay.rect(x0, 0, x1, heightPx, themeColors().wave.punchRegion.rgba);
       }
       overlay.append(overlayBatch(opMarkers(layout, markers.list, isTakeMarker)));
       const headPx = pixelAtSample(layout.at + layout.takeLen, startSample, samplesPerPixel);
-      overlay.vLine(headPx, 0, heightPx, hexToRgba(colorToken("--wave-record-head", "#ff5c5c")));
+      overlay.vLine(headPx, 0, heightPx, themeColors().wave.recordHead.rgba, themeColors().strokePx);
     } else {
       const state = requester.state;
       const level = pickLevel(samplesPerPixel);
@@ -475,7 +468,7 @@
           content = { mode: "columns", vertices: buildColumnQuads(columns, centerY, fillColor).toFloat32Array() };
         }
       } else if (state?.partial) {
-        overlay.rect(0, 0, viewportPx, heightPx, hexToRgba(colorToken("--wave-pending", "#3a3d44")));
+        overlay.rect(0, 0, viewportPx, heightPx, themeColors().wave.pending.rgba);
       }
       overlay.append(overlayBatch(markers.list));
     }
@@ -502,11 +495,12 @@
       selection: selection.current,
       markers: markerList,
       playheadSample: isOpen ? transport.playheadSamples : null,
+      lineWidthPx: themeColors().strokePx,
       colors: {
-        selectionFill: cssColorToRgba(colorToken("--wave-selection-fill", "rgba(77, 163, 255, 0.22)")),
-        marker: hexToRgba(colorToken("--wave-marker", "#35c46a")),
-        markerRegionFill: cssColorToRgba(colorToken("--wave-marker-region", "rgba(53, 196, 106, 0.18)")),
-        playhead: hexToRgba(colorToken("--wave-playhead", "#ffb454")),
+        selectionFill: themeColors().wave.selectionFill.rgba,
+        marker: themeColors().wave.marker.rgba,
+        markerRegionFill: themeColors().wave.markerRegion.rgba,
+        playhead: themeColors().wave.playhead.rgba,
       },
     });
   }
@@ -535,7 +529,7 @@
     }
     ctx.save();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const bg = colorToken("--wave-bg", "#16171a");
+    const bg = themeColors().wave.bg.css;
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, viewportPx, heightPx);
 
@@ -557,21 +551,21 @@
         const x0 = Math.max(0, pixelAtSample(layout.at, startSample, samplesPerPixel));
         const x1 = Math.min(viewportPx, pixelAtSample(layout.punchEnd, startSample, samplesPerPixel));
         if (x1 > x0) {
-          ctx.fillStyle = colorToken("--wave-punch-region", "rgba(255, 92, 92, 0.12)");
+          ctx.fillStyle = themeColors().wave.punchRegion.css;
           ctx.fillRect(x0, 0, x1 - x0, heightPx);
         }
       }
-      fillColumns(ctx, cols.base, colorToken("--wave-fill", "#7fc8ff"), centerY);
-      fillColumns(ctx, cols.take, colorToken("--wave-record", "#ff5c5c"), centerY);
+      fillColumns(ctx, cols.base, themeColors().wave.fill.css, centerY);
+      fillColumns(ctx, cols.take, themeColors().wave.record.css, centerY);
       drawSelection(ctx);
       drawMarkers(ctx, opMarkers(layout, markers.list, isTakeMarker));
       drawPlayhead(ctx, centerY);
       const headPx = pixelAtSample(layout.at + layout.takeLen, startSample, samplesPerPixel);
-      ctx.strokeStyle = colorToken("--wave-record-head", "#ff5c5c");
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = themeColors().wave.recordHead.css;
+      ctx.lineWidth = themeColors().strokePx;
       ctx.beginPath();
-      ctx.moveTo(headPx + 0.5, 0);
-      ctx.lineTo(headPx + 0.5, heightPx);
+      ctx.moveTo(headPx + crispOffset(ctx.lineWidth), 0);
+      ctx.lineTo(headPx + crispOffset(ctx.lineWidth), heightPx);
       ctx.stroke();
       ctx.restore();
       return;
@@ -585,7 +579,7 @@
         drawColumns(ctx, state.buckets, state.startSample, level, centerY);
       }
     } else if (state?.partial) {
-      ctx.fillStyle = colorToken("--wave-pending", "#3a3d44");
+      ctx.fillStyle = themeColors().wave.pending.css;
       ctx.fillRect(0, 0, viewportPx, heightPx);
     }
     drawSelection(ctx);
@@ -601,8 +595,8 @@
     if (!isOpen || list.length === 0) {
       return;
     }
-    const flagColor = colorToken("--wave-marker", "#35c46a");
-    const regionFill = colorToken("--wave-marker-region", "rgba(53, 196, 106, 0.18)");
+    const flagColor = themeColors().wave.marker.css;
+    const regionFill = themeColors().wave.markerRegion.css;
     for (const marker of list) {
       const startPx = pixelAtSample(marker.pos_samples, startSample, samplesPerPixel);
       if (marker.len_samples > 0) {
@@ -619,10 +613,10 @@
       }
       if (startPx >= -6 && startPx <= viewportPx + 6) {
         ctx.strokeStyle = flagColor;
-        ctx.lineWidth = 1;
+        ctx.lineWidth = themeColors().strokePx;
         ctx.beginPath();
-        ctx.moveTo(startPx + 0.5, 0);
-        ctx.lineTo(startPx + 0.5, heightPx);
+        ctx.moveTo(startPx + crispOffset(ctx.lineWidth), 0);
+        ctx.lineTo(startPx + crispOffset(ctx.lineWidth), heightPx);
         ctx.stroke();
         drawFlag(ctx, startPx, flagColor);
       }
@@ -653,7 +647,7 @@
     if (x1 <= x0) {
       return;
     }
-    ctx.fillStyle = colorToken("--wave-selection-fill", "rgba(77, 163, 255, 0.22)");
+    ctx.fillStyle = themeColors().wave.selectionFill.css;
     ctx.fillRect(x0, 0, x1 - x0, heightPx);
   }
 
@@ -672,7 +666,7 @@
       samplesPerPixel,
       Math.ceil(viewportPx),
     );
-    fillColumns(ctx, columns, colorToken("--wave-fill", "#7fc8ff"), centerY);
+    fillColumns(ctx, columns, themeColors().wave.fill.css, centerY);
   }
 
   /** One `color` min/max column per pixel (`null`: nothing drawn there). */
@@ -700,8 +694,8 @@
     fetchStartSample: number,
     centerY: number,
   ): void {
-    ctx.strokeStyle = colorToken("--wave-fill", "#7fc8ff");
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = themeColors().wave.fill.css;
+    ctx.lineWidth = themeColors().strokePx;
     ctx.beginPath();
     for (let i = 0; i < samples.length; i++) {
       const sample = samples[i];
@@ -718,7 +712,7 @@
     }
     ctx.stroke();
     if (showsDots(samplesPerPixel)) {
-      ctx.fillStyle = colorToken("--wave-fill", "#7fc8ff");
+      ctx.fillStyle = themeColors().wave.fill.css;
       for (let i = 0; i < samples.length; i++) {
         const sample = samples[i];
         if (!sample) {
@@ -727,7 +721,7 @@
         const px = pixelAtSample(fetchStartSample + i, startSample, samplesPerPixel);
         const y = centerY - sample[0] * centerY;
         ctx.beginPath();
-        ctx.arc(px, y, 1.5, 0, Math.PI * 2);
+        ctx.arc(px, y, 1 + themeColors().strokePx / 2, 0, Math.PI * 2);
         ctx.fill();
       }
     }
@@ -741,22 +735,22 @@
     if (px < -1 || px > viewportPx + 1) {
       return;
     }
-    ctx.strokeStyle = colorToken("--wave-playhead", "#ffb454");
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = themeColors().wave.playhead.css;
+    ctx.lineWidth = themeColors().strokePx;
     ctx.beginPath();
-    ctx.moveTo(px + 0.5, 0);
-    ctx.lineTo(px + 0.5, centerY * 2);
+    ctx.moveTo(px + crispOffset(ctx.lineWidth), 0);
+    ctx.lineTo(px + crispOffset(ctx.lineWidth), centerY * 2);
     ctx.stroke();
   }
 
   /** H-07: a line at the take's current length (the view is always zoomed so it's on-screen). */
   function drawRecordHead(ctx: CanvasRenderingContext2D, centerY: number): void {
     const px = pixelAtSample(rec.elapsedSamples, startSample, samplesPerPixel);
-    ctx.strokeStyle = colorToken("--wave-record-head", "#ff5c5c");
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = themeColors().wave.recordHead.css;
+    ctx.lineWidth = themeColors().strokePx;
     ctx.beginPath();
-    ctx.moveTo(px + 0.5, 0);
-    ctx.lineTo(px + 0.5, centerY * 2);
+    ctx.moveTo(px + crispOffset(ctx.lineWidth), 0);
+    ctx.lineTo(px + crispOffset(ctx.lineWidth), centerY * 2);
     ctx.stroke();
   }
 

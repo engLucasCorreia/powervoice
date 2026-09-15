@@ -1,88 +1,9 @@
 /*
- * PowerVoice dark theme tokens (ADR-001, PROMPT §3.6: "Audition-like dark layout").
- * Every color used by components should come from one of these custom properties, never a
- * literal, so a future light/alt theme only needs to redefine this file.
+ * Base element styles (ADR-001). T-708: every colour now lives in `design-tokens.css` — one block
+ * per theme, content tokens (`--wave-*`, `--spec-*`, `--analyzer-*`, `--eq-*`) included — and the
+ * pre-H-25 chrome names (`--surface-*`, `--text-*`, `--accent*`, `--meter-*`) are aliases in
+ * `theme-bridge.css`. Don't add colour values here.
  */
-:root {
-  color-scheme: dark;
-
-  /* Surfaces, darkest to lightest. */
-  --surface-app: #1a1c20;
-  --surface-panel: #202226;
-  --surface-panel-raised: #26292e;
-  --surface-inset: #16171a;
-  --surface-border: #34373d;
-
-  /* Text. */
-  --text-primary: #e6e7ea;
-  --text-secondary: #9a9da4;
-  --text-disabled: #5c5f66;
-  --text-on-accent: #0d0e10;
-
-  /* Accent (transport/primary actions). */
-  --accent: #4da3ff;
-  --accent-hover: #6fb6ff;
-  --accent-active: #2f8ce0;
-
-  /* Waveform + selection. */
-  --waveform-fill: #7fc8ff;
-  --waveform-rms: #3f6f94;
-  --waveform-baseline: #454850;
-  --selection-fill: rgba(77, 163, 255, 0.22);
-  --selection-border: #4da3ff;
-
-  /* Meter ballistics. */
-  --meter-green: #35c46a;
-  --meter-yellow: #e0c93f;
-  --meter-red: #e5484d;
-
-  /* Focus ring, used on every interactive control. */
-  --focus-ring: #7fc8ff;
-
-  /* Waveform view (SPEC-006 §2.12): token *names* are fixed by the spec; a future theme/accent
-   * pass only needs to redefine these values, never touch the rendering code. Selection/marker
-   * tokens are declared now even though S1-03 doesn't draw them yet (deferred to Slice 2) so
-   * hardening tickets don't need a token-naming pass later. */
-  --wave-bg: #16171a;
-  --wave-fill: #7fc8ff;
-  --wave-outline: #4da3ff;
-  --wave-pending: #3a3d44;
-  --wave-clip: #e5484d;
-  --wave-playhead: #ffb454;
-  --wave-selection-fill: rgba(77, 163, 255, 0.22);
-  --wave-selection-handle: #4da3ff;
-  --wave-marker: #35c46a;
-  --wave-marker-region: rgba(53, 196, 106, 0.18);
-  --wave-ruler-text: #9a9da4;
-  --wave-ruler-grid: #34373d;
-  --wave-zero-line: #454850;
-
-  /* Spectral pane (SPEC-007 §4.7, T-207): overlays (playhead/selection/markers) reuse the
-   * `--wave-*` tokens above (SPEC-006 §2.12: "the same theme tokens"). */
-  --spec-bg: #0d0e10;
-  --spec-pending: #232630;
-  --spec-ruler-text: #9a9da4;
-  --spec-ruler-grid: #34373d;
-
-  /* Live output analyzer (SPEC-007 §2.9, §4.7, T-208). */
-  --analyzer-fill: rgba(127, 200, 255, 0.28);
-  --analyzer-peak: #ffb454;
-  --analyzer-grid: #34373d;
-
-  /* EQ graph (SPEC-015 §2.6.3, S3-07): band colors follow the HP…LP processing order. */
-  --eq-curve: #e6e7ea;
-  --eq-fill: rgba(230, 231, 234, 0.15);
-  --eq-grid: #34373d;
-  --eq-band-hp: #9a9da4;
-  --eq-band-ls: #4da3ff;
-  --eq-band-1: #35c46a;
-  --eq-band-2: #e0c93f;
-  --eq-band-3: #ff9f4d;
-  --eq-band-4: #e5484d;
-  --eq-band-5: #c76ae0;
-  --eq-band-hs: #7fc8ff;
-  --eq-band-lp: #6fb6ff;
-}
 
 * {
   box-sizing: border-box;
@@ -92,18 +13,13 @@ html,
 body {
   margin: 0;
   height: 100%;
-  background: var(--surface-app);
-  color: var(--text-primary);
-  font-family:
-    "Inter",
-    system-ui,
-    -apple-system,
-    "Segoe UI",
-    sans-serif;
+  background: var(--pv-bg-app);
+  color: var(--pv-text-primary);
+  font-family: var(--pv-font-sans);
   font-size: 13px;
 }
 
 :focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: var(--pv-focus-width) solid var(--pv-focus-ring);
   outline-offset: 1px;
 }

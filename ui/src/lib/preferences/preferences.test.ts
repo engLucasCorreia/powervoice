@@ -6,6 +6,7 @@ import { clearNotices } from "../state/notices.svelte";
 import { applyRecordStateForTest, resetRecordForTest } from "../state/record.svelte";
 import { resetSettingsStateForTest } from "../state/settings.svelte";
 import { settingsFixture as makeSettings } from "../test/fixtures";
+import { resetThemeForTest } from "../theme/theme.svelte";
 import PreferencesDialog from "./PreferencesDialog.svelte";
 import { closePreferences, openPreferences, preferencesState, resetPreferencesForTest } from "./preferences.svelte";
 
@@ -14,6 +15,7 @@ afterEach(() => {
   clearNotices();
   resetSettingsStateForTest();
   resetPreferencesForTest();
+  resetThemeForTest();
 });
 
 function mountDialog(): { target: HTMLElement; app: object } {
@@ -34,6 +36,52 @@ async function settle(): Promise<void> {
 function q<T extends Element = HTMLElement>(root: HTMLElement, id: string): T | null {
   return root.querySelector<T>(`[data-testid="${id}"]`);
 }
+
+describe("Preferences → Appearance (T-708)", () => {
+  it("offers all four themes with previews and applies + saves a pick at once", async () => {
+    let lastSaved: Settings | undefined;
+    mockIPC((cmd, args) => {
+      if (cmd === "settings_get") return makeSettings({ theme: "dark" });
+      if (cmd === "settings_set") {
+        lastSaved = (args as { settings: Settings }).settings;
+        return lastSaved;
+      }
+      if (cmd === "plugins_list") return [];
+      return null;
+    });
+    const { loadSettings } = await import("../state/settings.svelte");
+    await loadSettings();
+    openPreferences();
+    await settle();
+    const { target, app } = mountDialog();
+    await settle();
+
+    const appearance = q(target, "preferences-appearance")!;
+    const radios = [...appearance.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+    expect(radios.map((r) => r.dataset.testid)).toEqual([
+      "preferences-theme-dark",
+      "preferences-theme-light",
+      "preferences-theme-system",
+      "preferences-theme-high_contrast",
+    ]);
+    expect(q(target, "preferences-theme-dark")?.getAttribute("aria-checked")).toBe("true");
+    expect(appearance.querySelectorAll('[data-testid^="theme-swatch-"]').length).toBe(4);
+
+    q<HTMLButtonElement>(target, "preferences-theme-light")!.click();
+    await settle();
+    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(lastSaved?.theme).toBe("light");
+    expect(q(target, "preferences-theme-light")?.getAttribute("aria-checked")).toBe("true");
+
+    q<HTMLButtonElement>(target, "preferences-theme-high_contrast")!.click();
+    await settle();
+    expect(document.documentElement.dataset.theme).toBe("high-contrast");
+    expect(lastSaved?.theme).toBe("high_contrast");
+
+    unmount(app);
+    target.remove();
+  });
+});
 
 describe("Preferences dialog (H-17 item 5)", () => {
   it("stays hidden until openPreferences is called", () => {

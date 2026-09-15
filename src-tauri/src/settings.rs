@@ -491,7 +491,9 @@ impl Default for LayoutPrefsDto {
 // --- Appearance (H-25) ---------------------------------------------------------------------------
 
 /// The UI colour theme (H-25 design system, docs/design/design-system.md §15). Dark is the
-/// factory default (the design is dark-first); `System` follows the OS light/dark preference.
+/// factory default (the design is dark-first, A-018); `System` follows the OS light/dark
+/// preference; `HighContrast` (T-708) is a dark-based theme with WCAG AAA text, thicker focus
+/// rings and thicker waveform lines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
@@ -500,6 +502,7 @@ pub enum ThemePref {
     Dark,
     Light,
     System,
+    HighContrast,
 }
 
 // --- Plugins (T-804, ADR-008 §5/§6) ---------------------------------------------------------------
@@ -988,6 +991,24 @@ mod tests {
 
         let system = br#"{"version":1,"theme":"system"}"#;
         assert_eq!(parse_and_migrate(system).unwrap().theme, ThemePref::System);
+
+        // T-708: High Contrast is stored as `high_contrast` and round-trips.
+        let hc = br#"{"version":1,"theme":"high_contrast"}"#;
+        assert_eq!(
+            parse_and_migrate(hc).unwrap().theme,
+            ThemePref::HighContrast
+        );
+        let settings = Settings {
+            theme: ThemePref::HighContrast,
+            ..Settings::default()
+        };
+        save(&path, &settings).unwrap();
+        assert_eq!(load_or_default(&path).theme, ThemePref::HighContrast);
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            raw.contains(r#""theme": "high_contrast""#)
+                || raw.contains(r#""theme":"high_contrast""#)
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

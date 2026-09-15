@@ -17,6 +17,7 @@
   } from "./gainAxis";
   import { buildEqNodes, hitTestNode, nodeGainDb, nodeFreqsHz, type EqNode } from "./nodes";
   import { formatRulerFreqHz } from "../spectrum/freqAxis";
+  import { eqBandColor, themeColors } from "../theme/themeColors";
 
   /**
    * The EQ graph panel (S3-07, SPEC-015 §2.6, lean slice): log-frequency axis, ±12/±24 dB gain
@@ -87,12 +88,9 @@
     draw();
   });
 
-  function colorToken(name: string, fallback: string): string {
-    if (!canvasEl) {
-      return fallback;
-    }
-    const value = getComputedStyle(canvasEl).getPropertyValue(name).trim();
-    return value || fallback;
+  /** The UI font for canvas labels (a font stack, not a colour). */
+  function fontFamily(): string {
+    return (canvasEl ? getComputedStyle(canvasEl).getPropertyValue("--pv-font-sans").trim() : "") || "sans-serif";
   }
 
   function draw(): void {
@@ -116,7 +114,7 @@
 
     // Grid: 0 dB emphasised, every 3 dB (±12) or 6 dB (±24) otherwise (SPEC-015 §2.6.2).
     const gainTicks = gainAxisTicks(GRAPH_HEIGHT_PX, gainRangeDb);
-    ctx.strokeStyle = colorToken("--eq-grid", "#34373d");
+    ctx.strokeStyle = themeColors().eq.grid.css;
     ctx.lineWidth = 1;
     for (const tick of gainTicks) {
       const y = Math.round(tick.y) + 0.5;
@@ -141,13 +139,13 @@
       formatRulerFreqHz,
       t("eq.graph.freq_unit"),
     );
-    const family = colorToken("--pv-font-sans", "sans-serif");
-    const patch = colorToken("--pv-bg-inset", "#111317");
+    const family = fontFamily();
+    const patch = themeColors().eq.labelPatch.css;
     ctx.font = `${EQ_AXIS_FONT_PX}px ${family}`;
     for (const label of [...labels.gain, ...labels.freq, labels.freqUnit]) {
       ctx.fillStyle = patch;
       ctx.fillRect(label.rect.x - 1, label.rect.y, label.rect.width + 2, label.rect.height);
-      ctx.fillStyle = colorToken("--pv-text-tertiary", "#8b9099");
+      ctx.fillStyle = themeColors().eq.labelText.css;
       ctx.textAlign = label.align;
       ctx.textBaseline = label.baseline;
       ctx.fillText(label.text, label.x, label.y);
@@ -168,13 +166,13 @@
           ctx.lineTo(x, y);
         }
       });
-      ctx.strokeStyle = colorToken("--eq-curve", "#e6e7ea");
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = themeColors().eq.curve.css;
+      ctx.lineWidth = themeColors().emphasisStrokePx;
       ctx.stroke();
       ctx.lineTo(width, zeroY);
       ctx.lineTo(0, zeroY);
       ctx.closePath();
-      ctx.fillStyle = colorToken("--eq-fill", "rgba(230, 231, 234, 0.15)");
+      ctx.fillStyle = themeColors().eq.fill.css;
       ctx.fill();
     }
 
@@ -182,7 +180,7 @@
     for (const node of nodes) {
       const x = xForFreq(node.freqHz, width, fLo, fHi);
       const y = yForDb(nodeGainDb(node, curve) ?? 0, GRAPH_HEIGHT_PX, gainRangeDb);
-      const color = colorToken(`--eq-band-${node.bandKey || node.component}`, "#7fc8ff");
+      const color = eqBandColor(themeColors(), String(node.bandKey || node.component)).css;
       ctx.beginPath();
       ctx.arc(x, y, 6, 0, Math.PI * 2);
       if (node.enabled) {
@@ -196,7 +194,7 @@
         ctx.globalAlpha = 1;
       }
       if (selected === node.component) {
-        ctx.strokeStyle = colorToken("--focus-ring", "#7fc8ff");
+        ctx.strokeStyle = themeColors().eq.selectedRing.css;
         ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.arc(x, y, 9, 0, Math.PI * 2);

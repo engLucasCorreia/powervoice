@@ -9,6 +9,8 @@
   import { rendererPref, setRendererPreference } from "../state/rendererPref.svelte";
   import { saveSettings, settingsState } from "../state/settings.svelte";
   import { spectralState } from "../state/spectral.svelte";
+  import { chooseTheme } from "../theme/chooseTheme";
+  import { themeState, THEMES } from "../theme/theme.svelte";
   import type { MenuEntry } from "../ui/menuModel";
 
   /**
@@ -16,10 +18,14 @@
    * (View → Renderer, backed by `Settings.renderer_preference`). H-26: on the shared menu.
    * H-28 item 3: Follow Playhead (SPEC-003 §3/SPEC-006 §2.8, `Settings.playhead_follow`), same
    * checkbox pattern as Analyzer — no shortcut is named in either spec, so none is bound.
+   * T-708: Theme ▸ (Dark / Light / Match System / High Contrast), radio rows from the same theme
+   * list as Preferences → Appearance; applies at once and persists. SPEC-003 names no theme
+   * shortcut, so none is bound.
    */
   const analyzer = analyzerState();
   const spectral = spectralState();
   const renderer = rendererPref();
+  const theme = themeState();
   const playheadFollow = $derived(settingsState().current?.playhead_follow ?? true);
 
   function togglePlayheadFollow(): void {
@@ -83,6 +89,22 @@
       onselect: () => dispatchAction("waveform.zoom_out"),
     },
     { kind: "separator", id: "sep-renderer" },
+    {
+      kind: "submenu",
+      id: "theme",
+      label: t("menu.view.theme"),
+      testid: "menu-theme",
+      menuTestid: "menu-theme-list",
+      minWidth: 180,
+      items: THEMES.map((choice) => ({
+        kind: "radio" as const,
+        id: choice.pref,
+        label: tDynamic(choice.menuLabelKey),
+        checked: theme.pref === choice.pref,
+        testid: `menu-theme-${choice.pref}`,
+        onselect: () => chooseTheme(choice.pref),
+      })),
+    },
     {
       kind: "submenu",
       id: "renderer",

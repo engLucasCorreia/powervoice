@@ -1155,9 +1155,11 @@ export type TelemetryKindDto = "gain_reduction" | "level" | "indicator" | "value
 
 /**
  * The UI colour theme (H-25 design system, docs/design/design-system.md §15). Dark is the
- * factory default (the design is dark-first); `System` follows the OS light/dark preference.
+ * factory default (the design is dark-first, A-018); `System` follows the OS light/dark
+ * preference; `HighContrast` (T-708) is a dark-based theme with WCAG AAA text, thicker focus
+ * rings and thicker waveform lines.
  */
-export type ThemePref = "dark" | "light" | "system";
+export type ThemePref = "dark" | "light" | "system" | "high_contrast";
 
 /**
  * Transport state (`transport_state` event, transport command results). While playing, the

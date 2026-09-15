@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   CONTRAST_PAIRS,
   contrastRatio,
+  minRatio,
   parseHex,
   parseThemes,
   resolveColor,
 } from "./contrast";
+import { RESOLVED_THEMES } from "./theme.svelte";
 
 // Raw text through Vite's `import.meta.glob` (the eqGraph lint test's recipe — no Node `fs`); a
 // plain `?raw` import of a `.css` file comes back empty under Vitest's CSS handling.
@@ -43,12 +45,18 @@ describe("design-tokens.css themes", () => {
     expect(css).toContain("--pv-bg-panel");
   });
 
-  it("defines a dark and a light theme with the same role names", () => {
-    expect(Object.keys(themes).sort()).toEqual(["dark", "light"]);
+  it("has exactly one block per theme the app can resolve to (data-driven, T-708)", () => {
+    expect(Object.keys(themes).sort()).toEqual([...RESOLVED_THEMES].sort());
+  });
+
+  it("every theme block defines the same tokens — chrome and audio content", () => {
     const dark = Object.keys(themes.dark ?? {}).sort();
-    const light = Object.keys(themes.light ?? {}).sort();
-    expect(dark.length).toBeGreaterThan(40);
-    expect(light).toEqual(dark);
+    expect(dark.length).toBeGreaterThan(100);
+    expect(dark).toContain("--wave-bg");
+    expect(dark).toContain("--eq-band-lp");
+    for (const name of RESOLVED_THEMES) {
+      expect(Object.keys(themes[name] ?? {}).sort(), name).toEqual(dark);
+    }
   });
 
   it("every pair names a role that exists and resolves to an opaque colour", () => {
@@ -62,17 +70,27 @@ describe("design-tokens.css themes", () => {
     }
   });
 
-  for (const themeName of ["dark", "light"] as const) {
-    describe(`${themeName} theme meets WCAG AA`, () => {
+  it("High Contrast asks for AAA text (7:1) and 4.5:1 indicators", () => {
+    const text = CONTRAST_PAIRS.find((p) => p.fg === "--pv-text-tertiary")!;
+    const ring = CONTRAST_PAIRS.find((p) => p.fg === "--pv-focus-ring")!;
+    expect(minRatio(text, "high-contrast")).toBe(7);
+    expect(minRatio(ring, "high-contrast")).toBe(4.5);
+    expect(minRatio(text, "light")).toBe(4.5);
+    expect(minRatio(ring, "dark")).toBe(3);
+  });
+
+  for (const themeName of RESOLVED_THEMES) {
+    describe(`${themeName} theme meets its contrast bar`, () => {
       for (const pair of CONTRAST_PAIRS) {
-        it(`${pair.fg} on ${pair.bg} ≥ ${pair.min}:1 (${pair.use})`, () => {
+        const min = minRatio(pair, themeName);
+        it(`${pair.fg} on ${pair.bg} ≥ ${min}:1 (${pair.use})`, () => {
           const theme = themes[themeName] ?? {};
           const fg = resolveColor(theme, pair.fg);
           const bg = resolveColor(theme, pair.bg);
           if (!fg || !bg) {
             throw new Error(`unresolved ${pair.fg} / ${pair.bg}`);
           }
-          expect(contrastRatio(fg, bg)).toBeGreaterThanOrEqual(pair.min);
+          expect(contrastRatio(fg, bg)).toBeGreaterThanOrEqual(min);
         });
       }
     });

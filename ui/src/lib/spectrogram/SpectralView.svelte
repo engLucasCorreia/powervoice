@@ -39,7 +39,7 @@
   } from "../waveform/coords";
   import { GlContextHost } from "../render/glContext";
   import { buildOverlayBatch } from "../render/overlayGeometry";
-  import { cssColorToRgba, hexToRgba } from "../render/quads";
+  import { crispOffset, themeColors } from "../theme/themeColors";
   import { pushNotice } from "../state/notices.svelte";
   import { rendererPref } from "../state/rendererPref.svelte";
   import { colorForT, type ColormapName, cssGradientFor, normalizeDb } from "./colormap";
@@ -229,23 +229,7 @@
     return `left: ${Math.max(0, left)}px; top: ${Math.max(0, top)}px;`;
   });
 
-  function colorToken(name: string, fallback: string): string {
-    if (!canvasEl) {
-      return fallback;
-    }
-    const value = getComputedStyle(canvasEl).getPropertyValue(name).trim();
-    return value || fallback;
-  }
 
-  /** `#rrggbb` -> `[r, g, b]`, or `null` if it isn't that shape (our own tokens always are). */
-  function hexToRgb(hex: string): [number, number, number] | null {
-    const m = /^#([0-9a-fA-F]{6})$/.exec(hex.trim());
-    if (!m) {
-      return null;
-    }
-    const n = parseInt(m[1]!, 16);
-    return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
-  }
 
   // H-13 (ADR-009 §2/§4): WebGL2 primary renderer, Canvas2D automatic fallback. See
   // WaveformView.svelte's identical pattern for the rationale (context lifetime tied to the
@@ -323,19 +307,20 @@
       markers: markers.list,
       playheadSample: transport.playheadSamples,
       markerStyle: "lines",
+      lineWidthPx: themeColors().strokePx * dpr,
       colors: {
-        selectionFill: cssColorToRgba(colorToken("--wave-selection-fill", "rgba(77, 163, 255, 0.22)")),
-        marker: hexToRgba(colorToken("--wave-marker", "#35c46a")),
-        markerRegionFill: cssColorToRgba(colorToken("--wave-marker-region", "rgba(53, 196, 106, 0.18)")),
-        playhead: hexToRgba(colorToken("--wave-playhead", "#ffb454")),
+        selectionFill: themeColors().wave.selectionFill.rgba,
+        marker: themeColors().wave.marker.rgba,
+        markerRegionFill: themeColors().wave.markerRegion.rgba,
+        playhead: themeColors().wave.playhead.rgba,
       },
     });
 
     renderer.draw({
       backingWidthPx: backingW,
       backingHeightPx: backingH,
-      background: hexToRgba(colorToken("--spec-bg", "#0d0e10")),
-      pending: hexToRgba(colorToken("--spec-pending", "#232630")),
+      background: themeColors().spec.bg.rgba,
+      pending: themeColors().spec.pending.rgba,
       colormap: spectral.colormap,
       floorDb: spectral.floorDb,
       ceilDb: spectral.ceilDb,
@@ -365,7 +350,8 @@
     const colormap = spectral.colormap;
     const floorDb = spectral.floorDb;
     const ceilDb = spectral.ceilDb;
-    const pendingRgb = hexToRgb(colorToken("--spec-pending", "#232630")) ?? [35, 38, 48];
+    const [pr, pg, pb] = themeColors().spec.pending.rgba;
+    const pendingRgb = [Math.round(pr * 255), Math.round(pg * 255), Math.round(pb * 255)] as const;
 
     const image = ctx.createImageData(backingW, backingH);
     const data = image.data;
@@ -413,30 +399,30 @@
       const x0 = Math.max(0, pixelAtSample(sel.startSample, startSample, samplesPerPixel));
       const x1 = Math.min(viewportPx, pixelAtSample(sel.endSample, startSample, samplesPerPixel));
       if (x1 > x0) {
-        ctx.fillStyle = colorToken("--wave-selection-fill", "rgba(77, 163, 255, 0.22)");
+        ctx.fillStyle = themeColors().wave.selectionFill.css;
         ctx.fillRect(x0, 0, x1 - x0, heightPx);
       }
     }
     if (markers.list.length > 0) {
-      ctx.strokeStyle = colorToken("--wave-marker", "#35c46a");
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = themeColors().wave.marker.css;
+      ctx.lineWidth = themeColors().strokePx;
       for (const marker of markers.list) {
         const px = pixelAtSample(marker.pos_samples, startSample, samplesPerPixel);
         if (px >= -1 && px <= viewportPx + 1) {
           ctx.beginPath();
-          ctx.moveTo(px + 0.5, 0);
-          ctx.lineTo(px + 0.5, heightPx);
+          ctx.moveTo(px + crispOffset(ctx.lineWidth), 0);
+          ctx.lineTo(px + crispOffset(ctx.lineWidth), heightPx);
           ctx.stroke();
         }
       }
     }
     const playheadPx = pixelAtSample(transport.playheadSamples, startSample, samplesPerPixel);
     if (playheadPx >= -1 && playheadPx <= viewportPx + 1) {
-      ctx.strokeStyle = colorToken("--wave-playhead", "#ffb454");
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = themeColors().wave.playhead.css;
+      ctx.lineWidth = themeColors().strokePx;
       ctx.beginPath();
-      ctx.moveTo(playheadPx + 0.5, 0);
-      ctx.lineTo(playheadPx + 0.5, heightPx);
+      ctx.moveTo(playheadPx + crispOffset(ctx.lineWidth), 0);
+      ctx.lineTo(playheadPx + crispOffset(ctx.lineWidth), heightPx);
       ctx.stroke();
     }
   }
@@ -464,8 +450,8 @@
         glRenderer.draw({
           backingWidthPx: backingW,
           backingHeightPx: backingH,
-          background: hexToRgba(colorToken("--spec-bg", "#0d0e10")),
-          pending: hexToRgba(colorToken("--spec-pending", "#232630")),
+          background: themeColors().spec.bg.rgba,
+          pending: themeColors().spec.pending.rgba,
           colormap: spectral.colormap,
           floorDb: spectral.floorDb,
           ceilDb: spectral.ceilDb,
@@ -488,7 +474,7 @@
     }
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = colorToken("--spec-bg", "#0d0e10");
+    ctx.fillStyle = themeColors().spec.bg.css;
     ctx.fillRect(0, 0, backingW, backingH);
     if (isOpen && lenSamples > 0 && rateHz > 0) {
       drawSpectrogram(ctx, backingW, backingH, dpr);
@@ -1011,8 +997,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(0, 0, 0, 0.45);
-    color: var(--text-primary);
+    background: var(--spec-scrim);
+    color: var(--spec-scrim-text);
     font-size: 0.8rem;
     text-align: center;
     padding: 0.5rem;

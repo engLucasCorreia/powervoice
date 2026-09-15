@@ -17,6 +17,7 @@
   import { analyzerState, initAnalyzer, setAnalyzerResponse } from "./analyzer.svelte";
   import { initOutputDeviceStatus, outputDeviceStatus } from "./outputDeviceStatus.svelte";
   import { createPeakHold, resetPeakHold, updatePeakHold, type PeakHoldBand } from "./peakHold";
+  import { themeColors } from "../theme/themeColors";
 
   /**
    * The live output analyzer panel (T-208/H-16, SPEC-007 §2.9): a filled spectrum curve on a log
@@ -172,14 +173,6 @@
     return () => cancelAnimationFrame(raf);
   });
 
-  function colorToken(name: string, fallback: string): string {
-    if (!canvasEl) {
-      return fallback;
-    }
-    const value = getComputedStyle(canvasEl).getPropertyValue(name).trim();
-    return value || fallback;
-  }
-
   function yForDb(db: number): number {
     return yForAnalyzerDb(db, floorDb, ceilDb, height);
   }
@@ -206,10 +199,10 @@
     }
     ctx.save();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = colorToken("--surface-inset", "#16171a");
+    ctx.fillStyle = themeColors().analyzer.bg.css;
     ctx.fillRect(0, 0, width, height);
 
-    const gridColor = colorToken("--analyzer-grid", "#34373d");
+    const gridColor = themeColors().analyzer.grid.css;
     ctx.strokeStyle = gridColor;
     ctx.lineWidth = 1;
     ctx.globalAlpha = 0.6;
@@ -250,12 +243,12 @@
       ctx.lineTo(lastX, bottomY);
       ctx.lineTo(xForFreq(bandCenterHzLocal(0, f.f0Hz, f.bandsPerOctave)), bottomY);
       ctx.closePath();
-      ctx.fillStyle = colorToken("--analyzer-fill", "rgba(127, 200, 255, 0.28)");
+      ctx.fillStyle = themeColors().analyzer.fill.css;
       ctx.fill();
 
       if (analyzer.peakHold && peaks.length === f.levelsDb.length) {
-        ctx.strokeStyle = colorToken("--analyzer-peak", "#ffb454");
-        ctx.lineWidth = 1;
+        ctx.strokeStyle = themeColors().analyzer.peak.css;
+        ctx.lineWidth = themeColors().strokePx;
         ctx.beginPath();
         peaks.forEach((band, k) => {
           if (!Number.isFinite(band.value)) {

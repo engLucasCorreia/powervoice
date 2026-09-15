@@ -1,3 +1,4 @@
+import { themeColors } from "../lib/theme/themeColors";
 import { buildColormapLut } from "./colormap";
 import type { DrawColumns } from "./webgl";
 
@@ -10,7 +11,7 @@ export function makeCanvas2dWaveformRenderer(canvas: HTMLCanvasElement): DrawCol
 
   return (columns, numColumns) => {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "#7fc8ff";
+    ctx.fillStyle = themeColors().wave.fill.css;
     ctx.beginPath();
     for (let col = 0; col < numColumns; col++) {
       const max = columns[col * 2 + 1] ?? 0;

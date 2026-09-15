@@ -1,11 +1,13 @@
 /**
- * WCAG 2.2 contrast checking for the design tokens (H-25). Pure and DOM-free: the test parses
- * `design-tokens.css` as text (jsdom doesn't compute custom properties from stylesheets reliably),
- * resolves `var(--x)` references inside one theme, and checks every pair below.
+ * WCAG 2.2 contrast checking for the design tokens (H-25, T-708). Pure and DOM-free: the test
+ * parses `design-tokens.css` as text (jsdom doesn't compute custom properties from stylesheets
+ * reliably), resolves `var(--x)` references inside one theme, and checks every pair below in
+ * every theme block. `themeColors.ts` reuses the parser as its fallback source.
  *
  * Text pairs need 4.5:1 (AA, normal text — every PowerVoice UI string is < 18.66 px bold/24 px);
- * non-text indicators (focus ring, selected border, slider fill, record lamp, meter boundaries)
- * need 3:1 (WCAG 1.4.11). Disabled text is exempt and deliberately absent.
+ * non-text indicators (focus ring, selected border, slider fill, record lamp, meter boundaries,
+ * waveform/playhead/marker lines) need 3:1 (WCAG 1.4.11). High Contrast raises both: 7:1 for text
+ * (AAA) and 4.5:1 for indicators (`minRatio`). Disabled text is exempt and deliberately absent.
  */
 
 export type Rgb = [number, number, number];
@@ -20,6 +22,17 @@ export interface ContrastPair {
 
 const AA_TEXT = 4.5;
 const AA_NON_TEXT = 3;
+const AAA_TEXT = 7;
+const HC_NON_TEXT = 4.5;
+
+/** The ratio `pair` must reach in `theme`: AA everywhere; AAA text (and 4.5:1 indicators) in
+ * High Contrast. */
+export function minRatio(pair: ContrastPair, theme: string): number {
+  if (theme === "high-contrast") {
+    return pair.min >= AA_TEXT ? AAA_TEXT : HC_NON_TEXT;
+  }
+  return pair.min;
+}
 
 const TEXT_ROLES = ["--pv-text-primary", "--pv-text-secondary", "--pv-text-tertiary"] as const;
 const SURFACES = [
@@ -87,6 +100,29 @@ export const CONTRAST_PAIRS: readonly ContrastPair[] = [
   { fg: "--pv-warning", bg: "--pv-bg-panel", min: AA_NON_TEXT, use: "warning dot" },
   { fg: "--pv-success", bg: "--pv-bg-panel", min: AA_NON_TEXT, use: "ok dot" },
   { fg: "--pv-text-secondary", bg: "--pv-control-track", min: AA_NON_TEXT, use: "switch-off knob" },
+  // Audio content (T-708): every line or bar that carries information holds 3:1 on its well.
+  { fg: "--wave-fill", bg: "--wave-bg", min: AA_NON_TEXT, use: "waveform" },
+  { fg: "--wave-playhead", bg: "--wave-bg", min: AA_NON_TEXT, use: "playhead" },
+  { fg: "--wave-marker", bg: "--wave-bg", min: AA_NON_TEXT, use: "marker line/flag" },
+  { fg: "--wave-record", bg: "--wave-bg", min: AA_NON_TEXT, use: "take being recorded" },
+  { fg: "--wave-record-head", bg: "--wave-bg", min: AA_NON_TEXT, use: "record head" },
+  { fg: "--wave-selection-handle", bg: "--wave-bg", min: AA_NON_TEXT, use: "selection edge" },
+  { fg: "--wave-ruler-text", bg: "--pv-bg-panel", min: AA_TEXT, use: "amplitude/time ruler labels" },
+  { fg: "--wave-playhead", bg: "--spec-bg", min: AA_NON_TEXT, use: "playhead over the spectrogram" },
+  { fg: "--wave-marker", bg: "--spec-bg", min: AA_NON_TEXT, use: "marker over the spectrogram" },
+  { fg: "--spec-ruler-text", bg: "--pv-bg-panel", min: AA_TEXT, use: "frequency ruler labels" },
+  { fg: "--spec-scrim-text", bg: "--spec-bg", min: AA_TEXT, use: "frozen notice over the spectrogram" },
+  { fg: "--analyzer-peak", bg: "--analyzer-bg", min: AA_NON_TEXT, use: "analyzer peak hold" },
+  { fg: "--pv-meter-safe", bg: "--pv-meter-track", min: AA_NON_TEXT, use: "meter level bar" },
+  { fg: "--pv-meter-caution", bg: "--pv-meter-track", min: AA_NON_TEXT, use: "meter peak hold / GR" },
+  { fg: "--pv-meter-over", bg: "--pv-meter-track", min: AA_NON_TEXT, use: "meter clip" },
+  { fg: "--eq-curve", bg: "--pv-bg-inset", min: AA_NON_TEXT, use: "EQ total response" },
+  ...["hp", "ls", "1", "2", "3", "4", "5", "hs", "lp"].map((band) => ({
+    fg: `--eq-band-${band}`,
+    bg: "--pv-bg-inset",
+    min: AA_NON_TEXT,
+    use: "EQ band node",
+  })),
 ];
 
 /** `#rgb` / `#rrggbb` → `[r, g, b]` (0–255), or `null` for anything else (rgba, names…). */
@@ -127,23 +163,23 @@ export function contrastRatio(a: string, b: string): number {
 function parseDeclarations(body: string): ThemeTokens {
   const tokens: ThemeTokens = {};
   const withoutComments = body.replace(/\/\*[\s\S]*?\*\//g, "");
-  for (const match of withoutComments.matchAll(/(--pv-[\w-]+)\s*:\s*([^;]+);/g)) {
+  for (const match of withoutComments.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)) {
     tokens[match[1]!] = match[2]!.trim();
   }
   return tokens;
 }
 
 /**
- * Splits `design-tokens.css` into `{ dark, light }` role maps: the dark block is the one whose
- * selector contains `[data-theme="dark"]`, the light block `[data-theme="light"]`. Theme-
- * independent scales and media-query blocks are ignored.
+ * Splits `design-tokens.css` into one token map per theme, keyed by the `[data-theme="…"]` name
+ * in the block's selector (`dark`, `light`, `high-contrast`). Theme-independent scales and
+ * media-query blocks are ignored.
  */
 export function parseThemes(css: string): Record<string, ThemeTokens> {
   const themes: Record<string, ThemeTokens> = {};
   const clean = css.replace(/\/\*[\s\S]*?\*\//g, "");
   for (const match of clean.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     const selector = match[1]!;
-    const theme = /\[data-theme="(\w+)"\]/.exec(selector);
+    const theme = /\[data-theme="([\w-]+)"\]/.exec(selector);
     if (theme) {
       themes[theme[1]!] = parseDeclarations(match[2]!);
     }
@@ -151,15 +187,18 @@ export function parseThemes(css: string): Record<string, ThemeTokens> {
   return themes;
 }
 
-/** Resolves a role (following `var(--x)` chains) to an opaque hex colour, or `null`. */
-export function resolveColor(theme: ThemeTokens, role: string, depth = 0): string | null {
-  const value = theme[role];
+/** A token's value with `var(--x)` chains followed, or `null` if it (or a link) is undefined. */
+export function resolveValue(theme: ThemeTokens, name: string, depth = 0): string | null {
+  const value = theme[name];
   if (value === undefined || depth > 8) {
     return null;
   }
   const ref = /^var\((--[\w-]+)\)$/.exec(value);
-  if (ref) {
-    return resolveColor(theme, ref[1]!, depth + 1);
-  }
-  return parseHex(value) ? value : null;
+  return ref ? resolveValue(theme, ref[1]!, depth + 1) : value;
+}
+
+/** Resolves a role (following `var(--x)` chains) to an opaque hex colour, or `null`. */
+export function resolveColor(theme: ThemeTokens, role: string): string | null {
+  const value = resolveValue(theme, role);
+  return value !== null && parseHex(value) ? value : null;
 }

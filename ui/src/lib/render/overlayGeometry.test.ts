@@ -34,6 +34,15 @@ describe("buildOverlayBatch (H-13, SPEC-006 §4.5 / SPEC-007 §4.7)", () => {
     expect(buildOverlayBatch(base).vertexCount).toBe(0);
   });
 
+  it("T-708: marker and playhead lines take the theme's line width (1 px by default)", () => {
+    const width = (lineWidthPx?: number) => {
+      const xs = xsOf(buildOverlayBatch({ ...base, playheadSample: 1500, lineWidthPx }).toFloat32Array());
+      return Math.max(...xs) - Math.min(...xs);
+    };
+    expect(width()).toBeCloseTo(1, 5);
+    expect(width(2)).toBeCloseTo(2, 5);
+  });
+
   it("draws the selection fill at the exact pixelAtSample bounds", () => {
     const batch = buildOverlayBatch({
       ...base,

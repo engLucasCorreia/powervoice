@@ -40,7 +40,8 @@ decorative motion, colour without a word or icon next to it.
 ## 2. Colour roles
 
 Components use **roles only**, never raw hex. Dark is the default on `:root`; `data-theme="light"`
-on `<html>` (or any subtree) switches every role.
+or `data-theme="high-contrast"` on `<html>` (or any subtree) switches every role. High Contrast
+(T-708) values are in `design-tokens.css`; see §15.
 
 ### Surfaces (darkest → lightest)
 | Role | Dark | Light | Use |
@@ -296,27 +297,55 @@ settings).
 - No information by colour alone; status always has a word or icon.
 - Respect `prefers-reduced-motion`.
 
-## 15. Theming
+## 15. Theming (T-708)
 
-`design-tokens.css` holds the roles; `tokens.css` keeps today's names until phase 2 maps them:
+**Themes:** Dark (default, A-018), Light ("clear"), Match system (live `prefers-color-scheme`),
+High Contrast (dark-based: every text role ≥ 7:1 on every surface — WCAG AAA — indicators
+≥ 4.5:1, a 3 px focus ring, 2 px content lines). `Settings.theme` = `dark | light | system |
+high_contrast` (Rust `ThemePref`).
 
-| Legacy (`tokens.css`) | Maps to |
-|---|---|
-| `--surface-app` / `-panel` / `-panel-raised` / `-inset` | `--pv-bg-app` / `-panel` / `-raised` (cards) or `--pv-control-bg` (buttons) / `-inset` |
-| `--surface-border` | `--pv-border` |
-| `--text-primary` / `-secondary` | `--pv-text-primary` / `-secondary` |
-| `--text-disabled` | `--pv-text-disabled` for disabled; **`--pv-text-tertiary` for hints** |
-| `--text-on-accent` | `--pv-text-on-accent` (white on the darker `--pv-accent-fill`) |
-| `--accent` / `-hover` / `-active` | `--pv-accent` (indicators), `--pv-accent-text` (text), `--pv-accent-fill*` (filled) |
-| `--meter-green` / `-yellow` / `-red` | `--pv-meter-safe` / `-caution` / `-over` (same values) |
-| `--focus-ring`, `--selection-*` | `--pv-focus-ring`, `--pv-selection-*` |
-| `--wave-*`, `--spec-*`, `--analyzer-*`, `--eq-*` | Stay (content tokens); get light values in phase 2 |
-| undefined `--error`, `--danger` | `--pv-danger-text` / `--pv-danger-fill` |
+**One token block per theme.** `design-tokens.css` has a `[data-theme="dark|light|high-contrast"]`
+block each, holding every colour role — chrome (`--pv-*`) and audio content (`--wave-*`,
+`--spec-*`, `--analyzer-*`, `--eq-*`, `--pv-meter-*`) — plus `--pv-focus-width`,
+`--pv-stroke-content` (playhead/marker/record-head/sample lines) and `--pv-stroke-emphasis` (EQ
+curve). `tokens.css` keeps only base element styles; `theme-bridge.css` aliases the pre-H-25 chrome
+names (`--surface-*`, `--text-*`, `--accent*`, `--meter-*`) onto the roles.
 
-Theme switch (phase 2): Preferences → Appearance → Theme: **Dark** (default) / Light / Match system.
-Persisted in `Settings` (new field, Rust + `just gen-types`); the UI sets `data-theme` on `<html>`
-(Match system resolves through `matchMedia("(prefers-color-scheme: light)")`). Canvas renderers read
-content tokens through `getComputedStyle` as they do today, and redraw on theme change.
+**Adding a theme:** a block in `design-tokens.css`, an entry in `RESOLVED_THEMES` and `THEMES`
+(`theme/theme.svelte.ts`: labels, caption, menu label), a Rust `ThemePref` variant (`just
+gen-types`). Tests fail if the block misses a token, a contrast pair fails, or the lists drift.
+
+**Switching:** Preferences → Appearance (`theme/ThemePicker.svelte` — a radio group of cards, each
+with a live miniature rendered under that theme's own `data-theme`; Match system is split
+diagonally) and View → Theme ▸ (radio rows on the shared `Menu`). Both call
+`theme/chooseTheme.ts` (apply at once + persist). No shortcut: SPEC-003 names none.
+
+**No flash:** `applyThemePref` mirrors the preference into `localStorage["powervoice.theme"]`;
+an inline script in `ui/index.html` stamps `data-theme` (and a provisional `color-scheme`) before
+the stylesheet and app load; Settings re-applies the authoritative value once loaded
+(`theme/boot.test.ts` runs that script against `resolveTheme`).
+
+**Renderers:** canvas/WebGL code reads colours and line widths only through
+`theme/themeColors.ts::themeColors()` — typed (`{ css, rgba }` per colour), read from
+`getComputedStyle(<html>)` with the token file as fallback, cached and invalidated when the
+resolved theme changes (`themeState().revision`). The rAF loops (waveform, spectral, analyzer) pick
+the new colours up on their next frame; the EQ graph's `$effect` re-runs. No reload.
+
+**Spectrogram:** its well stays dark in every theme (colormaps start at black), so Inferno stays
+the default everywhere; the user's colormap choice (spectral defaults / sidecar) always wins —
+themes never touch it. The "frozen" notice uses `--spec-scrim` / `--spec-scrim-text`.
+
+**Meters and analyzer:** same ballistics and anatomy in every theme (the "jump" is motion, not
+colour). Light deepens the meter greens/ambers until they hold 3:1 on a light track.
+
+**Guards:** `contrast.test.ts` (every pair in every theme; AAA for High Contrast; content pairs —
+waveform, playhead, markers, meters, EQ bands on their wells), `themeParity.test.ts` (content
+shapes the renderers parse, stroke widths, UI list ↔ Rust enum ↔ token blocks),
+`colorLiterals.test.ts` (no hex/`rgb()`/`hsl()`/named colour in any `.ts`/`.svelte` outside the
+token files and the colormap tables).
+
+**Preview:** `?preview&theme=dark|light|system|high_contrast` (with `&scene=`, `&dialog=`,
+`&menu=theme` for View → Theme ▸ open).
 
 ## 16. Component kit reference
 

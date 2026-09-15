@@ -17,6 +17,7 @@ import { openMenu, type MenuId } from "../lib/menu/menubar.svelte";
 import { installFrom, openPluginManager } from "../lib/plugins/plugins.svelte";
 import { openPreferences } from "../lib/preferences/preferences.svelte";
 import { openRecoveryStorage } from "../lib/recovery/recovery.svelte";
+import { continueBakeConfirm, startBake } from "../lib/state/bake.svelte";
 import { openNormalizeDialog } from "../lib/state/normalize.svelte";
 import { openNormalizeLufsDialog } from "../lib/state/normalizeLufs.svelte";
 import { openCalibration, openNewRecordingPrompt, toggleRecord } from "../lib/state/record.svelte";
@@ -128,6 +129,16 @@ export async function runPreviewScene(options: PreviewOptions, menu: string | nu
     case "plugin-failed":
       void installFrom(PREVIEW_INSTALL_SOURCE, false);
       break;
+    case "bake":
+    case "bake-progress":
+      // T-602 dialogs (needs `scene=rack`): the noise-only confirm, or — `bake-progress` — past it
+      // to a running job (the progress dialog appears after 250 ms).
+      await startBake();
+      if (dialog === "bake-progress") {
+        await continueBakeConfirm();
+      }
+      await emit("job_progress", { job_id: 9, kind: "bake", state: "running", fraction: 0.42 });
+      break;
     default:
       break;
   }
@@ -162,6 +173,11 @@ export async function runPreviewScene(options: PreviewOptions, menu: string | nu
       click("rack-add");
     } else if (menu === "rack-slot") {
       click("rack-slot-menu");
+    } else if (menu === "theme") {
+      // T-708: View → Theme ▸ open.
+      openMenu("view");
+      await sleep(100);
+      click("menu-theme");
     }
   }
 }

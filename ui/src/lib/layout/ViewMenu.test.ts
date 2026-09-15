@@ -8,6 +8,7 @@ import { resetMenuBarForTest } from "../menu/menubar.svelte";
 import { rendererPref, resetRendererPrefForTest } from "../state/rendererPref.svelte";
 import { loadSettings, resetSettingsStateForTest, settingsState } from "../state/settings.svelte";
 import { resetSpectralForTest, spectralState } from "../state/spectral.svelte";
+import { applyThemePref, resetThemeForTest, themeState } from "../theme/theme.svelte";
 import { settingsFixture as makeSettings } from "../test/fixtures";
 import ViewMenu from "./ViewMenu.svelte";
 
@@ -19,6 +20,7 @@ afterEach(() => {
   resetMenuBarForTest();
   resetSpectralForTest();
   resetRendererPrefForTest();
+  resetThemeForTest();
 });
 
 function mountMenu(): { target: HTMLElement; app: ReturnType<typeof mount> } {
@@ -156,6 +158,61 @@ describe("ViewMenu (H-19)", () => {
 
     unmount(app);
     target.remove();
+  });
+
+  describe("Theme submenu (T-708, Settings.theme)", () => {
+    it("lists every theme as a menuitemradio row, the current one checked", () => {
+      mockIPC(() => null);
+      applyThemePref("light");
+      const { target, app } = mountMenu();
+      openMenu(target);
+      const trigger = target.querySelector<HTMLButtonElement>('[data-testid="menu-theme"]')!;
+      expect(trigger.textContent).toContain("Theme");
+      trigger.click();
+      flushSync();
+
+      const rows = ["dark", "light", "system", "high_contrast"].map((pref) =>
+        target.querySelector(`[data-testid="menu-theme-${pref}"]`),
+      );
+      expect(rows.map((row) => row?.getAttribute("role"))).toEqual(Array(4).fill("menuitemradio"));
+      expect(rows.map((row) => row?.getAttribute("aria-checked"))).toEqual(["false", "true", "false", "false"]);
+      expect(rows[2]?.textContent).toContain("Match System");
+      expect(rows[3]?.textContent).toContain("High Contrast");
+
+      unmount(app);
+      target.remove();
+    });
+
+    it("picking one applies it live (data-theme) and persists it", async () => {
+      let lastSaved: Settings | undefined;
+      mockIPC((cmd, args) => {
+        if (cmd === "settings_get") {
+          return makeSettings();
+        }
+        if (cmd === "settings_set") {
+          lastSaved = (args as { settings: Settings }).settings;
+          return lastSaved;
+        }
+        return null;
+      });
+      await loadSettings();
+      const { target, app } = mountMenu();
+      openMenu(target);
+      target.querySelector<HTMLButtonElement>('[data-testid="menu-theme"]')!.click();
+      flushSync();
+      target.querySelector<HTMLButtonElement>('[data-testid="menu-theme-high_contrast"]')!.click();
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+
+      expect(document.documentElement.dataset.theme).toBe("high-contrast");
+      expect(themeState().pref).toBe("high_contrast");
+      expect(lastSaved?.theme).toBe("high_contrast");
+      expect(settingsState().current?.theme).toBe("high_contrast");
+
+      unmount(app);
+      target.remove();
+    });
   });
 
   describe("Renderer submenu (H-19, Settings.renderer_preference)", () => {

@@ -3,7 +3,8 @@
  * opened — and screenshotted — in a plain browser, without a Tauri backend or audio devices.
  * `main.ts` loads this only for `?preview` when `import.meta.env.DEV` (never in a build):
  *
- *   npm --prefix ui run dev → http://localhost:1420/?preview (add `&theme=light` for light)
+ *   npm --prefix ui run dev → http://localhost:1420/?preview
+ *   &theme=dark | light | system | high_contrast   (T-708; default dark)
  *
  * H-26 adds fixture content, driven by `previewScenes.ts` after the App mounts:
  *   &scene=document | spectral | recording | rack | loudness   (combine: scene=rack,loudness)
@@ -13,8 +14,10 @@
  *   &dialog=about | preferences | export | new-recording | calibration | normalize |
  *           normalize-lufs | recovery | recovery-storage | save-as | unsaved | recent-missing |
  *           audio-devices | confirm | channel-choice | clip | low-disk |
- *           plugin-install | plugin-collision | plugin-failed   (T-809 "Install module…")
+ *           plugin-install | plugin-collision | plugin-failed   (T-809 "Install module…") |
+ *           bake   (T-602, with `scene=rack`: the noise-only confirm or the progress dialog)
  *   &menu=file | edit | view | effects | help | normalize | add-module | rack-slot
+ *        | theme   (T-708: View → Theme ▸ open)
  * The audio is synthetic (a narrator's phrases with breaths), generated here as the same binary
  * frames the backend sends (VXPK peaks, VXST spectrogram tiles, VXTM telemetry).
  * Commands it doesn't know return null, like the App shell tests.
@@ -650,6 +653,9 @@ export function installPreviewIpc(options: PreviewOptions): void {
           return { name: "PowerVoice", version: "0.1.0" };
         case "settings_get":
           return settings;
+        case "edit_bake_start":
+          // T-708: `&scene=rack&dialog=bake` shows T-602's bake progress (or its noise-only confirm).
+          return { job_id: 9 };
         case "settings_set":
           return (args as { settings: Settings }).settings;
         case "transport_get": {

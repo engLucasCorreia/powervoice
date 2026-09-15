@@ -1,17 +1,19 @@
 /*
- * PowerVoice design tokens (H-25, docs/design/design-system.md, A-017).
+ * PowerVoice design tokens (H-25, T-708; docs/design/design-system.md §2, §15; A-017, A-018).
  *
- * Role-based tokens, all prefixed `--pv-` so this file is purely additive next to the legacy
- * `tokens.css` names (`--surface-*`, `--text-*`, `--accent`, `--wave-*`, `--meter-*`, …). Phase 2
- * maps the legacy names onto these roles (e.g. `--surface-panel: var(--pv-bg-panel)`) and moves
- * every component onto `--pv-*`; until then importing this file changes nothing on screen.
+ * ONE BLOCK PER THEME. Each `[data-theme="…"]` block below defines every colour role the app
+ * uses — chrome (`--pv-*`) AND audio content (`--wave-*`, `--spec-*`, `--analyzer-*`, `--eq-*`,
+ * `--pv-meter-*`) — plus the per-theme stroke widths. Adding a theme = adding one block here, one
+ * entry in `theme.svelte.ts`'s `THEMES`, and a Rust `ThemePref` variant. `contrast.test.ts` fails
+ * if a block misses a token another block has, or if a pair drops below its WCAG ratio.
  *
- * Themes: dark is the default on `:root`; `data-theme="light"` (on <html> or any subtree — the
- * component gallery renders both side by side) switches every role. Components never read a raw
- * hex value — only these roles — so a theme is exactly one block below.
+ * Dark is the default on `:root` (A-018); the resolved theme is stamped as `data-theme` on
+ * <html> (before the app mounts — see index.html) and can also be set on any subtree (the
+ * Preferences swatches and the component gallery render several themes side by side).
  *
- * Contrast: `contrast.test.ts` parses this file and checks every text/background role pair and
- * every non-text indicator against WCAG AA in both themes. Change a value → run the test.
+ * Components never read a raw colour — only these roles. Canvas/WebGL renderers read them
+ * through `themeColors()` (typed, cached, invalidated on a theme switch). Renderers parse content
+ * colours as `#rrggbb` or `rgba(r, g, b, a)`, so keep those two shapes.
  */
 
 :root,
@@ -78,7 +80,16 @@
   --pv-success-fill: #3fcf78;
   --pv-success-soft: #16301f;
 
-  /* ── Audio content (the hero). Values match tokens.css so the look the owner likes stays. ── */
+  /* ── Focus ── */
+  --pv-focus-ring: #6cb2ff;
+  --pv-focus-width: 2px;
+
+  /* ── Elevation (borders do most of the work in dark; shadows only separate floating layers) ── */
+  --pv-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --pv-shadow-2: 0 6px 16px rgba(0, 0, 0, 0.45);
+  --pv-shadow-3: 0 16px 40px rgba(0, 0, 0, 0.55);
+
+  /* ── Audio content (the hero). Dark keeps the look the owner likes (pre-H-25 values). ── */
   --pv-meter-safe: #35c46a;
   --pv-meter-caution: #e0c93f;
   --pv-meter-over: #e5484d;
@@ -88,16 +99,63 @@
   --pv-waveform: #7fc8ff;
   --pv-selection-fill: rgba(77, 163, 255, 0.22);
   --pv-selection-border: #4da3ff;
+  /* Line widths for content strokes: playhead, record head, markers, the sample polyline. */
+  --pv-stroke-content: 1px;
+  --pv-stroke-emphasis: 2px; /* the EQ graph's total-response curve */
 
-  /* ── Focus ── */
-  --pv-focus-ring: #6cb2ff;
+  /* Waveform view (SPEC-006 §2.12: the names are fixed by the spec). */
+  --wave-bg: #16171a;
+  --wave-fill: #7fc8ff;
+  --wave-outline: #4da3ff;
+  --wave-pending: #3a3d44;
+  --wave-clip: #e5484d;
+  --wave-playhead: #ffb454;
+  --wave-selection-fill: rgba(77, 163, 255, 0.22);
+  --wave-selection-handle: #4da3ff;
+  --wave-marker: #35c46a;
+  --wave-marker-region: rgba(53, 196, 106, 0.18);
+  --wave-ruler-text: #9a9da4;
+  --wave-ruler-grid: #34373d;
+  --wave-zero-line: #454850;
+  --wave-record: var(--pv-record); /* the take being recorded */
+  --wave-record-head: var(--pv-record);
+  --wave-punch-region: rgba(255, 79, 86, 0.12);
 
-  /* ── Elevation (borders do most of the work in dark; shadows only separate floating layers) ── */
-  --pv-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --pv-shadow-2: 0 6px 16px rgba(0, 0, 0, 0.45);
-  --pv-shadow-3: 0 16px 40px rgba(0, 0, 0, 0.55);
+  /* Spectral pane (SPEC-007 §4.7). The well stays dark in every theme: the colormaps start at
+     black, so Inferno (the default) reads the same in Dark, Light and High Contrast. */
+  --spec-bg: #0d0e10;
+  --spec-pending: #232630;
+  --spec-ruler-text: #9a9da4;
+  --spec-ruler-grid: #34373d;
+  --spec-scrim: rgba(0, 0, 0, 0.45); /* "frozen" notice over the spectrogram */
+  --spec-scrim-text: #e6e8ec;
+
+  /* Live output analyzer (SPEC-007 §2.9). */
+  --analyzer-bg: var(--pv-bg-inset);
+  --analyzer-fill: rgba(127, 200, 255, 0.28);
+  --analyzer-peak: #ffb454;
+  --analyzer-grid: #34373d;
+
+  /* EQ graph (SPEC-015 §2.6.3): band colours follow the HP…LP processing order. */
+  --eq-curve: #e6e7ea;
+  --eq-fill: rgba(230, 231, 234, 0.15);
+  --eq-grid: #34373d;
+  --eq-band-hp: #9a9da4;
+  --eq-band-ls: #4da3ff;
+  --eq-band-1: #35c46a;
+  --eq-band-2: #e0c93f;
+  --eq-band-3: #ff9f4d;
+  --eq-band-4: #e5484d;
+  --eq-band-5: #c76ae0;
+  --eq-band-hs: #7fc8ff;
+  --eq-band-lp: #6fb6ff;
 }
 
+/*
+ * Light ("clear"): a daylight studio. Paper-white wells for the waveform, graphite ink, the same
+ * single blue accent (deepened for AA on white), meters and markers deepened until they hold
+ * 3:1 on a light track. The spectrogram keeps its dark well (see `--spec-bg`).
+ */
 [data-theme="light"] {
   color-scheme: light;
 
@@ -155,21 +213,190 @@
   --pv-success-fill: #3fcf78;
   --pv-success-soft: #e2f5e9;
 
-  --pv-meter-safe: #35c46a;
-  --pv-meter-caution: #e0c93f;
-  --pv-meter-over: #e5484d;
-  --pv-meter-track: #dfe2e7;
-  --pv-clip: #e5484d;
-  --pv-playhead: #e08a00;
-  --pv-waveform: #1f6fe0;
-  --pv-selection-fill: rgba(31, 111, 224, 0.18);
-  --pv-selection-border: #1f6fe0;
-
   --pv-focus-ring: #1a64cc;
+  --pv-focus-width: 2px;
 
   --pv-shadow-1: 0 1px 2px rgba(16, 24, 40, 0.08);
   --pv-shadow-2: 0 6px 16px rgba(16, 24, 40, 0.12);
   --pv-shadow-3: 0 16px 40px rgba(16, 24, 40, 0.18);
+
+  --pv-meter-safe: #1a8747;
+  --pv-meter-caution: #9c6b00;
+  --pv-meter-over: #d11f27;
+  --pv-meter-track: #e4e7eb;
+  --pv-clip: #d11f27;
+  --pv-playhead: #c46c00;
+  --pv-waveform: #1f6fe0;
+  --pv-selection-fill: rgba(31, 111, 224, 0.18);
+  --pv-selection-border: #1f6fe0;
+  --pv-stroke-content: 1px;
+  --pv-stroke-emphasis: 2px;
+
+  --wave-bg: #fbfcfd;
+  --wave-fill: #2f72d6;
+  --wave-outline: #1f5fbf;
+  --wave-pending: #d3d7de;
+  --wave-clip: #d11f27;
+  --wave-playhead: #c46c00;
+  --wave-selection-fill: rgba(31, 111, 224, 0.16);
+  --wave-selection-handle: #1f6fe0;
+  --wave-marker: #178a49;
+  --wave-marker-region: rgba(23, 138, 73, 0.12);
+  --wave-ruler-text: #5f6671;
+  --wave-ruler-grid: #d3d7de;
+  --wave-zero-line: #aab1bb;
+  --wave-record: var(--pv-record);
+  --wave-record-head: var(--pv-record);
+  --wave-punch-region: rgba(224, 38, 46, 0.1);
+
+  --spec-bg: #0d0e10;
+  --spec-pending: #232630;
+  --spec-ruler-text: #5f6671;
+  --spec-ruler-grid: #d3d7de;
+  --spec-scrim: rgba(0, 0, 0, 0.45);
+  --spec-scrim-text: #e6e8ec;
+
+  --analyzer-bg: var(--pv-bg-inset);
+  --analyzer-fill: rgba(31, 111, 224, 0.22);
+  --analyzer-peak: #b35f00;
+  --analyzer-grid: #c3c8d0;
+
+  --eq-curve: #1a1d22;
+  --eq-fill: rgba(26, 29, 34, 0.1);
+  --eq-grid: #c3c8d0;
+  --eq-band-hp: #5f6671;
+  --eq-band-ls: #1f6fe0;
+  --eq-band-1: #178a49;
+  --eq-band-2: #8f6a00;
+  --eq-band-3: #b85a0e;
+  --eq-band-4: #c41c24;
+  --eq-band-5: #8a36ad;
+  --eq-band-hs: #1a64cc;
+  --eq-band-lp: #2f6fc9;
+}
+
+/*
+ * High Contrast (T-708): dark-based, for low vision and glare. True-black wells, white ink, every
+ * text role ≥ 7:1 (WCAG AAA) on every surface, non-text indicators ≥ 4.5:1, borders you can see,
+ * a 3 px focus ring, and 2 px content lines (playhead, markers, record head, sample polyline).
+ */
+[data-theme="high-contrast"] {
+  color-scheme: dark;
+
+  --pv-bg-inset: #000000;
+  --pv-bg-app: #000000;
+  --pv-bg-panel: #0e0f11;
+  --pv-bg-raised: #15171a;
+  --pv-bg-overlay: #1a1c20;
+  --pv-bg-backdrop: rgba(0, 0, 0, 0.75);
+
+  --pv-control-bg: #1c1f24;
+  --pv-control-bg-hover: #2a2e35;
+  --pv-control-bg-active: #353a42;
+  --pv-control-bg-selected: #3d434d;
+  --pv-control-track: #000000;
+  --pv-field-bg: #000000;
+
+  --pv-border-subtle: #4a5059;
+  --pv-border: #7b828d;
+  --pv-border-strong: #b8bec7;
+  --pv-border-control: #b8bec7;
+
+  --pv-text-primary: #ffffff;
+  --pv-text-secondary: #e2e5ea;
+  --pv-text-tertiary: #c4c9d1;
+  --pv-text-disabled: #858c97;
+  --pv-text-on-accent: #ffffff;
+  --pv-text-on-record: #ffffff;
+  --pv-text-on-danger: #ffffff;
+  --pv-text-on-warning: #000000;
+  --pv-text-on-success: #000000;
+
+  --pv-accent: #6cb8ff;
+  --pv-accent-text: #8cc8ff;
+  --pv-accent-fill: #174ea6;
+  --pv-accent-fill-hover: #1552a8;
+  --pv-accent-fill-active: #13438f;
+  --pv-accent-soft: #0f2745;
+
+  --pv-record: #ff5a60;
+  --pv-record-text: #ff8a8e;
+  --pv-record-fill: #a31219;
+  --pv-record-fill-hover: #8e0f15;
+  --pv-record-soft: #3d0d10;
+  --pv-danger-text: #ff8a8e;
+  --pv-danger-fill: #a31219;
+  --pv-danger-fill-hover: #8e0f15;
+  --pv-danger-soft: #3d0d10;
+  --pv-warning: #ffc94d;
+  --pv-warning-text: #ffd166;
+  --pv-warning-fill: #ffc94d;
+  --pv-warning-soft: #3a2c05;
+  --pv-success: #4be08a;
+  --pv-success-text: #6ee7a0;
+  --pv-success-fill: #4be08a;
+  --pv-success-soft: #0b2e19;
+
+  --pv-focus-ring: #ffd84d;
+  --pv-focus-width: 3px;
+
+  --pv-shadow-1: 0 0 0 1px rgba(255, 255, 255, 0.2);
+  --pv-shadow-2: 0 0 0 1px rgba(255, 255, 255, 0.35);
+  --pv-shadow-3: 0 0 0 1px rgba(255, 255, 255, 0.5);
+
+  --pv-meter-safe: #3ddc78;
+  --pv-meter-caution: #ffd84d;
+  --pv-meter-over: #ff4d55;
+  --pv-meter-track: #000000;
+  --pv-clip: #ff4d55;
+  --pv-playhead: #ffc14d;
+  --pv-waveform: #9fd6ff;
+  --pv-selection-fill: rgba(108, 184, 255, 0.32);
+  --pv-selection-border: #8cc8ff;
+  --pv-stroke-content: 2px;
+  --pv-stroke-emphasis: 3px;
+
+  --wave-bg: #000000;
+  --wave-fill: #9fd6ff;
+  --wave-outline: #ffffff;
+  --wave-pending: #2a2e35;
+  --wave-clip: #ff4d55;
+  --wave-playhead: #ffc14d;
+  --wave-selection-fill: rgba(108, 184, 255, 0.32);
+  --wave-selection-handle: #8cc8ff;
+  --wave-marker: #4be08a;
+  --wave-marker-region: rgba(75, 224, 138, 0.22);
+  --wave-ruler-text: #e2e5ea;
+  --wave-ruler-grid: #7b828d;
+  --wave-zero-line: #9aa1ab;
+  --wave-record: var(--pv-record);
+  --wave-record-head: var(--pv-record);
+  --wave-punch-region: rgba(255, 90, 96, 0.2);
+
+  --spec-bg: #000000;
+  --spec-pending: #1c1f24;
+  --spec-ruler-text: #e2e5ea;
+  --spec-ruler-grid: #7b828d;
+  --spec-scrim: rgba(0, 0, 0, 0.7);
+  --spec-scrim-text: #ffffff;
+
+  --analyzer-bg: var(--pv-bg-inset);
+  --analyzer-fill: rgba(159, 214, 255, 0.4);
+  --analyzer-peak: #ffc14d;
+  --analyzer-grid: #4a5059;
+
+  --eq-curve: #ffffff;
+  --eq-fill: rgba(255, 255, 255, 0.18);
+  --eq-grid: #4a5059;
+  --eq-band-hp: #c4c9d1;
+  --eq-band-ls: #6cb8ff;
+  --eq-band-1: #4be08a;
+  --eq-band-2: #ffd84d;
+  --eq-band-3: #ffab66;
+  --eq-band-4: #ff6b72;
+  --eq-band-5: #df8cf5;
+  --eq-band-hs: #9fd6ff;
+  --eq-band-lp: #8cc8ff;
 }
 
 /* Theme-independent scales. */
@@ -227,8 +454,7 @@
   --pv-statusbar-h: 24px;
   --pv-border-width: 1px;
 
-  /* Focus. */
-  --pv-focus-width: 2px;
+  /* Focus (the ring's width is per theme — High Contrast draws it thicker). */
   --pv-focus-offset: 2px;
 
   /* Motion (answers an action; never decorative). */

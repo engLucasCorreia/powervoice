@@ -28,8 +28,11 @@ async function bootstrap(root: HTMLElement): Promise<void> {
   if (import.meta.env.DEV && params.has("preview")) {
     const { installPreviewIpc } = await import("./dev/previewIpc");
     const { runPreviewScene } = await import("./dev/previewScenes");
+    const { isThemePref } = await import("./lib/theme/theme.svelte");
+    // T-708: `&theme=dark|light|system|high_contrast` (`high-contrast` also accepted).
+    const wanted = (params.get("theme") ?? "dark").replace("-", "_");
     const options = {
-      theme: params.get("theme") === "light" ? ("light" as const) : ("dark" as const),
+      theme: isThemePref(wanted) ? wanted : ("dark" as const),
       scenes: (params.get("scene") ?? "").split(",").filter((s) => s !== ""),
       dialog: params.get("dialog"),
     };

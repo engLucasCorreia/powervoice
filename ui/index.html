@@ -4,6 +4,26 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PowerVoice</title>
+    <script>
+      // T-708: stamp the saved theme before the stylesheet or the app loads, so the window never
+      // flashes the wrong one. The preference is mirrored from Settings by theme.svelte.ts (which
+      // re-applies the authoritative value once settings load). Must match `resolveTheme()` —
+      // theme/boot.test.ts runs this exact script against it.
+      (function () {
+        var root = document.documentElement;
+        var pref = "dark";
+        try {
+          pref = localStorage.getItem("powervoice.theme") || "dark";
+        } catch (e) {}
+        var theme = "dark";
+        if (pref === "light") theme = "light";
+        else if (pref === "high_contrast") theme = "high-contrast";
+        else if (pref === "system" && window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches)
+          theme = "light";
+        root.setAttribute("data-theme", theme);
+        root.style.colorScheme = theme === "light" ? "light" : "dark";
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>

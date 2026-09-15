@@ -38,6 +38,9 @@ export interface OverlayInput {
    * length — kept distinct so the spectral pane's WebGL2 path doesn't grow overlay detail its own
    * Canvas2D fallback never had (SPEC-006 §4.5: "exactly one visual output" per view). */
   markerStyle?: "flags-and-regions" | "lines";
+  /** Width of the marker and playhead lines, in the same pixel space as the rest (T-708: the
+   * theme's `--pv-stroke-content` — 2 px in High Contrast). Default 1. */
+  lineWidthPx?: number;
 }
 
 /** Builds the selection fill + marker regions/flags + playhead line as one batch, in the same
@@ -51,6 +54,7 @@ export function buildOverlayBatch(input: OverlayInput): QuadBatch {
     return batch;
   }
   const markerStyle = input.markerStyle ?? "flags-and-regions";
+  const lineWidthPx = input.lineWidthPx ?? 1;
 
   if (input.selection) {
     const x0 = Math.max(0, pixelAtSample(input.selection.startSample, startSample, samplesPerPixel));
@@ -68,7 +72,7 @@ export function buildOverlayBatch(input: OverlayInput): QuadBatch {
       }
     }
     if (startPx >= -6 && startPx <= viewportPx + 6) {
-      batch.vLine(startPx, 0, heightPx, colors.marker);
+      batch.vLine(startPx, 0, heightPx, colors.marker, lineWidthPx);
       if (markerStyle === "flags-and-regions") {
         batch.flag(startPx, colors.marker);
       }
@@ -78,7 +82,7 @@ export function buildOverlayBatch(input: OverlayInput): QuadBatch {
   if (input.playheadSample !== null) {
     const px = pixelAtSample(input.playheadSample, startSample, samplesPerPixel);
     if (px >= -1 && px <= viewportPx + 1) {
-      batch.vLine(px, 0, heightPx, colors.playhead);
+      batch.vLine(px, 0, heightPx, colors.playhead, lineWidthPx);
     }
   }
 

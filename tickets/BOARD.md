@@ -68,6 +68,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-28 | Post-H-26/H-27 fixes: `?preview&scene=recording` `effect_update_depth_exceeded` in WaveformView follow effects, transport store null guard when telemetry precedes `transport_get`, View-menu toggle for `Settings.playhead_follow`, Normalize target fields in true minus | S | done |
 | H-29 | Plugin follow-ups (T-809): uninstall action (remove installed file + registry, confirm, documents keep a Missing slot), deterministic duplicate-id policy across install/rescan, move plugin fixtures into `ui/src/lib/test/fixtures.ts` | S | in progress |
 | H-30 | Job-service consistency (T-602): export and save hold `SpectroService::begin_background_job()` (SPEC-007 lists them), every job service emits its error notice before the terminal `Failed` event (audit export/loudness/normalize/nr_capture/calibration), a rack edit during a bake is refused instead of discarded at commit | S | todo |
+| H-31 | Theme follow-ups (T-708): Match System also honours `prefers-contrast: more` → High Contrast (A-019), High Contrast column in the component gallery, WebGL thick sample lines in HC (quad-based) | S | todo |
 | H-18 | Shared test factories for DTOs (`ui/src/lib/test/fixtures.ts` + Rust builders) so a new DTO field touches one helper, not 20 test literals (merge-friction fix) | H | done |
 | H-17 | Recovery follow-ups (T-301): dialog stays open for remaining sessions (A-015), AC-3/AC-11 timing on a real disk (test-big), compaction off the document lock, markers during an interrupted take, Memory-for-audio UI, `/tmp/vox-project-*` sweep | S | done |
 | H-15 | Sidecar follow-ups (T-306): recent-file-missing dialog, read-only folder matrix (AC-13), SIGKILL-during-sidecar-save test (AC-6), per-slot leniency for a malformed rack slot, perf budget (AC-18) | S | done |
@@ -171,8 +172,8 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-705 | AppImage/deb, Win/mac build docs, README/user guide | W2 | S | T-701..T-704 | done (Win/mac installers documented, not built) |
 | T-706 | Complete architecture & developer docs (owner req.): docs hub, C4/crate/threading/sequence Mermaid diagrams, data/IPC/DSP/plugins/UI docs, contributing guide, ADR index, docs check script | W3 | O | T-809 | todo |
 | T-707 | Docs for everyone (owner req.): what-is / how-it-works with Mermaid, complete task-based user guide, FAQ, glossary with plain-language analogies, friendly README | W4 | S | T-706, T-708, T-709 | todo |
-| T-708 | Themes (owner req.): Light ("clear") mode at full parity incl. canvas/WebGL renderers from tokens, Match System, High Contrast, View → Theme menu, no-flash, 4-theme screenshots + raw-colour lint | W2 | O | T-809, H-28 | in progress |
-| T-709 | Guided Tour widget (owner req.): spotlight + anchored step cards, Welcome tour + contextual tours, first-run offer, Help → Take the Tour, `Settings.tours` | W3 | O | T-708 | todo |
+| T-708 | Themes (owner req.): Light ("clear") mode at full parity incl. canvas/WebGL renderers from tokens, Match System, High Contrast, View → Theme menu, no-flash, 4-theme screenshots + raw-colour lint | W2 | O | T-809, H-28 | done |
+| T-709 | Guided Tour widget (owner req.): spotlight + anchored step cards, Welcome tour + contextual tours, first-run offer, Help → Take the Tour, `Settings.tours` | W3 | O | T-708 | in progress |
 
 ## M8 — External plugins
 | ID | Title | Wave | Tier | Deps | Status |

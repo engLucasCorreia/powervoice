@@ -29,7 +29,7 @@ import {
 import { VXTM_FLAGS, type TelemetryFrame } from "../ipc/telemetry";
 import { registerAction } from "../shortcuts";
 import { noticeFromIpcError } from "../notices/fromIpcError";
-import { PeakBallistics } from "../record/ballistics";
+import { nowMs, PeakBallistics } from "../meters/ballistics";
 import { DISK_WARN_MINUTES } from "../record/format";
 import { DEFAULT_RECORD_PREFS, parseOffsetText } from "../record/punch";
 import { pushNotice } from "./notices.svelte";
@@ -209,8 +209,6 @@ async function run(command: () => Promise<RecordStateDto>): Promise<void> {
     report(err);
   }
 }
-
-const nowMs = (): number => (typeof performance !== "undefined" ? performance.now() : Date.now());
 
 /** One telemetry frame: input meter, clip latch, elapsed take time. */
 export function onInputTelemetry(frame: TelemetryFrame, atMs: number = nowMs()): void {

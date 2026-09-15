@@ -1,9 +1,11 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TransportStateDto } from "../ipc/bindings";
+import { VXTM_FLAGS } from "../ipc/telemetry";
 import { clearActionHandlers } from "../shortcuts";
 import { transportStateDto } from "../test/fixtures";
 import {
+  clearOutputClip,
   extrapolatedPositionAt,
   initTransport,
   onTelemetry,
@@ -29,12 +31,15 @@ function u64(dv: DataView, offset: number, value: number): void {
   dv.setUint32(offset + 4, Math.floor(value / 2 ** 32), true);
 }
 
-/** A minimal 72-byte `VXTM` v1 frame (`ipc/telemetry.ts`'s `decodeVxtm` contract), for tests that
- * only care about `playheadSample`/`playheadTimeNs`/`rate`. */
+/** A minimal 72-byte `VXTM` v1 frame (`ipc/telemetry.ts`'s `decodeVxtm` contract). `flags` and the
+ * meter fields default to 0/`-Infinity` for tests that only care about the playhead. */
 function buildVxtmFrame(fields: {
   playheadSample: number;
   playheadTimeNs: number;
   rate: number;
+  flags?: number;
+  outPeakDbfs?: number;
+  outRmsDbfs?: number;
 }): ArrayBuffer {
   const buf = new ArrayBuffer(72);
   const dv = new DataView(buf);
@@ -44,9 +49,12 @@ function buildVxtmFrame(fields: {
   dv.setUint8(3, 0x4d); // 'M'
   dv.setUint16(4, 1, true); // version
   dv.setUint16(6, 72, true); // header_len
+  dv.setUint32(12, fields.flags ?? 0, true); // flags
   u64(dv, 16, fields.playheadSample);
   u64(dv, 24, fields.playheadTimeNs);
   dv.setFloat64(32, fields.rate, true);
+  dv.setFloat32(40, fields.outPeakDbfs ?? Number.NEGATIVE_INFINITY, true); // out_peak_dbfs
+  dv.setFloat32(44, fields.outRmsDbfs ?? Number.NEGATIVE_INFINITY, true); // out_rms_dbfs
   return buf;
 }
 
@@ -116,5 +124,110 @@ describe("a telemetry frame arriving before transport_get resolves (H-28 item 2)
     expect(transportState().playheadSamples).toBe(555_555);
 
     stop();
+  });
+});
+
+// H-41: the output meter applies the same ballistics the input meter does (instant attack, 20
+// dB/s release, a 1.5 s hold) on top of the engine's now-properly-windowed out_peak_dbfs/
+// out_rms_dbfs, throttles the numeric readouts to ~4-5 Hz, and latches OUT_CLIP client-side.
+describe("the output meter (H-41)", () => {
+  async function setUp(): Promise<() => void> {
+    mockIPC((cmd) => {
+      if (cmd === "clock_now_ns") return performance.now() * 1e6;
+      if (cmd === "transport_get") return TRANSPORT_GET;
+      return null;
+    });
+    return initTransport();
+  }
+
+  it("applies instant-attack / smooth-release ballistics to the bar, and holds the peak", async () => {
+    const stop = await setUp();
+    const now = vi.spyOn(performance, "now");
+    try {
+      now.mockReturnValue(0);
+      onTelemetry(buildVxtmFrame({ playheadSample: 0, playheadTimeNs: 0, rate: 48_000, outPeakDbfs: -6, outRmsDbfs: -9 }));
+      expect(transportState().meter.peakDbfs).toBe(-6); // instant attack
+      expect(transportState().meter.holdDbfs).toBe(-6);
+      expect(transportState().meter.rmsDbfs).toBe(-9); // the bar tracks the engine's own RMS directly
+
+      now.mockReturnValue(500); // 0.5 s later, a much quieter frame — the bar only releases
+      onTelemetry(buildVxtmFrame({ playheadSample: 0, playheadTimeNs: 0, rate: 48_000, outPeakDbfs: -60, outRmsDbfs: -60 }));
+      expect(transportState().meter.peakDbfs).toBeCloseTo(-16, 5); // -6 - 20 dB/s * 0.5 s
+      expect(transportState().meter.holdDbfs).toBe(-6); // still held (< 1.5 s since the peak)
+    } finally {
+      now.mockRestore();
+      stop();
+    }
+  });
+
+  it("latches the clip indicator on OUT_CLIP until clearOutputClip()", async () => {
+    const stop = await setUp();
+    try {
+      onTelemetry(
+        buildVxtmFrame({ playheadSample: 0, playheadTimeNs: 0, rate: 48_000, flags: VXTM_FLAGS.OUT_CLIP, outPeakDbfs: 0 }),
+      );
+      expect(transportState().meter.clip).toBe(true);
+
+      // A later frame with no clip flag must not clear it — it latches until clicked.
+      onTelemetry(buildVxtmFrame({ playheadSample: 0, playheadTimeNs: 0, rate: 48_000, outPeakDbfs: -40 }));
+      expect(transportState().meter.clip).toBe(true);
+
+      clearOutputClip();
+      expect(transportState().meter.clip).toBe(false);
+    } finally {
+      stop();
+    }
+  });
+
+  it("throttles the numeric readouts to ~4-5 Hz instead of every telemetry frame", async () => {
+    const stop = await setUp();
+    const now = vi.spyOn(performance, "now");
+    try {
+      now.mockReturnValue(0);
+      onTelemetry(buildVxtmFrame({ playheadSample: 0, playheadTimeNs: 0, rate: 48_000, outPeakDbfs: -6, outRmsDbfs: -9 }));
+      expect(transportState().meter.peakReadoutDbfs).toBe(-6);
+
+      now.mockReturnValue(50); // well under the throttle interval
+      onTelemetry(buildVxtmFrame({ playheadSample: 0, playheadTimeNs: 0, rate: 48_000, outPeakDbfs: -3, outRmsDbfs: -3 }));
+      // The bar itself moves every frame (lively motion)...
+      expect(transportState().meter.peakDbfs).toBe(-3);
+      // ...but the readout hasn't been redrawn yet.
+      expect(transportState().meter.peakReadoutDbfs).toBe(-6);
+
+      now.mockReturnValue(400); // past the throttle interval
+      onTelemetry(buildVxtmFrame({ playheadSample: 0, playheadTimeNs: 0, rate: 48_000, outPeakDbfs: -3, outRmsDbfs: -3 }));
+      expect(transportState().meter.peakReadoutDbfs).toBe(-3);
+    } finally {
+      now.mockRestore();
+      stop();
+    }
+  });
+
+  it("stops writing new meter state once it has settled back at silence (idle-CPU guard, H-41 owner note)", async () => {
+    const stop = await setUp();
+    const now = vi.spyOn(performance, "now");
+    try {
+      now.mockReturnValue(0);
+      onTelemetry(buildVxtmFrame({ playheadSample: 0, playheadTimeNs: 0, rate: 48_000, outPeakDbfs: -6, outRmsDbfs: -9 }));
+
+      // Enough silent, real time for the bar and hold to fully release to -Infinity.
+      now.mockReturnValue(20_000);
+      onTelemetry(buildVxtmFrame({ playheadSample: 0, playheadTimeNs: 0, rate: 48_000 }));
+      // ... and past the readout throttle interval, so the readouts have caught up too.
+      now.mockReturnValue(20_300);
+      onTelemetry(buildVxtmFrame({ playheadSample: 0, playheadTimeNs: 0, rate: 48_000 }));
+      const settled = transportState().meter;
+      expect(settled.peakDbfs).toBe(Number.NEGATIVE_INFINITY);
+      expect(settled.holdDbfs).toBe(Number.NEGATIVE_INFINITY);
+
+      // A further identical (silent) telemetry frame must not produce a new meter object — a
+      // component reading it reactively should not re-render for a bar that isn't moving.
+      now.mockReturnValue(20_600);
+      onTelemetry(buildVxtmFrame({ playheadSample: 0, playheadTimeNs: 0, rate: 48_000 }));
+      expect(transportState().meter).toBe(settled);
+    } finally {
+      now.mockRestore();
+      stop();
+    }
   });
 });

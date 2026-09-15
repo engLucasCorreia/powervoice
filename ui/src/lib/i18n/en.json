@@ -164,6 +164,8 @@
   "meter.peak": "Peak {value} dBFS",
   "meter.rms": "RMS {value} dBFS",
   "meter.silence": "−∞",
+  "meter.clip": "CLIP",
+  "meter.clip_title": "Output clipped — click to reset",
 
   "devices.open": "Audio devices…",
   "devices.title": "Audio Devices",

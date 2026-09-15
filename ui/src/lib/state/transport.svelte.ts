@@ -15,6 +15,7 @@ import {
   transportStop,
 } from "../ipc/commands";
 import { VXTM_FLAGS, decodeVxtm, toArrayBuffer, type TelemetryFrame } from "../ipc/telemetry";
+import { nowMs, PeakBallistics, READOUT_SMOOTHING_TAU_MS, SmoothedDb, ThrottledReadout } from "../meters/ballistics";
 import { registerAction } from "../shortcuts";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { ClockSync, PlayheadExtrapolator } from "../transport/playhead";
@@ -30,6 +31,16 @@ import { selectionState } from "./selection.svelte";
  * loops the selection while loop is on (and Play from start starts at it), so every selection
  * change is sent, latest-wins (one call in flight, so a drag's burst can never land out of
  * order). The extrapolated playhead wraps inside the engine's effective `loop_range`.
+ *
+ * H-41 (output meter): the engine now sends `out_peak_dbfs` as a true max-hold since the last
+ * frame and `out_rms_dbfs` over a proper 300 ms sliding window (`crates/engine/src/telemetry.rs`,
+ * `Meter`) — this store only adds ballistics/readout pacing on top, the same way the input meter
+ * does (`record.svelte.ts`). `OUT_CLIP` latches client-side until {@link clearOutputClip}, like
+ * the input meter's clip lamp. Deliberately no `requestAnimationFrame`/`setInterval` loop here:
+ * the bar/hold/readout only move in response to a real telemetry frame, and the reactive `meter`
+ * assignment is skipped entirely once nothing has actually changed (owner note, H-41: a meter that
+ * has decayed to the floor on a silent signal must not keep repainting or holding the main thread
+ * busy — see `meterEquals` below).
  */
 
 const IDLE: TransportStateDto = {
@@ -44,20 +55,48 @@ const IDLE: TransportStateDto = {
 };
 
 export interface OutputMeter {
+  /** Bar (with ballistics): instant attack, 20 dB/s release. */
   peakDbfs: number;
+  /** Peak-hold tick: holds ~1.5 s, then falls at the same rate. */
+  holdDbfs: number;
+  /** 300 ms RMS (engine-windowed), for the bar. */
   rmsDbfs: number;
+  /** The hold value, throttled to ~4-5 Hz for a legible numeric readout. */
+  peakReadoutDbfs: number;
+  /** The RMS value, smoothed and throttled to ~4-5 Hz for a legible numeric readout. */
+  rmsReadoutDbfs: number;
+  /** OUT_CLIP, latched until {@link clearOutputClip}. */
   clip: boolean;
 }
 
 const SILENT: OutputMeter = {
   peakDbfs: Number.NEGATIVE_INFINITY,
+  holdDbfs: Number.NEGATIVE_INFINITY,
   rmsDbfs: Number.NEGATIVE_INFINITY,
+  peakReadoutDbfs: Number.NEGATIVE_INFINITY,
+  rmsReadoutDbfs: Number.NEGATIVE_INFINITY,
   clip: false,
 };
+
+function meterEquals(a: OutputMeter, b: OutputMeter): boolean {
+  return (
+    a.peakDbfs === b.peakDbfs &&
+    a.holdDbfs === b.holdDbfs &&
+    a.rmsDbfs === b.rmsDbfs &&
+    a.peakReadoutDbfs === b.peakReadoutDbfs &&
+    a.rmsReadoutDbfs === b.rmsReadoutDbfs &&
+    a.clip === b.clip
+  );
+}
 
 let state = $state<TransportStateDto>({ ...IDLE });
 let playheadSamples = $state(0);
 let meter = $state<OutputMeter>({ ...SILENT });
+let outputClipLatched = false;
+const outputBallistics = new PeakBallistics();
+const rmsSmoothed = new SmoothedDb(Number.NEGATIVE_INFINITY, READOUT_SMOOTHING_TAU_MS);
+const peakReadout = new ThrottledReadout(Number.NEGATIVE_INFINITY);
+const rmsReadout = new ThrottledReadout(Number.NEGATIVE_INFINITY);
 /** H-28 item 2: `true` once the initial `transport_state`/`transport_get` has been applied. A
  * telemetry frame that beats it (`initTransport` subscribes to telemetry before awaiting
  * `transportGet`) would otherwise seed the extrapolator with an anchor computed against the
@@ -234,16 +273,40 @@ export function onTelemetry(message: unknown): void {
     // above, unaffected by this store's own readiness.
     return;
   }
-  meter = {
-    peakDbfs: frame.outPeakDbfs,
+  if ((frame.flags & VXTM_FLAGS.OUT_CLIP) !== 0) {
+    outputClipLatched = true;
+  }
+  const atMs = nowMs();
+  outputBallistics.update(frame.outPeakDbfs, atMs);
+  rmsSmoothed.update(frame.outRmsDbfs, atMs);
+  peakReadout.update(outputBallistics.hold, atMs);
+  rmsReadout.update(rmsSmoothed.value, atMs);
+  const next: OutputMeter = {
+    peakDbfs: outputBallistics.bar,
+    holdDbfs: outputBallistics.hold,
     rmsDbfs: frame.outRmsDbfs,
-    clip: (frame.flags & VXTM_FLAGS.OUT_CLIP) !== 0,
+    peakReadoutDbfs: peakReadout.value,
+    rmsReadoutDbfs: rmsReadout.value,
+    clip: outputClipLatched,
   };
+  // H-41 (owner note): once the meter has settled — decayed to the floor on a silent signal, with
+  // nothing left to throttle or smooth toward — skip the reactive write so an idle telemetry
+  // stream (which keeps arriving at the telemetry rate regardless of the signal) doesn't keep
+  // triggering Svelte re-renders/repaints for a bar that visibly isn't moving anymore.
+  if (!meterEquals(meter, next)) {
+    meter = next;
+  }
   extrapolator.update(
     { sample: frame.playheadSample, timeNs: frame.playheadTimeNs, rate: frame.rate },
     clock.nowNs(),
     state.doc_len_samples,
   );
+}
+
+/** Clicking the output meter's clip indicator clears the latch (H-41, like the input meter's). */
+export function clearOutputClip(): void {
+  outputClipLatched = false;
+  meter = { ...meter, clip: false };
 }
 
 async function syncClock(): Promise<void> {
@@ -337,6 +400,11 @@ export function resetTransportForTest(): void {
   state = { ...IDLE };
   playheadSamples = 0;
   meter = { ...SILENT };
+  outputClipLatched = false;
+  outputBallistics.reset();
+  rmsSmoothed.reset(Number.NEGATIVE_INFINITY);
+  peakReadout.reset(Number.NEGATIVE_INFINITY);
+  rmsReadout.reset(Number.NEGATIVE_INFINITY);
   ready = false;
   extrapolator.reset();
   selectionSent = null;

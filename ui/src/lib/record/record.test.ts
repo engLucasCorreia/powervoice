@@ -19,7 +19,7 @@ import {
   resolveLowDiskPrompt,
 } from "../state/record.svelte";
 import { initTransport, resetTransportForTest } from "../state/transport.svelte";
-import { PeakBallistics } from "./ballistics";
+import { PeakBallistics } from "../meters/ballistics";
 import {
   DISK_WARN_MINUTES,
   formatElapsed,
@@ -186,7 +186,7 @@ describe("record panel (S1-04)", () => {
     expect(formatElapsed(100, 0)).toBe("0:00:00.0");
   });
 
-  it("peak bar: instant attack, 20 dB/s release, 1.5 s hold", () => {
+  it("peak bar: instant attack, 20 dB/s release, 1.5 s hold (ballistics maths: meters/ballistics.test.ts)", () => {
     const b = new PeakBallistics();
     b.update(-6, 1000);
     expect(b.bar).toBe(-6);

@@ -1374,6 +1374,10 @@ impl Control {
         let doc_rate = doc_rate.unwrap_or(req.sample_rate_hz);
         match self.build_output(&req, doc_rate) {
             Ok(out) => {
+                // H-41: the RMS window's sample count is rate-dependent (300 ms of the output
+                // device's own rate, not the document's) — reset it here rather than relying on
+                // whatever `window_frames` a previous device left behind.
+                self.meter.reset(out.rate_hz);
                 self.output = Some(out);
                 self.monitor_reset();
                 self.device_event(DeviceEvent::Opened {
@@ -1496,6 +1500,10 @@ impl Control {
         let Some(out) = self.output.take() else {
             return;
         };
+        // H-41: otherwise a stale RMS window (built for the closed device's rate) would keep
+        // reporting the last level, non-decaying, if anything ever called `take()` again before
+        // the next `reset()` on reopen.
+        self.meter.reset(0);
         if self.transport.playing() {
             let heard = self.heard_now(self.now());
             let _ = self.transport.pause(heard, false);

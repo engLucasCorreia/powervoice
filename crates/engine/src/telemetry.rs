@@ -138,36 +138,72 @@ pub fn to_dbfs(x: f64) -> f32 {
     }
 }
 
-/// Output meter aggregation between two frames.
+/// RMS window shared by every meter (SPEC-002 §3 `meter_rms_window_ms`; ADR-003's `VXTM` table
+/// says the output meter's RMS is a "window per meter spec" without giving its own number, so
+/// this reuses the input meter's fixed 300 ms convention — H-41).
+pub(crate) const METER_RMS_WINDOW_MS: u64 = 300;
+
+/// Backwards-compatible alias (input meter call sites predate the output meter reusing the same
+/// window).
+pub(crate) const INPUT_RMS_WINDOW_MS: u64 = METER_RMS_WINDOW_MS;
+
+/// Output meter aggregation between two frames (H-41: peak is a true max-hold since the last
+/// `take()`, reset on every call; RMS is a proper sliding rectangular window over
+/// [`METER_RMS_WINDOW_MS`] of audio — *not* reset on `take()`, or it would only ever average the
+/// ~17/33 ms between two 60/30 Hz telemetry frames, which is short enough to read as noise/
+/// flicker rather than a level. The window itself persists across `take()` calls exactly like
+/// [`InputMeter`]'s).
 #[derive(Debug, Default)]
 pub(crate) struct Meter {
     peak: f32,
-    sum_sq: f64,
+    /// Rolling window of `(frames, sum_sq)` chunks, oldest first (mirrors [`InputMeter::window`]).
+    window: std::collections::VecDeque<(u32, f64)>,
     frames: u64,
+    sum_sq: f64,
+    window_frames: u64,
 }
 
 impl Meter {
-    pub(crate) fn add(&mut self, peak: f32, sum_sq: f64, frames: u32) {
-        self.peak = self.peak.max(peak);
-        self.sum_sq += sum_sq;
-        self.frames += u64::from(frames);
+    /// Clears the meter for a stream at `rate_hz` (0: no stream — the window never accepts data
+    /// until a real rate is set, see `add`'s doc comment).
+    pub(crate) fn reset(&mut self, rate_hz: u32) {
+        *self = Self {
+            window_frames: u64::from(rate_hz) * METER_RMS_WINDOW_MS / 1000,
+            ..Self::default()
+        };
     }
 
-    /// `(peak, peak dBFS, rms dBFS)` since the last call.
+    /// Folds one output block's `(peak, sum_sq, frames)` into the meter. Before the first
+    /// [`Self::reset`] (`window_frames == 0`) every chunk is evicted as soon as it's added, so the
+    /// RMS reads silence rather than accumulating against an unknown window size.
+    pub(crate) fn add(&mut self, peak: f32, sum_sq: f64, frames: u32) {
+        self.peak = self.peak.max(peak);
+        self.window.push_back((frames, sum_sq));
+        self.frames += u64::from(frames);
+        self.sum_sq += sum_sq;
+        while let Some(&(f, s)) = self.window.front() {
+            if self.frames - u64::from(f) < self.window_frames {
+                break;
+            }
+            self.window.pop_front();
+            self.frames -= u64::from(f);
+            self.sum_sq = (self.sum_sq - s).max(0.0);
+        }
+    }
+
+    /// `(peak, peak dBFS, windowed RMS dBFS)` — `peak` is the max-hold since the last call and
+    /// resets here; the RMS window is unaffected by `take()` and keeps sliding.
     pub(crate) fn take(&mut self) -> (f32, f32, f32) {
         let peak = self.peak;
+        self.peak = 0.0;
         let rms = if self.frames > 0 {
             (self.sum_sq / self.frames as f64).sqrt()
         } else {
             0.0
         };
-        *self = Self::default();
         (peak, to_dbfs(f64::from(peak)), to_dbfs(rms))
     }
 }
-
-/// RMS window of the input meter (SPEC-002 §3 `meter_rms_window_ms`).
-pub(crate) const INPUT_RMS_WINDOW_MS: u64 = 300;
 
 /// Input meter (SPEC-002 §2.1): peak max-hold since the previous frame, unweighted RMS over a
 /// sliding rectangular window of ≥ 300 ms (block granularity), and the clip flag.
@@ -487,12 +523,86 @@ mod tests {
     #[test]
     fn meter_peak_and_rms() {
         let mut m = Meter::default();
+        m.reset(48_000);
         m.add(0.5, 0.25 * 100.0, 100);
         m.add(0.25, 0.0, 100);
         let (peak, peak_db, rms_db) = m.take();
         assert_eq!(peak.to_bits(), 0.5f32.to_bits());
         assert!((peak_db + 6.0206).abs() < 1e-3);
         assert!((rms_db - to_dbfs(0.125f64.sqrt())).abs() < 1e-4);
-        assert!(m.take().1.is_infinite(), "reset after take");
+        assert!(m.take().1.is_infinite(), "peak resets after take");
+        // H-41: unlike peak, the RMS window is *not* cleared by take() — a telemetry frame with
+        // no new block still reports the level of the audio still inside the window, not silence.
+        assert!(m.take().2.is_finite(), "the RMS window outlives take()");
+    }
+
+    /// H-41 (the ticket's own acceptance numbers): a full-scale-relative sine at −6 dBFS peak
+    /// gives peak −6.0 dBFS and RMS −9.0 dBFS (a sine's RMS is 3.0103 dB under its peak).
+    #[test]
+    fn meter_sine_peak_and_rms() {
+        let rate = 48_000u32;
+        let mut m = Meter::default();
+        m.reset(rate);
+        let amp = 10f64.powf(-6.0 / 20.0);
+        let block_len = 480usize;
+        let block: Vec<f64> = (0..block_len)
+            .map(|i| amp * (std::f64::consts::TAU * 1000.0 * i as f64 / f64::from(rate)).sin())
+            .collect();
+        let sum_sq: f64 = block.iter().map(|x| x * x).sum();
+        let peak = block.iter().cloned().fold(0.0, f64::max) as f32;
+        // Fill the full 300 ms window with identical blocks so the RMS has converged.
+        let blocks_per_window = (u64::from(rate) * METER_RMS_WINDOW_MS / 1000) / block_len as u64;
+        for _ in 0..(blocks_per_window * 2) {
+            m.add(peak, sum_sq, block_len as u32);
+        }
+        let (_, peak_db, rms_db) = m.take();
+        assert!((peak_db + 6.0).abs() < 0.05, "peak_db={peak_db}");
+        assert!((rms_db + 9.0).abs() < 0.05, "rms_db={rms_db}");
+    }
+
+    /// H-41: the RMS window is a proper sliding 300 ms rectangular window (SPEC-002 §3's fixed
+    /// convention, reused for the output meter per ADR-003's `VXTM` table) — *not* just whatever
+    /// arrived since the previous telemetry frame (which at 60 Hz would be ~17 ms of audio, far
+    /// too little to read as a stable level rather than noise).
+    #[test]
+    fn meter_rms_is_a_sliding_window_not_a_per_frame_reset() {
+        let rate = 48_000u32;
+        let mut m = Meter::default();
+        m.reset(rate);
+        // One block of full-scale audio, then many frames' worth of silence: a per-frame-reset
+        // RMS would read silence on the very next `take()`; a real 300 ms window keeps the loud
+        // block's energy audible until it actually slides out.
+        m.add(1.0, 480.0, 480);
+        let (_, _, rms_after_block) = m.take();
+        assert!(rms_after_block.is_finite());
+        m.add(0.0, 0.0, 480);
+        let (_, _, rms_next_frame) = m.take();
+        assert!(
+            rms_next_frame.is_finite() && rms_next_frame < 0.0,
+            "the loud block is still inside the 300 ms window: {rms_next_frame}"
+        );
+        // Push enough silence to slide the whole window past the loud block (300 ms of it).
+        let window_frames = u64::from(rate) * METER_RMS_WINDOW_MS / 1000;
+        let mut pushed = 480u64; // already added above
+        while pushed < window_frames + 480 {
+            m.add(0.0, 0.0, 480);
+            pushed += 480;
+        }
+        let (_, _, rms_after_window_slides) = m.take();
+        assert!(
+            rms_after_window_slides.is_infinite(),
+            "the loud block has slid out of the window: {rms_after_window_slides}"
+        );
+    }
+
+    /// H-41: before the meter's first `reset()` (no stream open yet, or a fresh `Meter::default()`
+    /// as some other caller might construct), `add` must not silently accumulate against an
+    /// unknown window size — it should read as silence rather than a meaningless (rate-less) RMS.
+    #[test]
+    fn meter_before_reset_reads_silent() {
+        let mut m = Meter::default();
+        m.add(1.0, 480.0, 480);
+        let (_, _, rms_db) = m.take();
+        assert!(rms_db.is_infinite());
     }
 }

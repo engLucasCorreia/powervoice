@@ -28,6 +28,8 @@ mod normalize_commands;
 mod normalize_dto;
 mod nr_capture_commands;
 mod nr_capture_dto;
+mod plugin_commands;
+mod plugin_dto;
 mod preset_commands;
 mod preset_dto;
 mod rack_commands;
@@ -65,8 +67,9 @@ pub use dto::AppInfo;
 pub use error::{IpcError, IpcErrorCode};
 pub use events::{
     EVENT_NAME_VARIANTS, EVENT_NAMES, EventName, ImportStartedDto, JobKind, JobProgressDto,
-    JobState, Notice, NoticeLevel, emit_import_started, emit_job_progress, emit_loudness_report,
-    emit_normalize_result, emit_notice,
+    JobState, Notice, NoticeLevel, PluginScanProgressDto, PluginScanSummaryDto,
+    emit_import_started, emit_job_progress, emit_loudness_report, emit_normalize_result,
+    emit_notice, emit_plugin_scan_progress, emit_plugin_scan_summary,
 };
 pub use export_commands::*;
 pub use export_dto::{
@@ -81,6 +84,8 @@ pub use normalize_commands::*;
 pub use normalize_dto::{NormalizeJobStartedDto, NormalizeResultDto};
 pub use nr_capture_commands::*;
 pub use nr_capture_dto::NrCaptureStartedDto;
+pub use plugin_commands::*;
+pub use plugin_dto::{PluginEntryDto, PluginPortsDto, PluginStatusDto};
 pub use preset_commands::*;
 pub use preset_dto::{PresetEntryDto, PresetRefDto};
 pub use rack_commands::*;
@@ -207,6 +212,13 @@ crate::ipc_commands!(
     record_offset_set,
     calibration_run,
     calibration_cancel,
+    plugins_list,
+    plugins_rescan,
+    plugins_set_enabled,
+    plugins_block,
+    plugins_unblock,
+    plugins_add_folder,
+    plugins_remove_folder,
 );
 
 #[cfg(feature = "spike")]
@@ -307,6 +319,13 @@ crate::ipc_commands!(
     record_offset_set,
     calibration_run,
     calibration_cancel,
+    plugins_list,
+    plugins_rescan,
+    plugins_set_enabled,
+    plugins_block,
+    plugins_unblock,
+    plugins_add_folder,
+    plugins_remove_folder,
     spike_env,
     spike_waveform_peaks,
     spike_spectrogram_texture,

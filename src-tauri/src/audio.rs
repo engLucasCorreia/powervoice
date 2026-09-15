@@ -37,7 +37,7 @@ pub fn start<R: Runtime>(
     prefs: &DevicePrefsDto,
     record_volume: &Path,
 ) -> anyhow::Result<AudioEngine> {
-    let registry = Arc::new(crate::plugins::registry()?);
+    let registry = crate::plugins::registry()?;
     let mut config = EngineConfig::new(Arc::new(CpalBackend::new()), registry);
     config.prefs = prefs.into();
     config.record_volume = record_volume.to_path_buf();

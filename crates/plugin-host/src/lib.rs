@@ -26,7 +26,10 @@
 //!   channel's `Monitor` (crash, hang, clean exit), kills hung processes and reaps retired ones:
 //!   no orphan processes, and no named shared-memory object outlives the handshake.
 
+pub mod blocklist;
+pub mod catalog;
 mod factory;
+pub mod health;
 mod proxy;
 mod rpc;
 mod sandbox;
@@ -34,9 +37,14 @@ pub mod scan;
 pub mod state;
 pub mod watchdog;
 
+pub use catalog::{CatalogPaths, PluginCatalog, ScanSummary};
 pub use factory::{
     CLAP_FORMAT, SandboxFactory, SandboxInstance, SandboxOptions, SandboxSpec, TEST_FORMAT,
     clap_spec, test_factories, test_spec,
 };
 pub use proxy::{MAX_TRANSPORT_BLOCK, ProxyModule};
 pub use sandbox::SandboxFault;
+// Re-exported so `src-tauri` (the plugin manager DTOs, T-804) can read a CLAP `SandboxSpec`'s
+// path without adding its own dependency on `vox-sandbox-ipc` (ADR-001 §3: format/protocol
+// crates stay behind `vox-plugin-host`, not linked directly by the editor's command layer).
+pub use vox_sandbox_ipc::protocol::ClapPluginRef;

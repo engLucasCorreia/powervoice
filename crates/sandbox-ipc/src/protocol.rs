@@ -196,8 +196,9 @@ impl ClapPluginRef {
     }
 }
 
-/// One plugin a scanned file offers (`powervoice-sandbox --scan`, ADR-008 §6; T-803).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One plugin a scanned file offers (`powervoice-sandbox --scan`, ADR-008 §6; T-803, richer
+/// fields T-804 Amendment 4).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScannedPlugin {
     /// The format's plugin id (CLAP: reverse DNS).
     pub id: String,
@@ -213,6 +214,18 @@ pub struct ScannedPlugin {
     pub url: Option<String>,
     /// Feature strings (CLAP features: `"audio-effect"`, `"compressor"`, `"stereo"`, …).
     pub features: Vec<String>,
+    /// Parameter count (T-804, ADR-008 §6 "richer scan data"): known only for a plugin the scan
+    /// instantiated (an audio effect); `0` otherwise (never instantiated).
+    #[serde(default)]
+    pub param_count: u32,
+    /// Main input audio port channel count (`0`: no input port, or never instantiated). `1` =
+    /// mono, `2` = stereo (hosted through the mono shim, ADR-008 Amendment 3 §2).
+    #[serde(default)]
+    pub main_input_channels: u32,
+    /// Main output audio port channel count, same convention as
+    /// [`main_input_channels`](Self::main_input_channels).
+    #[serde(default)]
+    pub main_output_channels: u32,
 }
 
 /// What `powervoice-sandbox --scan <file> --format <format>` prints on its protocol output
@@ -414,6 +427,9 @@ mod tests {
                 description: String::new(),
                 url: None,
                 features: vec!["audio-effect".into(), "stereo".into()],
+                param_count: 3,
+                main_input_channels: 2,
+                main_output_channels: 2,
             }],
         };
         let json = serde_json::to_string(&ScanReply::Ok(report.clone())).unwrap();

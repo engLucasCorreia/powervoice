@@ -140,8 +140,14 @@ impl ProxyModule {
             .arg(handle)
             .arg("--host-pid")
             .arg(std::process::id().to_string());
-        let sandbox = Sandbox::spawn(cmd, region, &spec.descriptor.name.text)
-            .map_err(ModuleError::External)?;
+        let sandbox = Sandbox::spawn(
+            cmd,
+            region,
+            &spec.descriptor.name.text,
+            &spec.descriptor.id,
+            options.health.clone(),
+        )
+        .map_err(ModuleError::External)?;
         let info = match Self::handshake(&sandbox, &spec, &options) {
             Ok(info) => info,
             Err(e) => {

@@ -23,15 +23,15 @@ vox_module_api::install_test_allocator!();
 
 #[test]
 fn registry_holds_one_version_per_id() {
-    let mut r = Registry::with_factories(test_factories()).unwrap();
+    let r = Registry::with_factories(test_factories()).unwrap();
     assert_eq!(
         r.register(Arc::new(vox_modules::GainFactory::new())),
         Err(RegistryError::Duplicate(Gain::ID.into()))
     );
     let ids = r.ids();
-    assert!(ids.contains(&Gain::ID));
+    assert!(ids.iter().any(|id| id == Gain::ID));
     assert!(ids.windows(2).all(|w| w[0] < w[1]), "sorted: {ids:?}");
-    assert_eq!(r.descriptors().count(), r.len());
+    assert_eq!(r.descriptors().len(), r.len());
     let m = model(vec![
         gain_slot(0.0),
         slot("com.acme.x", &[]),
@@ -324,7 +324,7 @@ impl Module for StereoOnly {
 }
 
 fn odd_registry() -> Arc<Registry> {
-    let mut r = Registry::with_factories(test_factories()).unwrap();
+    let r = Registry::with_factories(test_factories()).unwrap();
     r.register(factory(|| Box::new(Failing))).unwrap();
     r.register(factory(|| {
         Box::new(StereoOnly {
@@ -449,7 +449,7 @@ fn load_time_failures_are_failed_slots_kept_verbatim() {
 
 #[test]
 fn restart_retries_a_slot_that_failed_to_start_at_load() {
-    let mut r = Registry::with_factories(test_factories()).unwrap();
+    let r = Registry::with_factories(test_factories()).unwrap();
     r.register(factory(|| Box::new(Flaky))).unwrap();
     let x = white(12, 48_000);
     let m = model(vec![gain_slot(0.0), slot(Flaky::ID, &[])]);

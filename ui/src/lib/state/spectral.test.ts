@@ -62,6 +62,7 @@ function settingsFixture(): Settings {
     save_dither: "tpdf",
     theme: "dark",
     playhead_follow: true,
+    plugins: { custom_folders: [], disabled: [] },
   };
 }
 

@@ -23,7 +23,8 @@ crate::ipc_events!(
     record_phase,
     record_finished,
     calibration_result,
-    import_started
+    import_started,
+    plugin_scan_progress
 );
 
 /// A user-facing notice (ADR-003 `notice` event). Two shapes, distinguished by `persistent`:
@@ -226,6 +227,83 @@ pub fn emit_normalize_result<R: tauri::Runtime>(
 ) -> tauri::Result<()> {
     use tauri::Emitter as _;
     app.emit(EventName::normalize_result.as_str(), result)
+}
+
+/// The background plugin scan's summary (T-804 item 1), once per rescan — the `plugin_scan_progress`
+/// event's final message (`current_path: None`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct PluginScanSummaryDto {
+    pub scanned: u32,
+    pub cached: u32,
+    pub failed: u32,
+    pub blocklisted_now: u32,
+    pub blocklisted: u32,
+    pub effects: u32,
+    /// Module ids newly registered by this scan (T-804 item 1: "insertable without a restart").
+    pub newly_registered: Vec<String>,
+}
+
+impl From<vox_plugin_host::catalog::ScanSummary> for PluginScanSummaryDto {
+    fn from(s: vox_plugin_host::catalog::ScanSummary) -> Self {
+        Self {
+            scanned: s.scanned as u32,
+            cached: s.cached as u32,
+            failed: s.failed as u32,
+            blocklisted_now: s.blocklisted_now as u32,
+            blocklisted: s.blocklisted as u32,
+            effects: s.effects as u32,
+            newly_registered: s.newly_registered,
+        }
+    }
+}
+
+/// `plugin_scan_progress` event payload (T-804 item 1): a tick while scanning (`current_path:
+/// Some(..)`, `summary: None`), or the final one (`current_path: None`, `summary: Some(..)`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct PluginScanProgressDto {
+    pub done: u32,
+    pub total: u32,
+    pub current_path: Option<String>,
+    pub summary: Option<PluginScanSummaryDto>,
+}
+
+/// Emits a `plugin_scan_progress` tick (T-804 item 1).
+pub fn emit_plugin_scan_progress<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    done: usize,
+    total: usize,
+    current_path: &std::path::Path,
+) -> tauri::Result<()> {
+    use tauri::Emitter as _;
+    app.emit(
+        EventName::plugin_scan_progress.as_str(),
+        PluginScanProgressDto {
+            done: done as u32,
+            total: total as u32,
+            current_path: Some(current_path.to_string_lossy().into_owned()),
+            summary: None,
+        },
+    )
+}
+
+/// Emits `plugin_scan_progress`'s final summary (T-804 item 1).
+pub fn emit_plugin_scan_summary<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    summary: vox_plugin_host::catalog::ScanSummary,
+) -> tauri::Result<()> {
+    use tauri::Emitter as _;
+    let summary = PluginScanSummaryDto::from(summary);
+    app.emit(
+        EventName::plugin_scan_progress.as_str(),
+        PluginScanProgressDto {
+            done: summary.scanned + summary.cached,
+            total: summary.scanned + summary.cached,
+            current_path: None,
+            summary: Some(summary),
+        },
+    )
 }
 
 #[cfg(test)]

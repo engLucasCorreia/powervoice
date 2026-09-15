@@ -594,6 +594,7 @@ export function installPreviewIpc(options: PreviewOptions): void {
     save_dither: "tpdf",
     theme,
     playhead_follow: true,
+    plugins: { custom_folders: [], disabled: [] },
   };
 
   const doc = documentFixture(options);

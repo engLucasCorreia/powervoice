@@ -257,6 +257,29 @@ impl ClapInstance {
         unsafe { &*self.plugin }
     }
 
+    /// Parameter count (T-804 richer scan data, ADR-008 §6).
+    pub(crate) fn param_count(&self) -> u32 {
+        self.params.len() as u32
+    }
+
+    /// `(main input channels, main output channels)` (T-804 richer scan data, ADR-008 §6): `0`
+    /// when the plugin has no port on that side (never true for a loaded audio effect, since
+    /// [`Self::load`] requires both).
+    pub(crate) fn main_ports(&self) -> (u32, u32) {
+        (
+            self.ports
+                .inputs
+                .get(self.ports.main_in)
+                .copied()
+                .unwrap_or(0),
+            self.ports
+                .outputs
+                .get(self.ports.main_out)
+                .copied()
+                .unwrap_or(0),
+        )
+    }
+
     fn extension(&self, id: &std::ffi::CStr) -> *const c_void {
         // SAFETY: `get_extension` is thread-safe; `id` is NUL-terminated.
         unsafe {

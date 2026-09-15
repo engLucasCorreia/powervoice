@@ -5078,10 +5078,12 @@ dependencies = [
 name = "vox-plugin-host"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
  "vox-module-api",
+ "vox-rack",
  "vox-sandbox-ipc",
 ]
 

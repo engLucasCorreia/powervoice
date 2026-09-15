@@ -1,7 +1,11 @@
 //! Module registry (SPEC-012 §2.10, ADR-005 §2): module id → factory, one version per id.
+//!
+//! Interior-mutable (T-804, ADR-008 §6 Amendment 4): a background plugin scan can [`upsert`]
+//! newly found modules into a `Registry` that's already shared (`Arc`) with a live rack, so the
+//! Add-module list picks them up without a restart.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use vox_module_api::{
     ActivateConfig, Module, ModuleDescriptor, ModuleFactory, ModuleState, StateError,
@@ -47,9 +51,15 @@ impl std::fmt::Debug for Resolved {
 }
 
 /// id → factory. Resolution is by id; the stored version is informational.
-#[derive(Default, Clone)]
+#[derive(Default)]
 pub struct Registry {
-    factories: BTreeMap<String, Arc<dyn ModuleFactory>>,
+    factories: Mutex<BTreeMap<String, Arc<dyn ModuleFactory>>>,
+}
+
+fn lock(
+    m: &Mutex<BTreeMap<String, Arc<dyn ModuleFactory>>>,
+) -> std::sync::MutexGuard<'_, BTreeMap<String, Arc<dyn ModuleFactory>>> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl Registry {
@@ -62,46 +72,60 @@ impl Registry {
     pub fn with_factories(
         factories: impl IntoIterator<Item = Arc<dyn ModuleFactory>>,
     ) -> Result<Self, RegistryError> {
-        let mut r = Self::new();
+        let r = Self::new();
         for f in factories {
             r.register(f)?;
         }
         Ok(r)
     }
 
-    /// Registers a factory under its descriptor id.
-    pub fn register(&mut self, factory: Arc<dyn ModuleFactory>) -> Result<(), RegistryError> {
+    /// Registers a factory under its descriptor id; an id already present is an error (one
+    /// version per id — use [`Self::upsert`] to replace or hot-add).
+    pub fn register(&self, factory: Arc<dyn ModuleFactory>) -> Result<(), RegistryError> {
         let id = factory.descriptor().id.clone();
-        if self.factories.contains_key(&id) {
+        let mut g = lock(&self.factories);
+        if g.contains_key(&id) {
             return Err(RegistryError::Duplicate(id));
         }
-        self.factories.insert(id, factory);
+        g.insert(id, factory);
         Ok(())
     }
 
+    /// Inserts or replaces a factory under its descriptor id, without erroring on a duplicate
+    /// (T-804, ADR-008 §6 Amendment 4): a background scan hot-adding a newly found plugin into a
+    /// `Registry` a live rack already shares. `true` if this added a new id, `false` if it
+    /// replaced an existing one.
+    pub fn upsert(&self, factory: Arc<dyn ModuleFactory>) -> bool {
+        let id = factory.descriptor().id.clone();
+        lock(&self.factories).insert(id, factory).is_none()
+    }
+
     /// The factory for `id`.
-    pub fn get(&self, id: &str) -> Option<&Arc<dyn ModuleFactory>> {
-        self.factories.get(id)
+    pub fn get(&self, id: &str) -> Option<Arc<dyn ModuleFactory>> {
+        lock(&self.factories).get(id).cloned()
     }
 
     /// Registered ids, sorted.
-    pub fn ids(&self) -> Vec<&str> {
-        self.factories.keys().map(String::as_str).collect()
+    pub fn ids(&self) -> Vec<String> {
+        lock(&self.factories).keys().cloned().collect()
     }
 
     /// Descriptors of the registered modules (the Add-module menu), sorted by id.
-    pub fn descriptors(&self) -> impl Iterator<Item = &ModuleDescriptor> {
-        self.factories.values().map(|f| f.descriptor())
+    pub fn descriptors(&self) -> Vec<ModuleDescriptor> {
+        lock(&self.factories)
+            .values()
+            .map(|f| f.descriptor().clone())
+            .collect()
     }
 
     /// Number of registered modules.
     pub fn len(&self) -> usize {
-        self.factories.len()
+        lock(&self.factories).len()
     }
 
     /// True if nothing is registered.
     pub fn is_empty(&self) -> bool {
-        self.factories.is_empty()
+        lock(&self.factories).is_empty()
     }
 
     /// The module references of `model` whose id is not registered (or does not parse), in
@@ -116,7 +140,7 @@ impl Registry {
             }
             let known = s
                 .module_ref()
-                .is_ok_and(|r| self.factories.contains_key(&r.id));
+                .is_ok_and(|r| lock(&self.factories).contains_key(&r.id));
             if !known && !out.contains(&s.module) {
                 out.push(s.module.clone());
             }
@@ -142,7 +166,7 @@ impl Registry {
         let Ok(r) = slot.module_ref() else {
             return Ok(missing());
         };
-        let Some(factory) = self.factories.get(&r.id) else {
+        let Some(factory) = self.get(&r.id) else {
             return Ok(missing());
         };
         let mut module = factory.create().map_err(|source| RackError::Create {

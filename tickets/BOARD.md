@@ -174,7 +174,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-801 | Shared-memory ring + wakeup shim + crash/hang/gain test plugins | W1 | O | M7 | done |
 | T-802 | Sandbox process, watchdog, proxy module | W2 | O | T-801 | done |
 | T-803 | CLAP adapter (+ enumerate) | W3 | O | T-802 | done |
-| T-804 | Scanner orchestration, cache, blocklist | W3 | S | T-802 | in progress |
+| T-804 | Scanner orchestration, cache, blocklist | W3 | S | T-802 | done |
 | T-805 | Our modules as CLAP packages (clack-plugin) | W4 | O | T-803 | todo |
 | T-806 | VST3 adapter (coupler vst3 + moduleinfo scan) | W4 | O | T-803, T-804 | todo |
 | T-807 | LV2 adapter (livi) | W4 | O | T-803, T-804 | todo |

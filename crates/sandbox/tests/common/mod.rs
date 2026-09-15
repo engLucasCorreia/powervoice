@@ -158,6 +158,7 @@ pub fn test_clap_plugin(id: &str) -> vox_plugin_host::scan::ScannedPlugin {
         description: String::new(),
         url: None,
         features: vec!["audio-effect".into(), "utility".into()],
+        ..vox_plugin_host::scan::ScannedPlugin::default()
     }
 }
 

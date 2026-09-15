@@ -67,7 +67,7 @@ peak_dbfs: number | null, clipped: boolean, weak: boolean, accepted: boolean, re
  */
 export type ClipboardChangedDto = { len_samples: number | null, sample_rate_hz: number | null, };
 
-export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "module_telemetry_subscribe" | "module_presets_list" | "module_preset_save" | "module_preset_load" | "module_preset_rename" | "module_preset_delete" | "module_reset_default" | "rack_presets_list" | "rack_preset_save" | "rack_preset_load" | "rack_preset_rename" | "rack_preset_delete" | "analyzer_subscribe" | "analyzer_set_response" | "analyzer_unsubscribe" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_open_cancel" | "document_probe" | "document_save" | "document_save_as" | "document_close" | "sidecar_view_set_spectral" | "sidecar_view_set_waveform" | "recent_files_get" | "recent_files_remove" | "recent_files_clear" | "recovery_list" | "recovery_recover" | "recovery_discard" | "storage_info" | "peaks_get" | "spectro_attach" | "spectro_detach" | "spectro_request" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check" | "record_start_at" | "record_offset_get" | "record_offset_set" | "calibration_run" | "calibration_cancel";
+export type CommandName = "app_info" | "settings_get" | "settings_set" | "devices_list" | "devices_select" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "module_telemetry_subscribe" | "module_presets_list" | "module_preset_save" | "module_preset_load" | "module_preset_rename" | "module_preset_delete" | "module_reset_default" | "rack_presets_list" | "rack_preset_save" | "rack_preset_load" | "rack_preset_rename" | "rack_preset_delete" | "analyzer_subscribe" | "analyzer_set_response" | "analyzer_unsubscribe" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_open_cancel" | "document_probe" | "document_save" | "document_save_as" | "document_close" | "sidecar_view_set_spectral" | "sidecar_view_set_waveform" | "recent_files_get" | "recent_files_remove" | "recent_files_clear" | "recovery_list" | "recovery_recover" | "recovery_discard" | "storage_info" | "peaks_get" | "spectro_attach" | "spectro_detach" | "spectro_request" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check" | "record_start_at" | "record_offset_get" | "record_offset_set" | "calibration_run" | "calibration_cancel" | "plugins_list" | "plugins_rescan" | "plugins_set_enabled" | "plugins_block" | "plugins_unblock" | "plugins_add_folder" | "plugins_remove_folder";
 
 /**
  * One draggable EQ-graph node (S3-07, SPEC-015 §3 "ResponseCurve components"): the band's
@@ -233,7 +233,7 @@ selection: [number, number] | null, playhead_samples: number, };
  */
 export type EditTargetDto = { "kind": "cursor", at_samples: number, } | { "kind": "range", start_samples: number, end_samples: number, };
 
-export type EventName = "notice" | "transport_state" | "devices_changed" | "rack_changed" | "param_changed" | "rack_latency" | "record_state" | "document_changed" | "history_state" | "clipboard_changed" | "job_progress" | "loudness_report" | "normalize_result" | "recent_files_changed" | "record_phase" | "record_finished" | "calibration_result" | "import_started";
+export type EventName = "notice" | "transport_state" | "devices_changed" | "rack_changed" | "param_changed" | "rack_latency" | "record_state" | "document_changed" | "history_state" | "clipboard_changed" | "job_progress" | "loudness_report" | "normalize_result" | "recent_files_changed" | "record_phase" | "record_finished" | "calibration_result" | "import_started" | "plugin_scan_progress";
 
 /**
  * Export output format and its per-format settings. FLAC's `bits` rejects `"32f"` (FLAC has no
@@ -514,6 +514,72 @@ export type ParamValueDto = { id: number, value: number, normalized: number, tex
  * any response whose `audio_rev` is not current"), not something this command refuses.
  */
 export type PeaksRequestDto = { request_id: number, audio_rev: number, spp: number, start_sample: number, count: number, };
+
+/**
+ * One plugin, for the plugin manager (T-804 item 6, T-809 UI).
+ */
+export type PluginEntryDto = { 
+/**
+ * Registry module id (`"clap:<id>"`, …); empty for a blocklisted file that crashed before
+ * it could even report its id.
+ */
+id: string, name: string, vendor: string, version: string, 
+/**
+ * Backend name (`"clap"`, …).
+ */
+format: string, 
+/**
+ * The plugin file/bundle path.
+ */
+path: string, status: PluginStatusDto, 
+/**
+ * `None` for a blocklisted entry (never instantiated to find out) or a format that doesn't
+ * report ports this way.
+ */
+ports: PluginPortsDto | null, param_count: number, };
+
+/**
+ * One audio port side's channel count (T-804 item 3, ADR-008 §6).
+ */
+export type PluginPortsDto = { input_channels: number, output_channels: number, };
+
+/**
+ * `plugin_scan_progress` event payload (T-804 item 1): a tick while scanning (`current_path:
+ * Some(..)`, `summary: None`), or the final one (`current_path: None`, `summary: Some(..)`).
+ */
+export type PluginScanProgressDto = { done: number, total: number, current_path: string | null, summary: PluginScanSummaryDto | null, };
+
+/**
+ * The background plugin scan's summary (T-804 item 1), once per rescan — the `plugin_scan_progress`
+ * event's final message (`current_path: None`).
+ */
+export type PluginScanSummaryDto = { scanned: number, cached: number, failed: number, blocklisted_now: number, blocklisted: number, effects: number, 
+/**
+ * Module ids newly registered by this scan (T-804 item 1: "insertable without a restart").
+ */
+newly_registered: Array<string>, };
+
+/**
+ * A plugin's status, as the plugin manager shows it (T-804 item 6). Only one applies at a time;
+ * see [`crate::plugins::plugins_list`] for the precedence when more than one could.
+ */
+export type PluginStatusDto = { "kind": "ok" } | { "kind": "disabled" } | { "kind": "blocklisted", reason: string, } | { "kind": "flagged", crash_count: number, };
+
+/**
+ * Settings → Plugins (T-804): extra folders scanned in addition to the standard per-format
+ * paths, and module ids hidden from Add Module. A disabled plugin is still listed (with its
+ * disabled status) in the plugin manager, and an existing document that already uses it still
+ * loads it — disabling only hides it from the *menu* (`rack_list_modules` filters by this).
+ */
+export type PluginsSettingsDto = { 
+/**
+ * Extra folders to scan (ADR-008 §6), in addition to the standard CLAP/VST3/LV2/JSFX paths.
+ */
+custom_folders: Array<string>, 
+/**
+ * Module ids (`"clap:<id>"`, …) hidden from Add Module.
+ */
+disabled: Array<string>, };
 
 /**
  * One entry of a module or rack preset menu (`module_presets_list`/`rack_presets_list`):
@@ -961,7 +1027,12 @@ theme: ThemePref,
  * scrolls to keep the playhead inside the follow band during playback. View-only — never
  * read by the engine. Default on. Additive field — the settings version stays 1.
  */
-playhead_follow: boolean, };
+playhead_follow: boolean, 
+/**
+ * T-804 (ADR-008 §5/§6): Settings → Plugins (custom scan folders, disabled module ids).
+ * Additive field — the settings version stays 1.
+ */
+plugins: PluginsSettingsDto, };
 
 /**
  * Slot status (SPEC-012 §2.2, §2.9; T-802: `restarting` for a sandboxed plugin whose automatic

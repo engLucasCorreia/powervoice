@@ -12,6 +12,7 @@ use vox_module_api::{
 use vox_sandbox_ipc::WaitBudget;
 use vox_sandbox_ipc::protocol::{ClapPluginRef, ScannedPlugin};
 
+use crate::health::HealthStore;
 use crate::proxy::ProxyModule;
 use crate::sandbox::{Sandbox, SandboxFault};
 
@@ -46,6 +47,10 @@ pub struct SandboxOptions {
     pub offline_timeout: Duration,
     /// Control requests (load, activate, state; ADR-008 §4: 5 s).
     pub request_timeout: Duration,
+    /// Runtime-crash flag counters (T-804, ADR-008 §5): incremented once per fault, the first
+    /// time a sandboxed instance of a module faults. `None` (the default) records nothing —
+    /// tests and the CLI that don't care about the plugin manager's flags.
+    pub health: Option<Arc<HealthStore>>,
 }
 
 impl SandboxOptions {
@@ -58,6 +63,7 @@ impl SandboxOptions {
             hang_timeout: Duration::from_millis(250),
             offline_timeout: Duration::from_secs(5),
             request_timeout: Duration::from_secs(5),
+            health: None,
         }
     }
 

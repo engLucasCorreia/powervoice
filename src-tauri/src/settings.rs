@@ -502,6 +502,22 @@ pub enum ThemePref {
     System,
 }
 
+// --- Plugins (T-804, ADR-008 §5/§6) ---------------------------------------------------------------
+
+/// Settings → Plugins (T-804): extra folders scanned in addition to the standard per-format
+/// paths, and module ids hidden from Add Module. A disabled plugin is still listed (with its
+/// disabled status) in the plugin manager, and an existing document that already uses it still
+/// loads it — disabling only hides it from the *menu* (`rack_list_modules` filters by this).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[serde(default)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct PluginsSettingsDto {
+    /// Extra folders to scan (ADR-008 §6), in addition to the standard CLAP/VST3/LV2/JSFX paths.
+    pub custom_folders: Vec<String>,
+    /// Module ids (`"clap:<id>"`, …) hidden from Add Module.
+    pub disabled: Vec<String>,
+}
+
 // --- Settings root -------------------------------------------------------------------------------
 
 /// The whole settings file. `#[serde(default)]` at the container level means any field missing
@@ -565,6 +581,9 @@ pub struct Settings {
     /// scrolls to keep the playhead inside the follow band during playback. View-only — never
     /// read by the engine. Default on. Additive field — the settings version stays 1.
     pub playhead_follow: bool,
+    /// T-804 (ADR-008 §5/§6): Settings → Plugins (custom scan folders, disabled module ids).
+    /// Additive field — the settings version stays 1.
+    pub plugins: PluginsSettingsDto,
     #[serde(flatten)]
     #[ts(skip)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -594,6 +613,7 @@ impl Default for Settings {
             layout: LayoutPrefsDto::default(),
             theme: ThemePref::default(),
             playhead_follow: true,
+            plugins: PluginsSettingsDto::default(),
             extra: serde_json::Map::new(),
         }
     }
@@ -1259,6 +1279,36 @@ mod tests {
         remove_recent_file(&mut recent, "/vo/A.wav");
         let paths: Vec<&str> = recent.iter().map(|e| e.path.as_str()).collect();
         assert_eq!(paths, vec!["/vo/B.wav"]);
+    }
+
+    // --- T-804: Settings → Plugins (custom folders, disabled ids) ------------------------------
+
+    /// Custom folders and disabled ids round-trip through save/load, and an older settings file
+    /// with no `plugins` key at all falls back to the factory defaults (container-level
+    /// `#[serde(default)]`, same convention as `layout`/`renderer_preference`).
+    #[test]
+    fn plugins_settings_round_trip_and_fall_back_to_empty() {
+        let dir = temp_dir("plugins-settings");
+        let path = dir.join("settings.json");
+
+        let settings = Settings {
+            plugins: PluginsSettingsDto {
+                custom_folders: vec!["/home/u/my-clap-plugins".to_string()],
+                disabled: vec!["clap:com.acme.deesser".to_string()],
+            },
+            ..Settings::default()
+        };
+        save(&path, &settings).unwrap();
+        let loaded = load_or_default(&path);
+        assert_eq!(loaded.plugins, settings.plugins);
+
+        let json = br#"{"version":1,"monitor_mode":"dry"}"#;
+        let migrated = parse_and_migrate(json).unwrap();
+        assert_eq!(migrated.plugins, PluginsSettingsDto::default());
+        assert!(migrated.plugins.custom_folders.is_empty());
+        assert!(migrated.plugins.disabled.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

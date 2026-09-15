@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use vox_sandbox_ipc::protocol::{RequestBody, ResponseBody};
 use vox_sandbox_ipc::{Fault, Monitor, PeerStatus, SharedRegion};
 
+use crate::health::HealthStore;
 use crate::rpc::{Rpc, RpcError};
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -96,14 +97,22 @@ pub(crate) struct Sandbox {
     exited: AtomicBool,
     /// Being shut down on purpose: an exit is not a fault.
     retiring: AtomicBool,
+    /// The registry module id (`"clap:<id>"`, …), for [`HealthStore::record_crash`].
+    module_id: String,
+    /// Runtime-crash flag store (T-804, ADR-008 §5); `None` records nothing.
+    health: Option<Arc<HealthStore>>,
 }
 
 impl Sandbox {
     /// Spawns `cmd` (stdin/stdout piped) through the watchdog thread and starts its channel.
+    /// `module_id` and `health` are ADR-008 §5's runtime-crash flag (T-804): the first fault
+    /// this sandbox ever records increments `module_id`'s counter in `health`, if given.
     pub(crate) fn spawn(
         mut cmd: Command,
         region: SharedRegion,
         name: &str,
+        module_id: &str,
+        health: Option<Arc<HealthStore>>,
     ) -> Result<Arc<Self>, String> {
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -132,6 +141,8 @@ impl Sandbox {
             fault: Arc::new(FaultCell::default()),
             exited: AtomicBool::new(false),
             retiring: AtomicBool::new(false),
+            module_id: module_id.to_owned(),
+            health,
         });
         crate::watchdog::watch(&sandbox);
         Ok(sandbox)
@@ -147,12 +158,18 @@ impl Sandbox {
         self.fault().is_none() && !self.exited.load(Ordering::Acquire)
     }
 
-    /// Records a fault, bypasses the live channel and — for a hang — kills the process.
+    /// Records a fault, bypasses the live channel and — for a hang — kills the process. The
+    /// *first* fault of any sandbox's lifetime also flags the module (ADR-008 §5, T-804): a
+    /// runtime crash never blocklists by itself, it only counts and lets the user decide.
     pub(crate) fn record(&self, f: SandboxFault) {
         if self.retiring.load(Ordering::Acquire) {
             return;
         }
-        self.fault.set(f);
+        if self.fault.set(f)
+            && let Some(health) = &self.health
+        {
+            health.record_crash(&self.module_id);
+        }
         if let Some(m) = lock(&self.monitor).as_ref() {
             m.force_bypass();
         }

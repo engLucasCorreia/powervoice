@@ -40,6 +40,9 @@ pub fn run() {
             // S1-01: the audio engine starts with the saved device prefs (SPEC-001 §2.5).
             let settings = app.state::<settings::SettingsStore>().get();
             let sessions_dir = document::default_sessions_dir();
+            // T-804 (ADR-008 §6, item 1): the instant, sandbox-free cached-plugins load, before
+            // any composition root builds its registry — start-up never blocks on a sandbox.
+            plugins::configure(&settings.plugins.custom_folders);
             // H-11 (SPEC-002 §2.5): the engine polls this volume's free space for the recording
             // disk floor and the record panel's remaining-time display.
             let engine = audio::start(app.handle(), &settings.device, &sessions_dir)?;
@@ -113,6 +116,34 @@ pub fn run() {
                 app.state::<document::DocumentService>().inner().clone(),
             );
             app.manage(housekeeping);
+            // T-804 (ADR-008 §6, item 1): the authoritative background rescan — every composition
+            // root above has already built (and registered) its own registry, so any plugin this
+            // finds hot-adds into all of them, not just the engine's.
+            let progress_app = app.handle().clone();
+            let done_app = app.handle().clone();
+            plugins::start_background_scan(
+                move |done, total, path| {
+                    if let Err(e) = ipc::emit_plugin_scan_progress(&progress_app, done, total, path)
+                    {
+                        tracing::warn!(error = %e, "plugin_scan_progress emit failed");
+                    }
+                },
+                move |summary| {
+                    tracing::info!(
+                        scanned = summary.scanned,
+                        cached = summary.cached,
+                        failed = summary.failed,
+                        blocklisted_now = summary.blocklisted_now,
+                        blocklisted = summary.blocklisted,
+                        effects = summary.effects,
+                        newly_registered = summary.newly_registered.len(),
+                        "CLAP plugin scan finished"
+                    );
+                    if let Err(e) = ipc::emit_plugin_scan_summary(&done_app, summary) {
+                        tracing::warn!(error = %e, "plugin_scan_progress summary emit failed");
+                    }
+                },
+            );
             Ok(())
         })
         .invoke_handler(ipc::invoke_handler())

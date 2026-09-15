@@ -586,3 +586,102 @@ from it. `powervoice-sandbox` dev-depends on the crate, so cargo builds the `.so
 - A plugin that requested a restart on every activation would restart about once per instance
   lifetime: there is no guard beyond one request per instance.
 - Windows and macOS are only compile-checked.
+
+## Amendment 4 — T-804 scanner orchestration, cache, blocklist, as implemented (2026-09-15)
+
+New module `vox_plugin_host::catalog` (`PluginCatalog`), plus `blocklist` and `health`. No new
+crate, no new third-party dependency (`crc32fast` was already a workspace dependency, used here
+for the blocklist's content hash).
+
+### 1. Richer scan data (refines Amendment 3 §4's "the scan reads descriptors only")
+`ScannedPlugin` gained `param_count`, `main_input_channels`, `main_output_channels`. The sandbox
+side (`crates/sandbox/src/clap/scan.rs`) still enumerates every plugin by descriptor alone, then
+— only for one whose features look like an audio effect — instantiates it
+(`ClapInstance::load`, main thread, never activated) to read its real ports and parameter count;
+a plugin that fails to instantiate this way just keeps zeroed fields, it doesn't fail the scan.
+This is still one disposable process per **file**, so a crash here is reported exactly like a
+descriptor-time crash (§6).
+
+**Cache schema bumped 1 → 2**: an old cache has none of the new fields, so it's discarded
+wholesale (never silently trusted with zeroed ports).
+
+### 2. Blocklist (`vox_plugin_host::blocklist`, refines §5)
+Persisted as `<cache dir>/plugin-blocklist.json` (write-then-rename, same convention as the scan
+cache), one entry per path: `{path, size, mtime_s, mtime_ns, hash: Option<u32>, reason, blocked_at_unix_ms}`.
+`hash` is a CRC32 (`crc32fast`) over the file's bytes at block time. A file is still considered
+blocked only while its **current** stat and content hash match the stored one — touching the
+mtime *or* the bytes clears the entry automatically, the moment it's next checked (no separate
+sweep). `reason` is `Crashed | TimedOut | Manual` (the last is `plugins_block`). Scanning
+(`scan::scan_clap_files_with`) checks the blocklist before the cache lookup — a blocklisted file
+is skipped before a sandbox would ever be spawned for it — and, on a failure, blocklists it only
+for `Crashed`/`TimedOut` (never for "not a CLAP library" or "couldn't start the sandbox" —
+`scan::FailureKind` carries the distinction from `scan_file`'s exit-status/timeout handling).
+
+### 3. Runtime crash flag (`vox_plugin_host::health`, refines §5's "runtime crashes only flag")
+`HealthStore` persists a `crash_count`/`last_unix_ms` per **module id** (`<cache
+dir>/plugin-health.json`), independent of the blocklist. `SandboxOptions` gained `health:
+Option<Arc<HealthStore>>`; `Sandbox::spawn` takes the module id and this handle, and
+`Sandbox::record` (the single place any fault — crashed, hung, exited, failed — is first
+recorded for a process) calls `HealthStore::record_crash` exactly once per sandbox's lifetime.
+This never touches the blocklist and never runs on the audio thread (the fault is recorded from
+the watchdog/control-thread call sites that already call `record`, same as before this ticket).
+
+### 4. Registry hot-add (`vox_rack::Registry`, refines ADR-005 §2)
+`Registry`'s storage became a `Mutex<BTreeMap<..>>` (was a plain `BTreeMap`, immutable after
+`with_factories`): `register` still errors on a duplicate id (unchanged behavior), and a new
+`upsert` inserts or replaces without erroring. `get`/`ids`/`descriptors` now return owned values
+(a `Mutex` guard can't outlive the call) instead of borrows — the only two call sites
+(`rack_registry`, one test) needed a one-line adjustment. Every `Registry` is still built once by
+a composition root and shared as `Arc<Registry>`, same as before; the difference is that the
+*same* `Arc` can now be mutated after RackHost/engine/export/etc. already hold it.
+
+### 5. The catalog (`PluginCatalog`, item 1's orchestration)
+Owns the current effect specs (`RwLock<Vec<SandboxSpec>>`), the sandbox options (with `health`
+attached), the cache/blocklist paths, the custom folders (item 5), and a list of `Weak<Registry>`
+observers.
+- **`load_cached`**: `find_clap_files` (a directory walk — cheap) then a cache-only lookup
+  (`scan::cached_effect_specs`, stat-matched, blocklist-filtered) — **no sandbox process is ever
+  spawned**. `src-tauri`'s `lib.rs` calls this (via `plugins::configure`) before the engine
+  starts, so start-up never blocks on a scan.
+- **`rescan`**: the authoritative scan (`scan::scan_clap_files_with`, which now accepts a
+  progress callback: `on_progress(done, total, path)`, called under an internal lock so calls
+  from parallel scan workers are never interleaved — `done` is always strictly increasing, one
+  call at a time, even though the underlying scans finish in parallel and in any order). New or
+  changed effects hot-add into every still-live observer (`Registry::upsert`); a dead `Weak` is
+  dropped, never upgraded.
+- **`rescan_in_background`**: `rescan` on its own thread.
+- Every composition root's `plugins::registry()` call registers its returned `Arc<Registry>` as
+  an observer, so `audio::start`'s engine, and also `export`/`loudness`/`nr_capture`'s
+  longer-lived registries, all pick up a plugin found by a later rescan — not just the one behind
+  Add Module.
+
+### 6. Settings and commands (items 5–6)
+`Settings.plugins: PluginsSettingsDto { custom_folders, disabled }` (additive, version stays 1).
+`disabled` only hides an id from `rack_list_modules`'s Add-module list
+(`rack_commands::visible_modules`) — the module stays registered, so an existing document that
+already uses it still loads it, and `plugins_list` still reports it (as `Disabled`, not absent).
+
+Commands (`src-tauri/src/ipc/plugin_commands.rs`, thin): `plugins_list` (registered effects —
+`Ok`/`Disabled`/`Flagged{crash_count}` — plus blocklisted files, `Blocklisted{reason}`),
+`plugins_rescan(full)` (`full` sets `ScanOptions::force`, ignoring the cache; blocklisted files
+are still skipped), `plugins_set_enabled`, `plugins_block`/`plugins_unblock`,
+`plugins_add_folder`/`plugins_remove_folder` (the latter two call `plugins::configure` again and
+`plugins_add_folder` also kicks a background rescan). New event `plugin_scan_progress`
+(`{done, total, current_path}` while scanning, `{summary: Some(..)}` once, at the end).
+
+### 7. Known limits (for T-806–T-809)
+- Format-agnostic in spirit only: the sandbox already takes `--format` as a parameter (§6), but
+  `PluginCatalog`/`scan.rs` are still CLAP-specific function names. T-806 (VST3) is expected to
+  add parallel functions/paths rather than a generic-over-format abstraction that has no second
+  implementation to validate against yet.
+- A blocklisted file's `plugins_list` entry has no id/name/vendor (the scan crashed before it
+  could report a descriptor) — it's identified by path and a file-stem-derived name only.
+- No "missing" status: a plugin file deleted from disk simply drops out of the catalog's specs at
+  the next scan; there's no persisted "this used to be here" marker for the plugin manager to
+  show a distinct "missing" row until then. T-809 may want one.
+- `plugins_add_folder`/`plugins_remove_folder` don't wait for the rescan they trigger; the UI
+  should treat the folder list as applied immediately and the plugin list as catching up via
+  `plugin_scan_progress`.
+- The offline-render deadline-miss fault (`SandboxFault::OfflineDeadline`, set directly from the
+  render thread without a lock, ADR-008 Amendment 2 §5) does not flag the health store — only
+  faults that go through `Sandbox::record` do, to keep the audio/render path lock-free.

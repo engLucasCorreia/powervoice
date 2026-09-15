@@ -12,9 +12,15 @@ publish.workspace = true
 [dependencies]
 vox-module-api = { path = "../module-api" }
 vox-sandbox-ipc = { path = "../sandbox-ipc" }
+# T-804: `PluginCatalog::observe`/`upsert` hot-adds newly found plugins into the live rack's
+# module registry (ADR-008 §6 Amendment 4) — no cycle: `vox-rack` doesn't depend on this crate.
+vox-rack = { path = "../rack" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# T-804: the plugin blocklist's content-hash key (ADR-008 §5) — already a workspace dependency
+# (vox-project's sidecar/journal CRCs), no new third-party crate.
+crc32fast.workspace = true
 
 [dev-dependencies]
 vox-module-api = { path = "../module-api", features = ["test-util"] }

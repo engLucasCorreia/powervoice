@@ -185,7 +185,7 @@ fn missing_modules_are_an_error_listing_the_ids() {
 /// every event keeps its exact sample position.
 #[test]
 fn dense_automation_keeps_exact_positions() {
-    let mut reg = vox_rack::Registry::with_factories(test_factories()).unwrap();
+    let reg = vox_rack::Registry::with_factories(test_factories()).unwrap();
     reg.register(std::sync::Arc::new(
         vox_module_api::test_util::TestGainFactory::new(),
     ))

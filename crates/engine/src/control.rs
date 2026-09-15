@@ -770,7 +770,7 @@ impl Control {
 
     /// The registered modules (the Add-module menu; always available, even with no live rack).
     pub(crate) fn rack_registry(&self) -> Vec<ModuleDescriptor> {
-        self.registry.descriptors().cloned().collect()
+        self.registry.descriptors()
     }
 
     /// `module_id`'s factory presets (T-406, ADR-005 §2 `ModuleFactory::presets`); empty for an

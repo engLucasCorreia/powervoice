@@ -51,6 +51,7 @@ function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     save_dither: "tpdf",
     theme: "dark",
     playhead_follow: true,
+    plugins: { custom_folders: [], disabled: [] },
     recent_files: [],
     spectral_defaults: {
       freq_scale: "log",

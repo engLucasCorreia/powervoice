@@ -7,6 +7,12 @@
 //! `job_progress` (ADR-003) at each rack-render block plus phase boundaries; never touches the
 //! document (D-019 — only Save/Save As write it).
 //!
+//! **T-602:** the rack render is `vox_engine::bake::render_document_range` — the one render path
+//! export shares with Bake rack, so a bake is bit-identical to an export of the same range and
+//! rack. A selection export therefore renders with the T-602 context (pre-roll from the audio
+//! before the selection, post-roll from the audio after it; SPEC-012 §2.8 amendment); a
+//! whole-file export is unchanged (SPEC-012's whole-file render).
+//!
 //! **H-08:** the rack panel (S3-01) and selection (S2-01) have both landed, so the "rack is
 //! always empty" / "whole file only" deviations this module used to carry are resolved: the
 //! dialog's Whole file/Selection choice sends `range` through unchanged (it was already plumbed
@@ -15,12 +21,13 @@
 //! shows.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Runtime};
 use vox_engine::EngineHandle;
-use vox_project::{CHUNK_SAMPLES, SnapshotReader};
+use vox_engine::bake::{DocumentRange, RangeRenderError, render_document_range_to_vec};
+use vox_project::CancelToken;
 use vox_rack::{RackModel, Registry};
 
 use crate::document::{DocumentService, ExportSource};
@@ -56,7 +63,7 @@ enum ExportEvent {
 type ExportEmitter = Arc<dyn Fn(ExportEvent) + Send + Sync>;
 
 struct JobHandle {
-    cancel: Arc<AtomicBool>,
+    cancel: CancelToken,
 }
 
 struct Inner {
@@ -122,11 +129,11 @@ impl ExportService {
         // to an empty rack rather than failing the export outright.
         let model = self.0.engine.rack_model().unwrap_or_default();
         let job_id = self.0.next_id.fetch_add(1, Ordering::Relaxed);
-        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel = CancelToken::new();
         self.0.jobs.lock().unwrap().insert(
             job_id,
             JobHandle {
-                cancel: Arc::clone(&cancel),
+                cancel: cancel.clone(),
             },
         );
         let inner = Arc::clone(&self.0);
@@ -155,7 +162,7 @@ impl ExportService {
     /// and reports `JobState::Cancelled`. A no-op for an already-finished or unknown job id.
     pub fn cancel_job(&self, job_id: u32) {
         if let Some(job) = self.0.jobs.lock().unwrap().get(&job_id) {
-            job.cancel.store(true, Ordering::Relaxed);
+            job.cancel.cancel();
         }
     }
 }
@@ -175,8 +182,8 @@ fn cancelled() -> IpcError {
     IpcError::new(IpcErrorCode::Cancelled, "error.cancelled")
 }
 
-fn check_cancelled(cancel: &AtomicBool) -> Result<(), IpcError> {
-    if cancel.load(Ordering::Relaxed) {
+fn check_cancelled(cancel: &CancelToken) -> Result<(), IpcError> {
+    if cancel.is_cancelled() {
         Err(cancelled())
     } else {
         Ok(())
@@ -227,7 +234,7 @@ fn run_job(
     path: PathBuf,
     format: ExportFormat,
     target_rate_hz: u32,
-    cancel: Arc<AtomicBool>,
+    cancel: CancelToken,
 ) {
     let emit = Arc::clone(&inner.emit);
     let result = run_pipeline(
@@ -279,93 +286,45 @@ fn run_job(
     }
 }
 
-/// Reads `[start, end)` of `source`'s current snapshot into memory (the same "whole buffer in
-/// RAM" approach `vox_project::save_snapshot_wav` uses today — H-02 backlog item to stream it).
-fn read_range(source: &ExportSource, start: u64, end: u64) -> Result<Vec<f32>, IpcError> {
-    let mut reader = SnapshotReader::new(Arc::clone(&source.store), Arc::clone(&source.snapshot));
-    let mut samples = Vec::with_capacity((end - start) as usize);
-    let mut buf = vec![0.0f32; CHUNK_SAMPLES];
-    let mut pos = start;
-    while pos < end {
-        let want = ((end - pos) as usize).min(buf.len());
-        let n = reader
-            .read(pos, &mut buf[..want])
-            .map_err(project_read_error)?;
-        if n == 0 {
-            break;
-        }
-        samples.extend_from_slice(&buf[..n]);
-        pos += n as u64;
-    }
-    Ok(samples)
-}
-
-/// The same block loop as `vox_rack::offline::render` (4096-frame blocks, latency trim), reused
-/// here (not modified in `vox_rack`, out of this ticket's scope) instead of called through it, so
-/// export can report progress and check `cancel` every block. No automation: export renders the
-/// rack's current static parameters (SPEC-012 §2.8's "time-aligned" render, no automation events
-/// in this ticket's scope).
-fn render_with_progress(
+/// Renders `[start, end)` of `source`'s snapshot through `model` into memory (T-602: the render
+/// path shared with Bake rack, `vox_engine::bake::render_document_range` — 4096-frame blocks,
+/// latency trimmed, the range's context as pre-roll/post-roll, no tail). `progress` gets the
+/// rendered fraction after every block; `cancel` stops it within one block. An empty range (an
+/// empty document) renders nothing.
+fn render_range(
     registry: &Registry,
     model: &RackModel,
-    sample_rate: f64,
-    input: &[f32],
-    cancel: &AtomicBool,
-    mut progress: impl FnMut(f32),
+    source: &ExportSource,
+    start: u64,
+    end: u64,
+    cancel: &CancelToken,
+    progress: impl FnMut(f32),
 ) -> Result<Vec<f32>, IpcError> {
-    // SAFETY-equivalent note: no `unsafe` here; the FTZ/DAZ guard just sets thread-local FPU mode
-    // for the render (ADR-002 §2, `vox_dsp::fp`), like every other offline render.
-    let _fp = vox_dsp::fp::DenormalGuard::new();
-    let mut chain =
-        vox_rack::offline::build_chain(registry, model, sample_rate).map_err(rack_error)?;
-    let latency = chain.latency_samples() as usize;
-    let total = input.len() + latency;
-    if total == 0 {
-        chain.deactivate();
+    if start >= end {
         return Ok(Vec::new());
     }
-    let mut out = vec![0.0f32; total];
-    let block = vox_rack::OFFLINE_BLOCK as usize;
-    let mut inbuf = vec![0.0f32; block];
-    let mut pos = 0usize;
-    while pos < total {
-        if cancel.load(Ordering::Relaxed) {
-            chain.deactivate();
-            return Err(cancelled());
+    let range = vox_project::validate_range(start, end, source.len_samples)
+        .map_err(|_| IpcError::new(IpcErrorCode::InvalidArgument, "error.export.invalid_range"))?;
+    let doc = DocumentRange {
+        store: &source.store,
+        snapshot: &source.snapshot,
+        sample_rate_hz: source.sample_rate_hz,
+        range,
+    };
+    render_document_range_to_vec(registry, model, doc, cancel, progress).map_err(|e| match e {
+        RangeRenderError::Cancelled => cancelled(),
+        RangeRenderError::Render(vox_rack::offline::RenderError::SlotFailed { name, .. }) => {
+            IpcError::new(IpcErrorCode::Internal, "error.export.slot_failed")
+                .with_param("slot", name)
         }
-        let n = block.min(total - pos);
-        let avail = input.len().saturating_sub(pos).min(n);
-        inbuf[..avail].copy_from_slice(&input[pos..pos + avail]);
-        inbuf[avail..n].fill(0.0);
-        chain.process(
-            vox_rack::Transport {
-                playing: true,
-                position_samples: Some(pos as u64),
-            },
-            &inbuf[..n],
-            &mut out[pos..pos + n],
-        );
-        if let Some((index, _reason)) = chain.take_failure() {
-            let name = chain.slot_name(index).unwrap_or_default().to_owned();
-            chain.deactivate();
-            return Err(
-                IpcError::new(IpcErrorCode::Internal, "error.export.slot_failed")
-                    .with_param("slot", name),
-            );
-        }
-        chain.drain_events(|_| {});
-        pos += n;
-        progress(pos as f32 / total as f32);
-    }
-    chain.deactivate();
-    out.drain(..latency);
-    out.truncate(input.len());
-    Ok(out)
+        RangeRenderError::Render(other) => rack_error(other),
+        RangeRenderError::Project(err) => project_read_error(err),
+    })
 }
 
 /// Read → render (the live rack, H-08) → resample → encode, in that order (SPEC-005 §2.12's
 /// "rack → resample → dither/quantize last → encode"; the encoders quantize internally). Reports
-/// coarse progress: 0-70% the rack render (per-block, see [`render_with_progress`]), 90% after
+/// coarse progress: 0-70% the rack render (per-block, see [`render_range`]), 90% after
 /// resampling, 100% after the encoder returns (encoders don't report progress mid-encode).
 #[allow(clippy::too_many_arguments)]
 fn run_pipeline(
@@ -377,21 +336,13 @@ fn run_pipeline(
     path: &Path,
     format: ExportFormat,
     target_rate_hz: u32,
-    cancel: &AtomicBool,
+    cancel: &CancelToken,
     mut progress: impl FnMut(f32),
 ) -> Result<(), IpcError> {
     check_cancelled(cancel)?;
-    let samples = read_range(source, start, end)?;
-
-    check_cancelled(cancel)?;
-    let rendered = render_with_progress(
-        registry,
-        model,
-        f64::from(source.sample_rate_hz),
-        &samples,
-        cancel,
-        |fraction| progress(fraction * 0.7),
-    )?;
+    let rendered = render_range(registry, model, source, start, end, cancel, |fraction| {
+        progress(fraction * 0.7)
+    })?;
 
     check_cancelled(cancel)?;
     let resampled = if target_rate_hz == source.sample_rate_hz {
@@ -438,7 +389,6 @@ fn run_pipeline(
 #[cfg(test)]
 mod tests {
     use std::process::Command;
-    use std::sync::atomic::AtomicBool;
     use std::time::Duration;
 
     use std::collections::BTreeMap;
@@ -508,7 +458,7 @@ mod tests {
             path,
             format,
             target_rate_hz,
-            &AtomicBool::new(false),
+            &CancelToken::new(),
             |_| {},
         )
     }
@@ -549,8 +499,8 @@ mod tests {
     /// Ticket AC: "Export a 1 kHz -20 dBFS sine through [Gain -6 dB]: WAV 24 -> peak
     /// -26.00 +/- 0.01 dBFS". `run_pipeline` itself always renders `RackModel::default()` (the
     /// "no rack UI yet" deviation noted at the top of this file), so this test exercises
-    /// [`render_with_progress`] directly with a Gain slot — the same block loop `run_pipeline`
-    /// uses — followed by the real WAV encoder, to check the render+encode math end to end.
+    /// [`render_range`] directly with a Gain slot — the same render `run_pipeline` uses —
+    /// followed by the real WAV encoder, to check the render+encode math end to end.
     #[test]
     fn wav24_export_through_gain_minus_6_db_hits_the_expected_peak() {
         let dir = tmp_dir("wav24-gain");
@@ -558,12 +508,14 @@ mod tests {
         let reg = registry();
 
         let model = gain_model(-6.0);
-        let rendered = render_with_progress(
+        let source = source_from(&dir, &samples, 48_000);
+        let rendered = render_range(
             &reg,
             &model,
-            48_000.0,
-            &samples,
-            &AtomicBool::new(false),
+            &source,
+            0,
+            source.len_samples,
+            &CancelToken::new(),
             |_| {},
         )
         .unwrap();
@@ -764,7 +716,8 @@ mod tests {
         let samples = vox_testkit::signal::sine(440.0, -6.0, 0.2, 48_000).unwrap();
         let source = source_from(&dir, &samples, 48_000);
         let reg = registry();
-        let cancel = AtomicBool::new(true);
+        let cancel = CancelToken::new();
+        cancel.cancel();
         let out_path = dir.join("out.wav");
         let err = run_pipeline(
             &reg,
@@ -804,7 +757,7 @@ mod tests {
             &out_path,
             ExportFormat::Wav(vox_io::BitDepth::Float32),
             48_000,
-            &AtomicBool::new(false),
+            &CancelToken::new(),
             |_| {},
         )
         .unwrap();

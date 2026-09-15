@@ -35,6 +35,7 @@
 
 pub mod analyzer;
 pub mod backend;
+pub mod bake;
 mod capture;
 mod control;
 pub mod device_state;

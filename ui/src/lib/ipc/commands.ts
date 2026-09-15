@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
+  BakeJobStartedDto,
   AcxCheckReportDto,
   AcxCheckRequestDto,
   AnalyzerResponseDto,
@@ -511,6 +512,24 @@ export async function editNormalizePeakStart(
  * SPEC-010 §2.8). */
 export async function editNormalizePeakCancel(jobId: number): Promise<void> {
   return invoke<void>("edit_normalize_peak_cancel" satisfies CommandName, { jobId });
+}
+
+/** T-602: starts a Bake rack job over `[startSamples, endSamples)` (the caller resolves "no
+ * selection" to the whole file). Progress arrives as `job_progress` (kind `bake`); a commit as
+ * `document_changed`/`history_state` plus a `notice.bake.done` toast. */
+export async function editBakeStart(
+  startSamples: number,
+  endSamples: number,
+): Promise<BakeJobStartedDto> {
+  return invoke<BakeJobStartedDto>("edit_bake_start" satisfies CommandName, {
+    startSamples,
+    endSamples,
+  });
+}
+
+/** T-602: cancels a running bake (best-effort; the document and the rack stay unchanged). */
+export async function editBakeCancel(jobId: number): Promise<void> {
+  return invoke<void>("edit_bake_cancel" satisfies CommandName, { jobId });
 }
 
 /** S2-01: undoes the top history entry. */

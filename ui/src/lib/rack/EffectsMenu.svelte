@@ -22,6 +22,7 @@
   import type { MenuEntry } from "../ui/menuModel";
   import { localized } from "./localized";
   import { canCapture } from "./nrCapture.svelte";
+  import { canBake, startBake } from "../state/bake.svelte";
   import {
     deleteRackPreset,
     listRackPresets,
@@ -31,13 +32,15 @@
   } from "./rack.svelte";
 
   /**
-   * Effects menu (H-19): Normalize…, Normalize (LUFS)…, Capture Noise Print, Favorites ▸ (the six
+   * Effects menu (H-19): Normalize…, Normalize (LUFS)…, Capture Noise Print, Bake Rack (T-602:
+   * renders the rack into the selection or the whole file, then resets it), Favorites ▸ (the six
    * one-click normalize presets) and Rack Presets ▸ (T-406: load, save the live rack, delete user
    * presets, confirm before replacing a non-empty rack). H-26: on the shared menu; the preset
    * name field and the replace confirmation are inline content of the submenu. T-809: Manage
    * Plugins… (the plugin manager) and Install Module… (native picker → copy + scan).
    */
   const captureEnabled = $derived(canCapture());
+  const bakeEnabled = $derived(canBake());
   const normalizeEnabled = $derived(canNormalize());
   const normalizeLufsEnabled = $derived(canNormalizeLufs());
 
@@ -184,6 +187,14 @@
       disabled: !captureEnabled,
       testid: "menu-capture-noise-print",
       onselect: () => dispatchAction("nr.capture_noise_print"),
+    },
+    {
+      kind: "item",
+      id: "bake-rack",
+      label: t("effects.bake_rack"),
+      disabled: !bakeEnabled,
+      testid: "menu-bake-rack",
+      onselect: () => void startBake(),
     },
     { kind: "separator", id: "sep-favorites" },
     {

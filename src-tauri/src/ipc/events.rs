@@ -149,6 +149,10 @@ pub enum JobKind {
     /// T-304 (SPEC-022 §2.14): a loopback latency calibration (`calibration_run`) — its result
     /// arrives separately as a `calibration_result` event.
     Calibration,
+    /// T-602: Bake rack (`edit_bake_start`) — renders the live rack into the selection or the
+    /// whole file; a successful commit arrives as `document_changed`/`history_state` plus a
+    /// `notice.bake.done` toast.
+    Bake,
 }
 
 /// `job_progress`'s lifecycle. `Running` fractions are monotonically non-decreasing in `[0, 1]`;

@@ -67,6 +67,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-27 | Playback playhead follow (SPEC-003 §2.1/§3, SPEC-006 §2.8 continuous band-follow; spec'd but never implemented — found by H-23), reconciled with H-23's record-head page-flip | S | done |
 | H-28 | Post-H-26/H-27 fixes: `?preview&scene=recording` `effect_update_depth_exceeded` in WaveformView follow effects, transport store null guard when telemetry precedes `transport_get`, View-menu toggle for `Settings.playhead_follow`, Normalize target fields in true minus | S | done |
 | H-29 | Plugin follow-ups (T-809): uninstall action (remove installed file + registry, confirm, documents keep a Missing slot), deterministic duplicate-id policy across install/rescan, move plugin fixtures into `ui/src/lib/test/fixtures.ts` | S | in progress |
+| H-30 | Job-service consistency (T-602): export and save hold `SpectroService::begin_background_job()` (SPEC-007 lists them), every job service emits its error notice before the terminal `Failed` event (audit export/loudness/normalize/nr_capture/calibration), a rack edit during a bake is refused instead of discarded at commit | S | todo |
 | H-18 | Shared test factories for DTOs (`ui/src/lib/test/fixtures.ts` + Rust builders) so a new DTO field touches one helper, not 20 test literals (merge-friction fix) | H | done |
 | H-17 | Recovery follow-ups (T-301): dialog stays open for remaining sessions (A-015), AC-3/AC-11 timing on a real disk (test-big), compaction off the document lock, markers during an interrupted take, Memory-for-audio UI, `/tmp/vox-project-*` sweep | S | done |
 | H-15 | Sidecar follow-ups (T-306): recent-file-missing dialog, read-only folder matrix (AC-13), SIGKILL-during-sidecar-save test (AC-6), per-slot leniency for a malformed rack slot, perf budget (AC-18) | S | done |
@@ -154,7 +155,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
 | T-601 | Loudness analysis I/S/M/LRA/TP | W1 | S+OR | M5 | done (via S4-01) |
-| T-602 | Bake rack (offline render, pre-roll, latency trim, tail) | W1 | O | M5 | in progress |
+| T-602 | Bake rack (offline render, pre-roll, latency trim, tail) | W1 | O | M5 | done |
 | T-603 | LUFS normalize favorites | W2 | S | T-601 | done (via S4-01 + H-09) |
 | T-604 | ACX check on processed output | W2 | S | T-601, T-602 | done (via S4-03) |
 | T-605 | Encoders (LAME dynamic), rubato, TPDF dither | W2 | S+OR | T-602 | done (via S4-02 + H-02 + H-14) |

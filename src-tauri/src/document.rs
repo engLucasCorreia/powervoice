@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use vox_engine::bake::BakeAttachment;
 use vox_engine::record::DropoutMark;
 use vox_engine::{EngineHandle, PlaybackDoc, TransportCommand};
 use vox_project::{
@@ -2533,6 +2534,63 @@ impl DocumentService {
         result
     }
 
+    // --- T-602: Bake rack ----------------------------------------------------------------------
+
+    /// T-602: begins a bake job over `[start, end)` — the same busy/recording/range rules and the
+    /// same busy flag as a normalize job (SPEC-010 §2.1's "one document job at a time": edits,
+    /// undo/redo and other document jobs are refused with `error.document_busy` until
+    /// [`Self::finish_bake`]/[`Self::abandon_bake_job`]). Returns the read-only source the job
+    /// renders from.
+    pub fn begin_bake_job(&self, start: u64, end: u64) -> Result<NormalizeJobSource, IpcError> {
+        self.begin_normalize_job(start, end)
+    }
+
+    /// Releases the busy flag of a bake that produced no edit (cancelled or failed): nothing was
+    /// committed, so the document and the rack are exactly as before.
+    pub fn abandon_bake_job(&self) {
+        self.abandon_normalize_job();
+    }
+
+    /// T-602: commits a finished bake's `edit` (one `history.bake` entry, SPEC-004 §2.2) and then
+    /// loads `after` into the live rack (SPEC-004 OD-4 default: the rack is reset). Always
+    /// releases the busy flag. If the document was replaced or edited while the job ran, nothing
+    /// is committed and the rack is left alone (`error.document_busy`, like a cancellation — the
+    /// rendered chunks become unreachable store data).
+    pub fn finish_bake(
+        &self,
+        source: &NormalizeJobSource,
+        edit: Edit,
+        after: vox_rack::RackModel,
+    ) -> Result<EditResult, IpcError> {
+        let mut guard = self.0.open.lock().unwrap();
+        let result = (|| {
+            let doc = guard.as_mut().ok_or_else(no_document)?;
+            if doc.session.id() != source.session_id
+                || !Arc::ptr_eq(&doc.session.current(), &source.snapshot)
+            {
+                return Err(document_busy());
+            }
+            let step = doc.session.commit_edit(edit).map_err(document_error)?;
+            Ok(self.apply_committed(doc, step, normalize_applied_post_edit(source.range)))
+        })();
+        drop(guard);
+        if result.is_ok() {
+            self.load_rack(after);
+        }
+        *self.0.normalize_busy.lock().unwrap() = false;
+        result
+    }
+
+    /// Replaces the live rack (a bake's reset, or a bake entry's rack on undo/redo). Called
+    /// without the document lock held: the engine's control thread must never wait on it.
+    fn load_rack(&self, model: vox_rack::RackModel) {
+        match self.0.engine.rack_load_model(model) {
+            Some(Ok(_)) => {}
+            Some(Err(error)) => tracing::warn!(%error, "loading the bake's rack failed"),
+            None => tracing::warn!("loading the bake's rack failed: the engine is stopped"),
+        }
+    }
+
     // --- S2-03: markers (add, rename, move/resize, delete) -----------------------------------
 
     /// The current marker list, in canonical order (SPEC-009 §2.1). Empty (not an error) when no
@@ -2693,35 +2751,30 @@ impl DocumentService {
         Ok(())
     }
 
-    /// Undoes the top entry (`Ok` with `changed: false` at the undo floor).
+    /// Undoes the top entry (`Ok` with `changed: false` at the undo floor). Undoing a bake also
+    /// restores the pre-bake rack from the entry's attachment (T-602, SPEC-004 AC-16).
     pub fn history_undo(&self) -> Result<EditResult, IpcError> {
-        if self.is_normalize_busy() {
-            return Err(document_busy());
-        }
-        let mut guard = self.0.open.lock().unwrap();
-        let doc = guard.as_mut().ok_or_else(no_document)?;
-        let Some(step) = doc.session.undo().map_err(document_error)? else {
-            let snapshot = doc.session.current();
-            return Ok(EditResult {
-                changed: false,
-                audio_rev: snapshot.audio_rev,
-                len_samples: snapshot.len_samples,
-                selection: None,
-                playhead_samples: 0,
-            });
-        };
-        let post = edit::post_undo_redo(step.first_at, step.snapshot.len_samples);
-        Ok(self.apply_committed(doc, step, post))
+        self.undo_or_redo(true)
     }
 
-    /// Redoes the top entry (`Ok` with `changed: false` when there's nothing to redo).
+    /// Redoes the top entry (`Ok` with `changed: false` when there's nothing to redo). Redoing a
+    /// bake also re-applies its rack reset (T-602, SPEC-004 AC-16).
     pub fn history_redo(&self) -> Result<EditResult, IpcError> {
+        self.undo_or_redo(false)
+    }
+
+    fn undo_or_redo(&self, undo: bool) -> Result<EditResult, IpcError> {
         if self.is_normalize_busy() {
             return Err(document_busy());
         }
         let mut guard = self.0.open.lock().unwrap();
         let doc = guard.as_mut().ok_or_else(no_document)?;
-        let Some(step) = doc.session.redo().map_err(document_error)? else {
+        let step = if undo {
+            doc.session.undo()
+        } else {
+            doc.session.redo()
+        };
+        let Some(step) = step.map_err(document_error)? else {
             let snapshot = doc.session.current();
             return Ok(EditResult {
                 changed: false,
@@ -2731,8 +2784,18 @@ impl DocumentService {
                 playhead_samples: 0,
             });
         };
+        let rack = step
+            .attachment
+            .as_deref()
+            .and_then(BakeAttachment::decode)
+            .map(|a| if undo { a.before } else { a.after });
         let post = edit::post_undo_redo(step.first_at, step.snapshot.len_samples);
-        Ok(self.apply_committed(doc, step, post))
+        let result = self.apply_committed(doc, step, post);
+        drop(guard);
+        if let Some(model) = rack {
+            self.load_rack(model);
+        }
+        Ok(result)
     }
 }
 

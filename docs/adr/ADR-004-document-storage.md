@@ -394,3 +394,15 @@ attachments exactly like the rest of the journal.
   swapping in a fresh session as a failed new-recording commit does (H-10).
 - **Recovery:** an interrupted operation is applied from its `take_window` if one was journaled, and
   discarded if the crash happened during pre-roll (T-301 recovery path).
+
+## Amendment 7 — T-602 (Bake rack), 2026-09-15
+- The bake entry's opaque attachment (Amendment 1) is `vox_engine::bake::BakeAttachment` as JSON:
+  `{"kind": "bake", "version": 1, "before": <RackModel>, "after": <RackModel>}`. Undo loads
+  `before` (the rack exactly as baked: slots, parameter values, bypass flags, state blobs), Redo
+  loads `after` (the reset rack, empty per SPEC-004 OD-4). Storing both keeps Redo independent of
+  whatever the rack holds when it runs. `project` still stores the bytes verbatim; an attachment
+  that doesn't decode as this kind/version leaves the rack alone.
+- The bake edit is one `Replace` op over the range with `MarkerMapping::Identity`
+  (length-preserving, SPEC-012 §2.8.1), committed through the same job pattern as normalize: the
+  render writes new chunks off the document lock; the commit re-checks that the snapshot is the
+  one the job read.

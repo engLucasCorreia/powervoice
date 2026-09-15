@@ -12,6 +12,8 @@ mod analyzer_commands;
 mod analyzer_dto;
 mod audio_commands;
 mod audio_dto;
+mod bake_commands;
+mod bake_dto;
 mod calibration_commands;
 mod commands;
 pub mod document_commands;
@@ -55,6 +57,8 @@ pub use audio_commands::*;
 pub use audio_dto::{
     DeviceDto, DeviceStatusDto, DevicesDto, TransportStateDto, notice_from_device,
 };
+pub use bake_commands::*;
+pub use bake_dto::BakeJobStartedDto;
 pub use calibration_commands::*;
 pub use commands::*;
 pub use document_commands::*;
@@ -195,6 +199,8 @@ crate::ipc_commands!(
     edit_normalize_peak_cancel,
     edit_normalize_lufs_start,
     edit_normalize_lufs_cancel,
+    edit_bake_start,
+    edit_bake_cancel,
     history_undo,
     history_redo,
     markers_get,
@@ -306,6 +312,8 @@ crate::ipc_commands!(
     edit_normalize_peak_cancel,
     edit_normalize_lufs_start,
     edit_normalize_lufs_cancel,
+    edit_bake_start,
+    edit_bake_cancel,
     history_undo,
     history_redo,
     markers_get,

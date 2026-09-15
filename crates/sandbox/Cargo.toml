@@ -35,6 +35,10 @@ vox-module-api = { path = "../module-api", features = ["test-util"] }
 vox-plugin-host = { path = "../plugin-host" }
 vox-rack = { path = "../rack" }
 vox-presets = { path = "../presets" }
+# T-602: a sandboxed plugin crashing mid-bake (`vox_engine::bake::plan_bake` over a real
+# `vox_project` session) — the test needs this crate's sandbox binary.
+vox-engine = { path = "../engine", default-features = false }
+vox-project = { path = "../project" }
 # T-803: the test CLAP plugin (`cdylib`): depending on it makes cargo build the `.so` the tests
 # load (`target/<profile>/deps/libvox_test_clap.so`).
 vox-test-clap = { path = "../test-clap" }

@@ -4,6 +4,7 @@
 //! domain types to the DTOs in [`ipc`].
 
 pub mod audio;
+pub mod bake;
 pub mod calibration;
 pub mod document;
 pub mod export;
@@ -98,6 +99,14 @@ pub fn run() {
             let spectro = std::sync::Arc::new(vox_engine::spectro::SpectroService::new(
                 vox_engine::spectro::SpectroConfig::default(),
             ));
+            // T-602: the Bake rack job service (renders the live rack like export; halves the
+            // spectrogram's tile workers while it runs, SPEC-007 §4.1).
+            let bake = bake::start(
+                app.handle().clone(),
+                documents.clone(),
+                engine.handle().clone(),
+                std::sync::Arc::clone(&spectro),
+            )?;
             // T-304 (SPEC-022 §2.14): the loopback latency calibration job.
             let calibration = calibration::start(app.handle(), engine.handle().clone());
             app.manage(spectro);
@@ -109,6 +118,7 @@ pub fn run() {
             app.manage(nr_capture);
             app.manage(loudness);
             app.manage(normalize);
+            app.manage(bake);
             // T-301: rack/view state journaling (2 s) and the disk budget check (10 s / after
             // every edit, SPEC-004 §2.5).
             let housekeeping = housekeeping::start(

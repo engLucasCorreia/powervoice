@@ -52,7 +52,7 @@ crc32fast = { workspace = true }
 vox-testkit = { path = "../crates/testkit" }
 hound = { workspace = true }
 # S4-04: builds a test `RackModel` slot directly (`ModuleRef`/`ModuleState`) in `export`'s tests.
-vox-module-api = { path = "../crates/module-api" }
+vox-module-api = { path = "../crates/module-api", features = ["test-util"] }
 
 [features]
 # Dev-only platform spike (T-007 / ADR-009): renderer + IPC throughput measurements. Off by

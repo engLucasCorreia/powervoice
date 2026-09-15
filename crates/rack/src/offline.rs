@@ -220,3 +220,198 @@ pub fn render_with_automation(
     out.truncate(input.len());
     Ok(out)
 }
+
+// --- T-602: windowed renders (bakes and exports of a range) ----------------------------------
+//
+// SPEC-012 §2.8 amendment (T-602): a render of `[start, start + len)` inside a longer signal (the
+// document) is still length-preserving and time-aligned, and adds two kinds of *context*:
+//
+// - **Pre-roll.** Real signal before `start` is fed first and its output discarded, so stateful
+//   modules (envelopes, adaptive gains, filter memory) reach the state they have in a whole-file
+//   render: `min(start, clamp(Σ tails of the non-bypassed slots, PRE_ROLL_MIN_S, PRE_ROLL_MAX_S))`
+//   (`Tail::Infinite` counts as the cap). 30 s covers every built-in time constant (≤ 2 s release
+//   τ decays below −120 dB in 13.8 τ); the tail sum stretches it for long filter ringing (the EQ's
+//   ≈ 35 s worst case, SPEC-015 §4.8) up to 60 s.
+// - **Post-roll.** The latency flush feeds the real signal after the range (at most L samples),
+//   then zeros — so a look-ahead module sees what really follows the range.
+//
+// No tail is ever appended: the output has exactly `len` samples, like SPEC-012's whole-file
+// render. A whole-signal window (`start = 0`, `len = signal_len`) therefore has no pre-roll and
+// zero post-roll, and is bit-identical to [`render`].
+
+/// Smallest pre-roll before a range (seconds, clamped to the signal before it).
+pub const PRE_ROLL_MIN_S: f64 = 30.0;
+/// Largest pre-roll before a range (seconds).
+pub const PRE_ROLL_MAX_S: f64 = 60.0;
+
+/// Where a windowed render sits in its signal (see the section comment above).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RenderWindow {
+    /// Absolute position of the range's first sample.
+    pub start: u64,
+    /// The range's length, which is the output length.
+    pub len: u64,
+    /// Signal samples fed before `start` (their output is discarded).
+    pub pre_roll: u64,
+    /// Signal samples fed after the range during the latency flush (≤ `latency`); zeros follow.
+    pub post_roll: u64,
+    /// The chain's total latency L, trimmed from the output.
+    pub latency: u64,
+}
+
+impl RenderWindow {
+    /// The first absolute signal sample the render reads (`start − pre_roll`).
+    pub fn first(&self) -> u64 {
+        self.start - self.pre_roll
+    }
+
+    /// Signal samples read, from [`Self::first`] on.
+    pub fn read_len(&self) -> u64 {
+        self.pre_roll + self.len + self.post_roll
+    }
+
+    /// Samples processed by the chain (`pre_roll + len + latency`).
+    pub fn total(&self) -> u64 {
+        self.pre_roll + self.len + self.latency
+    }
+}
+
+/// The pre-roll the T-602 policy wants before a range, for an activated `chain` at
+/// `sample_rate` (before clamping to the signal that exists before the range).
+pub fn pre_roll_samples(chain: &Chain, sample_rate: f64) -> u64 {
+    let min = (PRE_ROLL_MIN_S * sample_rate).round() as u64;
+    let max = (PRE_ROLL_MAX_S * sample_rate).round() as u64;
+    let mut tails = 0u64;
+    for i in 0..chain.len() {
+        if chain.is_bypassed(i) {
+            continue;
+        }
+        match chain.slot_tail(i) {
+            Some(vox_module_api::Tail::Samples(n)) => tails = tails.saturating_add(n),
+            Some(vox_module_api::Tail::Infinite) => tails = max,
+            None => {}
+        }
+    }
+    tails.clamp(min, max)
+}
+
+/// Plans the window for `[start, start + len)` of a signal `signal_len` samples long.
+pub fn plan_window(
+    chain: &Chain,
+    sample_rate: f64,
+    start: u64,
+    len: u64,
+    signal_len: u64,
+) -> RenderWindow {
+    let latency = u64::from(chain.latency_samples());
+    let end = start.saturating_add(len);
+    RenderWindow {
+        start,
+        len,
+        pre_roll: start.min(pre_roll_samples(chain, sample_rate)),
+        post_roll: signal_len.saturating_sub(end).min(latency),
+        latency,
+    }
+}
+
+/// Error from [`render_range`]: the render itself, or one of the caller's callbacks (reading the
+/// signal, taking the output, or the per-block tick that reports progress and cancels).
+#[derive(Debug)]
+pub enum WindowError<E> {
+    /// The rack could not be built, or a slot failed (SPEC-012 §2.9, ADR-008 §5).
+    Render(RenderError),
+    /// A callback returned an error; the render stopped there.
+    Caller(E),
+}
+
+impl<E> From<RenderError> for WindowError<E> {
+    fn from(e: RenderError) -> Self {
+        WindowError::Render(e)
+    }
+}
+
+/// Renders `[start, start + len)` of a signal `signal_len` samples long through `model`, in
+/// 4096-frame offline blocks, with the T-602 pre-roll/post-roll context (see above).
+///
+/// - `read(pos, buf)` must fill `buf` with the signal from absolute position `pos` (the render
+///   reads [`RenderWindow::first`] … `first + read_len` in order, never past `signal_len`);
+/// - `write(samples)` receives the output of the range in order, `len` samples in total;
+/// - `tick(done, total)` runs after every block (processed samples so far / in total); an error
+///   stops the render — how a caller cancels.
+///
+/// Positions passed to the modules (`Transport::position_samples`) are absolute signal
+/// positions. Returns the window used.
+#[allow(clippy::too_many_arguments)]
+pub fn render_range<E>(
+    registry: &Registry,
+    model: &RackModel,
+    sample_rate: f64,
+    start: u64,
+    len: u64,
+    signal_len: u64,
+    mut read: impl FnMut(u64, &mut [f32]) -> Result<(), E>,
+    mut write: impl FnMut(&[f32]) -> Result<(), E>,
+    mut tick: impl FnMut(u64, u64) -> Result<(), E>,
+) -> Result<RenderWindow, WindowError<E>> {
+    let _fp = vox_dsp::fp::DenormalGuard::new();
+    let mut chain = build_chain(registry, model, sample_rate)?;
+    let window = plan_window(&chain, sample_rate, start, len, signal_len);
+    let result = run_window(&mut chain, &window, &mut read, &mut write, &mut tick);
+    chain.deactivate();
+    result.map(|()| window)
+}
+
+fn run_window<E>(
+    chain: &mut Chain,
+    window: &RenderWindow,
+    read: &mut impl FnMut(u64, &mut [f32]) -> Result<(), E>,
+    write: &mut impl FnMut(&[f32]) -> Result<(), E>,
+    tick: &mut impl FnMut(u64, u64) -> Result<(), E>,
+) -> Result<(), WindowError<E>> {
+    let first = window.first();
+    let total = window.total();
+    let read_len = window.read_len();
+    // Output index `i` (processed-sample count) is input `i − L`: the range's output is
+    // `[pre_roll + L, pre_roll + L + len)`.
+    let keep_from = window.pre_roll + window.latency;
+    let keep_to = keep_from + window.len;
+    let block = OFFLINE_BLOCK as usize;
+    let mut inbuf = vec![0.0f32; block];
+    let mut outbuf = vec![0.0f32; block];
+    let mut pos = 0u64;
+    while pos < total {
+        let n = (total - pos).min(block as u64) as usize;
+        let avail = read_len.saturating_sub(pos).min(n as u64) as usize;
+        if avail > 0 {
+            read(first + pos, &mut inbuf[..avail]).map_err(WindowError::Caller)?;
+        }
+        inbuf[avail..n].fill(0.0);
+        chain.process(
+            Transport {
+                playing: true,
+                position_samples: Some(first + pos),
+            },
+            &inbuf[..n],
+            &mut outbuf[..n],
+        );
+        if let Some((index, reason)) = chain.take_failure() {
+            let name = chain.slot_name(index).unwrap_or_default().to_owned();
+            return Err(WindowError::Render(RenderError::SlotFailed {
+                index,
+                name,
+                reason,
+            }));
+        }
+        chain.drain_events(|_| {});
+        let block_end = pos + n as u64;
+        let from = keep_from.max(pos);
+        let to = keep_to.min(block_end);
+        if from < to {
+            write(&outbuf[(from - pos) as usize..(to - pos) as usize])
+                .map_err(WindowError::Caller)?;
+        }
+        pos = block_end;
+        tick(pos, total).map_err(WindowError::Caller)?;
+    }
+    Ok(())
+}

@@ -85,6 +85,9 @@ pub struct SpectroStats {
     pub failed: u64,
     /// Payload bytes currently cached.
     pub bytes_cached: u64,
+    /// The most tiles ever computed at the same time (T-602: stays ≤ half the workers while a
+    /// background job holds [`SpectroService::begin_background_job`]).
+    pub peak_running: usize,
 }
 
 /// A refused request.
@@ -226,6 +229,12 @@ struct State {
     queue: VecDeque<Job>,
     cache: TileCache,
     shutdown: bool,
+    /// Tiles being computed right now.
+    running: usize,
+    /// Live [`BackgroundJob`] guards (T-602, SPEC-007 §4.1).
+    background_jobs: usize,
+    /// Highest `running` so far ([`SpectroStats::peak_running`]).
+    peak_running: usize,
 }
 
 impl State {
@@ -238,6 +247,8 @@ impl State {
 }
 
 struct Shared {
+    /// Worker threads started.
+    workers: usize,
     state: Mutex<State>,
     work: Condvar,
     next_generation: AtomicU64,
@@ -258,11 +269,15 @@ impl SpectroService {
     /// Starts `config.workers` worker threads.
     pub fn new(config: SpectroConfig) -> Self {
         let shared = Arc::new(Shared {
+            workers: config.workers.max(1),
             state: Mutex::new(State {
                 views: HashMap::new(),
                 queue: VecDeque::new(),
                 cache: TileCache::new(config.cache_cap_bytes),
                 shutdown: false,
+                running: 0,
+                background_jobs: 0,
+                peak_running: 0,
             }),
             work: Condvar::new(),
             next_generation: AtomicU64::new(1),
@@ -433,13 +448,27 @@ impl SpectroService {
 
     /// The service counters.
     pub fn stats(&self) -> SpectroStats {
-        let bytes_cached = lock(&self.shared.state).cache.bytes();
+        let (bytes_cached, peak_running) = {
+            let state = lock(&self.shared.state);
+            (state.cache.bytes(), state.peak_running)
+        };
         SpectroStats {
+            peak_running,
             computed: self.shared.computed.load(Ordering::Relaxed),
             cache_hits: self.shared.cache_hits.load(Ordering::Relaxed),
             cancelled: self.shared.cancelled.load(Ordering::Relaxed),
             failed: self.shared.failed.load(Ordering::Relaxed),
             bytes_cached,
+        }
+    }
+
+    /// SPEC-007 §4.1 (T-602): "while a save, export or bake job runs, tile work uses at most half
+    /// of the workers, so it never starves those jobs". Hold the returned guard for the job's
+    /// whole duration; dropping it lifts the limit (tiles already running finish either way).
+    pub fn begin_background_job(&self) -> BackgroundJob {
+        lock(&self.shared.state).background_jobs += 1;
+        BackgroundJob {
+            shared: Arc::clone(&self.shared),
         }
     }
 
@@ -459,13 +488,43 @@ impl Drop for SpectroService {
     }
 }
 
+/// How many tiles may be computed at once: every worker, or half of them (at least one) while a
+/// background job runs (SPEC-007 §4.1).
+pub fn worker_cap(workers: usize, background_jobs: usize) -> usize {
+    if background_jobs > 0 {
+        (workers / 2).max(1)
+    } else {
+        workers.max(1)
+    }
+}
+
+/// A running save/export/bake job, from [`SpectroService::begin_background_job`]: tile work is
+/// limited to half the workers until it is dropped.
+pub struct BackgroundJob {
+    shared: Arc<Shared>,
+}
+
+impl Drop for BackgroundJob {
+    fn drop(&mut self) {
+        {
+            let mut state = lock(&self.shared.state);
+            state.background_jobs = state.background_jobs.saturating_sub(1);
+        }
+        self.shared.work.notify_all();
+    }
+}
+
 fn next_job(shared: &Shared) -> Option<Job> {
     let mut state = lock(&shared.state);
     loop {
         if state.shutdown {
             return None;
         }
-        if let Some(job) = state.queue.pop_front() {
+        if state.running < worker_cap(shared.workers, state.background_jobs)
+            && let Some(job) = state.queue.pop_front()
+        {
+            state.running += 1;
+            state.peak_running = state.peak_running.max(state.running);
             return Some(job);
         }
         state = shared
@@ -481,61 +540,67 @@ fn worker(shared: &Shared) {
     let mut analyzers: Vec<FrameAnalyzer> = Vec::new();
     let mut buf: Vec<f32> = Vec::new();
     while let Some(job) = next_job(shared) {
-        let d = job.delivery;
-        if !job.view.is_current(d.generation) {
-            shared.cancelled.fetch_add(1, Ordering::Relaxed);
-            continue;
+        run_job(shared, job, &mut analyzers, &mut buf);
+        lock(&shared.state).running -= 1;
+        // A worker waiting on the background-job cap may take the next tile now.
+        shared.work.notify_all();
+    }
+}
+
+/// Computes and delivers one tile (or drops it: superseded, closed document, cache hit).
+fn run_job(shared: &Shared, job: Job, analyzers: &mut Vec<FrameAnalyzer>, buf: &mut Vec<f32>) {
+    let d = job.delivery;
+    if !job.view.is_current(d.generation) {
+        shared.cancelled.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    // Another request may have computed this tile since it was queued.
+    let cached = lock(&shared.state).cache.get(&job.key);
+    if let Some(payload) = cached {
+        shared.cache_hits.fetch_add(1, Ordering::Relaxed);
+        job.view.deliver(&d, &payload);
+        return;
+    }
+    let Some(store) = job.store.upgrade() else {
+        // The document was closed meanwhile.
+        shared.cancelled.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+    let n = d.geom.fft_size as usize;
+    let index = match analyzers.iter().position(|a| a.fft_size() == n) {
+        Some(i) => i,
+        None => {
+            analyzers.push(FrameAnalyzer::new(n));
+            analyzers.len() - 1
         }
-        // Another request may have computed this tile since it was queued.
-        let cached = lock(&shared.state).cache.get(&job.key);
-        if let Some(payload) = cached {
-            shared.cache_hits.fetch_add(1, Ordering::Relaxed);
+    };
+    let mut reader = SnapshotReader::new(Arc::clone(&store), Arc::clone(&job.snapshot));
+    let view = &job.view;
+    let result = compute_tile(
+        &mut reader,
+        &d.geom,
+        d.preview,
+        &mut analyzers[index],
+        buf,
+        &|| !view.is_current(d.generation),
+    );
+    drop(reader);
+    match result {
+        Ok(Some(payload)) => {
+            shared.computed.fetch_add(1, Ordering::Relaxed);
+            let payload: Arc<[u8]> = payload.into();
+            lock(&shared.state)
+                .cache
+                .insert(&store, Arc::clone(&job.key), Arc::clone(&payload));
+            drop(store);
             job.view.deliver(&d, &payload);
-            continue;
         }
-        let Some(store) = job.store.upgrade() else {
-            // The document was closed meanwhile.
+        Ok(None) => {
             shared.cancelled.fetch_add(1, Ordering::Relaxed);
-            continue;
-        };
-        let n = d.geom.fft_size as usize;
-        let index = match analyzers.iter().position(|a| a.fft_size() == n) {
-            Some(i) => i,
-            None => {
-                analyzers.push(FrameAnalyzer::new(n));
-                analyzers.len() - 1
-            }
-        };
-        let mut reader = SnapshotReader::new(Arc::clone(&store), Arc::clone(&job.snapshot));
-        let view = &job.view;
-        let result = compute_tile(
-            &mut reader,
-            &d.geom,
-            d.preview,
-            &mut analyzers[index],
-            &mut buf,
-            &|| !view.is_current(d.generation),
-        );
-        drop(reader);
-        match result {
-            Ok(Some(payload)) => {
-                shared.computed.fetch_add(1, Ordering::Relaxed);
-                let payload: Arc<[u8]> = payload.into();
-                lock(&shared.state).cache.insert(
-                    &store,
-                    Arc::clone(&job.key),
-                    Arc::clone(&payload),
-                );
-                drop(store);
-                job.view.deliver(&d, &payload);
-            }
-            Ok(None) => {
-                shared.cancelled.fetch_add(1, Ordering::Relaxed);
-            }
-            Err(_) => {
-                shared.failed.fetch_add(1, Ordering::Relaxed);
-                job.view.skip(&d);
-            }
+        }
+        Err(_) => {
+            shared.failed.fetch_add(1, Ordering::Relaxed);
+            job.view.skip(&d);
         }
     }
 }

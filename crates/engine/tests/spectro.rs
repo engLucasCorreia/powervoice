@@ -666,3 +666,34 @@ fn ac9_latency_on_a_60_min_document() {
         assert!(warm_ms <= 50.0, "warm re-request took {warm_ms} ms");
     }
 }
+
+/// T-602 (SPEC-007 §4.1): "while a save, export or bake job runs, tile work uses at most half of
+/// the workers" — a background-job guard caps concurrent tiles; dropping it lifts the cap.
+#[test]
+fn a_background_job_limits_tile_work_to_half_the_workers() {
+    use vox_engine::spectro::worker_cap;
+    assert_eq!(worker_cap(8, 0), 8);
+    assert_eq!(worker_cap(8, 1), 4);
+    assert_eq!(worker_cap(8, 2), 4);
+    assert_eq!(worker_cap(3, 1), 1);
+    assert_eq!(worker_cap(1, 1), 1, "never starved completely");
+    assert_eq!(worker_cap(0, 0), 1);
+
+    let d = doc("background-job", &noise(5, 12.0));
+    let svc = service(4);
+    let rx = attach(&svc, 1);
+    let job = svc.begin_background_job();
+    let tiles: Vec<u32> = (0..16).collect();
+    let got = run(&svc, &rx, 1, d.source(), req(1024, 256, tiles.clone()));
+    assert!(got.iter().any(Tile::is_last));
+    assert!(
+        svc.stats().peak_running <= 2,
+        "at most half of 4 workers while the job runs: {}",
+        svc.stats().peak_running
+    );
+    drop(job);
+    // Without the job every worker may take tiles again (all tiles still arrive).
+    let got = run(&svc, &rx, 1, d.source(), req(2048, 512, tiles));
+    assert!(got.iter().any(Tile::is_last));
+    assert!(svc.stats().peak_running <= 4);
+}

@@ -8,7 +8,7 @@
    * dialog would appear, so a favorite on a phrase feels instant"). Reused for both peak
    * (`NormalizeDialog.svelte`) and LUFS (`NormalizeLufsDialog.svelte`) jobs — `titleKey` picks
    * "Normalizing…" vs "Normalizing loudness…". H-25: Dialog shell, a slim accent bar and a
-   * tabular percentage.
+   * tabular percentage. T-602: Bake rack reuses it too (`testidPrefix` names its test ids).
    */
   interface JobState {
     jobId: number;
@@ -19,11 +19,13 @@
   let {
     job,
     titleKey,
+    testidPrefix = "normalize-progress",
     onCancel,
     onDismiss,
   }: {
     job: JobState | null;
     titleKey: MessageKey;
+    testidPrefix?: string;
     onCancel: () => void;
     onDismiss: () => void;
   } = $props();
@@ -56,9 +58,9 @@
 
 {#if visible && job}
   <Dialog
-    actions={[{ label: t("dialog.progress.cancel"), role: "cancel", testid: "normalize-progress-cancel", onclick: onCancel }]} size="sm" title={t(titleKey)} titleId="normalize-progress-title" testid="normalize-progress-dialog">
+    actions={[{ label: t("dialog.progress.cancel"), role: "cancel", testid: `${testidPrefix}-cancel`, onclick: onCancel }]} size="sm" title={t(titleKey)} titleId={`${testidPrefix}-title`} testid={`${testidPrefix}-dialog`}>
     <div class="progress-row">
-      <progress data-testid="normalize-progress-bar" value={job.fraction} max="1"></progress>
+      <progress data-testid={`${testidPrefix}-bar`} value={job.fraction} max="1"></progress>
       <span class="percent">{Math.round(job.fraction * 100)}%</span>
     </div>
   </Dialog>

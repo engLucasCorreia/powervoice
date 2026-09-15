@@ -167,8 +167,8 @@ T-406.
     to input sample n.
   - The total latency L is trimmed by feeding L samples of silence after the input end and discarding
     the first L output samples.
-  - A whole-file render has no pre-roll and appends no tail. Tail and pre-roll policy for bakes and
-    exports of selections belongs to T-602.
+  - A whole-file render has no pre-roll and appends no tail. Bakes and exports of a **range**
+    follow the T-602 amendment below (§2.8.1).
 - **Deterministic.** Two renders of the same input and rack are bit-identical on any machine and with
   any thread count.
 - **Equal to preview.** Realtime output with the same input and parameter changes at the same sample
@@ -181,6 +181,26 @@ T-406.
   - the output WAV is 32-bit float at the input rate.
 - **Module failure.** A module that fails during an offline render aborts it with an error naming the
   slot (ADR-008 §5).
+
+#### 2.8.1 Amendment (T-602, 2026-09-15): renders of a range (bake, export of a selection)
+Decided by T-602 as the conservative policy consistent with the whole-file rule above; one code
+path (`vox_rack::offline::render_range`, used through `vox_engine::bake::render_document_range`)
+serves both bake and export, so a bake equals an export of the same range and rack bit for bit.
+- **Length-preserving, time-aligned, no tail.** The output of `[start, end)` has exactly
+  `end − start` samples, and output sample n corresponds to input sample `start + n`. No tail is
+  ever appended — not after a selection (the ring-out would be mixed over unprocessed audio) and
+  not at the document end (the whole-file rule above; the EQ's constant ≈ 35 s worst-case tail,
+  SPEC-015 §4.8, would pad every bake). Markers and the document length never change.
+- **Pre-roll.** Before the range, `min(start, clamp(Σ tails of the non-bypassed slots, 30 s,
+  60 s))` samples of the real audio are rendered and discarded (`Tail::Infinite` counts as 60 s),
+  so stateful modules enter the range in the state a whole-file render has: 30 s covers every
+  built-in time constant (a 2 s release τ decays below −120 dB in 13.8 τ), the tail sum stretches
+  it for long filter ringing, 60 s caps the cost. A range that starts within the first 30 s is
+  therefore rendered from sample 0 and equals the whole-file render's slice bit for bit.
+- **Post-roll.** The latency flush feeds the real audio after the range (at most L samples), then
+  zeros, so a look-ahead module sees what actually follows the range.
+- **Positions.** `Transport::position_samples` are absolute document positions.
+- A whole-file range has no pre-roll and zero post-roll: exactly the whole-file render above.
 
 ### 2.9 Safety nets
 - **Non-finite guard.** If a slot outputs any non-finite sample (NaN/±inf), the rack:
@@ -449,8 +469,8 @@ Signals come from testkit (`sine`, `white`, `pink`, `log_sweep`, `impulse`); not
 ## 7. Out of scope
 - The DSP and parameter sets of Noise Gate, Noise Reduction, EQ, Dynamics and the True-Peak Limiter
   (their own M4/M5 specs). Preset storage format (T-406).
-- Bake/export pre-roll and tail policy (T-602). Parameter automation lanes (none in v1). Sidechain
-  inputs.
+- Parameter automation lanes (none in v1). Sidechain inputs. (The bake/export pre-roll and tail
+  policy is §2.8.1, T-602.)
 - External plugins, scanning, the sandbox, installable modules (M8) and native plugin GUIs (M9),
   beyond the behavior they must share (§2.3, §2.4, §2.9).
 - CPU budget and pausing bypassed modules (ADR-005 open question 2, T-704).

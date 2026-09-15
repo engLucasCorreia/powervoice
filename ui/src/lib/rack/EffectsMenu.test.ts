@@ -12,6 +12,10 @@ import { rackSlotDto, rackStateDto } from "../test/fixtures";
 import EffectsMenu from "./EffectsMenu.svelte";
 import { resetNrCaptureForTest } from "./nrCapture.svelte";
 import { loadRack, resetRackForTest } from "./rack.svelte";
+import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
+import { resetBakeForTest } from "../state/bake.svelte";
+import { applyRecordStateForTest } from "../state/record.svelte";
+import { docDto } from "../test/fixtures";
 
 afterEach(() => {
   clearMocks();
@@ -350,5 +354,101 @@ describe("EffectsMenu (H-19)", () => {
       unmount(app);
       target.remove();
     });
+  });
+});
+
+describe("Bake Rack (T-602)", () => {
+  afterEach(() => {
+    resetBakeForTest();
+    resetDocumentStateForTest();
+  });
+
+  async function setUp(open: boolean, slots: RackStateDto["slots"]): Promise<void> {
+    mockIPC((cmd) => {
+      switch (cmd) {
+        case "document_open":
+          return docDto({ len_samples: 48_000 });
+        case "rack_list_modules":
+          return [];
+        case "rack_get":
+          return rackStateDto(slots);
+        default:
+          throw new Error(`unmocked command: ${cmd}`);
+      }
+    });
+    if (open) {
+      await openDocument("/home/user/take.wav");
+    }
+    const stop = await loadRack();
+    stop();
+    clearMocks();
+  }
+
+  function bakeItem(target: HTMLElement): HTMLButtonElement {
+    return target.querySelector<HTMLButtonElement>('[data-testid="menu-bake-rack"]')!;
+  }
+
+  it("is listed after Capture Noise Print and disabled without a document", async () => {
+    await setUp(false, [rackSlotDto()]);
+    const { target, app } = mountMenu();
+    openMenu(target);
+    const item = bakeItem(target);
+    expect(item.textContent).toContain("Bake Rack");
+    expect(item.disabled).toBe(true);
+    const ids = [...target.querySelectorAll("[data-testid]")].map((e) => e.getAttribute("data-testid"));
+    expect(ids.indexOf("menu-bake-rack")).toBe(ids.indexOf("menu-capture-noise-print") + 1);
+    unmount(app);
+    target.remove();
+  });
+
+  it("is disabled with an empty or fully bypassed rack", async () => {
+    await setUp(true, []);
+    let { target, app } = mountMenu();
+    openMenu(target);
+    expect(bakeItem(target).disabled).toBe(true);
+    unmount(app);
+    target.remove();
+
+    await setUp(true, [rackSlotDto({ bypass: true })]);
+    resetMenuBarForTest();
+    ({ target, app } = mountMenu());
+    openMenu(target);
+    expect(bakeItem(target).disabled).toBe(true);
+    unmount(app);
+    target.remove();
+  });
+
+  it("is enabled with a document and an active rack, and disabled while recording", async () => {
+    await setUp(true, [rackSlotDto()]);
+    const { target, app } = mountMenu();
+    openMenu(target);
+    expect(bakeItem(target).disabled).toBe(false);
+    applyRecordStateForTest({ recording: true });
+    flushSync();
+    expect(bakeItem(target).disabled).toBe(true);
+    unmount(app);
+    target.remove();
+  });
+
+  it("bakes the whole file without a selection and closes the menu", async () => {
+    await setUp(true, [rackSlotDto()]);
+    const calls: Array<[string, unknown]> = [];
+    mockIPC((cmd, args) => {
+      calls.push([cmd, args]);
+      if (cmd === "edit_bake_start") {
+        return { job_id: 1 };
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    const { target, app } = mountMenu();
+    openMenu(target);
+    bakeItem(target).click();
+    flushSync();
+    await vi.waitFor(() =>
+      expect(calls).toContainEqual(["edit_bake_start", { startSamples: 0, endSamples: 48_000 }]),
+    );
+    expect(target.querySelector('[data-testid="effects-menu"]')).toBeNull();
+    unmount(app);
+    target.remove();
   });
 });

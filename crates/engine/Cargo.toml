@@ -17,6 +17,8 @@ thiserror.workspace = true
 cpal = { workspace = true, optional = true }
 # S1-01: playback (ADR-001 §2 edges engine → rack, project, dsp).
 rtrb.workspace = true
+# T-602: the bake undo attachment (ADR-004 Amendment 1) serializes the pre-bake `RackModel`.
+serde_json.workspace = true
 vox-rack = { path = "../rack" }
 vox-project = { path = "../project" }
 vox-dsp = { path = "../dsp" }

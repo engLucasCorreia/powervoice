@@ -8,7 +8,9 @@ import {
   schedulePersistWaveformView,
   setPendingRestore,
   setTimeRulerFormat,
+  setVerticalZoom,
   timeRulerFormatState,
+  verticalZoomState,
   waveformViewApi,
 } from "./waveformView.svelte";
 
@@ -45,6 +47,21 @@ describe("timeRulerFormatState (T-206, SPEC-006 §2.5)", () => {
   });
 });
 
+describe("verticalZoomState (H-35, SPEC-006 §2.4)", () => {
+  it("defaults to 1 and is settable", () => {
+    expect(verticalZoomState().current).toBe(1);
+    setVerticalZoom(8);
+    expect(verticalZoomState().current).toBe(8);
+  });
+
+  it("clamps to the SPEC-006 §2.4 range, [1, 256]", () => {
+    setVerticalZoom(0.001);
+    expect(verticalZoomState().current).toBe(1);
+    setVerticalZoom(1_000);
+    expect(verticalZoomState().current).toBe(256);
+  });
+});
+
 describe("H-12: sidecar_view_set_waveform persistence (debounced, SPEC-018 §2.6.5)", () => {
   it("debounces a sidecar_view_set_waveform call with the full snapshot", () => {
     vi.useFakeTimers();
@@ -70,8 +87,27 @@ describe("H-12: sidecar_view_set_waveform persistence (debounced, SPEC-018 §2.6
         selection: { start_sample: 100, end_sample: 200 },
         cursor_samples: 150,
         time_ruler_format: "timecode",
+        vertical_zoom: 1,
       },
     });
+  });
+
+  it("persists the current vertical_zoom, or an explicit override (H-35)", () => {
+    vi.useFakeTimers();
+    const calls: unknown[] = [];
+    mockIPC((cmd, args) => {
+      calls.push(args);
+      return null;
+    });
+
+    setVerticalZoom(8);
+    schedulePersistWaveformView(0, 1, null, 0);
+    vi.advanceTimersByTime(300);
+    expect((calls[0] as { waveform: { vertical_zoom: unknown } }).waveform.vertical_zoom).toBe(8);
+
+    schedulePersistWaveformView(0, 1, null, 0, "timecode", 32);
+    vi.advanceTimersByTime(300);
+    expect((calls[1] as { waveform: { vertical_zoom: unknown } }).waveform.vertical_zoom).toBe(32);
   });
 
   it("persists the current time_ruler_format, or an explicit override", () => {

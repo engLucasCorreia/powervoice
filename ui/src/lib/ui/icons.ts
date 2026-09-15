@@ -39,6 +39,7 @@ import Keyboard from "@lucide/svelte/icons/keyboard";
 import Layers from "@lucide/svelte/icons/layers";
 import LoaderCircle from "@lucide/svelte/icons/loader-circle";
 import Lock from "@lucide/svelte/icons/lock";
+import Maximize from "@lucide/svelte/icons/maximize";
 import Mic from "@lucide/svelte/icons/mic";
 import MicOff from "@lucide/svelte/icons/mic-off";
 import Minus from "@lucide/svelte/icons/minus";
@@ -56,6 +57,7 @@ import RefreshCw from "@lucide/svelte/icons/refresh-cw";
 import Repeat from "@lucide/svelte/icons/repeat";
 import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
 import Save from "@lucide/svelte/icons/save";
+import ScanSearch from "@lucide/svelte/icons/scan-search";
 import Scissors from "@lucide/svelte/icons/scissors";
 import Search from "@lucide/svelte/icons/search";
 import Settings2 from "@lucide/svelte/icons/settings-2";
@@ -102,6 +104,8 @@ export const ICONS = {
   meters: Activity,
   zoomIn: ZoomIn,
   zoomOut: ZoomOut,
+  zoomToSelection: ScanSearch,
+  zoomFull: Maximize,
   panelLeft: PanelLeft,
   panelRight: PanelRight,
   panelBottom: PanelBottom,

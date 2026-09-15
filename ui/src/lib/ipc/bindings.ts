@@ -1240,12 +1240,16 @@ export type WaveformSelectionDto = { start_sample: number, end_sample: number, }
  * H-12 (SPEC-018 §2.6.5's `view.waveform`, this ticket's subset — see `WaveformViewInfo`'s doc
  * for what's deferred): the shared waveform/spectral viewport plus the selection and edit
  * cursor, persisted like `SpectralViewDto`. T-206 adds `time_ruler_format` (SPEC-006 §2.5/§2.2,
- * SPEC-018 §2.6.5's `waveform.time_ruler_format`) — the other deferred fields (`vertical_zoom`,
- * `amplitude_ruler_mode`) still have no corresponding UI and are left for whichever ticket adds
- * them (`WaveformViewInfo`'s doc).
+ * SPEC-018 §2.6.5's `waveform.time_ruler_format`); H-35 adds `vertical_zoom` (SPEC-006 §2.4/§2.6)
+ * — `amplitude_ruler_mode` still has no corresponding UI and is left for whichever ticket adds it
+ * (`WaveformViewInfo`'s doc).
  */
 export type WaveformViewDto = { start_sample: number, samples_per_pixel: number, 
 /**
  * `null` = no selection.
  */
-selection: WaveformSelectionDto | null, cursor_samples: number, time_ruler_format: TimeRulerFormatDto, };
+selection: WaveformSelectionDto | null, cursor_samples: number, time_ruler_format: TimeRulerFormatDto, 
+/**
+ * H-35 (SPEC-006 §2.4): the linear amplitude scale factor, `1.0..=256.0`, default `1.0`.
+ */
+vertical_zoom: number, };

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { amplitudeTicksDbfs, centerlineY, yForAmplitudeDb } from "./amplitudeAxis";
+import { MAX_VERTICAL_ZOOM } from "./verticalZoom";
 
 describe("yForAmplitudeDb", () => {
   it("puts 0 dBFS at the top edge and the centerline at -Infinity dB", () => {
@@ -83,5 +84,29 @@ describe("amplitudeTicksDbfs (H-24 item 7, SPEC-006 §2.4/§4.2)", () => {
       }
       expect(ticks.every((t) => !t.label.includes("-")), "true minus").toBe(true);
     }
+  });
+
+  it("H-35: never collides at the SPEC-006 §2.4 ceiling (256x) — same minGap guarantee", () => {
+    // At 256x, every ladder entry down to about -48 dBFS maps outside +-1.0 (only 0 dBFS survives
+    // per-amplitude filtering) — this exercises the same thinning path at the extreme end of the
+    // vertical-zoom range the ticket calls out, not just the unscaled (1x) case above.
+    for (const height of [60, 120, 200, 400, 800]) {
+      const ticks = amplitudeTicksDbfs(height, MAX_VERTICAL_ZOOM, 16);
+      for (let i = 1; i < ticks.length; i++) {
+        expect(
+          ticks[i]!.y - ticks[i - 1]!.y,
+          `${height}px @ 256x: ${ticks[i - 1]!.label} / ${ticks[i]!.label}`,
+        ).toBeGreaterThanOrEqual(16);
+      }
+    }
+  });
+
+  it("H-35: at 256x only very quiet ticks stay on-screen (0 dBFS is scaled off the top/bottom)", () => {
+    // Zooming IN vertically shrinks the visible amplitude range, so it's the LOUD ticks (0 dBFS'
+    // amplitude of 1.0, scaled by 256x) that go off-screen — inverted from the 1x case above.
+    const ticks = amplitudeTicksDbfs(800, MAX_VERTICAL_ZOOM, 16);
+    expect(ticks.length).toBeGreaterThan(0);
+    expect(ticks.some((t) => t.db === 0)).toBe(false);
+    expect(ticks.every((t) => t.db <= -60)).toBe(true);
   });
 });

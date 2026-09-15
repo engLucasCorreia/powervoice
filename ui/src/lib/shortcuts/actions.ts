@@ -20,6 +20,18 @@ export type ActionId =
   | "file.save_as"
   | "waveform.zoom_in"
   | "waveform.zoom_out"
+  // H-35 (SPEC-006 §2.6): "Zoom to selection" and "Zoom full" — both commands exist (menu +
+  // toolbar per the spec), but §2.6 defers their keyboard binding to SPEC-019 (two sources
+  // disagree, neither checkable against the 403'ing official page), so these have no `registry.ts`
+  // entry — only `dispatchAction` calls from the menu/toolbar `onselect`/`onclick`.
+  | "waveform.zoom_to_selection"
+  | "waveform.zoom_full"
+  // H-35 (SPEC-006 §2.4/§2.6): vertical (amplitude) zoom — `Alt+=`/`Alt+-` verified against
+  // Audition (tutorialtactic.com, pie-menu.com); `Alt+0` to reset is a PowerVoice-original
+  // conservative choice (SPEC-006 doesn't name a reset binding) — see `registry.ts`.
+  | "waveform.zoom_in_vertical"
+  | "waveform.zoom_out_vertical"
+  | "waveform.zoom_reset_vertical"
   | "edit.cut"
   | "edit.copy"
   | "edit.paste"

@@ -29,7 +29,12 @@
     shiftClickTo,
   } from "../state/selection.svelte";
   import { seek, transportState } from "../state/transport.svelte";
-  import { audioKeyFor, consumePendingRestore } from "../state/waveformView.svelte";
+  import {
+    audioKeyFor,
+    consumePendingRestore,
+    setVerticalZoom,
+    verticalZoomState,
+  } from "../state/waveformView.svelte";
   import { amplitudeTicksDbfs, centerlineY } from "./amplitudeAxis";
   import { extendSelectionEdge, hitTestHandle, normalizeSelection, nudgeSelectionRange } from "./selection";
   import { snapSampleToZeroCrossing } from "./zeroCrossing";
@@ -48,8 +53,11 @@
     zoomAroundSample,
     ZOOM_STEP_FACTOR,
     zoomFullSamplesPerPixel,
+    zoomFullViewport,
     zoomStep,
+    zoomToSelectionViewport,
   } from "./coords";
+  import { DEFAULT_VERTICAL_ZOOM, verticalZoomStep } from "./verticalZoom";
   import { GlContextHost } from "../render/glContext";
   import { buildOverlayBatch } from "../render/overlayGeometry";
   import { QuadBatch } from "../render/quads";
@@ -89,8 +97,9 @@
    * `drawWebgl2`/`drawCanvas2d` share the same pixel math (`coords.ts`, `../render/
    * overlayGeometry.ts`) so the two renderers agree pixel-for-pixel. Horizontal zoom/scroll, the
    * shared playhead (SPEC-003 §2.2's extrapolation, read from the transport store — never
-   * re-derived here), and click-to-seek. HiDPI aware. Selection, vertical zoom, markers and the
-   * overview strip are deferred to hardening/Slice 2 (ticket's "Out" list).
+   * re-derived here), and click-to-seek. HiDPI aware. Selection (S2-01), vertical zoom (H-35) and
+   * markers (SPEC-009) have since landed; the overview strip is still deferred (ticket's "Out"
+   * list, unclaimed).
    *
    * H-12: the time ruler and scrollbar that used to live here now live in `EditorView` (shared
    * with `SpectralView`, SPEC-007 §2.1's ruler → waveform → divider → spectral → scrollbar
@@ -180,6 +189,11 @@
   const selection = selectionState();
   const markers = markersState();
   const requester = new PeaksRequester(peaksGet);
+  /** H-35 (SPEC-006 §2.4): the amplitude ruler/waveform vertical scale, per-document sidecar
+   * state (`state/waveformView.svelte.ts`) — no viewport width to wait on (unlike
+   * `startSample`/`samplesPerPixel`), so it's read directly here instead of through a bindable
+   * prop. */
+  const vzoom = verticalZoomState();
 
   const lenSamples = $derived(doc.current.len_samples);
   const rateHz = $derived(doc.current.sample_rate_hz);
@@ -195,10 +209,12 @@
     opPeaksRequestStart(layout, Math.max(0, Math.floor(startSample)), viewportPx * samplesPerPixel),
   );
 
-  // H-24 item 7: the amplitude ruler gutter — fixed at verticalZoom 1 (SPEC-006 §2.2's actual
-  // vertical-zoom-and-drag feature is out of this ticket's scope; see amplitudeAxis.ts's doc
+  // H-24 item 7 / H-35: the amplitude ruler gutter, scaled by the real `verticalZoom` (SPEC-006
+  // §2.4/§2.2 — drag-to-zoom the gutter itself is still out of scope, see amplitudeAxis.ts's doc
   // comment). `heightPx` is this view's own measured canvas height (below).
-  const ampTicks = $derived.by(() => (heightPx > 0 ? amplitudeTicksDbfs(heightPx, 1, 16) : []));
+  const ampTicks = $derived.by(() =>
+    heightPx > 0 ? amplitudeTicksDbfs(heightPx, vzoom.current, 16) : [],
+  );
   // H-26: the ruler's labels, fitted (`fitGutterLabels`): the 0 dBFS labels at the top and
   // bottom edges align inward instead of being cut in half, and none touches the unit. The grid
   // lines still use every tick.
@@ -442,10 +458,11 @@
     const overlay = new QuadBatch();
     let content: WaveformGlContent | null = null;
 
+    const vz = vzoom.current;
     if (liveNewTake) {
       if (liveBuckets.length > 0) {
         const columns = reduceColumns(liveBuckets, liveStartSample, liveSpb, startSample, samplesPerPixel, Math.ceil(viewportPx));
-        content = { mode: "columns", vertices: buildColumnQuads(columns, centerY, fillColor).toFloat32Array() };
+        content = { mode: "columns", vertices: buildColumnQuads(columns, centerY, fillColor, vz).toFloat32Array() };
       }
       const recordHeadColor = themeColors().wave.recordHead.rgba;
       const px = pixelAtSample(rec.elapsedSamples, startSample, samplesPerPixel);
@@ -454,8 +471,8 @@
       // H-21: the operation view — the existing audio (Insert: shifted past `at`) plus the live
       // take at `at` in the record colour, the punch region, the record head.
       const cols = opViewColumns(layout);
-      const quads = buildColumnQuads(cols.base, centerY, fillColor);
-      quads.append(buildColumnQuads(cols.take, centerY, themeColors().wave.record.rgba));
+      const quads = buildColumnQuads(cols.base, centerY, fillColor, vz);
+      quads.append(buildColumnQuads(cols.take, centerY, themeColors().wave.record.rgba, vz));
       content = { mode: "columns", vertices: quads.toFloat32Array() };
       if (layout.punchEnd !== null) {
         const x0 = Math.max(0, pixelAtSample(layout.at, startSample, samplesPerPixel));
@@ -479,11 +496,12 @@
             fillColor,
             showsDots(samplesPerPixel),
             themeColors().strokePx,
+            vz,
           );
           content = { mode: "raw", geometry };
         } else {
           const columns = reduceColumns(state.buckets, state.startSample, level, startSample, samplesPerPixel, Math.ceil(viewportPx));
-          content = { mode: "columns", vertices: buildColumnQuads(columns, centerY, fillColor).toFloat32Array() };
+          content = { mode: "columns", vertices: buildColumnQuads(columns, centerY, fillColor, vz).toFloat32Array() };
         }
       } else if (state?.partial) {
         overlay.rect(0, 0, viewportPx, heightPx, themeColors().wave.pending.rgba);
@@ -552,11 +570,12 @@
     ctx.fillRect(0, 0, viewportPx, heightPx);
 
     const centerY = heightPx / 2;
+    const vz = vzoom.current;
     if (liveNewTake) {
       // H-07: the growing take (from record_peaks_get), plus a record-head line — never the
       // normal peaks_get state, which has nothing to show until the take is committed at Stop.
       if (liveBuckets.length > 0) {
-        drawColumns(ctx, liveBuckets, liveStartSample, liveSpb, centerY);
+        drawColumns(ctx, liveBuckets, liveStartSample, liveSpb, centerY, vz);
       }
       drawRecordHead(ctx, centerY);
       ctx.restore();
@@ -573,8 +592,8 @@
           ctx.fillRect(x0, 0, x1 - x0, heightPx);
         }
       }
-      fillColumns(ctx, cols.base, themeColors().wave.fill.css, centerY);
-      fillColumns(ctx, cols.take, themeColors().wave.record.css, centerY);
+      fillColumns(ctx, cols.base, themeColors().wave.fill.css, centerY, vz);
+      fillColumns(ctx, cols.take, themeColors().wave.record.css, centerY, vz);
       drawSelection(ctx);
       drawMarkers(ctx, opMarkers(layout, markers.list, isTakeMarker));
       drawPlayhead(ctx, centerY);
@@ -592,9 +611,9 @@
     const level = pickLevel(samplesPerPixel);
     if (state && state.level === level && state.buckets.length > 0) {
       if (level === RAW_SPP) {
-        drawRawPolyline(ctx, state.buckets, state.startSample, centerY);
+        drawRawPolyline(ctx, state.buckets, state.startSample, centerY, vz);
       } else {
-        drawColumns(ctx, state.buckets, state.startSample, level, centerY);
+        drawColumns(ctx, state.buckets, state.startSample, level, centerY, vz);
       }
     } else if (state?.partial) {
       ctx.fillStyle = themeColors().wave.pending.css;
@@ -675,6 +694,7 @@
     bucketsStartSample: number,
     level: number,
     centerY: number,
+    verticalZoom = 1,
   ): void {
     const columns = reduceColumns(
       buckets,
@@ -684,15 +704,17 @@
       samplesPerPixel,
       Math.ceil(viewportPx),
     );
-    fillColumns(ctx, columns, themeColors().wave.fill.css, centerY);
+    fillColumns(ctx, columns, themeColors().wave.fill.css, centerY, verticalZoom);
   }
 
-  /** One `color` min/max column per pixel (`null`: nothing drawn there). */
+  /** One `color` min/max column per pixel (`null`: nothing drawn there). `verticalZoom` (H-35,
+   * SPEC-006 §2.4) defaults to `1` (unscaled). */
   function fillColumns(
     ctx: CanvasRenderingContext2D,
     columns: ReadonlyArray<Column>,
     color: string,
     centerY: number,
+    verticalZoom = 1,
   ): void {
     ctx.fillStyle = color;
     for (let px = 0; px < columns.length; px++) {
@@ -701,7 +723,7 @@
         continue;
       }
       const [mn, mx] = column;
-      const [yTop, yBot] = columnYRange(mn, mx, centerY);
+      const [yTop, yBot] = columnYRange(mn, mx, centerY, verticalZoom);
       ctx.fillRect(px, yTop, 1, yBot - yTop);
     }
   }
@@ -711,6 +733,7 @@
     samples: Array<[number, number]>,
     fetchStartSample: number,
     centerY: number,
+    verticalZoom = 1,
   ): void {
     ctx.strokeStyle = themeColors().wave.fill.css;
     ctx.lineWidth = themeColors().strokePx;
@@ -721,7 +744,7 @@
         continue;
       }
       const px = pixelAtSample(fetchStartSample + i, startSample, samplesPerPixel);
-      const y = centerY - sample[0] * centerY;
+      const y = centerY - sample[0] * verticalZoom * centerY;
       if (i === 0) {
         ctx.moveTo(px, y);
       } else {
@@ -737,7 +760,7 @@
           continue;
         }
         const px = pixelAtSample(fetchStartSample + i, startSample, samplesPerPixel);
-        const y = centerY - sample[0] * centerY;
+        const y = centerY - sample[0] * verticalZoom * centerY;
         ctx.beginPath();
         ctx.arc(px, y, 1 + themeColors().strokePx / 2, 0, Math.PI * 2);
         ctx.fill();
@@ -794,6 +817,46 @@
     zoomAt(anchorSample, anchorPx, zoomStep(samplesPerPixel, direction, lenSamples, viewportPx));
   }
 
+  /** H-35 (SPEC-006 §2.6): "Zoom to selection" — a no-op (per spec) with no document open or no
+   * selection. Menu/toolbar-only today (no keyboard binding, see `actions.ts`'s doc comment). */
+  function zoomToSelectionCommand(): void {
+    if (!isOpen) {
+      return;
+    }
+    const result = zoomToSelectionViewport(selection.current, lenSamples, viewportPx);
+    if (!result) {
+      return;
+    }
+    samplesPerPixel = result.samplesPerPixel;
+    startSample = result.startSample;
+  }
+
+  /** H-35 (SPEC-006 §2.6): "Zoom full" — fits the whole document to the viewport. */
+  function zoomFullCommand(): void {
+    if (!isOpen || viewportPx <= 0) {
+      return;
+    }
+    const result = zoomFullViewport(lenSamples, viewportPx);
+    samplesPerPixel = result.samplesPerPixel;
+    startSample = result.startSample;
+  }
+
+  /** `Alt+=`/`Alt+-` (SPEC-006 §2.4/§2.6): vertical (amplitude) zoom, power-of-two steps. */
+  function zoomVerticalKeyboard(direction: 1 | -1): void {
+    if (!isOpen) {
+      return;
+    }
+    setVerticalZoom(verticalZoomStep(vzoom.current, direction));
+  }
+
+  /** `Alt+0` (H-35, no source-documented binding — see `actions.ts`): resets vertical zoom to 1×. */
+  function resetVerticalZoomKeyboard(): void {
+    if (!isOpen) {
+      return;
+    }
+    setVerticalZoom(DEFAULT_VERTICAL_ZOOM);
+  }
+
   function onWheel(event: WheelEvent): void {
     if (!isOpen || viewportPx <= 0 || !containerEl) {
       return;
@@ -805,6 +868,11 @@
       const anchorSample = sampleAtPixel(anchorPx, startSample, samplesPerPixel);
       const factor = event.deltaY > 0 ? ZOOM_STEP_FACTOR : 1 / ZOOM_STEP_FACTOR;
       zoomAt(anchorSample, anchorPx, samplesPerPixel * factor);
+    } else if (event.altKey) {
+      // SPEC-006 §2.6: "Alt+wheel zooms vertically, centered on the ruler's current center
+      // line" — true by construction (the y-mapping is always centred on `centerY`), so no
+      // anchor math is needed here, just the scale factor.
+      setVerticalZoom(verticalZoomStep(vzoom.current, event.deltaY > 0 ? -1 : 1));
     } else {
       const delta = event.deltaX !== 0 ? event.deltaX : event.deltaY;
       startSample = clampStartSample(
@@ -1093,6 +1161,11 @@
     const cleanups: Array<() => void> = [
       registerAction("waveform.zoom_in", () => zoomKeyboard(1)),
       registerAction("waveform.zoom_out", () => zoomKeyboard(-1)),
+      registerAction("waveform.zoom_to_selection", zoomToSelectionCommand),
+      registerAction("waveform.zoom_full", zoomFullCommand),
+      registerAction("waveform.zoom_in_vertical", () => zoomVerticalKeyboard(1)),
+      registerAction("waveform.zoom_out_vertical", () => zoomVerticalKeyboard(-1)),
+      registerAction("waveform.zoom_reset_vertical", resetVerticalZoomKeyboard),
       registerAction("waveform.select_all", () => {
         if (isOpen) {
           selectAllOf(lenSamples);

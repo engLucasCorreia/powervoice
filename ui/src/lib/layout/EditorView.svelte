@@ -8,6 +8,7 @@
   import {
     schedulePersistWaveformView,
     timeRulerFormatState,
+    verticalZoomState,
     waveformViewApi,
   } from "../state/waveformView.svelte";
   import {
@@ -46,6 +47,7 @@
   const selection = selectionState();
   const spectral = spectralState();
   const timeFormat = timeRulerFormatState();
+  const vzoom = verticalZoomState();
 
   const lenSamples = $derived(doc.current.len_samples);
   const rateHz = $derived(doc.current.sample_rate_hz);
@@ -68,7 +70,8 @@
   // debounced (never marks the document modified, §2.4). The cursor is the transport's
   // last-known, non-extrapolated position (`state.playhead_samples`) rather than the
   // continuously-extrapolated `playheadSamples` — the latter changes every animation frame while
-  // playing, which would starve the debounce and never persist anything.
+  // playing, which would starve the debounce and never persist anything. H-35 adds the vertical
+  // zoom (`WaveformView` owns the actual zoom gesture; this effect just re-fires when it changes).
   $effect(() => {
     if (!isOpen) {
       return;
@@ -79,6 +82,7 @@
       selection.current,
       transport.state.playhead_samples,
       timeFormat.current,
+      vzoom.current,
     );
   });
 

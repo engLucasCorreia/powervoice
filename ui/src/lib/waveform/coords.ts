@@ -92,6 +92,49 @@ export function zoomAroundSample(
   return Math.round(anchorSample - anchorPx * nextSamplesPerPixel);
 }
 
+/** One viewport write: the new `startSample`/`samplesPerPixel` pair a zoom command produces. */
+export interface ZoomedViewport {
+  startSample: number;
+  samplesPerPixel: number;
+}
+
+/**
+ * "Zoom to selection" (SPEC-006 §2.6, H-35): the spec's own exact formula — `startSample =
+ * selection.startSample`, `samplesPerPixel = (endSample − startSample) / viewportPx`, clamped to
+ * the §2.6 `[0.1, zoom-full]` range (no extra margin either side — the spec is explicit about
+ * this formula, so there's nothing to invent). `startSample` is then run through
+ * {@link clampStartSample} too, matching every other viewport write in this module — a no-op in
+ * the exact case (the fitted viewport already covers exactly the selection), but a guard if
+ * clamping `samplesPerPixel` changed the viewport width (e.g. a selection shorter than the
+ * `MIN_SAMPLES_PER_PIXEL` floor allows).
+ *
+ * `null` (no selection, an empty selection, or no known viewport width) is a no-op per SPEC-006
+ * §2.6: "a no-op (shows nothing, no error) when there's no selection" — the caller does nothing
+ * with a `null` result rather than applying a meaningless viewport.
+ */
+export function zoomToSelectionViewport(
+  selection: { startSample: number; endSample: number } | null,
+  lenSamples: number,
+  viewportPx: number,
+): ZoomedViewport | null {
+  if (!selection || selection.endSample <= selection.startSample || viewportPx <= 0) {
+    return null;
+  }
+  const samplesPerPixel = clampSamplesPerPixel(
+    (selection.endSample - selection.startSample) / viewportPx,
+    lenSamples,
+    viewportPx,
+  );
+  const startSample = clampStartSample(selection.startSample, samplesPerPixel, lenSamples, viewportPx);
+  return { startSample, samplesPerPixel };
+}
+
+/** "Zoom full" (SPEC-006 §2.6): "sets `samplesPerPixel = len_samples / viewportPx`, `startSample
+ * = 0`" — the whole document exactly fills the viewport. */
+export function zoomFullViewport(lenSamples: number, viewportPx: number): ZoomedViewport {
+  return { startSample: 0, samplesPerPixel: zoomFullSamplesPerPixel(lenSamples, viewportPx) };
+}
+
 /** Clamps `startSample` so the viewport never shows before 0 or (when it fits) past the end. */
 export function clampStartSample(
   startSample: number,
@@ -187,10 +230,19 @@ export function reduceColumns(
  * pane, `-1.0` the bottom. At least 1 px tall, so a silent column still draws a visible line
  * (H-13: the one implementation both the Canvas2D and WebGL2 renderers call, so they always agree
  * pixel-for-pixel).
+ *
+ * `verticalZoom` (H-35, SPEC-006 §2.4: `y = centerY − amplitude × verticalZoom × halfHeightPx`,
+ * and `centerY` doubles as `halfHeightPx` here) defaults to `1` (unscaled), so every existing
+ * caller keeps its old output.
  */
-export function columnYRange(min: number, max: number, centerY: number): [top: number, bottom: number] {
-  const top = centerY - max * centerY;
-  const bottom = centerY - min * centerY;
+export function columnYRange(
+  min: number,
+  max: number,
+  centerY: number,
+  verticalZoom = 1,
+): [top: number, bottom: number] {
+  const top = centerY - max * verticalZoom * centerY;
+  const bottom = centerY - min * verticalZoom * centerY;
   return [top, Math.max(top + 1, bottom)];
 }
 

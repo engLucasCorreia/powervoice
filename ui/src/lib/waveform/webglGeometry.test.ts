@@ -45,6 +45,22 @@ describe("buildColumnQuads (H-13, SPEC-006 §2.3/§4.5)", () => {
   it("produces nothing for an all-null column array", () => {
     expect(buildColumnQuads([null, null], 10, COLOR).vertexCount).toBe(0);
   });
+
+  it("verticalZoom (H-35, SPEC-006 §2.4) scales amplitude, matching columnYRange, default 1", () => {
+    const centerY = 50;
+    const unscaled = buildColumnQuads([[-0.5, 0.5]], centerY, COLOR).toFloat32Array();
+    const explicit1 = buildColumnQuads([[-0.5, 0.5]], centerY, COLOR, 1).toFloat32Array();
+    expect(Array.from(unscaled)).toEqual(Array.from(explicit1));
+
+    const scaled = buildColumnQuads([[-0.5, 0.5]], centerY, COLOR, 2).toFloat32Array();
+    const ys: number[] = [];
+    for (let i = 0; i < scaled.length; i += FLOATS_PER_VERTEX) {
+      ys.push(scaled[i + 1]!);
+    }
+    const [top, bottom] = columnYRange(-0.5, 0.5, centerY, 2);
+    expect(Math.min(...ys)).toBeCloseTo(top, 5);
+    expect(Math.max(...ys)).toBeCloseTo(bottom, 5);
+  });
 });
 
 describe("buildRawPolyline (H-13, SPEC-006 §2.3)", () => {
@@ -110,5 +126,20 @@ describe("buildRawPolyline (H-13, SPEC-006 §2.3)", () => {
     const samples: Array<[number, number] | undefined> = [[0, 0], undefined, [1, 1]];
     const { line } = buildRawPolyline(samples, fetchStartSample, startSample, samplesPerPixel, centerY, COLOR, false);
     expect(line.length).toBe(VERTICES_PER_QUAD * FLOATS_PER_VERTEX);
+  });
+
+  it("verticalZoom (H-35, SPEC-006 §2.4) scales the sample amplitude, default 1", () => {
+    const samples: Array<[number, number]> = [
+      [0.25, 0.25],
+      [-0.25, -0.25],
+    ];
+    const unscaled = buildRawPolyline(samples, fetchStartSample, startSample, samplesPerPixel, centerY, COLOR, true);
+    const explicit1 = buildRawPolyline(samples, fetchStartSample, startSample, samplesPerPixel, centerY, COLOR, true, 1, 1);
+    expect(Array.from(unscaled.dots)).toEqual(Array.from(explicit1.dots));
+
+    const scaled = buildRawPolyline(samples, fetchStartSample, startSample, samplesPerPixel, centerY, COLOR, true, 1, 2);
+    // Dot y = centerY - sample * verticalZoom * centerY.
+    expect(scaled.dots[1]).toBeCloseTo(centerY - 0.25 * 2 * centerY, 5);
+    expect(scaled.dots[FLOATS_PER_VERTEX + 1]).toBeCloseTo(centerY - -0.25 * 2 * centerY, 5);
   });
 });

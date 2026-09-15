@@ -185,6 +185,11 @@ selection edges, ruler labels, marker x-positions, the playhead — are **docume
     what I'm listening to/editing near" intent.
 - **Vertical zoom in/out (keyboard):** `Alt+=` zooms in, `Alt+-` zooms out (Option on macOS) —
   **Verified**, same two sources as above, both agreeing on the modifier.
+  - **Decided (autonomous, H-35):** no source documents a reset-to-1×-vertical-zoom binding.
+    `Alt+0` is chosen — conservative and non-conflicting (unused by any other default binding,
+    `registry.ts`'s `findDuplicateBindings` enforces this), and `0` reads naturally as "reset" next
+    to `Alt+=`/`Alt+-`'s in/out, the same digit-as-endpoint shape numeric zoom controls commonly
+    use elsewhere (e.g. browsers' `Ctrl+0` = reset zoom).
 - **Mouse wheel:** plain wheel scrolls the view horizontally (§2.7); **Ctrl+wheel zooms horizontally**,
   centered on the pointer's document-sample position; **Alt+wheel zooms vertically** (§2.4), centered
   on the ruler's current center line.
@@ -207,8 +212,9 @@ selection edges, ruler labels, marker x-positions, the playhead — are **docume
     glyphs inconsistently across its own list, which lowers confidence in it further).
   - ⚠ **Contradiction, not silently resolved:** these two sources disagree on both bindings and don't
     even agree on modifier *style* internally. Per this ticket's instruction, both commands are
-    implemented and reachable by menu/toolbar/command-palette now; **no keyboard shortcut is bound
-    for either in M2** pending SPEC-019's owner-reviewed shortcut audit (M7). Do not guess a binding
+    implemented and reachable by menu/toolbar now (H-35; PowerVoice has no command palette — that
+    was this bullet's own speculative wording, corrected here); **no keyboard shortcut is bound
+    for either** pending SPEC-019's owner-reviewed shortcut audit (M7). Do not guess a binding
     that might collide with something SPEC-019 assigns later.
   - **Zoom to selection** sets `startSample = selection.startSample`, `samplesPerPixel =
     (selection.endSample − selection.startSample) / viewportPx`, clamped to the §2.6 range; a no-op

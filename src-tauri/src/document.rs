@@ -218,11 +218,11 @@ pub struct SpectralViewInfo {
 
 /// H-12 (SPEC-018 §2.6.5's `view.waveform`): the shared waveform/spectral viewport plus the
 /// selection and edit cursor, lifted out of `EditorView`'s own state so it can be persisted per
-/// document (like [`SpectralViewInfo`]) and restored on open. `vertical_zoom` and
-/// `amplitude_ruler_mode` (SPEC-018 §2.6.5) still have no corresponding UI yet (no vertical zoom,
-/// one fixed ruler mode) and are left for whichever ticket adds them; T-206 adds
-/// `time_ruler_format` (SPEC-006 §2.5). Plain data —
-/// [`crate::ipc::document_dto::WaveformViewDto`] is the ts-rs wire type.
+/// document (like [`SpectralViewInfo`]) and restored on open. T-206 adds `time_ruler_format`
+/// (SPEC-006 §2.5); H-35 adds `vertical_zoom` (SPEC-006 §2.4/§2.6). `amplitude_ruler_mode`
+/// (SPEC-018 §2.6.5, dBFS vs. percent) still has no corresponding UI (one fixed dBFS ruler,
+/// SPEC-006 §2.4's own "Decided: default = dBFS") and is left for whichever ticket adds it. Plain
+/// data — [`crate::ipc::document_dto::WaveformViewDto`] is the ts-rs wire type.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WaveformViewInfo {
     pub start_sample: u64,
@@ -233,6 +233,9 @@ pub struct WaveformViewInfo {
     /// T-206 (SPEC-006 §2.5, SPEC-018 §2.6.5): the time ruler's display format, persisted per
     /// document like the rest of `waveform`.
     pub time_ruler_format: TimeRulerFormatDto,
+    /// H-35 (SPEC-006 §2.4, SPEC-018 §2.6.5): the linear amplitude scale factor, `1.0..=256.0`
+    /// (SPEC-006 §2.4's range), default `1.0`.
+    pub vertical_zoom: f64,
 }
 
 /// S2-01: the in-app clipboard (SPEC-008 §2.6), same-document only for now (cleared whenever a
@@ -942,9 +945,15 @@ fn spectral_view_of(view: &serde_json::Value) -> Option<SpectralViewInfo> {
     })
 }
 
+/// SPEC-006 §2.4's `verticalZoom` range, `1.0..=256.0`.
+const MIN_VERTICAL_ZOOM: f64 = 1.0;
+const MAX_VERTICAL_ZOOM: f64 = 256.0;
+/// SPEC-006 §2.4's default `verticalZoom`.
+const DEFAULT_VERTICAL_ZOOM: f64 = 1.0;
+
 /// `doc.sidecar.view["waveform"]` -> [`WaveformViewInfo`] (SPEC-018 §2.6.5: `start_sample`/
-/// `samples_per_pixel`/`selection`/`cursor_samples`/`time_ruler_format` — see the struct doc for
-/// what's still deferred). A malformed or partial section (missing `start_sample`/
+/// `samples_per_pixel`/`selection`/`cursor_samples`/`time_ruler_format`/`vertical_zoom` — see the
+/// struct doc for what's still deferred). A malformed or partial section (missing `start_sample`/
 /// `samples_per_pixel`) reports "no opinion" (`None`), same as a missing one. `selection`/
 /// `cursor_samples` are restored only when they fit `[0, len_samples]` (§2.6.5: "restored when
 /// within `[0, L]`... otherwise `null` / 0"); `start_sample`/`samples_per_pixel` are restored
@@ -953,7 +962,10 @@ fn spectral_view_of(view: &serde_json::Value) -> Option<SpectralViewInfo> {
 /// knows, so that half of the rule is applied there (`state/waveformView.svelte.ts`'s
 /// pending-restore mechanism). `time_ruler_format` (§2.6.5: "SPEC-006 enums") falls back to
 /// `Timecode` (SPEC-006 §2.5's default) on a missing or unrecognized value, same "no opinion on
-/// the invalid part" spirit as `selection`/`cursor_samples`.
+/// the invalid part" spirit as `selection`/`cursor_samples`. H-35: `vertical_zoom` needs no
+/// viewport to validate (SPEC-006 §2.4's range is a fixed `[1, 256]`, not viewport-relative like
+/// `samples_per_pixel`), so it's clamped here directly, falling back to the SPEC-006 §2.4 default
+/// (`1.0`) on a missing or non-finite value.
 fn waveform_view_of(view: &serde_json::Value, len_samples: u64) -> Option<WaveformViewInfo> {
     let w = view.get("waveform")?;
     let start_sample = w.get("start_sample")?.as_u64()?;
@@ -979,12 +991,19 @@ fn waveform_view_of(view: &serde_json::Value, len_samples: u64) -> Option<Wavefo
         Some("seconds") => TimeRulerFormatDto::Seconds,
         _ => TimeRulerFormatDto::Timecode,
     };
+    let vertical_zoom = w
+        .get("vertical_zoom")
+        .and_then(|v| v.as_f64())
+        .filter(|v| v.is_finite())
+        .map(|v| v.clamp(MIN_VERTICAL_ZOOM, MAX_VERTICAL_ZOOM))
+        .unwrap_or(DEFAULT_VERTICAL_ZOOM);
     Some(WaveformViewInfo {
         start_sample,
         samples_per_pixel,
         selection,
         cursor_samples,
         time_ruler_format,
+        vertical_zoom,
     })
 }
 
@@ -1705,6 +1724,7 @@ impl DocumentService {
                 "selection": selection,
                 "cursor_samples": waveform.cursor_samples,
                 "time_ruler_format": time_ruler_format,
+                "vertical_zoom": waveform.vertical_zoom,
             }),
         );
         doc.sidecar.view = serde_json::Value::Object(view);
@@ -5625,6 +5645,7 @@ mod tests {
             selection: Some((2_000, 4_000)),
             cursor_samples: 3_000,
             time_ruler_format: TimeRulerFormatDto::Seconds,
+            vertical_zoom: 8.0,
         });
 
         let save_path = dir.join("with-rack.wav");
@@ -5692,6 +5713,10 @@ mod tests {
             TimeRulerFormatDto::Seconds,
             "T-206: time_ruler_format round-trips too"
         );
+        assert!(
+            (waveform_view.vertical_zoom - 8.0).abs() < 1e-9,
+            "H-35: vertical_zoom round-trips too"
+        );
 
         assert!(
             !info.sidecar_dirty,
@@ -5711,6 +5736,7 @@ mod tests {
             selection: None,
             cursor_samples: 0,
             time_ruler_format: TimeRulerFormatDto::Timecode,
+            vertical_zoom: 1.0,
         });
         assert_eq!(service.info().waveform_view, None);
     }
@@ -5743,6 +5769,7 @@ mod tests {
             selection: Some((0, 100)),
             cursor_samples: 100,
             time_ruler_format: TimeRulerFormatDto::Samples,
+            vertical_zoom: 16.0,
         });
 
         assert!(!service.info().sidecar_dirty);
@@ -5771,6 +5798,10 @@ mod tests {
             TimeRulerFormatDto::Timecode,
             "T-206: a missing time_ruler_format falls back to the SPEC-006 §2.5 default"
         );
+        assert!(
+            (info.vertical_zoom - 1.0).abs() < 1e-9,
+            "H-35: a missing vertical_zoom falls back to the SPEC-006 §2.4 default (1.0)"
+        );
 
         let missing_view = serde_json::json!({ "waveform": { "start_sample": 10 } });
         assert_eq!(
@@ -5789,6 +5820,7 @@ mod tests {
                 "selection": { "start_sample": 0, "end_sample": 2_000 },
                 "cursor_samples": 5_000,
                 "time_ruler_format": "not-a-real-format",
+                "vertical_zoom": 1_000.0,
             }
         });
         let info = waveform_view_of(&out_of_range, 1_000).unwrap();
@@ -5802,6 +5834,10 @@ mod tests {
             TimeRulerFormatDto::Timecode,
             "T-206: an unrecognized time_ruler_format value falls back to the default too"
         );
+        assert!(
+            (info.vertical_zoom - 256.0).abs() < 1e-9,
+            "H-35: vertical_zoom beyond the SPEC-006 §2.4 range is clamped, not dropped"
+        );
 
         let samples_format = serde_json::json!({
             "waveform": {
@@ -5810,13 +5846,33 @@ mod tests {
                 "selection": null,
                 "cursor_samples": 0,
                 "time_ruler_format": "samples",
+                "vertical_zoom": 0.0001,
             }
         });
-        assert_eq!(
-            waveform_view_of(&samples_format, 1_000)
+        let info = waveform_view_of(&samples_format, 1_000).unwrap();
+        assert_eq!(info.time_ruler_format, TimeRulerFormatDto::Samples);
+        assert!(
+            (info.vertical_zoom - 1.0).abs() < 1e-9,
+            "H-35: vertical_zoom below the SPEC-006 §2.4 range is clamped to 1.0"
+        );
+
+        let null_vertical_zoom = serde_json::json!({
+            "waveform": {
+                "start_sample": 0,
+                "samples_per_pixel": 1.0,
+                "selection": null,
+                "cursor_samples": 0,
+                "vertical_zoom": null,
+            }
+        });
+        assert!(
+            (waveform_view_of(&null_vertical_zoom, 1_000)
                 .unwrap()
-                .time_ruler_format,
-            TimeRulerFormatDto::Samples
+                .vertical_zoom
+                - 1.0)
+                .abs()
+                < 1e-9,
+            "H-35: an explicit null vertical_zoom falls back to the default too"
         );
     }
 

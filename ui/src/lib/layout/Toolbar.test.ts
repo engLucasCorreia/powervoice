@@ -1,10 +1,12 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { attachKeymap, clearActionHandlers } from "../shortcuts";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
+import { attachKeymap, clearActionHandlers, registerAction } from "../shortcuts";
+import { resetSelectionForTest, setSelectionFromResult } from "../state/selection.svelte";
 import { initTransport, resetTransportForTest } from "../state/transport.svelte";
 import { resetWaveformViewForTest, setTimeRulerFormat } from "../state/waveformView.svelte";
-import { transportStateDto } from "../test/fixtures";
+import { docDto, transportStateDto } from "../test/fixtures";
 import Toolbar from "./Toolbar.svelte";
 
 let calls: string[] = [];
@@ -47,6 +49,8 @@ afterEach(() => {
   clearActionHandlers();
   resetTransportForTest();
   resetWaveformViewForTest();
+  resetDocumentStateForTest();
+  resetSelectionForTest();
 });
 
 async function settle(): Promise<void> {
@@ -142,6 +146,43 @@ describe("transport bar (S1-01)", () => {
       "transport_return_to_start",
     ]);
     detach();
+    teardown();
+  });
+
+  it("Zoom to Selection/Zoom Full toolbar buttons: disabled with no document, gated by selection, dispatching (H-35)", async () => {
+    const teardown = await initTransport();
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(Toolbar, { target, props: { version: "1" } });
+    flushSync();
+
+    const toSelection = target.querySelector<HTMLButtonElement>('[data-testid="zoom-to-selection"]')!;
+    const full = target.querySelector<HTMLButtonElement>('[data-testid="zoom-full"]')!;
+    expect(toSelection.disabled).toBe(true);
+    expect(full.disabled).toBe(true);
+
+    clearMocks();
+    mockIPC((cmd) => (cmd === "document_open" ? docDto() : null));
+    await openDocument("/home/user/take.wav");
+    flushSync();
+    expect(toSelection.disabled).toBe(true); // still no selection
+    expect(full.disabled).toBe(false);
+
+    const zoomFull = vi.fn();
+    const zoomToSelection = vi.fn();
+    registerAction("waveform.zoom_full", zoomFull);
+    registerAction("waveform.zoom_to_selection", zoomToSelection);
+    full.click();
+    expect(zoomFull).toHaveBeenCalledOnce();
+
+    setSelectionFromResult([100, 200]);
+    flushSync();
+    expect(toSelection.disabled).toBe(false);
+    toSelection.click();
+    expect(zoomToSelection).toHaveBeenCalledOnce();
+
+    unmount(app);
+    target.remove();
     teardown();
   });
 });

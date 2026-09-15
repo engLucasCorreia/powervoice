@@ -1,6 +1,7 @@
 import { sidecarViewSetWaveform } from "../ipc/commands";
 import type { TimeRulerFormatDto } from "../ipc/bindings";
 import type { SelectionRange } from "../waveform/selection";
+import { clampVerticalZoom, DEFAULT_VERTICAL_ZOOM } from "../waveform/verticalZoom";
 
 /**
  * Waveform viewport store (H-12, T-207/T-306 follow-up, SPEC-018 §2.6.5's `view.waveform`):
@@ -59,6 +60,26 @@ export function setTimeRulerFormat(format: TimeRulerFormatDto): void {
   timeRulerFormat = format;
 }
 
+/**
+ * H-35 (SPEC-006 §2.4, SPEC-018 §2.6.5's `waveform.vertical_zoom`): the amplitude ruler/waveform
+ * scale factor, per document — same "no viewport width needed to validate" shape as
+ * `timeRulerFormat` above (SPEC-006 §2.4's range is a fixed `[1, 256]`, not viewport-relative like
+ * `samplesPerPixel`), so `document.svelte.ts` applies a restored value immediately on open too.
+ */
+let verticalZoom = $state<number>(DEFAULT_VERTICAL_ZOOM);
+
+export function verticalZoomState(): { readonly current: number } {
+  return {
+    get current() {
+      return verticalZoom;
+    },
+  };
+}
+
+export function setVerticalZoom(value: number): void {
+  verticalZoom = clampVerticalZoom(value);
+}
+
 interface PendingRestore {
   audioKey: string;
   startSample: number;
@@ -98,7 +119,8 @@ let persistTimer: ReturnType<typeof setTimeout> | null = null;
  * Debounced `sidecar_view_set_waveform` (fire-and-forget: a view-only change never marks the
  * document modified, SPEC-018 §2.4). `EditorView` calls this from an `$effect` that reads the
  * viewport, the selection and the transport's last-known (non-extrapolated) cursor position, so
- * it re-fires on any of those changing.
+ * it re-fires on any of those changing. H-35 adds `verticalZoomValue` (SPEC-018 §2.6.5's
+ * `waveform.vertical_zoom`), defaulting to this module's own state like `timeRulerFormatValue`.
  */
 export function schedulePersistWaveformView(
   startSample: number,
@@ -106,6 +128,7 @@ export function schedulePersistWaveformView(
   selection: SelectionRange | null,
   cursorSamples: number,
   timeRulerFormatValue: TimeRulerFormatDto = timeRulerFormat,
+  verticalZoomValue: number = verticalZoom,
 ): void {
   if (persistTimer !== null) {
     clearTimeout(persistTimer);
@@ -120,6 +143,7 @@ export function schedulePersistWaveformView(
         : null,
       cursor_samples: cursorSamples,
       time_ruler_format: timeRulerFormatValue,
+      vertical_zoom: verticalZoomValue,
     }).catch(() => {
       // Fire-and-forget, same as `spectral.svelte.ts`: no document open, or the IPC call itself
       // failed — the next Save just won't carry this particular viewport tweak.
@@ -167,4 +191,5 @@ export function resetWaveformViewForTest(): void {
   state = { startSample: 0, samplesPerPixel: 1 };
   pendingRestore = null;
   timeRulerFormat = "timecode";
+  verticalZoom = DEFAULT_VERTICAL_ZOOM;
 }

@@ -1,9 +1,12 @@
 <script lang="ts">
   import AudioDevicesDialog from "../devices/AudioDevicesDialog.svelte";
+  import { documentState, hasDocument } from "../document/document.svelte";
   import { t } from "../i18n";
+  import { dispatchAction } from "../shortcuts";
   import { shortcutLabelForAction } from "../shortcuts/shortcutLabel";
   import NormalizeToolbarButtons from "../normalize/NormalizeToolbarButtons.svelte";
   import RecordControls from "../record/RecordControls.svelte";
+  import { hasSelection } from "../state/selection.svelte";
   import { recordState } from "../state/record.svelte";
   import SelectionReadout from "./SelectionReadout.svelte";
   import { spectralState } from "../state/spectral.svelte";
@@ -18,6 +21,9 @@
    * input & monitoring, view — then the occasional actions (Normalize favourites, devices) on the
    * right. Groups wrap as whole groups on narrow windows; button labels never wrap. While
    * recording, a red tally line runs along the top edge. The app name/version live in Help → About.
+   * H-35 (SPEC-006 §2.6): the view group also carries Zoom to Selection/Zoom Full — disabled with
+   * no document open, Zoom to Selection also disabled with no selection (spec: "a no-op ... when
+   * there's no selection").
    */
   // `version` is still passed by App.svelte; it's shown in Help → About now, not here.
   const props: { version?: string } = $props();
@@ -26,6 +32,8 @@
   const spectral = spectralState();
   const rec = recordState();
   const timeFormat = timeRulerFormatState();
+  const doc = documentState();
+  const isOpen = $derived(hasDocument(doc.current));
   let devicesOpen = $state(false);
   // T-206 (SPEC-006 §2.5): the toolbar clock follows the same time_ruler_format as the ruler,
   // marker list and selection readouts — "everything that shows time uses it."
@@ -84,6 +92,22 @@
       pressed={spectral.visible}
       testid="spectral-toggle"
       onclick={() => spectral.toggle()}
+    />
+    <IconButton
+      icon="zoomToSelection"
+      label={t("waveform.zoom_to_selection")}
+      shortcut={shortcutLabelForAction("waveform.zoom_to_selection")}
+      disabled={!isOpen || !hasSelection()}
+      testid="zoom-to-selection"
+      onclick={() => dispatchAction("waveform.zoom_to_selection")}
+    />
+    <IconButton
+      icon="zoomFull"
+      label={t("waveform.zoom_full")}
+      shortcut={shortcutLabelForAction("waveform.zoom_full")}
+      disabled={!isOpen}
+      testid="zoom-full"
+      onclick={() => dispatchAction("waveform.zoom_full")}
     />
   </div>
   <span class="spacer"></span>

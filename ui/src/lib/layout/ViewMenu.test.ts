@@ -2,10 +2,12 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyAnalyzerPrefs, resetAnalyzerForTest } from "../analyzer/analyzer.svelte";
+import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import type { Settings } from "../ipc/bindings";
 import { clearActionHandlers, registerAction } from "../shortcuts";
 import { resetMenuBarForTest } from "../menu/menubar.svelte";
 import { rendererPref, resetRendererPrefForTest } from "../state/rendererPref.svelte";
+import { resetSelectionForTest, setSelectionFromResult } from "../state/selection.svelte";
 import { loadSettings, resetSettingsStateForTest, settingsState } from "../state/settings.svelte";
 import { resetSpectralForTest, spectralState } from "../state/spectral.svelte";
 import {
@@ -14,7 +16,7 @@ import {
   timeRulerFormatState,
 } from "../state/waveformView.svelte";
 import { applyThemePref, resetThemeForTest, themeState } from "../theme/theme.svelte";
-import { settingsFixture as makeSettings } from "../test/fixtures";
+import { docDto, settingsFixture as makeSettings } from "../test/fixtures";
 import ViewMenu from "./ViewMenu.svelte";
 
 afterEach(() => {
@@ -27,7 +29,20 @@ afterEach(() => {
   resetRendererPrefForTest();
   resetThemeForTest();
   resetWaveformViewForTest();
+  resetDocumentStateForTest();
+  resetSelectionForTest();
 });
+
+async function openFixtureDocument(): Promise<void> {
+  mockIPC((cmd) => {
+    if (cmd === "document_open") {
+      return docDto();
+    }
+    throw new Error(`unmocked command: ${cmd}`);
+  });
+  await openDocument("/home/user/take.wav");
+  clearMocks();
+}
 
 function mountMenu(): { target: HTMLElement; app: ReturnType<typeof mount> } {
   const target = document.createElement("div");
@@ -233,6 +248,86 @@ describe("ViewMenu (H-19)", () => {
     expect(target.querySelector('[data-testid="menu-zoom-out"] .shortcut')?.textContent).toBe("-");
     target.querySelector<HTMLButtonElement>('[data-testid="menu-zoom-out"]')!.click();
     expect(zoomOut).toHaveBeenCalledOnce();
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Zoom to Selection/Zoom Full are disabled with no document open (H-35)", () => {
+    mockIPC(() => null);
+    const { target, app } = mountMenu();
+
+    openMenu(target);
+    const toSelection = target.querySelector<HTMLButtonElement>('[data-testid="menu-zoom-to-selection"]')!;
+    const full = target.querySelector<HTMLButtonElement>('[data-testid="menu-zoom-full"]')!;
+    expect(toSelection.disabled).toBe(true);
+    expect(full.disabled).toBe(true);
+    // No shortcut chip — H-35: the keyboard binding is still deferred to SPEC-019.
+    expect(target.querySelector('[data-testid="menu-zoom-to-selection"] .shortcut')).toBeNull();
+    expect(target.querySelector('[data-testid="menu-zoom-full"] .shortcut')).toBeNull();
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Zoom to Selection is disabled without a selection, enabled with one; Zoom Full dispatches (H-35)", async () => {
+    await openFixtureDocument();
+    mockIPC(() => null);
+    const zoomToSelection = vi.fn();
+    const zoomFull = vi.fn();
+    registerAction("waveform.zoom_to_selection", zoomToSelection);
+    registerAction("waveform.zoom_full", zoomFull);
+    const { target, app } = mountMenu();
+
+    openMenu(target);
+    const toSelection = target.querySelector<HTMLButtonElement>('[data-testid="menu-zoom-to-selection"]')!;
+    expect(toSelection.disabled).toBe(true);
+    const full = target.querySelector<HTMLButtonElement>('[data-testid="menu-zoom-full"]')!;
+    expect(full.disabled).toBe(false);
+    full.click();
+    expect(zoomFull).toHaveBeenCalledOnce();
+
+    setSelectionFromResult([100, 200]);
+    openMenu(target);
+    const toSelection2 = target.querySelector<HTMLButtonElement>('[data-testid="menu-zoom-to-selection"]')!;
+    expect(toSelection2.disabled).toBe(false);
+    toSelection2.click();
+    expect(zoomToSelection).toHaveBeenCalledOnce();
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Zoom In/Out/Reset (Vertical) show the registry's shortcut labels and dispatch (H-35)", () => {
+    mockIPC(() => null);
+    const zoomInV = vi.fn();
+    const zoomOutV = vi.fn();
+    const zoomResetV = vi.fn();
+    registerAction("waveform.zoom_in_vertical", zoomInV);
+    registerAction("waveform.zoom_out_vertical", zoomOutV);
+    registerAction("waveform.zoom_reset_vertical", zoomResetV);
+    const { target, app } = mountMenu();
+
+    openMenu(target);
+    expect(target.querySelector('[data-testid="menu-zoom-in-vertical"] .shortcut')?.textContent).toBe(
+      "Alt+=",
+    );
+    target.querySelector<HTMLButtonElement>('[data-testid="menu-zoom-in-vertical"]')!.click();
+    expect(zoomInV).toHaveBeenCalledOnce();
+
+    openMenu(target);
+    expect(target.querySelector('[data-testid="menu-zoom-out-vertical"] .shortcut')?.textContent).toBe(
+      "Alt+-",
+    );
+    target.querySelector<HTMLButtonElement>('[data-testid="menu-zoom-out-vertical"]')!.click();
+    expect(zoomOutV).toHaveBeenCalledOnce();
+
+    openMenu(target);
+    expect(target.querySelector('[data-testid="menu-zoom-reset-vertical"] .shortcut')?.textContent).toBe(
+      "Alt+0",
+    );
+    target.querySelector<HTMLButtonElement>('[data-testid="menu-zoom-reset-vertical"]')!.click();
+    expect(zoomResetV).toHaveBeenCalledOnce();
 
     unmount(app);
     target.remove();

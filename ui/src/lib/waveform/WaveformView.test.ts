@@ -7,14 +7,14 @@ import { clearActionHandlers } from "../shortcuts";
 import { initDocument, openDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import { clearNotices } from "../state/notices.svelte";
 import { initRecord, onInputTelemetry, resetRecordForTest } from "../state/record.svelte";
-import { resetSelectionForTest, selectionState } from "../state/selection.svelte";
+import { resetSelectionForTest, selectionState, setSelectionFromResult } from "../state/selection.svelte";
 import { loadSettings, resetSettingsStateForTest } from "../state/settings.svelte";
 import { resetTransportForTest, transportState } from "../state/transport.svelte";
 import { docDto, recordStateDto, settingsFixture } from "../test/fixtures";
 import { RAW_SPP } from "./coords";
 import { VXPK_FLAGS } from "./vxpk";
 import WaveformView from "./WaveformView.svelte";
-import { resetWaveformViewForTest } from "../state/waveformView.svelte";
+import { resetWaveformViewForTest, verticalZoomState } from "../state/waveformView.svelte";
 
 afterEach(() => {
   clearMocks();
@@ -737,6 +737,165 @@ describe("WaveformView keyboard nudge/extend (T-701/A-020)", () => {
       flushSync();
       expect(selectionState().current).toEqual({ startSample: 100, endSample: 508 });
     });
+
+    unmount(app);
+    target.remove();
+  });
+});
+
+// H-35 (SPEC-006 §2.4/§2.6): Zoom to Selection, Zoom Full, vertical (amplitude) zoom.
+describe("WaveformView zoom commands (H-35)", () => {
+  const widthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+
+  function stubWidth(px: number): void {
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => px });
+  }
+
+  afterEach(() => {
+    if (widthDescriptor) {
+      Object.defineProperty(HTMLElement.prototype, "clientWidth", widthDescriptor);
+    }
+  });
+
+  async function openFixture(lenSamples: number): Promise<void> {
+    const fixture = docDto({ len_samples: lenSamples });
+    mockIPC((cmd) => {
+      if (cmd === "document_open") {
+        return fixture;
+      }
+      if (cmd === "peaks_get") {
+        return headerOnlyVxpk();
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    await openDocument("/home/user/take.wav");
+  }
+
+  /** Mounts with a captured, externally-readable `startSample`/`samplesPerPixel` (Svelte 5's
+   * documented `mount()` pattern for reading a `$bindable` prop from outside a parent template —
+   * a plain getter/setter pair, no runes needed). */
+  function mountBoundView(): {
+    app: object;
+    target: HTMLElement;
+    viewport: () => { startSample: number; samplesPerPixel: number };
+  } {
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    let startSample = 0;
+    let samplesPerPixel = 1;
+    const app = mount(WaveformView, {
+      target,
+      props: {
+        get startSample() {
+          return startSample;
+        },
+        set startSample(v: number) {
+          startSample = v;
+        },
+        get samplesPerPixel() {
+          return samplesPerPixel;
+        },
+        set samplesPerPixel(v: number) {
+          samplesPerPixel = v;
+        },
+      },
+    });
+    flushSync();
+    return { app, target, viewport: () => ({ startSample, samplesPerPixel }) };
+  }
+
+  it("Zoom to Selection fits the selection exactly, per SPEC-006 §2.6's formula", async () => {
+    stubWidth(800);
+    await openFixture(100_000);
+    const { app, target, viewport } = mountBoundView();
+    expect(viewport()).toEqual({ startSample: 0, samplesPerPixel: 125 }); // zoom-full at open
+
+    setSelectionFromResult([10_000, 14_000]);
+    const { dispatchAction } = await import("../shortcuts");
+    dispatchAction("waveform.zoom_to_selection");
+    flushSync();
+
+    expect(viewport()).toEqual({ startSample: 10_000, samplesPerPixel: 5 }); // 4_000 / 800
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Zoom to Selection is a no-op with no selection (SPEC-006 §2.6)", async () => {
+    stubWidth(800);
+    await openFixture(100_000);
+    const { app, target, viewport } = mountBoundView();
+    const before = viewport();
+
+    const { dispatchAction } = await import("../shortcuts");
+    dispatchAction("waveform.zoom_to_selection");
+    flushSync();
+
+    expect(viewport()).toEqual(before);
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Zoom Full fits the whole document, startSample 0", async () => {
+    stubWidth(800);
+    await openFixture(100_000);
+    const { app, target, viewport } = mountBoundView();
+
+    setSelectionFromResult([10_000, 14_000]);
+    const { dispatchAction } = await import("../shortcuts");
+    dispatchAction("waveform.zoom_to_selection");
+    flushSync();
+    expect(viewport().samplesPerPixel).toBe(5); // zoomed into the selection first
+
+    dispatchAction("waveform.zoom_full");
+    flushSync();
+    expect(viewport()).toEqual({ startSample: 0, samplesPerPixel: 125 });
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Alt+= / Alt+- / Alt+0 zoom vertical amplitude in/out/reset (SPEC-006 §2.4)", async () => {
+    stubWidth(800);
+    await openFixture(100_000);
+    const { app, target } = mountBoundView();
+    expect(verticalZoomState().current).toBe(1);
+
+    const { dispatchAction } = await import("../shortcuts");
+    dispatchAction("waveform.zoom_in_vertical");
+    flushSync();
+    expect(verticalZoomState().current).toBe(2);
+
+    dispatchAction("waveform.zoom_in_vertical");
+    flushSync();
+    expect(verticalZoomState().current).toBe(4);
+
+    dispatchAction("waveform.zoom_out_vertical");
+    flushSync();
+    expect(verticalZoomState().current).toBe(2);
+
+    dispatchAction("waveform.zoom_reset_vertical");
+    flushSync();
+    expect(verticalZoomState().current).toBe(1);
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Alt+wheel zooms vertical amplitude, centred on the ruler center line", async () => {
+    stubWidth(800);
+    await openFixture(100_000);
+    const { app, target } = mountBoundView();
+
+    const container = target.querySelector('[data-testid="waveform-canvas"]')!.parentElement as HTMLElement;
+    container.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, altKey: true, bubbles: true, cancelable: true }));
+    flushSync();
+    expect(verticalZoomState().current).toBe(2);
+
+    container.dispatchEvent(new WheelEvent("wheel", { deltaY: 100, altKey: true, bubbles: true, cancelable: true }));
+    flushSync();
+    expect(verticalZoomState().current).toBe(1);
 
     unmount(app);
     target.remove();

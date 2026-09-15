@@ -39,6 +39,9 @@ menus becomes ⌘ — every table below shows both.
 |---|---|---|
 | Zoom in (waveform) | `=` | `=` |
 | Zoom out (waveform) | `-` | `-` |
+| Zoom in (vertical) | `Alt+=` | `⌥=` |
+| Zoom out (vertical) | `Alt+-` | `⌥-` |
+| Reset vertical zoom | `Alt+0` | `⌥0` |
 | Select all | `Ctrl+A` | `⌘A` |
 | Clear selection | `Esc` | `Esc` |
 | Nudge cursor/selection left | `←` | `←` |

@@ -11,6 +11,7 @@ import {
   resetWaveformViewForTest,
   setTimeRulerFormat,
   timeRulerFormatState,
+  verticalZoomState,
   waveformViewApi,
 } from "../state/waveformView.svelte";
 import EditorView from "./EditorView.svelte";
@@ -251,6 +252,7 @@ describe("EditorView shared ruler/scrollbar (H-12, SPEC-007 §2.1's ruler → wa
         selection: { start_sample: 1_000, end_sample: 2_000 },
         cursor_samples: 1_500,
         time_ruler_format: "samples",
+        vertical_zoom: 4,
       },
     });
 
@@ -265,6 +267,8 @@ describe("EditorView shared ruler/scrollbar (H-12, SPEC-007 §2.1's ruler → wa
     expect(selectionState().current).toEqual({ startSample: 1_000, endSample: 2_000 });
     // T-206: time_ruler_format needs no viewport to validate, so it's applied immediately too.
     expect(timeRulerFormatState().current).toBe("samples");
+    // H-35: same "no viewport width needed" shape as time_ruler_format.
+    expect(verticalZoomState().current).toBe(4);
 
     const scrollbar = target.querySelector<HTMLInputElement>('[data-testid="editor-scrollbar"]')!;
     expect(scrollbar.value).toBe("12000");
@@ -282,6 +286,7 @@ describe("EditorView shared ruler/scrollbar (H-12, SPEC-007 §2.1's ruler → wa
         selection: null,
         cursor_samples: 0,
         time_ruler_format: "timecode",
+        vertical_zoom: 1,
       },
     });
 

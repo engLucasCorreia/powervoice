@@ -96,9 +96,9 @@ impl From<SpectralViewDto> for SpectralViewInfo {
 /// H-12 (SPEC-018 §2.6.5's `view.waveform`, this ticket's subset — see `WaveformViewInfo`'s doc
 /// for what's deferred): the shared waveform/spectral viewport plus the selection and edit
 /// cursor, persisted like `SpectralViewDto`. T-206 adds `time_ruler_format` (SPEC-006 §2.5/§2.2,
-/// SPEC-018 §2.6.5's `waveform.time_ruler_format`) — the other deferred fields (`vertical_zoom`,
-/// `amplitude_ruler_mode`) still have no corresponding UI and are left for whichever ticket adds
-/// them (`WaveformViewInfo`'s doc).
+/// SPEC-018 §2.6.5's `waveform.time_ruler_format`); H-35 adds `vertical_zoom` (SPEC-006 §2.4/§2.6)
+/// — `amplitude_ruler_mode` still has no corresponding UI and is left for whichever ticket adds it
+/// (`WaveformViewInfo`'s doc).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "bindings.ts")]
 pub struct WaveformViewDto {
@@ -108,6 +108,8 @@ pub struct WaveformViewDto {
     pub selection: Option<WaveformSelectionDto>,
     pub cursor_samples: u64,
     pub time_ruler_format: TimeRulerFormatDto,
+    /// H-35 (SPEC-006 §2.4): the linear amplitude scale factor, `1.0..=256.0`, default `1.0`.
+    pub vertical_zoom: f64,
 }
 
 /// `[start_sample, end_sample)` document samples (SPEC-006 §2.2's selection shape).
@@ -145,6 +147,7 @@ impl From<WaveformViewInfo> for WaveformViewDto {
                 }),
             cursor_samples: v.cursor_samples,
             time_ruler_format: v.time_ruler_format,
+            vertical_zoom: v.vertical_zoom,
         }
     }
 }
@@ -157,6 +160,7 @@ impl From<WaveformViewDto> for WaveformViewInfo {
             selection: v.selection.map(|s| (s.start_sample, s.end_sample)),
             cursor_samples: v.cursor_samples,
             time_ruler_format: v.time_ruler_format,
+            vertical_zoom: v.vertical_zoom,
         }
     }
 }

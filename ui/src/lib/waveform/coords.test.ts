@@ -16,7 +16,9 @@ import {
   timeTicks,
   zoomAroundSample,
   zoomFullSamplesPerPixel,
+  zoomFullViewport,
   zoomStep,
+  zoomToSelectionViewport,
 } from "./coords";
 
 describe("columnYRange (H-13, SPEC-006 §2.3/§4.5: shared by both renderers)", () => {
@@ -32,6 +34,56 @@ describe("columnYRange (H-13, SPEC-006 §2.3/§4.5: shared by both renderers)", 
     const [top, bottom] = columnYRange(-0.5, 0.8, 40);
     expect(top).toBeCloseTo(40 - 0.8 * 40, 10);
     expect(bottom).toBeCloseTo(40 - -0.5 * 40, 10);
+  });
+
+  it("verticalZoom (H-35, SPEC-006 §2.4) scales the amplitude before mapping, default 1", () => {
+    expect(columnYRange(-0.5, 0.8, 40)).toEqual(columnYRange(-0.5, 0.8, 40, 1));
+    const [top, bottom] = columnYRange(-0.5, 0.8, 40, 2);
+    expect(top).toBeCloseTo(40 - 0.8 * 2 * 40, 10);
+    expect(bottom).toBeCloseTo(40 - -0.5 * 2 * 40, 10);
+  });
+});
+
+describe("zoomToSelectionViewport (SPEC-006 §2.6, H-35)", () => {
+  it("uses the spec's exact formula: startSample = selection start, spp = length / viewportPx", () => {
+    const result = zoomToSelectionViewport({ startSample: 1_000, endSample: 5_000 }, 100_000, 800);
+    expect(result).not.toBeNull();
+    expect(result!.samplesPerPixel).toBeCloseTo(4_000 / 800, 10);
+    expect(result!.startSample).toBe(1_000);
+  });
+
+  it("is a no-op (null) when there is no selection", () => {
+    expect(zoomToSelectionViewport(null, 100_000, 800)).toBeNull();
+  });
+
+  it("is a no-op (null) for an empty selection", () => {
+    expect(zoomToSelectionViewport({ startSample: 500, endSample: 500 }, 100_000, 800)).toBeNull();
+  });
+
+  it("is a no-op (null) with no known viewport width", () => {
+    expect(zoomToSelectionViewport({ startSample: 0, endSample: 100 }, 100_000, 0)).toBeNull();
+  });
+
+  it("clamps samplesPerPixel to the SPEC-006 §2.6 range for a tiny selection", () => {
+    const result = zoomToSelectionViewport({ startSample: 0, endSample: 1 }, 100_000, 800);
+    expect(result!.samplesPerPixel).toBe(MIN_SAMPLES_PER_PIXEL);
+  });
+
+  it("clamps startSample so the fitted viewport never runs past the document end", () => {
+    // A selection right at the end, clamped up toward MIN_SAMPLES_PER_PIXEL widens the viewport
+    // past what starting exactly at the selection would allow.
+    const result = zoomToSelectionViewport({ startSample: 999_999, endSample: 1_000_000 }, 1_000_000, 800);
+    expect(result!.startSample).toBeLessThanOrEqual(999_999);
+    expect(result!.startSample + result!.samplesPerPixel * 800).toBeGreaterThanOrEqual(1_000_000);
+  });
+});
+
+describe("zoomFullViewport (SPEC-006 §2.6, H-35)", () => {
+  it("fits the whole document with startSample 0", () => {
+    const result = zoomFullViewport(48_000, 800);
+    expect(result.startSample).toBe(0);
+    expect(result.samplesPerPixel).toBeCloseTo(60, 10);
+    expect(result).toEqual({ startSample: 0, samplesPerPixel: zoomFullSamplesPerPixel(48_000, 800) });
   });
 });
 

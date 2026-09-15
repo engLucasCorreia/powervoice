@@ -1,5 +1,6 @@
 <script lang="ts">
   import { analyzerState, setAnalyzerVisible } from "../analyzer/analyzer.svelte";
+  import { documentState, hasDocument } from "../document/document.svelte";
   import { t, tDynamic } from "../i18n";
   import { dispatchAction } from "../shortcuts";
   import { shortcutLabelForAction } from "../shortcuts/shortcutLabel";
@@ -7,6 +8,7 @@
   import { MENU_MNEMONICS } from "../menu/menubar.svelte";
   import type { RendererPreference } from "../render/rendererMode";
   import { rendererPref, setRendererPreference } from "../state/rendererPref.svelte";
+  import { hasSelection } from "../state/selection.svelte";
   import { saveSettings, settingsState } from "../state/settings.svelte";
   import { spectralState } from "../state/spectral.svelte";
   import { setTimeRulerFormat, timeRulerFormatState } from "../state/waveformView.svelte";
@@ -27,12 +29,18 @@
    * `waveformView.svelte.ts`'s `timeRulerFormatState`, no shortcut named by the spec) and Snap to
    * Zero Crossing (SPEC-006 §2.10, `Settings.snap_to_zero_crossing`, same checkbox pattern as
    * Follow Playhead).
+   * H-35: Zoom to Selection/Zoom Full (SPEC-006 §2.6, `dispatchAction` — no registry binding yet,
+   * see `actions.ts`; Zoom to Selection is disabled without one, per the ticket) and the vertical
+   * zoom trio (Zoom In/Out (Vertical), Reset Vertical Zoom — `Alt+=`/`Alt+-`/`Alt+0`, SPEC-006
+   * §2.4).
    */
   const analyzer = analyzerState();
   const spectral = spectralState();
   const renderer = rendererPref();
   const theme = themeState();
   const timeFormat = timeRulerFormatState();
+  const doc = documentState();
+  const isOpen = $derived(hasDocument(doc.current));
   const playheadFollow = $derived(settingsState().current?.playhead_follow ?? true);
   const snapToZeroCrossing = $derived(settingsState().current?.snap_to_zero_crossing ?? false);
 
@@ -113,6 +121,48 @@
       shortcut: shortcutLabelForAction("waveform.zoom_out"),
       testid: "menu-zoom-out",
       onselect: () => dispatchAction("waveform.zoom_out"),
+    },
+    {
+      kind: "item",
+      id: "zoom-to-selection",
+      label: t("waveform.zoom_to_selection"),
+      shortcut: shortcutLabelForAction("waveform.zoom_to_selection"),
+      disabled: !isOpen || !hasSelection(),
+      testid: "menu-zoom-to-selection",
+      onselect: () => dispatchAction("waveform.zoom_to_selection"),
+    },
+    {
+      kind: "item",
+      id: "zoom-full",
+      label: t("waveform.zoom_full"),
+      shortcut: shortcutLabelForAction("waveform.zoom_full"),
+      disabled: !isOpen,
+      testid: "menu-zoom-full",
+      onselect: () => dispatchAction("waveform.zoom_full"),
+    },
+    {
+      kind: "item",
+      id: "zoom-in-vertical",
+      label: t("menu.view.zoom_in_vertical"),
+      shortcut: shortcutLabelForAction("waveform.zoom_in_vertical"),
+      testid: "menu-zoom-in-vertical",
+      onselect: () => dispatchAction("waveform.zoom_in_vertical"),
+    },
+    {
+      kind: "item",
+      id: "zoom-out-vertical",
+      label: t("menu.view.zoom_out_vertical"),
+      shortcut: shortcutLabelForAction("waveform.zoom_out_vertical"),
+      testid: "menu-zoom-out-vertical",
+      onselect: () => dispatchAction("waveform.zoom_out_vertical"),
+    },
+    {
+      kind: "item",
+      id: "zoom-reset-vertical",
+      label: t("menu.view.zoom_reset_vertical"),
+      shortcut: shortcutLabelForAction("waveform.zoom_reset_vertical"),
+      testid: "menu-zoom-reset-vertical",
+      onselect: () => dispatchAction("waveform.zoom_reset_vertical"),
     },
     { kind: "separator", id: "sep-renderer" },
     {

@@ -76,8 +76,14 @@ export interface ShortcutDef extends KeyBinding {
  *   record mode)", which is the same owner-overridden ambiguity — so Shift+R stays, still
  *   provisional, not contradicted by anything with better sourcing).
  * - M = add marker. Ctrl/⌘+Z = undo, Ctrl/⌘+Shift+Z = redo. Ctrl/⌘+O/S/Shift+S = open/save/save as.
- * - `=`/`-` = waveform zoom in/out (horizontal; vertical zoom and Zoom to Selection/Zoom Full have
- *   no implementation to bind a key to yet — SPEC-006 §2.4/§2.6, T-701 report).
+ * - `=`/`-` = waveform zoom in/out (horizontal). H-35: `Alt+=`/`Alt+-` = vertical (amplitude) zoom
+ *   in/out — **Verified** against Audition by the same two sources as horizontal `=`/`-`
+ *   (tutorialtactic.com, pie-menu.com, both agreeing on the modifier per SPEC-006 §2.6). `Alt+0` =
+ *   reset vertical zoom to 1× — no source documents a reset binding, so this is a
+ *   PowerVoice-original, conservative choice (unused elsewhere, and `0` already reads as
+ *   "reset/clear" the same shape as `Ctrl+0` = delete selected marker(s), see SPEC-006 §2.6's
+ *   H-35 amendment). Zoom to Selection/Zoom Full exist (menu + toolbar, SPEC-006 §2.6) but their
+ *   keyboard binding is still deferred to SPEC-019 (two sources disagree) — no registry entry.
  * - Ctrl/⌘+X/C/V = cut/copy/paste, Delete = delete, Ctrl/⌘+T = trim to selection (Crop); Ctrl/⌘+A
  *   selects all, Esc clears the selection. Silence/Insert Silence and Mix Paste/Copy to New have
  *   no default binding (menu only / not implemented, SPEC-008 §2.11).
@@ -132,6 +138,27 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   },
   { action: "waveform.zoom_in", code: "Equal", scope: "waveform", labelKey: "shortcut.waveform.zoom_in" },
   { action: "waveform.zoom_out", code: "Minus", scope: "waveform", labelKey: "shortcut.waveform.zoom_out" },
+  {
+    action: "waveform.zoom_in_vertical",
+    code: "Equal",
+    alt: true,
+    scope: "waveform",
+    labelKey: "shortcut.waveform.zoom_in_vertical",
+  },
+  {
+    action: "waveform.zoom_out_vertical",
+    code: "Minus",
+    alt: true,
+    scope: "waveform",
+    labelKey: "shortcut.waveform.zoom_out_vertical",
+  },
+  {
+    action: "waveform.zoom_reset_vertical",
+    code: "Digit0",
+    alt: true,
+    scope: "waveform",
+    labelKey: "shortcut.waveform.zoom_reset_vertical",
+  },
   { action: "edit.cut", code: "KeyX", mod: true, scope: "global", labelKey: "shortcut.edit.cut" },
   { action: "edit.copy", code: "KeyC", mod: true, scope: "global", labelKey: "shortcut.edit.copy" },
   { action: "edit.paste", code: "KeyV", mod: true, scope: "global", labelKey: "shortcut.edit.paste" },

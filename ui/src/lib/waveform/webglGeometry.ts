@@ -12,11 +12,13 @@ import { columnYRange, pixelAtSample } from "./coords";
 import { QuadBatch, type Rgba } from "../render/quads";
 
 /** One quad per non-`null` column (SPEC-006 §2.3 min/max fill), in the same left-to-right order
- * as {@link reduceColumns}'s output. */
+ * as {@link reduceColumns}'s output. `verticalZoom` (H-35, SPEC-006 §2.4) defaults to `1`
+ * (unscaled). */
 export function buildColumnQuads(
   columns: ReadonlyArray<[number, number] | null>,
   centerY: number,
   color: Rgba,
+  verticalZoom = 1,
 ): QuadBatch {
   const batch = new QuadBatch();
   for (let px = 0; px < columns.length; px++) {
@@ -25,7 +27,7 @@ export function buildColumnQuads(
       continue;
     }
     const [mn, mx] = column;
-    const [yTop, yBot] = columnYRange(mn, mx, centerY);
+    const [yTop, yBot] = columnYRange(mn, mx, centerY, verticalZoom);
     batch.rect(px, yTop, px + 1, yBot, color);
   }
   return batch;
@@ -46,7 +48,8 @@ export interface RawPolylineGeometry {
 /** The raw polyline + dots (SPEC-006 §2.3, below `RAW_SPP`), built with the exact same
  * `pixelAtSample`/centerY math as the Canvas2D fallback's `drawRawPolyline`. `widthPx` matches the
  * theme's stroke width (`themeColors().strokePx`) so the two renderers agree pixel-for-pixel,
- * including in High Contrast's heavier stroke (H-31). */
+ * including in High Contrast's heavier stroke (H-31). `verticalZoom` (H-35, SPEC-006 §2.4)
+ * defaults to `1` (unscaled). */
 export function buildRawPolyline(
   samples: ReadonlyArray<readonly [number, number] | undefined>,
   fetchStartSample: number,
@@ -56,6 +59,7 @@ export function buildRawPolyline(
   color: Rgba,
   withDots: boolean,
   widthPx = 1,
+  verticalZoom = 1,
 ): RawPolylineGeometry {
   const [r, g, b, a] = color;
   const batch = new QuadBatch();
@@ -69,7 +73,7 @@ export function buildRawPolyline(
       continue;
     }
     const px = pixelAtSample(fetchStartSample + i, startSample, samplesPerPixel);
-    const y = centerY - sample[0] * centerY;
+    const y = centerY - sample[0] * verticalZoom * centerY;
     if (withDots) {
       dotPts.push(px, y, r, g, b, a);
     }

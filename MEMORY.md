@@ -200,6 +200,7 @@ The project is NOT finished until T-706..T-709 are done.
 
 ## Owner requests after the M8 push (2026-09-15)
 - H-41: vertical, fixed-size output level meter with readable peak/RMS (ballistics, hold, throttled numerals) — the horizontal bar resized the analyzer.
+- H-43: idle CPU — the web view main thread used ~1 core while idle (owner measured from outside); fix after H-41/H-42/T-704 merge.
 - H-42: analyzer diagnostics — peak frequency labels, voice statistics (F0, sibilance/de-esser suggestion, mud/presence, hum, rumble, noise floor), LTAS, compare/freeze, optional Spectrum Inspector window.
 
 ## Ticket learnings

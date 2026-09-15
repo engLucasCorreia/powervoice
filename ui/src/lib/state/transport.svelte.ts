@@ -100,6 +100,17 @@ function report(err: unknown): void {
 }
 
 function applyState(next: TransportStateDto): void {
+  // H-32: a malformed/missing IPC response must never corrupt this store — every reader
+  // (RackPanel's `rateHz`, the EQ graph, the meter bridge, `extrapolatedPositionAt`, ...) assumes
+  // `state` is always a real `TransportStateDto`. Root cause: `document.svelte.ts`'s `applyDoc`
+  // fires an automatic `seek()` on open to restore the saved cursor; the dev-preview harness had
+  // no `transport_seek` case, so that command resolved `null` and `state = null` stuck forever —
+  // racing the real `transport_get` reply that fires from `initTransport` at the same time,
+  // which is why this only showed up sometimes (worse odds the busier the page, e.g. more visible
+  // panels at a wider window width delaying one side of the race).
+  if (!next) {
+    return;
+  }
   state = next;
   ready = true;
   if (!next.playing && !extrapolator.hasAnchor) {

@@ -151,23 +151,30 @@
     const tick = (now: number) => {
       const dtS = Math.max(0, Math.min(0.25, (now - last) / 1000));
       last = now;
-      const f = frame;
-      if (f) {
-        if (f.reset) {
-          resetPeakHold(peaks);
-          // A device reopen/rate change invalidates a manual zoom picked against the old
-          // Nyquist rate (SPEC-007 §4.8.6 treats this exactly like the analyzer's own reset).
-          zoomRange = null;
+      try {
+        const f = frame;
+        if (f) {
+          if (f.reset) {
+            resetPeakHold(peaks);
+            // A device reopen/rate change invalidates a manual zoom picked against the old
+            // Nyquist rate (SPEC-007 §4.8.6 treats this exactly like the analyzer's own reset).
+            zoomRange = null;
+          }
+          if (peaks.length !== f.levelsDb.length) {
+            peaks = createPeakHold(f.levelsDb.length);
+          }
+          if (analyzer.peakHold) {
+            peaks = updatePeakHold(peaks, f.levelsDb, dtS);
+          }
         }
-        if (peaks.length !== f.levelsDb.length) {
-          peaks = createPeakHold(f.levelsDb.length);
-        }
-        if (analyzer.peakHold) {
-          peaks = updatePeakHold(peaks, f.levelsDb, dtS);
-        }
+        draw();
+      } finally {
+        // H-32: reschedule unconditionally — a transient bad read must never stop this loop from
+        // trying again next frame (same shared cause as the EQ graph: a corrupted `transport`
+        // store, fixed at the source in `transport.svelte.ts`, but this loop shouldn't depend on
+        // every future reader being exception-free to keep animating).
+        raf = requestAnimationFrame(tick);
       }
-      draw();
-      raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);

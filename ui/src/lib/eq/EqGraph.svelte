@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { eqAxisLayout, EQ_AXIS_FONT_PX } from "./axisLayout";
   import { t, tDynamic } from "../i18n";
   import type { RackSlotDto, ResponseCurveDto } from "../ipc/bindings";
@@ -84,8 +85,43 @@
     return () => ro.disconnect();
   });
 
-  $effect(() => {
-    draw();
+  // H-32: draw on a perpetual animation-frame loop (like `WaveformView`/`SpectralView`/
+  // `AnalyzerPanel`), not a reactive `$effect(() => draw())`. A Svelte `$effect` only re-runs for
+  // state it actually read during its *last* run; the rack column's width can briefly read wide
+  // (or 0) before the persisted layout settles on first paint, and a `$effect`-scheduled draw that
+  // returns early (or throws) before reaching `curve`/`nodes` never subscribes to their later
+  // arrival — the graph is left showing only whatever partial frame it managed, permanently,
+  // until something it *did* read (e.g. `width`) happens to change again (a manual window
+  // resize). The rAF loop redraws unconditionally every frame, so a bad first-paint measurement
+  // self-heals on the very next frame with no dependency tracking involved.
+  onMount(() => {
+    const requestFrame: (cb: () => void) => number =
+      typeof requestAnimationFrame === "function"
+        ? (cb) => requestAnimationFrame(cb)
+        : (cb) => setTimeout(cb, 16) as unknown as number;
+    const cancelFrame: (id: number) => void =
+      typeof cancelAnimationFrame === "function"
+        ? (id) => cancelAnimationFrame(id)
+        : (id) => clearTimeout(id);
+    let disposed = false;
+    let frameId = 0;
+    const loop = () => {
+      if (disposed) {
+        return;
+      }
+      try {
+        draw();
+      } finally {
+        // Reschedule unconditionally — even a bug inside `draw()` that somehow escapes its own
+        // try/catch must never stop this loop from trying again next frame (H-32).
+        frameId = requestFrame(loop);
+      }
+    };
+    frameId = requestFrame(loop);
+    return () => {
+      disposed = true;
+      cancelFrame(frameId);
+    };
   });
 
   /** The UI font for canvas labels (a font stack, not a colour). */
@@ -109,6 +145,23 @@
       canvasEl.height = backingH;
     }
     ctx.save();
+    try {
+      drawInner(ctx, dpr);
+    } catch (err) {
+      // A draw must never throw all the way out to the rAF loop below — that would stop `loop()`
+      // from rescheduling its next frame and leave the graph frozen forever, just like the
+      // original H-32 bug via a different mechanism. Log and retry on the next frame instead.
+      if (import.meta.env.DEV) {
+        console.error("[EqGraph] draw failed; retrying next frame", err);
+      }
+    } finally {
+      // Always balances the `ctx.save()` above, even after a throw — an unbalanced context stack
+      // would otherwise distort every later frame's transform.
+      ctx.restore();
+    }
+  }
+
+  function drawInner(ctx: CanvasRenderingContext2D, dpr: number): void {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, GRAPH_HEIGHT_PX);
 
@@ -157,9 +210,14 @@
     const c = curve;
     if (c && c.freqs_hz.length > 0) {
       const zeroY = yForDb(0, GRAPH_HEIGHT_PX, gainRangeDb);
-      const points = totalCurveToScreen(c, width, GRAPH_HEIGHT_PX, fLo, fHi, gainRangeDb);
+      // A point with a non-finite coordinate (a param/curve value briefly mid-update) is
+      // dropped rather than handed to `moveTo`/`lineTo` — one bad sample must not blank the
+      // whole polyline (H-32).
+      const finitePoints = totalCurveToScreen(c, width, GRAPH_HEIGHT_PX, fLo, fHi, gainRangeDb).filter(
+        ({ x, y }) => Number.isFinite(x) && Number.isFinite(y),
+      );
       ctx.beginPath();
-      points.forEach(({ x, y }, i) => {
+      finitePoints.forEach(({ x, y }, i) => {
         if (i === 0) {
           ctx.moveTo(x, y);
         } else {
@@ -169,17 +227,22 @@
       ctx.strokeStyle = themeColors().eq.curve.css;
       ctx.lineWidth = themeColors().emphasisStrokePx;
       ctx.stroke();
-      ctx.lineTo(width, zeroY);
-      ctx.lineTo(0, zeroY);
-      ctx.closePath();
-      ctx.fillStyle = themeColors().eq.fill.css;
-      ctx.fill();
+      if (finitePoints.length > 0) {
+        ctx.lineTo(width, zeroY);
+        ctx.lineTo(0, zeroY);
+        ctx.closePath();
+        ctx.fillStyle = themeColors().eq.fill.css;
+        ctx.fill();
+      }
     }
 
     // Nodes (SPEC-015 §2.6.3 "Nodes").
     for (const node of nodes) {
       const x = xForFreq(node.freqHz, width, fLo, fHi);
       const y = yForDb(nodeGainDb(node, curve) ?? 0, GRAPH_HEIGHT_PX, gainRangeDb);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        continue; // same rationale as the curve above — skip, don't abort the whole graph
+      }
       const color = eqBandColor(themeColors(), String(node.bandKey || node.component)).css;
       ctx.beginPath();
       ctx.arc(x, y, 6, 0, Math.PI * 2);
@@ -201,7 +264,6 @@
         ctx.stroke();
       }
     }
-    ctx.restore();
   }
 
   interface Dragging {

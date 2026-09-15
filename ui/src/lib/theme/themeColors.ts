@@ -12,8 +12,9 @@ import { RESOLVED_THEMES, themeState, type ResolvedTheme } from "./theme.svelte"
  * `design-tokens.css` for the resolved theme — the token file stays the only place a colour is
  * written down.
  *
- * Reading `themeColors()` inside an `$effect` subscribes it to theme changes (EQ graph); the rAF
- * loops (waveform, spectral, analyzer) simply pick the new object up on their next frame.
+ * Every renderer (waveform, spectral, analyzer, EQ graph — H-32) draws on its own perpetual
+ * animation-frame loop rather than a reactive `$effect`, so a theme switch is simply picked up on
+ * the next frame with no explicit subscription needed.
  */
 
 /** One colour in both shapes the renderers need. */

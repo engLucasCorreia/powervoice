@@ -68,8 +68,8 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-28 | Post-H-26/H-27 fixes: `?preview&scene=recording` `effect_update_depth_exceeded` in WaveformView follow effects, transport store null guard when telemetry precedes `transport_get`, View-menu toggle for `Settings.playhead_follow`, Normalize target fields in true minus | S | done |
 | H-29 | Plugin follow-ups (T-809): uninstall action (remove installed file + registry, confirm, documents keep a Missing slot), deterministic duplicate-id policy across install/rescan, move plugin fixtures into `ui/src/lib/test/fixtures.ts` | S | done |
 | H-30 | Job-service consistency (T-602): export and save hold `SpectroService::begin_background_job()` (SPEC-007 lists them), every job service emits its error notice before the terminal `Failed` event (audit export/loudness/normalize/nr_capture/calibration), a rack edit during a bake is refused instead of discarded at commit | S | in progress |
-| H-31 | Theme follow-ups (T-708): Match System also honours `prefers-contrast: more` → High Contrast (A-019), High Contrast column in the component gallery, WebGL thick sample lines in HC (quad-based) | S | todo |
-| H-32 | EQ graph draws grid but no curve/labels at 2126×850 (all themes; first-layout measuring bug) — found in T-708 screenshots | S | in progress |
+| H-31 | Theme follow-ups (T-708): Match System also honours `prefers-contrast: more` → High Contrast (A-019), High Contrast column in the component gallery, WebGL thick sample lines in HC (quad-based), preview IPC transport command cases (H-32/T-709) | S | in progress |
+| H-32 | EQ graph draws grid but no curve/labels at 2126×850 (all themes; first-layout measuring bug) — found in T-708 screenshots | S | done |
 | H-18 | Shared test factories for DTOs (`ui/src/lib/test/fixtures.ts` + Rust builders) so a new DTO field touches one helper, not 20 test literals (merge-friction fix) | H | done |
 | H-17 | Recovery follow-ups (T-301): dialog stays open for remaining sessions (A-015), AC-3/AC-11 timing on a real disk (test-big), compaction off the document lock, markers during an interrupted take, Memory-for-audio UI, `/tmp/vox-project-*` sweep | S | done |
 | H-15 | Sidecar follow-ups (T-306): recent-file-missing dialog, read-only folder matrix (AC-13), SIGKILL-during-sidecar-save test (AC-6), per-slot leniency for a malformed rack slot, perf budget (AC-18) | S | done |
@@ -184,7 +184,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-803 | CLAP adapter (+ enumerate) | W3 | O | T-802 | done |
 | T-804 | Scanner orchestration, cache, blocklist | W3 | S | T-802 | done |
 | T-805 | Our modules as CLAP packages (clack-plugin) | W4 | O | T-803 | todo |
-| T-806 | VST3 adapter (coupler vst3 + moduleinfo scan) | W4 | O | T-803, T-804 | todo |
+| T-806 | VST3 adapter (coupler vst3 + moduleinfo scan) | W4 | O | T-803, T-804 | in progress |
 | T-807 | LV2 adapter (livi) | W4 | O | T-803, T-804 | todo |
 | T-808 | JSFX adapter (ysfx, sandbox-only) | W4 | O | T-803, T-804 | todo |
 | T-809 | Plugin manager UI + "Install module…" | W5 | S | T-804 | done |

@@ -38,6 +38,38 @@ describe("eqAxisLayout (H-26: EQ graph labels never collide)", () => {
     }
   });
 
+  it("H-32: never throws and keeps every label in bounds at wide rack/window sizes, including the exact width that regressed (2126px), and at 0/negative/non-finite widths", () => {
+    // H-32's evidence was a first-paint measuring bug, not a layout-math one — this pins the
+    // pure math down anyway, for the exact reported width and the whole range a canvas could
+    // transiently report before the rack column settles (up to a very wide monitor, and the
+    // degenerate 0/negative/non-finite values `clientWidth` must never produce but a stale
+    // read theoretically could).
+    for (const rangeDb of [EQ_GAIN_RANGE_DEFAULT_DB, EQ_GAIN_RANGE_WIDE_DB]) {
+      for (const width of [0, -1, NaN, Infinity, 721, 1000, 1280, 1600, 2126, 2560, 5000]) {
+        expect(() => layout(width, rangeDb), `width=${width}`).not.toThrow();
+        if (!(width > 0) || !Number.isFinite(width)) {
+          continue; // degenerate widths have no meaningful "in bounds" to check
+        }
+        const labels = all(layout(width, rangeDb));
+        for (const label of labels) {
+          const where = `${label.text} @ ${width}px ±${rangeDb}`;
+          expect(label.rect.x, where).toBeGreaterThanOrEqual(0);
+          expect(label.rect.y, where).toBeGreaterThanOrEqual(0);
+          expect(label.rect.x + label.rect.width, where).toBeLessThanOrEqual(width);
+          expect(label.rect.y + label.rect.height, where).toBeLessThanOrEqual(HEIGHT);
+        }
+        for (let i = 0; i < labels.length; i++) {
+          for (let j = i + 1; j < labels.length; j++) {
+            expect(
+              rectsOverlap(labels[i]!.rect, labels[j]!.rect),
+              `${labels[i]!.text} vs ${labels[j]!.text} @ ${width}px ±${rangeDb}`,
+            ).toBe(false);
+          }
+        }
+      }
+    }
+  });
+
   it("always shows the 0 dB line and both gain range ends, with a true minus", () => {
     const gain = layout(280, EQ_GAIN_RANGE_DEFAULT_DB).gain.map((l) => l.text);
     expect(gain).toContain("0");

@@ -926,8 +926,14 @@
       if (disposed) {
         return;
       }
-      draw();
-      frameId = requestFrame(loop);
+      try {
+        draw();
+      } finally {
+        // H-32: reschedule unconditionally — a transient bad read (e.g. the shared `transport`
+        // store, guarded at the source in `transport.svelte.ts`) must never stop this loop from
+        // trying again next frame.
+        frameId = requestFrame(loop);
+      }
     };
     frameId = requestFrame(loop);
     cleanups.push(() => cancelFrame(frameId));

@@ -119,6 +119,7 @@ impl PluginInstance for TestPlugin {
         let g = self.lock();
         let m = &g.module;
         PluginInfo {
+            editor: false,
             name: self.name.to_owned(),
             vendor: "PowerVoice".to_owned(),
             version: m.descriptor().version.to_string(),

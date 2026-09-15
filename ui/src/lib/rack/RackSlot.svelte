@@ -11,10 +11,12 @@
   import ParamGroupSection from "./ParamGroupSection.svelte";
   import { openManagePresets } from "./managePresets.svelte";
   import {
+    closePluginWindow,
     deleteModulePreset,
     listModulePresets,
     loadModulePreset,
     noteSlotFocused,
+    openPluginWindow,
     removeSlot,
     resetSlotToDefault,
     restartSlot,
@@ -82,6 +84,31 @@
   /** Retry = the rack's Restart of a failed slot (a sandboxed plugin is respawned with its
    * last committed state). A missing module can't be restarted (SPEC-012 §2.9). */
   const canRetry = $derived(slot.status.kind === "failed");
+
+  // T-901: a running sandboxed plugin offers its own window (a floating window its sandbox runs).
+  // Without a GUI the button stays, disabled, with a tooltip saying why (`aria-disabled` keeps
+  // the tooltip, which a native `disabled` would suppress).
+  const offersWindow = $derived(slot.sandboxed && slot.status.kind === "active");
+  const windowLabel = $derived(
+    !slot.has_editor
+      ? t("rack.slot.window.unavailable")
+      : slot.editor_open
+        ? t("rack.slot.window.close")
+        : t("rack.slot.window.open"),
+  );
+
+  function toggleWindow(): void {
+    if (!slot.has_editor) {
+      return;
+    }
+    void (slot.editor_open ? closePluginWindow(index) : openPluginWindow(index, slot.name));
+  }
+
+  function openWindowFromName(): void {
+    if (offersWindow && slot.has_editor && !slot.editor_open) {
+      void openPluginWindow(index, slot.name);
+    }
+  }
 
   // --- Presets (T-406, SPEC-012 §2.7) -----------------------------------------------------
   let presetEntries = $state<PresetEntryDto[] | null>(null);
@@ -220,7 +247,20 @@
   });
 
   const menuItems = $derived.by((): MenuEntry[] => {
-    const list: MenuEntry[] = [
+    const list: MenuEntry[] = [];
+    if (offersWindow && slot.has_editor) {
+      list.push(
+        {
+          kind: "item",
+          id: "window",
+          label: windowLabel,
+          testid: "rack-slot-window-menu",
+          onselect: toggleWindow,
+        },
+        { kind: "separator", id: "sep-window" },
+      );
+    }
+    list.push(
       {
         kind: "item",
         id: "restart",
@@ -235,7 +275,7 @@
         testid: "rack-slot-remove",
         onselect: () => void removeSlot(index),
       },
-    ];
+    );
     if (slot.module_id) {
       list.push(
         { kind: "separator", id: "sep-presets" },
@@ -386,7 +426,8 @@
       aria-expanded={!collapsed}
       onclick={() => (collapsed = !collapsed)}
     />
-    <span class="name" data-testid="rack-slot-name">{slot.name}</span>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <span class="name" data-testid="rack-slot-name" ondblclick={openWindowFromName}>{slot.name}</span>
     {#if crashCount > 0}
       <span class="flag">
         <IconButton
@@ -405,6 +446,19 @@
     {/if}
     {#if latencyLabel}
       <span class="latency" title={latencyLabel}>{latencyLabel}</span>
+    {/if}
+    {#if offersWindow}
+      <span class="window" class:unavailable={!slot.has_editor}>
+        <IconButton
+          icon="pluginWindow"
+          label={windowLabel}
+          size="sm"
+          pressed={slot.has_editor ? slot.editor_open : undefined}
+          aria-disabled={slot.has_editor ? undefined : "true"}
+          testid="rack-slot-window"
+          onclick={toggleWindow}
+        />
+      </span>
     {/if}
     {#if slot.status.kind === "active"}
       {#each headerMeters as { channel, index } (channel.id)}
@@ -532,6 +586,20 @@
 
   .flag :global(.pv-icon-button) {
     color: inherit;
+  }
+
+  /* T-901: the plugin-window key; without a GUI it stays visible (with its tooltip) but dimmed. */
+  .window {
+    display: inline-flex;
+  }
+
+  .window.unavailable :global(.pv-icon-button) {
+    opacity: 0.45;
+  }
+
+  .window.unavailable :global(.pv-icon-button:hover) {
+    background: transparent;
+    color: var(--pv-text-secondary);
   }
 
   .latency {

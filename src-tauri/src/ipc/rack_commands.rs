@@ -2,10 +2,10 @@
 //! `RackCommand` and maps the result to a DTO (ADR-003); Rust — not this layer, not the UI —
 //! parses parameter text and formats it back (`param_set_text`, SPEC-012 §2.6).
 
-use tauri::State;
 use tauri::ipc::{Channel, InvokeResponseBody};
+use tauri::{AppHandle, Manager, Runtime, State};
 use vox_engine::{ModuleTelemetryFrame, RackCommand};
-use vox_rack::{ModuleDescriptor, ParamId};
+use vox_rack::{EditorRequest, ModuleDescriptor, ParamId};
 
 use crate::audio::AudioEngine;
 use crate::document::DocumentService;
@@ -153,6 +153,78 @@ pub async fn rack_restart(
     slot: usize,
 ) -> Result<RackStateDto, IpcError> {
     apply(&engine, &documents, RackCommand::Restart { index: slot }).await
+}
+
+/// T-901 (ADR-008 §7): the handle a plugin window stays above — an X11 window id when PowerVoice
+/// itself runs on X11 (XWayland included), the `HWND` on Windows; `None` on Wayland and macOS,
+/// where the plugin window floats on its own.
+fn editor_parent<R: Runtime>(app: &AppHandle<R>) -> Option<u64> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let window = app.get_webview_window("main")?;
+    let handle = window.window_handle().ok()?;
+    match handle.as_raw() {
+        RawWindowHandle::Xlib(h) => {
+            // A C `unsigned long`: 64-bit here, 32-bit on Windows.
+            #[allow(clippy::unnecessary_cast)]
+            let id = h.window as u64;
+            Some(id)
+        }
+        RawWindowHandle::Xcb(h) => Some(u64::from(h.window.get())),
+        RawWindowHandle::Win32(h) => Some(h.hwnd.get() as u64),
+        _ => None,
+    }
+}
+
+/// Runs `cmd` on the engine's control thread (no bake guard: plugin windows don't change the
+/// rack).
+async fn run_editor_command(
+    engine: &AudioEngine,
+    cmd: RackCommand,
+) -> Result<RackStateDto, IpcError> {
+    let handle = engine.handle().clone();
+    let result = tauri::async_runtime::spawn_blocking(move || handle.rack_command(cmd))
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+    Ok(RackStateDto::from(&result.map_err(rack_ipc_error)?))
+}
+
+/// Opens slot `slot`'s plugin window (T-901): the plugin's own GUI, a floating window run by its
+/// sandbox, titled `title` (the UI localizes "‹Plugin› — PowerVoice"). Waits for the plugin's
+/// GUI (off the engine's control thread); `error.plugin_window.open_failed` with the reason.
+#[tauri::command]
+pub async fn rack_editor_open<R: Runtime>(
+    app: AppHandle<R>,
+    engine: State<'_, AudioEngine>,
+    slot: usize,
+    title: String,
+) -> Result<RackStateDto, IpcError> {
+    let request = EditorRequest {
+        title,
+        parent: editor_parent(&app),
+    };
+    let handle = engine.handle().clone();
+    let result =
+        tauri::async_runtime::spawn_blocking(move || handle.rack_open_editor(slot, request))
+            .await
+            .map_err(|e| IpcError::internal(e.to_string()))?;
+    Ok(RackStateDto::from(&result.map_err(rack_ipc_error)?))
+}
+
+/// Closes slot `slot`'s plugin window (T-901; no-op when closed).
+#[tauri::command]
+pub async fn rack_editor_close(
+    engine: State<'_, AudioEngine>,
+    slot: usize,
+) -> Result<RackStateDto, IpcError> {
+    run_editor_command(&engine, RackCommand::CloseEditor { index: slot }).await
+}
+
+/// Closes every plugin window (T-901).
+#[tauri::command]
+pub async fn rack_editor_close_all(
+    engine: State<'_, AudioEngine>,
+) -> Result<RackStateDto, IpcError> {
+    run_editor_command(&engine, RackCommand::CloseAllEditors).await
 }
 
 /// Sets a parameter from a normalized `[0, 1]` slider position (SPEC-012 §2.4, §2.6). The UI is

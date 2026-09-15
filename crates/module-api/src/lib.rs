@@ -16,8 +16,8 @@
 //! - Packaged modules (ADR-006 §2): [`ModuleInfo`], the JSON a CLAP-packaged module publishes
 //!   through [`MODULE_INFO_EXTENSION_ID`]; [`is_valid_module_id`].
 //! - Extensions: [`ExtensionId`], [`Extension`], [`Telemetry`], [`ResponseCurve`],
-//!   [`NoiseProfile`], [`AdapterHealth`], [`ParamText`] (§11; the last two are host-internal,
-//!   T-802/T-803).
+//!   [`NoiseProfile`], [`AdapterHealth`], [`ParamText`], [`PluginEditor`] (§11; the last three
+//!   are host-internal, T-802/T-803/T-901).
 //!
 //! Feature `test-util` adds [`test_util::ModuleTestHost`] and the reference module
 //! [`test_util::TestGain`].
@@ -47,9 +47,10 @@ pub use event::{
     DEFAULT_EVENT_CAPACITY, EventList, EventListError, OutputEvents, ParamEvent, Segment, segments,
 };
 pub use extension::{
-    AdapterHealth, AtomicF32, CurveHandle, Extension, ExtensionId, Hold, NoiseProfile, ParamText,
-    ResponseCurve, Telemetry, TelemetryCells, TelemetryInfo, TelemetryKind, adapter_health,
-    noise_profile, param_text, response_curve, telemetry,
+    AdapterHealth, AtomicF32, CurveHandle, EditorRequest, EditorUpdate, Extension, ExtensionId,
+    Hold, NoiseProfile, ParamText, PluginEditor, ResponseCurve, Telemetry, TelemetryCells,
+    TelemetryInfo, TelemetryKind, adapter_health, noise_profile, param_text, plugin_editor,
+    response_curve, telemetry,
 };
 pub use info::{MODULE_INFO_EXTENSION_ID, ModuleInfo, ModuleInfoError};
 pub use module::{Module, ModuleError};

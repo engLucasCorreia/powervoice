@@ -547,7 +547,7 @@ function rackFixture(withPlugin: boolean): RackStateDto {
   const breath = slot(5, PREVIEW_FLAGGED_PLUGIN, "Breath Control", [
     param(0, "p0", "Reduction", db, -30, 0, -12, 1),
     param(1, "p1", "Sensitivity", none, 0, 100, 60, 0),
-  ], { sandboxed: true, latency_samples: 256 });
+  ], { sandboxed: true, has_editor: true, latency_samples: 256 });
   const slots = withPlugin ? [eq, gate, comp, limiter, breath] : [eq, gate, comp, limiter];
   return rackStateDto(slots, false, withPlugin ? 320 : 64);
 }
@@ -805,7 +805,7 @@ export function installPreviewIpc(options: PreviewOptions): void {
   const doc = documentFixture(options);
   const pyramid = options.longDocument === true ? new SyntheticPyramid(doc.len_samples) : null;
   const pluginsScene = ["plugins", "plugins-scanning", "plugins-folders", "plugin-flag"].some(hasScene);
-  const rack = hasScene("rack") ? rackFixture(pluginsScene) : rackStateDto();
+  let rack = hasScene("rack") ? rackFixture(pluginsScene) : rackStateDto();
   const spectro = new Map<number, Sink>();
   let documentOpens = 0;
   let lastSpectrumSources: Array<"source" | "processed"> = ["processed"];
@@ -965,6 +965,19 @@ export function installPreviewIpc(options: PreviewOptions): void {
           return MODULES;
         case "rack_get":
           return rack;
+        // T-901: the preview has no sandbox; the slot's window state just toggles.
+        case "rack_editor_open":
+        case "rack_editor_close":
+        case "rack_editor_close_all": {
+          const open = cmd === "rack_editor_open";
+          rack = {
+            ...rack,
+            slots: rack.slots.map((s, i) =>
+              cmd === "rack_editor_close_all" || i === a.slot ? { ...s, editor_open: open && s.has_editor } : s,
+            ),
+          };
+          return rack;
+        }
         case "rack_response_curve":
           return responseCurve(a.points as number[]);
         case "module_presets_list":

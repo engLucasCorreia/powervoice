@@ -5,6 +5,7 @@
  * action. Per-icon imports keep the bundle to the ~60 icons actually used.
  */
 import Activity from "@lucide/svelte/icons/activity";
+import AppWindow from "@lucide/svelte/icons/app-window";
 import AudioLines from "@lucide/svelte/icons/audio-lines";
 import AudioWaveform from "@lucide/svelte/icons/audio-waveform";
 import Ban from "@lucide/svelte/icons/ban";
@@ -127,6 +128,7 @@ export const ICONS = {
   drag: GripVertical,
   // Plugins (T-809)
   plugin: Plug,
+  pluginWindow: AppWindow,
   install: PackagePlus,
   blocked: Ban,
   refresh: RefreshCw,

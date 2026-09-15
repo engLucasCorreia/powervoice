@@ -26,6 +26,8 @@ pub mod scan;
 #[cfg(unix)]
 mod state;
 #[cfg(unix)]
+mod suil;
+#[cfg(unix)]
 mod worker;
 
 use std::sync::Arc;

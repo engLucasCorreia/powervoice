@@ -12,7 +12,7 @@
 
 #![allow(non_camel_case_types)]
 
-use std::ffi::{CStr, c_char, c_void};
+use std::ffi::{CStr, c_char, c_int, c_void};
 
 /// `clap_version_t`.
 #[repr(C)]
@@ -632,6 +632,195 @@ pub struct clap_host_thread_check {
     pub is_audio_thread: Option<unsafe extern "C" fn(host: *const clap_host) -> bool>,
 }
 
+// --- GUI, timers, file descriptors (T-901) ------------------------------------------------
+
+/// `CLAP_EXT_GUI`.
+pub const CLAP_EXT_GUI: &CStr = c"clap.gui";
+/// `CLAP_EXT_TIMER_SUPPORT`.
+pub const CLAP_EXT_TIMER_SUPPORT: &CStr = c"clap.timer-support";
+/// `CLAP_EXT_POSIX_FD_SUPPORT`.
+pub const CLAP_EXT_POSIX_FD_SUPPORT: &CStr = c"clap.posix-fd-support";
+
+/// `CLAP_WINDOW_API_X11`: an X11 window id.
+pub const CLAP_WINDOW_API_X11: &CStr = c"x11";
+/// `CLAP_WINDOW_API_WIN32`: an `HWND`.
+pub const CLAP_WINDOW_API_WIN32: &CStr = c"win32";
+/// `CLAP_WINDOW_API_COCOA`: an `NSView*`.
+pub const CLAP_WINDOW_API_COCOA: &CStr = c"cocoa";
+/// `CLAP_WINDOW_API_WAYLAND` (floating only; not offered by PowerVoice).
+pub const CLAP_WINDOW_API_WAYLAND: &CStr = c"wayland";
+
+/// The handle of a `clap_window_t` (the C union).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union clap_window_handle {
+    /// `clap_nsview`.
+    pub cocoa: *mut c_void,
+    /// `clap_xwnd` (`unsigned long`).
+    pub x11: std::ffi::c_ulong,
+    /// `clap_hwnd`.
+    pub win32: *mut c_void,
+    /// Any pointer.
+    pub ptr: *mut c_void,
+}
+
+/// `clap_window_t`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct clap_window {
+    /// One of the `CLAP_WINDOW_API_*` strings.
+    pub api: *const c_char,
+    /// The native handle.
+    pub handle: clap_window_handle,
+}
+
+/// `clap_gui_resize_hints_t`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct clap_gui_resize_hints {
+    /// Can resize horizontally.
+    pub can_resize_horizontally: bool,
+    /// Can resize vertically.
+    pub can_resize_vertically: bool,
+    /// Keeps an aspect ratio.
+    pub preserve_aspect_ratio: bool,
+    /// Aspect ratio width.
+    pub aspect_ratio_width: u32,
+    /// Aspect ratio height.
+    pub aspect_ratio_height: u32,
+}
+
+/// `clap_plugin_gui_t` (every call is \[main\]).
+#[repr(C)]
+pub struct clap_plugin_gui {
+    /// The API (and floating/embedded mode) is supported.
+    pub is_api_supported: Option<
+        unsafe extern "C" fn(
+            plugin: *const clap_plugin,
+            api: *const c_char,
+            is_floating: bool,
+        ) -> bool,
+    >,
+    /// The plugin's preferred API.
+    pub get_preferred_api: Option<
+        unsafe extern "C" fn(
+            plugin: *const clap_plugin,
+            api: *mut *const c_char,
+            is_floating: *mut bool,
+        ) -> bool,
+    >,
+    /// Creates the GUI.
+    pub create: Option<
+        unsafe extern "C" fn(
+            plugin: *const clap_plugin,
+            api: *const c_char,
+            is_floating: bool,
+        ) -> bool,
+    >,
+    /// Destroys it.
+    pub destroy: Option<unsafe extern "C" fn(plugin: *const clap_plugin)>,
+    /// Content scale.
+    pub set_scale: Option<unsafe extern "C" fn(plugin: *const clap_plugin, scale: f64) -> bool>,
+    /// Current size (embedded).
+    pub get_size: Option<
+        unsafe extern "C" fn(plugin: *const clap_plugin, width: *mut u32, height: *mut u32) -> bool,
+    >,
+    /// The GUI can be resized by the host.
+    pub can_resize: Option<unsafe extern "C" fn(plugin: *const clap_plugin) -> bool>,
+    /// Resize constraints.
+    pub get_resize_hints: Option<
+        unsafe extern "C" fn(plugin: *const clap_plugin, hints: *mut clap_gui_resize_hints) -> bool,
+    >,
+    /// Rounds a size to one the plugin accepts.
+    pub adjust_size: Option<
+        unsafe extern "C" fn(plugin: *const clap_plugin, width: *mut u32, height: *mut u32) -> bool,
+    >,
+    /// Sets the size (embedded).
+    pub set_size:
+        Option<unsafe extern "C" fn(plugin: *const clap_plugin, width: u32, height: u32) -> bool>,
+    /// Embeds into `window`.
+    pub set_parent: Option<
+        unsafe extern "C" fn(plugin: *const clap_plugin, window: *const clap_window) -> bool,
+    >,
+    /// Floating: stays above `window`.
+    pub set_transient: Option<
+        unsafe extern "C" fn(plugin: *const clap_plugin, window: *const clap_window) -> bool,
+    >,
+    /// Floating: the window title.
+    pub suggest_title:
+        Option<unsafe extern "C" fn(plugin: *const clap_plugin, title: *const c_char)>,
+    /// Shows the window.
+    pub show: Option<unsafe extern "C" fn(plugin: *const clap_plugin) -> bool>,
+    /// Hides it.
+    pub hide: Option<unsafe extern "C" fn(plugin: *const clap_plugin) -> bool>,
+}
+
+/// `clap_host_gui_t`.
+#[repr(C)]
+pub struct clap_host_gui {
+    /// \[thread-safe & !floating\] The resize hints changed.
+    pub resize_hints_changed: Option<unsafe extern "C" fn(host: *const clap_host)>,
+    /// \[thread-safe & !floating\] Asks the host to resize the parent window.
+    pub request_resize:
+        Option<unsafe extern "C" fn(host: *const clap_host, width: u32, height: u32) -> bool>,
+    /// \[thread-safe\] Asks the host to show the window.
+    pub request_show: Option<unsafe extern "C" fn(host: *const clap_host) -> bool>,
+    /// \[thread-safe\] Asks the host to hide the window.
+    pub request_hide: Option<unsafe extern "C" fn(host: *const clap_host) -> bool>,
+    /// \[thread-safe\] The floating window was closed (or the connection to the GUI lost).
+    pub closed: Option<unsafe extern "C" fn(host: *const clap_host, was_destroyed: bool)>,
+}
+
+/// `clap_plugin_timer_support_t`.
+#[repr(C)]
+pub struct clap_plugin_timer_support {
+    /// \[main\] Timer `timer_id` fired.
+    pub on_timer: Option<unsafe extern "C" fn(plugin: *const clap_plugin, timer_id: clap_id)>,
+}
+
+/// `clap_host_timer_support_t`.
+#[repr(C)]
+pub struct clap_host_timer_support {
+    /// \[main\] Registers a periodic timer.
+    pub register_timer: Option<
+        unsafe extern "C" fn(
+            host: *const clap_host,
+            period_ms: u32,
+            timer_id: *mut clap_id,
+        ) -> bool,
+    >,
+    /// \[main\] Unregisters it.
+    pub unregister_timer:
+        Option<unsafe extern "C" fn(host: *const clap_host, timer_id: clap_id) -> bool>,
+}
+
+/// `clap_posix_fd_flags_t`: readable.
+pub const CLAP_POSIX_FD_READ: u32 = 1 << 0;
+/// Writable.
+pub const CLAP_POSIX_FD_WRITE: u32 = 1 << 1;
+/// Error.
+pub const CLAP_POSIX_FD_ERROR: u32 = 1 << 2;
+
+/// `clap_plugin_posix_fd_support_t`.
+#[repr(C)]
+pub struct clap_plugin_posix_fd_support {
+    /// \[main\] `fd` is ready (`flags`: `CLAP_POSIX_FD_*`).
+    pub on_fd: Option<unsafe extern "C" fn(plugin: *const clap_plugin, fd: c_int, flags: u32)>,
+}
+
+/// `clap_host_posix_fd_support_t`.
+#[repr(C)]
+pub struct clap_host_posix_fd_support {
+    /// \[main\] Watches `fd`.
+    pub register_fd:
+        Option<unsafe extern "C" fn(host: *const clap_host, fd: c_int, flags: u32) -> bool>,
+    /// \[main\] Changes what is watched.
+    pub modify_fd:
+        Option<unsafe extern "C" fn(host: *const clap_host, fd: c_int, flags: u32) -> bool>,
+    /// \[main\] Stops watching.
+    pub unregister_fd: Option<unsafe extern "C" fn(host: *const clap_host, fd: c_int) -> bool>,
+}
+
 /// A `*const c_char` that is `Sync`, for `static` descriptor tables pointing at string literals
 /// (a raw pointer isn't `Sync` on its own).
 #[repr(transparent)]
@@ -714,6 +903,18 @@ mod tests {
         assert_eq!(offset_of!(clap_audio_port_info, port_type), 272);
         assert_eq!(size_of::<clap_plugin_params>(), 48);
         assert_eq!(size_of::<clap_plugin_module_info>(), 8);
+        // T-901
+        assert_eq!(size_of::<clap_window>(), 16);
+        assert_eq!(offset_of!(clap_window, handle), 8);
+        assert_eq!(size_of::<clap_gui_resize_hints>(), 12);
+        assert_eq!(offset_of!(clap_gui_resize_hints, aspect_ratio_width), 4);
+        assert_eq!(size_of::<clap_plugin_gui>(), 15 * 8);
+        assert_eq!(offset_of!(clap_plugin_gui, set_parent), 10 * 8);
+        assert_eq!(size_of::<clap_host_gui>(), 5 * 8);
+        assert_eq!(size_of::<clap_plugin_timer_support>(), 8);
+        assert_eq!(size_of::<clap_host_timer_support>(), 16);
+        assert_eq!(size_of::<clap_plugin_posix_fd_support>(), 8);
+        assert_eq!(size_of::<clap_host_posix_fd_support>(), 24);
     }
 
     #[test]

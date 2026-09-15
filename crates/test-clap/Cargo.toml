@@ -22,6 +22,8 @@ vox-modules = { path = "../modules" }
 # The deliberate crash-on-scan abort disables core dumps first (setrlimit / prctl).
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+# T-901: the trivial GUI's child X11 window, through the system's libX11 loaded at run time.
+libloading.workspace = true
 
 [lints]
 workspace = true

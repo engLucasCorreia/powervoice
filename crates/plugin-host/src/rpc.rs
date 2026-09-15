@@ -3,11 +3,14 @@
 
 use std::io::{BufReader, BufWriter};
 use std::process::{ChildStdin, ChildStdout};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use vox_sandbox_ipc::protocol::{self, Request, RequestBody, Response, ResponseBody};
+use vox_sandbox_ipc::protocol::{self, NOTIFY_ID, Request, RequestBody, Response, ResponseBody};
+
+use crate::editor::Notifications;
 
 /// Why a request failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -34,11 +37,14 @@ pub(crate) struct Rpc {
 }
 
 impl Rpc {
-    /// Starts the writer (→ `stdin`) and reader (← `stdout`) threads.
+    /// Starts the writer (→ `stdin`) and reader (← `stdout`) threads. The reader hands the
+    /// sandbox's unsolicited messages (id [`NOTIFY_ID`], T-901) to `notes`, and notes every
+    /// message as a sign of life of the sandbox's main thread.
     pub(crate) fn start(
         stdin: ChildStdin,
         stdout: ChildStdout,
         name: &str,
+        notes: Arc<Notifications>,
     ) -> std::io::Result<Self> {
         let (out_tx, out_rx) = mpsc::channel::<Outgoing>();
         let (in_tx, in_rx) = mpsc::channel::<Incoming>();
@@ -57,8 +63,15 @@ impl Rpc {
             .name(format!("sandbox-rx {name}"))
             .spawn(move || {
                 let mut r = BufReader::new(stdout);
-                while let Ok(Some(msg)) = protocol::recv::<Response>(&mut r) {
-                    if in_tx.send(msg).is_err() {
+                while let Ok(Some((resp, payload))) = protocol::recv::<Response>(&mut r) {
+                    notes.note_alive();
+                    if resp.id == NOTIFY_ID {
+                        if let ResponseBody::Notify(n) = resp.body {
+                            notes.handle(n, payload);
+                        }
+                        continue;
+                    }
+                    if in_tx.send((resp, payload)).is_err() {
                         break;
                     }
                 }

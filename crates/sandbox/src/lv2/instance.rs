@@ -22,7 +22,7 @@
 use std::cell::UnsafeCell;
 use std::ffi::{CStr, c_char, c_void};
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use vox_lv2_abi::*;
@@ -31,11 +31,27 @@ use vox_sandbox_ipc::protocol::{ParamValue, PluginInfo};
 use vox_sandbox_ipc::{Chunk, EventKind, WireEvent};
 
 use super::host::{Host, PROVIDED_OPTIONS, SUPPORTED_FEATURES};
-use super::lilv::{Api, LilvInstanceImpl, Node, Nodes, World};
+use super::lilv::{Api, LilvInstanceImpl, Node, Nodes, UiChoice, World};
 use super::params::{self, PortKind, RawPort};
 use super::state::{Blob, Property};
+use super::suil::{self, UiSession};
 use super::worker::{self, AudioSide, WorkerSide, WorkerThread};
-use crate::backend::{ActiveInfo, PluginInstance};
+use crate::backend::{ActiveInfo, MainThreadEvents, PluginInstance};
+use crate::gui::{Api as WindowApi, EditorHost};
+
+/// T-901: a [`Lv2Instance::ui_writes`] cell holding a value (its low 32 bits are the `f32`).
+const UI_WRITE: u64 = 1 << 32;
+/// T-901: the window an LV2 UI opens in, until it asks for its own size (`ui:resize`).
+const UI_DEFAULT_SIZE: (u32, u32) = (480, 320);
+
+/// T-901: the plugin's UI suil can show in an X11 window (X11 platforms, suil installed).
+fn choose_ui(world: &World, plugin: *const c_void) -> Option<UiChoice> {
+    if WindowApi::native() != WindowApi::X11 {
+        return None;
+    }
+    let suil = suil::api().ok()?;
+    world.plugin_ui(plugin, uri::UI_X11_UI, suil.ui_supported)
+}
 
 /// The sample rate of the instance made at load (re-instantiated when an activation differs).
 const DEFAULT_RATE: f64 = 48_000.0;
@@ -590,6 +606,14 @@ pub struct Lv2Instance {
     active: Mutex<bool>,
     audio: Mutex<Option<Box<AudioState>>>,
     worker: Mutex<Option<WorkerThread>>,
+    /// T-901: the plugin's UI suil can show (`None`: no window).
+    ui: Option<UiChoice>,
+    /// T-901: the open UI (main thread).
+    ui_session: Mutex<Option<UiSession>>,
+    /// T-901: per port, a value the UI wrote for the audio thread ([`UI_WRITE`] | `f32` bits;
+    /// 0: none), and whether any cell is set.
+    ui_writes: Box<[AtomicU64]>,
+    ui_any: AtomicBool,
     /// Dropped last: the plugin and everything lilv returned borrow from it.
     world: World,
 }
@@ -678,6 +702,10 @@ impl Lv2Instance {
             active: Mutex::new(false),
             audio: Mutex::new(None),
             worker: Mutex::new(None),
+            ui: choose_ui(&world, plugin),
+            ui_session: Mutex::new(None),
+            ui_writes: (0..port_count).map(|_| AtomicU64::new(0)).collect(),
+            ui_any: AtomicBool::new(false),
             world,
         };
         {
@@ -1023,6 +1051,7 @@ impl Lv2Instance {
 impl PluginInstance for Lv2Instance {
     fn info(&self) -> PluginInfo {
         PluginInfo {
+            editor: false,
             name: self.name.clone(),
             vendor: self.vendor.clone(),
             version: self.version.clone(),
@@ -1173,6 +1202,31 @@ impl PluginInstance for Lv2Instance {
                 buf[..n].fill(0.0);
             }
         }
+        // T-901: values the plugin's UI wrote apply from this chunk's first sample, and reach the
+        // host's mirror like any plugin-originated change.
+        if self.ui_any.swap(false, Ordering::AcqRel) {
+            for p in &self.ports {
+                if p.kind != PortKind::ControlIn {
+                    continue;
+                }
+                let Some(cell) = self.ui_writes.get(p.index as usize) else {
+                    continue;
+                };
+                let w = cell.swap(0, Ordering::AcqRel);
+                if w & UI_WRITE != 0 {
+                    let v = f32::from_bits(w as u32);
+                    self.set_control(p.index, v);
+                    if out_events.len() < out_events.capacity() {
+                        out_events.push(WireEvent {
+                            pos: chunk.pos,
+                            kind: EventKind::PARAM_VALUE,
+                            id: p.index,
+                            value: f64::from(v),
+                        });
+                    }
+                }
+            }
+        }
         // Segments split at the parameter events' offsets: a control port has one value per
         // `run`.
         let events = chunk.events;
@@ -1252,6 +1306,82 @@ impl PluginInstance for Lv2Instance {
         }
     }
 
+    fn main_thread_idle(&self, events: &mut MainThreadEvents) {
+        let mut guard = lock(&self.ui_session);
+        let Some(ui) = guard.as_mut() else {
+            return;
+        };
+        if !ui.idle() {
+            events.editor_closed = true;
+        }
+        let active = *lock(&self.active);
+        for (port, v) in ui.ctl.take_writes() {
+            if !self
+                .port(port)
+                .is_some_and(|p| p.kind == PortKind::ControlIn && p.is_param())
+            {
+                continue;
+            }
+            if active {
+                if let Some(cell) = self.ui_writes.get(port as usize) {
+                    cell.store(UI_WRITE | u64::from(v.to_bits()), Ordering::Release);
+                    self.ui_any.store(true, Ordering::Release);
+                }
+            } else {
+                // Inactive: nobody runs the plugin; the host gets the value as a notification.
+                self.set_control(port, v);
+                events.params.push(ParamValue {
+                    id: ParamId(port),
+                    value: f64::from(v),
+                });
+            }
+        }
+        ui.update(|port| self.mirror(port));
+        if let Some(size) = ui.ctl.take_resize() {
+            events.editor_resize = Some(size);
+        }
+    }
+
+    fn has_editor(&self) -> bool {
+        self.ui.is_some()
+    }
+
+    fn open_editor(&self, host: &mut EditorHost<'_>) -> Result<(u32, u32), String> {
+        let choice = self
+            .ui
+            .as_ref()
+            .ok_or_else(|| "the plugin has no window of its own".to_owned())?;
+        if host.api()? != WindowApi::X11 {
+            return Err(format!("{} has no window for this system", self.name));
+        }
+        let suil = suil::api()?;
+        let plugin_uri = self.world.plugin_uri(self.plugin).unwrap_or_default();
+        let (w, h) = UI_DEFAULT_SIZE;
+        let window = host.create_window(w, h, true)?;
+        let symbols = self
+            .ports
+            .iter()
+            .map(|p| (p.symbol.clone(), p.index))
+            .collect();
+        let controls = self
+            .ports
+            .iter()
+            .filter(|p| matches!(p.kind, PortKind::ControlIn | PortKind::ControlOut))
+            .map(|p| p.index)
+            .collect();
+        let mut ui = UiSession::open(suil, choice, &plugin_uri, window.raw, symbols, controls)
+            .map_err(|e| format!("{}: {e}", self.name))?;
+        ui.update(|port| self.mirror(port));
+        let size = ui.ctl.take_resize().unwrap_or((w, h));
+        host.resize_window(size.0, size.1);
+        *lock(&self.ui_session) = Some(ui);
+        Ok(size)
+    }
+
+    fn close_editor(&self) {
+        drop(lock(&self.ui_session).take());
+    }
+
     fn set_param(&self, id: ParamId, value: f64) -> Result<(), String> {
         let Some(p) = self.params.iter().find(|p| p.id == id) else {
             return Err(format!("no parameter {}", id.0));
@@ -1312,6 +1442,8 @@ impl PluginInstance for Lv2Instance {
 
 impl Drop for Lv2Instance {
     fn drop(&mut self) {
+        // T-901: the UI goes before the plugin it controls.
+        self.close_editor();
         self.deactivate();
         // The instance is freed (main thread) before the world: `core` drops before `world`.
         lock(&self.core).free();

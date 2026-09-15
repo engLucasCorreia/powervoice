@@ -81,11 +81,12 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-41 | Output level meter (owner req.): vertical, fixed-size (no analyzer resize), standard peak/RMS ballistics + peak hold, readable throttled numerals, clip latch — keep the lively jump | S | done |
 | H-42 | Analyzer diagnostics (owner req.): peak frequency labels (Hz + note), voice statistics panel (F0, sibilance → de-esser suggestion, mud/presence, hum, rumble, noise floor), LTAS over selection/document, compare/freeze snapshots, optional Spectrum Inspector window, "add EQ band here" | O | done |
 | H-43 | Idle CPU (owner report): web view main thread ~1 core while idle — draw-on-demand frame scheduler instead of perpetual rAF loops, idle telemetry throttling, meters/analyzer stop at rest; target ≤ 2 % idle (release) with a regression guard | O | in progress |
-| H-44 | `.voxmod` locales + presets (T-805, ADR-006 §7 step 5): merge a package's `locales/` into i18n at load and index its `presets/` as factory presets for that module; remove both on uninstall | S | todo |
+| H-44 | `.voxmod` locales + presets (T-805, ADR-006 §7 step 5): merge a package's `locales/` into i18n at load and index its `presets/` as factory presets for that module; remove both on uninstall | S | in progress |
 | H-45 | Packaging: bundle `powervoice-sandbox` in local `just build` (Tauri externalBin + build step; the release workflow already passes it via `--config`), verify plugins load from the AppImage/.deb, CI job for `just check` on pushes | S | done |
 | H-46 | Rack pre-roll on Play/seek (T-704, A-026): playback start with the voice rack is 49.4 ms because rack latency (NR 42.7 ms + limiter) is added to every start — pre-roll the rack from the prefetch so audio starts < 50 ms regardless of rack latency; SPEC-003/SPEC-012 amendment | O | done |
 | H-47 | Split-view frame spikes (T-704): WebGL2 waveform+spectral p99 ~120 ms on tile arrival (texture upload/tile scheduling budget per frame), Canvas2D spectral fallback < 60 fps, re-check output-callback worst case on an idle machine — after H-43 | O | todo (after H-43) |
-| H-48 | UI polish from screenshots: toolbar selection readout (Start/End/Length) clips its values at 2126 px, output meter scale labels crowd at short dock heights, meter bar thin vs its column; consolidate H-42 peak-marker decay onto H-41's `PeakBallistics` | S | todo |
+| H-48 | UI polish from screenshots: toolbar selection readout (Start/End/Length) clips its values at 2126 px, output meter scale labels crowd at short dock heights, meter bar thin vs its column; consolidate H-42 peak-marker decay onto H-41's `PeakBallistics` | S | in progress |
+| H-49 | Packaging (T-901): deb Recommends `libsuil-0-0` (LV2 plugin windows) and libX11 where needed; user-guide note on plugin windows (Linux X11/XWayland, Windows untested, macOS not yet) | H | todo |
 | H-18 | Shared test factories for DTOs (`ui/src/lib/test/fixtures.ts` + Rust builders) so a new DTO field touches one helper, not 20 test literals (merge-friction fix) | H | done |
 | H-17 | Recovery follow-ups (T-301): dialog stays open for remaining sessions (A-015), AC-3/AC-11 timing on a real disk (test-big), compaction off the document lock, markers during an interrupted take, Memory-for-audio UI, `/tmp/vox-project-*` sweep | S | done |
 | H-15 | Sidecar follow-ups (T-306): recent-file-missing dialog, read-only folder matrix (AC-13), SIGKILL-during-sidecar-save test (AC-6), per-slot leniency for a malformed rack slot, perf budget (AC-18) | S | done |
@@ -187,7 +188,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-703 | Settings audit | W1 | S | M6 | done |
 | T-704 | Performance tuning vs targets | W1 | O | M6 | done |
 | T-705 | AppImage/deb, Win/mac build docs, README/user guide | W2 | S | T-701..T-704 | done (Win/mac installers documented, not built) |
-| T-706 | Complete architecture & developer docs (owner req.): docs hub, C4/crate/threading/sequence Mermaid diagrams, data/IPC/DSP/plugins/UI docs, contributing guide, ADR index, docs check script | W3 | O | T-809 | todo |
+| T-706 | Complete architecture & developer docs (owner req.): docs hub, C4/crate/threading/sequence Mermaid diagrams, data/IPC/DSP/plugins/UI docs, contributing guide, ADR index, docs check script | W3 | O | T-809 | in progress |
 | T-707 | Docs for everyone (owner req.): what-is / how-it-works with Mermaid, complete task-based user guide, FAQ, glossary with plain-language analogies, friendly README | W4 | S | T-706, T-708, T-709 | todo |
 | T-708 | Themes (owner req.): Light ("clear") mode at full parity incl. canvas/WebGL renderers from tokens, Match System, High Contrast, View → Theme menu, no-flash, 4-theme screenshots + raw-colour lint | W2 | O | T-809, H-28 | done |
 | T-709 | Guided Tour widget (owner req.): spotlight + anchored step cards, Welcome tour + contextual tours, first-run offer, Help → Take the Tour, `Settings.tours` | W3 | O | T-708 | done |
@@ -210,4 +211,4 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 ## M9 — Native plugin editors
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
-| T-901 | Plugin GUI as floating window owned by sandbox (HWND/NSView/X11-XWayland) | W1 | O | M8 | in progress |
+| T-901 | Plugin GUI as floating window owned by sandbox (HWND/NSView/X11-XWayland) | W1 | O | M8 | done |

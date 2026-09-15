@@ -8,8 +8,8 @@ use std::time::Duration;
 use vox_module_api::{
     ActivateConfig, AdapterHealth, ChannelLayout, Extension, ExtensionId, HostRequest, Module,
     ModuleDescriptor, ModuleError, ModuleState, ParamEvent, ParamFlags, ParamGroup, ParamId,
-    ParamInfo, ParamText, ProcessContext, ProcessMode, ProcessStatus, StateError, Tail,
-    validate_schema,
+    ParamInfo, ParamText, PluginEditor, ProcessContext, ProcessMode, ProcessStatus, StateError,
+    Tail, validate_schema,
 };
 use vox_sandbox_ipc::layout::Layout;
 use vox_sandbox_ipc::protocol::{
@@ -19,6 +19,7 @@ use vox_sandbox_ipc::{
     BlockOutcome, Channel, ChannelConfig, EventKind, HostEnd, HostOptions, SharedRegion, WireEvent,
 };
 
+use crate::editor::EditorHandle;
 use crate::factory::{SandboxOptions, SandboxSpec};
 use crate::sandbox::{FaultCell, Sandbox};
 use crate::state::{self, StateHeader};
@@ -115,6 +116,8 @@ pub struct ProxyModule {
     health: Arc<dyn AdapterHealth>,
     /// The plugin's own parameter text, when it has one (T-803).
     text: Option<Arc<dyn ParamText>>,
+    /// The plugin's editor window (T-901); `available()` is `false` without a GUI.
+    editor: Arc<dyn PluginEditor>,
     active: Option<Active>,
     last_state: Mutex<Option<Vec<u8>>>,
 }
@@ -135,6 +138,7 @@ impl ProxyModule {
         let region =
             SharedRegion::create(layout.total_size).map_err(|e| external("sandbox segment", e))?;
         let mut cmd = Command::new(&options.binary);
+        cmd.envs(options.env.iter().map(|(k, v)| (k, v)));
         let handle = region.share_with(&mut cmd);
         cmd.arg("--shm")
             .arg(handle)
@@ -146,6 +150,7 @@ impl ProxyModule {
             &spec.descriptor.name.text,
             &spec.descriptor.id,
             options.health.clone(),
+            options.editor_hang_timeout,
         )
         .map_err(ModuleError::External)?;
         let info = match Self::handshake(&sandbox, &spec, &options) {
@@ -169,6 +174,18 @@ impl ProxyModule {
         let text = info
             .param_text
             .then(|| Arc::new(Texts(Arc::downgrade(&sandbox))) as Arc<dyn ParamText>);
+        let editor = Arc::new(EditorHandle {
+            sandbox: Arc::downgrade(&sandbox),
+            notes: sandbox.notes.clone(),
+            available: info.editor,
+            header: StateHeader {
+                format: spec.format.clone(),
+                plugin: spec.plugin.clone(),
+                id: spec.descriptor.id.clone(),
+                version: info.version.clone(),
+            },
+            timeout: options.request_timeout,
+        });
         Ok(Self {
             descriptor: spec.descriptor.clone(),
             spec,
@@ -182,6 +199,7 @@ impl ProxyModule {
             health: Arc::new(Health(fault.clone())),
             fault,
             text,
+            editor,
             active: None,
             last_state: Mutex::new(None),
         })
@@ -562,6 +580,7 @@ impl Module for ProxyModule {
         match id {
             ExtensionId::AdapterHealth => Some(Extension::AdapterHealth(self.health.clone())),
             ExtensionId::ParamText => self.text.clone().map(Extension::ParamText),
+            ExtensionId::PluginEditor => Some(Extension::PluginEditor(self.editor.clone())),
             _ => None,
         }
     }

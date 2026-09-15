@@ -112,6 +112,15 @@ pub enum RackCommand {
         /// Slot index.
         index: usize,
     },
+    /// Closes slot `index`'s plugin window (T-901; no-op without one). Opening one is
+    /// [`crate::EngineHandle::rack_open_editor`] (it waits for the plugin's GUI off the control
+    /// thread).
+    CloseEditor {
+        /// Slot index.
+        index: usize,
+    },
+    /// Closes every plugin window (T-901: document close).
+    CloseAllEditors,
 }
 
 /// One slot's schema/status plus its current mirrored values (index-aligned with
@@ -210,6 +219,8 @@ pub enum RackApiError {
     Unavailable,
     /// The rack rejected the command (`vox_rack::RackError`'s message).
     Rack(String),
+    /// The plugin couldn't open its window (T-901; the plugin's or sandbox's reason).
+    Editor(String),
 }
 
 impl std::fmt::Display for RackApiError {
@@ -217,6 +228,7 @@ impl std::fmt::Display for RackApiError {
         match self {
             Self::Unavailable => write!(f, "no audio output is open"),
             Self::Rack(msg) => write!(f, "{msg}"),
+            Self::Editor(msg) => write!(f, "couldn't open the plugin window: {msg}"),
         }
     }
 }

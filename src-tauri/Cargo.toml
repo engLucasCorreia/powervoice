@@ -46,6 +46,10 @@ vox-dsp = { path = "../crates/dsp" }
 # T-306: fingerprints the just-written save file the same way `vox_project::sidecar` does
 # (ADR-004: "CRC uses crc32fast"), by decoding it the way a reader would (SPEC-018 §4.2).
 crc32fast = { workspace = true }
+# T-901 (ADR-008 §7, ADR-007 amendment): the editor window's native handle (X11 window id or
+# Win32 HWND) that a plugin window keeps above it. Already in the graph through Tauri; this only
+# names it (MIT OR Apache-2.0 OR Zlib).
+raw-window-handle = "0.6.2"
 
 [dev-dependencies]
 # S1-03: WAV fixtures for the `document` module's tests (dev-only, PROMPT §4).

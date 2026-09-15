@@ -286,6 +286,31 @@ pub struct LV2_Atom_Sequence {
     pub body: LV2_Atom_Sequence_Body,
 }
 
+// --- ui (T-901) --------------------------------------------------------------------------------
+
+/// `LV2UI_Resize` (`ui:resize`): how a UI asks the host for another size, and vice versa.
+#[repr(C)]
+pub struct LV2UI_Resize {
+    /// The other side's handle.
+    pub handle: *mut c_void,
+    /// Requests `width`×`height`; 0 on success.
+    pub ui_resize: Option<
+        unsafe extern "C" fn(
+            handle: *mut c_void,
+            width: std::ffi::c_int,
+            height: std::ffi::c_int,
+        ) -> std::ffi::c_int,
+    >,
+}
+
+/// `LV2UI_Idle_Interface` (`ui:idleInterface`): the host calls `idle` regularly on the UI thread;
+/// non-zero means the UI wants to close.
+#[repr(C)]
+pub struct LV2UI_Idle_Interface {
+    /// One idle round.
+    pub idle: Option<unsafe extern "C" fn(ui: *mut c_void) -> std::ffi::c_int>,
+}
+
 // --- URIs ---------------------------------------------------------------------------------------
 
 /// URIs of the LV2 vocabulary PowerVoice's host and test plugin use (from the headers'
@@ -376,6 +401,11 @@ pub mod uri {
         PORT_PROPS_NOT_ON_GUI = "http://lv2plug.in/ns/ext/port-props#notOnGUI";
         PORT_GROUPS_GROUP = "http://lv2plug.in/ns/ext/port-groups#group";
         UNITS_UNIT = "http://lv2plug.in/ns/extensions/units#unit";
+        // ui (T-901)
+        UI_X11_UI = "http://lv2plug.in/ns/extensions/ui#X11UI";
+        UI_PARENT = "http://lv2plug.in/ns/extensions/ui#parent";
+        UI_RESIZE = "http://lv2plug.in/ns/extensions/ui#resize";
+        UI_IDLE_INTERFACE = "http://lv2plug.in/ns/extensions/ui#idleInterface";
     }
 
     /// The `units:` namespace (`units:db`, `units:hz`, …).

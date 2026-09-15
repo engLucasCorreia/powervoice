@@ -27,16 +27,20 @@ pub enum ExtensionId {
     /// out-of-process adapters whose plugin formats its own parameter text; never a CLAP
     /// extension.
     ParamText,
+    /// [`PluginEditor`] (T-901, ADR-008 §7 + its T-901 amendment): host-internal, answered only by
+    /// out-of-process adapters whose plugin has its own editor window; never a CLAP extension.
+    PluginEditor,
 }
 
 impl ExtensionId {
     /// Every known id, in declaration order (what the host queries after `activate`).
-    pub const ALL: [ExtensionId; 5] = [
+    pub const ALL: [ExtensionId; 6] = [
         ExtensionId::Telemetry,
         ExtensionId::ResponseCurve,
         ExtensionId::NoiseProfile,
         ExtensionId::AdapterHealth,
         ExtensionId::ParamText,
+        ExtensionId::PluginEditor,
     ];
 
     /// Wire id; also the CLAP custom-extension id (ADR-006) — except
@@ -48,6 +52,7 @@ impl ExtensionId {
             Self::NoiseProfile => "org.powervoice.noise-profile/1",
             Self::AdapterHealth => "org.powervoice.adapter-health/1",
             Self::ParamText => "org.powervoice.param-text/1",
+            Self::PluginEditor => "org.powervoice.plugin-editor/1",
         }
     }
 }
@@ -67,6 +72,8 @@ pub enum Extension {
     AdapterHealth(Arc<dyn AdapterHealth>),
     /// The plugin's own parameter text.
     ParamText(Arc<dyn ParamText>),
+    /// The plugin's own editor window.
+    PluginEditor(Arc<dyn PluginEditor>),
 }
 
 impl Extension {
@@ -78,6 +85,7 @@ impl Extension {
             Extension::NoiseProfile(_) => ExtensionId::NoiseProfile,
             Extension::AdapterHealth(_) => ExtensionId::AdapterHealth,
             Extension::ParamText(_) => ExtensionId::ParamText,
+            Extension::PluginEditor(_) => ExtensionId::PluginEditor,
         }
     }
 }
@@ -126,6 +134,64 @@ pub fn param_text(m: &dyn Module) -> Option<Arc<dyn ParamText>> {
         Some(Extension::ParamText(t)) => Some(t),
         _ => None,
     }
+}
+
+/// The module's [`PluginEditor`] handle; `None` if absent or answered with the wrong variant.
+pub fn plugin_editor(m: &dyn Module) -> Option<Arc<dyn PluginEditor>> {
+    match m.extension(ExtensionId::PluginEditor) {
+        Some(Extension::PluginEditor(e)) => Some(e),
+        _ => None,
+    }
+}
+
+/// How the host asks for a plugin's editor window ([`PluginEditor::open`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EditorRequest {
+    /// The window title ("‹Plugin› — PowerVoice", already localized).
+    pub title: String,
+    /// The host's own top-level window, when the platform lets the plugin window stay above it:
+    /// an X11 window id (only when the host itself runs on X11) or a Win32 `HWND`. `None`
+    /// elsewhere (Wayland, macOS): the window then floats on its own.
+    pub parent: Option<u64>,
+}
+
+/// What a plugin did through its editor since the previous [`PluginEditor::poll`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EditorUpdate {
+    /// Whether the window is open now (the user may have closed it).
+    pub open: bool,
+    /// Parameters the plugin changed while it wasn't processing (plain values, oldest first).
+    /// While it processes, the same changes arrive as `process()` output events instead.
+    pub params: Vec<(ParamId, f64)>,
+    /// The plugin's newest state blob (the module's `ModuleState::blob` format), when its
+    /// state changed outside its parameters since the last poll (a GUI-only change).
+    pub state: Option<Vec<u8>>,
+}
+
+/// A foreign plugin's **own editor window** (T-901): an out-of-process adapter whose plugin has
+/// a GUI answers this, and the host offers "Open plugin window" on its slot. The window belongs
+/// to the adapter's process (ADR-008 §7: the host never embeds foreign GUIs); if that process
+/// dies the window goes with it.
+///
+/// Host-internal (never a CLAP extension). Called by the host's control thread — also while the
+/// instance is live on the audio thread (`Send + Sync`; the adapter answers through its own
+/// control channel, never through `process`). The handle outlives the instance: afterwards
+/// every call is a no-op, `is_open` is `false` and `open` fails.
+pub trait PluginEditor: Send + Sync {
+    /// The plugin has an editor this adapter can show (`false`: offer no window).
+    fn available(&self) -> bool;
+    /// Opens the window (or raises an open one). Blocks for one control round trip (the
+    /// adapter's request timeout at most); the error is a user-facing English reason.
+    fn open(&self, request: &EditorRequest) -> Result<(), String>;
+    /// Closes the window; never blocks.
+    fn close(&self);
+    /// Whether the window is open (as last reported by the adapter).
+    fn is_open(&self) -> bool;
+    /// Drains what happened since the previous call (cheap when nothing did).
+    fn poll(&self) -> EditorUpdate;
+    /// The plugin's state blob right now (one blocking round trip; `None` when the adapter
+    /// can't answer) — the host captures it at save time so GUI-only state is never lost.
+    fn capture_state(&self) -> Option<Vec<u8>>;
 }
 
 /// A foreign plugin's **own parameter text** (T-803, ADR-005 Amendment 4): an out-of-process

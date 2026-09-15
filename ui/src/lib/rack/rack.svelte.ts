@@ -27,6 +27,9 @@ import {
   rackAb,
   rackAdd,
   rackBypass,
+  rackEditorClose,
+  rackEditorCloseAll,
+  rackEditorOpen,
   rackGet,
   rackListModules,
   rackMove,
@@ -40,6 +43,7 @@ import {
   rackRemove,
   rackRestart,
 } from "../ipc/commands";
+import { t } from "../i18n";
 import { decodeVxmt } from "../ipc/moduleTelemetry";
 import { toArrayBuffer } from "../ipc/telemetry";
 import { noticeFromIpcError } from "../notices/fromIpcError";
@@ -143,6 +147,16 @@ export const setBypass = (index: number, on: boolean): Promise<void> =>
   run(() => rackBypass(index, on));
 export const setAb = (on: boolean): Promise<void> => run(() => rackAb(on));
 export const restartSlot = (index: number): Promise<void> => run(() => rackRestart(index));
+
+// --- Plugin windows (T-901) ---------------------------------------------------------------------
+
+/** Opens slot `index`'s plugin window ("‹Plugin› — PowerVoice"); a failure is a notice. */
+export const openPluginWindow = (index: number, pluginName: string): Promise<void> =>
+  run(() => rackEditorOpen(index, t("rack.slot.window.title", { plugin: pluginName })));
+/** Closes slot `index`'s plugin window. */
+export const closePluginWindow = (index: number): Promise<void> => run(() => rackEditorClose(index));
+/** Closes every plugin window. */
+export const closeAllPluginWindows = (): Promise<void> => run(() => rackEditorCloseAll());
 
 // --- Module & rack presets (T-406, SPEC-012 §2.7) ---------------------------------------------
 

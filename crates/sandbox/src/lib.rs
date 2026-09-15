@@ -19,6 +19,7 @@
 
 mod backend;
 pub mod clap;
+pub mod gui;
 pub mod jsfx;
 pub mod lv2;
 mod rt;
@@ -26,5 +27,7 @@ mod server;
 pub mod test_backend;
 pub mod vst3;
 
-pub use backend::{ActiveInfo, OUT_EVENT_CAPACITY, PluginBackend, PluginInstance, backends};
+pub use backend::{
+    ActiveInfo, MainThreadEvents, OUT_EVENT_CAPACITY, PluginBackend, PluginInstance, backends,
+};
 pub use server::main;

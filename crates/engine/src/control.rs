@@ -18,8 +18,9 @@ use vox_dsp::async_resample::MonitorResampler;
 use vox_dsp::capture_resample::CaptureResampler;
 use vox_project::{FreeSpaceProvider, TakeCapture};
 use vox_rack::{
-    ActivateConfig, ChannelLayout, MAX_BLOCK, ModuleDescriptor, ModulePreset, ModuleState,
-    ProcessMode, RackHost, RackModel, RackNotice, RackOptions, Registry,
+    ActivateConfig, ChannelLayout, EditorRequest, MAX_BLOCK, ModuleDescriptor, ModulePreset,
+    ModuleState, PluginEditor, ProcessMode, RackHost, RackModel, RackNotice, RackOptions, Registry,
+    SlotUid,
 };
 
 use crate::analyzer::{
@@ -932,6 +933,11 @@ impl Control {
                     host.apply_module_preset(index, &state)
                 }
                 RackCommand::ResetToDefault { index } => host.reset_to_default(index),
+                RackCommand::CloseEditor { index } => host.close_editor(index),
+                RackCommand::CloseAllEditors => {
+                    host.close_all_editors();
+                    Ok(())
+                }
             };
             (result, host.take_notices())
         };
@@ -940,6 +946,45 @@ impl Control {
         let snapshot = self.rack_snapshot();
         (self.events)(EngineEvent::RackChanged(snapshot.clone()));
         Ok(snapshot)
+    }
+
+    /// T-901: slot `index`'s plugin editor handle, for [`crate::EngineHandle::rack_open_editor`]
+    /// (which opens it off this thread); remembers `request` for reopening after a restart.
+    pub(crate) fn rack_editor_for_open(
+        &mut self,
+        index: usize,
+        request: EditorRequest,
+    ) -> Result<Arc<dyn PluginEditor>, RackApiError> {
+        let Some(out) = self.output.as_mut() else {
+            return Err(RackApiError::Unavailable);
+        };
+        out.rack
+            .editor_for_open(index, request)
+            .map_err(|e| RackApiError::Rack(e.to_string()))
+    }
+
+    /// T-901: the editors whose plugin state a save captures first
+    /// ([`vox_rack::RackHost::editors_to_capture`]); empty without a live rack.
+    pub(crate) fn rack_editors_to_capture(&self) -> Vec<(SlotUid, Arc<dyn PluginEditor>)> {
+        self.output
+            .as_ref()
+            .map(|out| out.rack.editors_to_capture())
+            .unwrap_or_default()
+    }
+
+    /// T-901: commits plugin states captured off this thread (a save's
+    /// [`crate::EngineHandle::rack_capture_plugin_states`]) as their slots' blobs.
+    pub(crate) fn rack_apply_plugin_states(&mut self, states: Vec<(SlotUid, Vec<u8>)>) {
+        let notices = {
+            let Some(out) = self.output.as_mut() else {
+                return;
+            };
+            for (uid, blob) in states {
+                out.rack.apply_plugin_state(uid, blob);
+            }
+            out.rack.take_notices()
+        };
+        self.handle_rack_notices(notices);
     }
 
     /// The committed state of slot `index` (T-406: what "Save as preset" reads). Read-only.
@@ -979,6 +1024,7 @@ impl Control {
                     | RackNotice::SlotRestarted { .. }
                     | RackNotice::SlotLoaded { .. }
                     | RackNotice::SlotRecovered { .. }
+                    | RackNotice::EditorChanged { .. }
             )
         });
         // T-401 (SPEC-012 §2.5, AC-8): a rack latency change reaches the monitoring readout within

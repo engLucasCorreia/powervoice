@@ -1500,3 +1500,126 @@ ramp, and each sample's gain rounded to `f32` in EEL2. EEL2's `^` is libm `pow`,
 - `.voxmod` packages install through `PluginCatalog::install_module` (one sandboxed scan of the
   extracted `.clap`) and uninstall through `PluginCatalog::uninstall_module`. A registry hot-add
   lets Missing document slots recover live (Amendment 10).
+
+## Amendment 13 — T-901 plugin editor windows, as implemented (2026-09-15)
+
+§7 stands: a plugin's own GUI is a **floating top-level window of its sandbox process**, run on
+the sandbox's main thread; the editor never embeds foreign GUIs. If the plugin crashes, its
+window goes with the process.
+
+### 1. Windows per platform (refines §7)
+- **Linux and other unixes: X11 through the system's libX11, loaded at run time** (`libloading`,
+  like lilv in Amendment 8 — no build-time dependency, nothing to install to build). Under Wayland
+  that is XWayland: the plugin GUI APIs are X11-based. The sandbox's window has the title
+  ("‹Plugin› — PowerVoice", localized by the UI), `WM_CLASS` `PowerVoice`, the dialog window type
+  (tiling window managers such as Hyprland float it), `WM_DELETE_WINDOW`, `_NET_WM_PID`, and
+  fixed size hints unless the plugin is resizable. `WM_TRANSIENT_FOR` points at the editor's
+  window only when the editor itself is an X11 window (the editor passes its X11 id, taken from
+  `raw-window-handle`; a Wayland editor passes none). X errors are ignored instead of Xlib's
+  default exit (a stale transient-for id must not kill the sandbox). Without libX11 or a display,
+  opening fails with "plugin windows need an X11 display (or XWayland), and none is available".
+- **Windows:** a top-level `HWND` whose **owner** is the editor's `HWND` (passed over the control
+  channel). Compile-checked by `just check-cross`; not run here.
+- **macOS:** not implemented; opening answers "plugin windows aren't supported on this platform
+  yet".
+- **Headless** (`POWERVOICE_SANDBOX_GUI=headless[:close-after-ms=N]`, tests only): the editor
+  opens against a pretend window (handle 0); `close-after-ms` pretends the user closed it. Every
+  test that opens an editor runs this way; the real-window smoke test is opt-in
+  (`POWERVOICE_TEST_GUI=1` and a display).
+
+### 2. The sandbox's main loop (refines Amendment 2 §1 and Amendment 3 §2)
+- The main thread no longer blocks on the request channel. It `poll`s a **wake pipe** (the
+  control reader thread writes a byte after each request), the X connection, and every
+  descriptor a plugin GUI registered, until the next deadline: the 10 ms idle tick (unchanged),
+  the next GUI timer, the heartbeat, or a pending state push. Windows (no `poll`): a channel wait
+  capped at 5 ms while a window exists, then the thread's message pump.
+- **Run loop** (`powervoice_sandbox::gui::runloop`): the timers and descriptors of CLAP
+  `timer-support` / `posix-fd-support` and VST3 `Linux::IRunLoop`, main thread only (a
+  registration from another thread is refused), callbacks called with no borrow held, cleared
+  before the plugin is destroyed.
+
+### 3. Protocol version 3 (refines Amendment 2 §2)
+| Message | Meaning |
+|---|---|
+| `PluginInfo.editor` (serde default `false`) | the plugin has a window this sandbox can show |
+| `OpenEditor {title, parent}` → `EditorOpened {width, height}` | open (or raise) the window; `parent` = the editor's X11 id / `HWND`, or none |
+| `CloseEditor` → `Ok` | close it (the state is sent right after) |
+| `Notify(EditorClosed)` | the window closed on its own (the user, the plugin) |
+| `Notify(StateChanged)` + payload | the plugin's state changed outside its parameters (debounced 250 ms), or its window just closed |
+| `Notify(Params {values})` | parameters the window changed while the plugin was **inactive** |
+| `Notify(Alive)` | the main thread's heartbeat, every 250 ms while a window is open |
+
+Notifications are responses with id 0 (`NOTIFY_ID`; host request ids start at 1); the host's
+reader thread routes them apart from the replies and counts every message as a sign of life.
+
+### 4. Formats
+| Format | Window | Size | State changes | Run loop |
+|---|---|---|---|---|
+| CLAP | `clap.gui`: embedded in our window (preferred), else floating (`set_transient`, `suggest_title`) | `get_size`, `request_resize`; user resizes go through `adjust_size` + `set_size` (a fixed-size GUI snaps back) | `state.mark_dirty` | `timer-support`, `posix-fd-support` (unix) |
+| VST3 | `IEditController::createView("editor")`, `attached` with `X11EmbedWindowID` / `HWND` / `NSView` | `getSize`; `IPlugFrame::resizeView` (the view gets `onSize` at once, the window follows); user resizes through `checkSizeConstraint` + `onSize` | `IComponentHandler2::setDirty` | `Linux::IRunLoop` on the plug frame |
+| LV2 | the system's **suil, loaded at run time** (`libsuil-0`): the plugin's `ui:X11UI` (or a UI suil can wrap into one) in our window (`ui:parent`) | `ui:resize` (both ways); 480×320 until the UI asks | — (the state is sent when the window closes) | `ui:idleInterface` on the idle tick |
+| JSFX | none: `@gfx` needs LICE/SWELL, which aren't built (Amendment 11) | | | |
+
+- **VST3:** whether a controller has a view is only known by creating it, so a VST3 plugin with a
+  controller offers "Open plugin window" and a plugin without a view answers "‹Plugin› has no
+  window of its own".
+- **LV2:** features given to the UI: `ui:parent`, `ui:resize`, `urid:map`/`urid:unmap` (a table of
+  the UI's own), `ui:idleInterface`. Not given: `instance-access`, `data-access` (such a UI fails to
+  open, gracefully). Only control ports are exchanged: UIs that talk to their plugin through atom
+  ports (`patch:`) get no messages. Without suil, or without a UI suil can show, the plugin has no
+  window.
+
+### 5. Synchronisation (resolves Amendment 2 §9's second limit, Amendment 3 §8, Amendment 6 §8)
+- **GUI → host.** While the plugin processes, its window's edits are output events of `process`
+  (the existing path: `ParamReport` → mirror + `ParamChanged`). While it doesn't, they come as a
+  `Params` notification and `RackHost::tick` applies them the same way. LV2 UI writes reach the
+  audio thread through per-port atomic cells applied at the next chunk's first sample.
+- **Host → GUI.** Automation reaches a CLAP plugin as events (its GUI follows itself); a VST3
+  controller is kept in sync on the idle tick (Amendment 6); an LV2 UI gets `port_event`s for
+  every changed control value on the idle tick.
+- **State.** A `StateChanged` notification replaces the slot's committed blob
+  (`RackNotice::PluginStateChanged`), so the rack model — and the document's `sidecar_dirty` —
+  follows a GUI-only change. **At save time** (`DocumentService::save`/`save_as`)
+  `EngineHandle::rack_capture_plugin_states` asks every slot whose window was opened for its state
+  (one `SaveState` round trip each, off the engine's control thread) and commits it first.
+- There is no rack undo in PowerVoice; GUI edits behave exactly like the rack UI's own edits
+  (mirror, notices, dirty state).
+
+### 6. Host side
+- **`PluginEditor`** (host-internal extension, ADR-005 Amendment 5): `available`, `open`, `close`,
+  `is_open`, `poll`, `capture_state`. `open` waits for the plugin's GUI on the **calling** thread
+  (`EngineHandle::rack_open_editor` hands the handle out of the control thread); `close` never
+  blocks.
+- **Rack** (`RackHost`): `SlotInfo.has_editor`/`editor_open`; `RackNotice::EditorChanged` (the UI
+  re-reads the rack) and `PluginStateChanged`; a window closes with its slot at once (`remove`,
+  and so a document's rack load), with `close_all_editors` (document close) and with the rack's
+  teardown; a plugin-requested restart, a state/preset replacement or a move reopens the window on
+  the new instance; a crash doesn't (its window died with its process).
+- **IPC:** `rack_editor_open(slot, title)`, `rack_editor_close(slot)`, `rack_editor_close_all`;
+  a failed open is `error.plugin_window.open_failed` with the reason.
+- **UI:** "Open plugin window" on a running sandboxed slot (a toggle showing whether it is open),
+  double-click on the slot's name, and the slot menu; a plugin without a window gets the button
+  disabled (`aria-disabled`, so the tooltip still says why).
+
+### 7. Robustness
+- **A crashing GUI** kills its sandbox: the channel faults, the rack's restart policy
+  (Amendment 2 §6) takes over, the window is gone and isn't reopened. Other sandboxes are
+  untouched.
+- **A hanging GUI** stops the heartbeat: while a window is open, a main thread silent for
+  `SandboxOptions::editor_hang_timeout` (default 5 s, the request timeout) is a hang — the
+  watchdog kills the process, and the restart policy takes over. The audio thread may still be
+  serving, so the channel monitor alone wouldn't notice.
+- **No leaks:** removing a slot closes its window before the fading instance is dropped; a
+  retired or dead sandbox takes its window with it (the X server destroys a dead client's
+  windows); the sandbox closes the editor before it destroys the plugin.
+
+### 8. Known limits
+- macOS has no windows; Windows is only compile-checked.
+- No third-party plugin GUI was run: none is installed on the development machine. The CLAP path
+  is tested end to end with the test plugin's GUI; the VST3 and LV2 paths are tested up to their
+  host objects (plug frame, run loop, suil callbacks) and their "no window" answers.
+- No content scaling (`set_scale`, `IPlugViewContentScaleSupport`) yet: HiDPI plugin windows get
+  their default size.
+- A GUI on the sandbox's main thread also delays that sandbox's control requests (parameter text,
+  state) while it works; heavy editors can take a while to open (bounded by the request timeout).
+- Wayland-native plugin GUIs (CLAP's `wayland` floating API) aren't offered.

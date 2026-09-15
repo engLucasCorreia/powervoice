@@ -324,3 +324,24 @@ Resolves the ⚠ on the "ysfx (JoepVanlier fork) + WDL/EEL2, dr_libs, stb, json"
 - Development builds compile miniz_oxide, crc32fast and adler2 at `opt-level = 3`
   (`[profile.dev.package.*]`): the `.voxmod` tests pack a real 40 MB debug `.clap`. Release
   builds are unaffected.
+
+## Amendment — T-901 plugin windows: libX11 and suil at run time (2026-09-15)
+- **libX11** (MIT/X11 license, the X.Org Foundation) is **not linked**: `powervoice-sandbox`
+  loads the system's `libX11.so.6` at run time (`libloading`) the first time a plugin window
+  opens, like lilv (amendment above). On a Wayland desktop XWayland provides it. It is a system
+  library in §1's sense: never bundled by us.
+- **suil** (ISC, David Robillard) is **not linked** either: the sandbox loads `libsuil-0` at run
+  time for LV2 plugin UIs. Without it, LV2 plugins have no window and nothing else changes. A
+  Linux package should `Recommends:` it next to lilv (deb `libsuil-0-0`, Arch `suil`; H-45 /
+  packaging follow-up).
+- **raw-window-handle 0.6.2** (MIT OR Apache-2.0 OR Zlib) is now a direct dependency of
+  `src-tauri`, to read the editor window's X11 id or `HWND`. It was already in the graph through
+  Tauri: THIRD_PARTY_NOTICES only marks it direct instead of transitive (`just notices`).
+- **windows-sys** (already a workspace dependency) gains the `Win32_Foundation`,
+  `Win32_Graphics_Gdi`, `Win32_System_LibraryLoader` and `Win32_UI_WindowsAndMessaging` features
+  in `powervoice-sandbox` (Windows only).
+- The test CLAP plugin (`vox-test-clap`, never shipped) uses `libloading` (already a workspace
+  dependency) for its child X11 window.
+- **Not used:** `x11`/`x11-dl`/`x11rb`/`xcb` (a build-time link or a large binding for ~25
+  functions), `winit` and `baseview` (their own event loops and far more surface than one
+  top-level window a plugin draws into). ADR-008 Amendment 13 records the design.

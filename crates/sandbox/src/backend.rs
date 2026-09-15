@@ -4,8 +4,10 @@
 use std::sync::Arc;
 
 use vox_module_api::{ActivateConfig, ParamId};
-use vox_sandbox_ipc::protocol::PluginInfo;
+use vox_sandbox_ipc::protocol::{ParamValue, PluginInfo};
 use vox_sandbox_ipc::{Chunk, WireEvent};
+
+use crate::gui::EditorHost;
 
 /// Plugin → host events one chunk may report at most (the audio loop's preallocated buffer;
 /// [`PluginInstance::process`] must not push beyond its capacity).
@@ -18,6 +20,21 @@ pub struct ActiveInfo {
     pub latency_samples: u32,
     /// Tail in samples; `None` = infinite.
     pub tail_samples: Option<u64>,
+}
+
+/// What a plugin did on the main thread since the previous idle tick (T-901), reported to the
+/// host by the sandbox.
+#[derive(Debug, Default)]
+pub struct MainThreadEvents {
+    /// Parameters the plugin changed itself while **inactive** (its window): sent as a
+    /// notification. While active, such changes are `process()` output events instead.
+    pub params: Vec<ParamValue>,
+    /// The plugin's state changed outside its parameters (CLAP `mark_dirty`, …).
+    pub state_dirty: bool,
+    /// A floating editor window closed on its own (the user closed it, or the plugin did).
+    pub editor_closed: bool,
+    /// An embedded editor asks for this size.
+    pub editor_resize: Option<(u32, u32)>,
 }
 
 /// A plugin format host (`"test"`, later `"clap"`, `"vst3"`, …).
@@ -49,8 +66,25 @@ pub trait PluginInstance: Send + Sync {
     /// \[main, inactive\] Loads a state [`save_state`](Self::save_state) produced.
     fn load_state(&self, data: &[u8]) -> Result<(), String>;
     /// \[main\] Called every few milliseconds while the control loop is idle (T-803: CLAP
-    /// `request_callback` → `on_main_thread`, `request_flush` while inactive).
-    fn main_thread_idle(&self) {}
+    /// `request_callback` → `on_main_thread`, `request_flush` while inactive; T-901: what the
+    /// plugin's window did goes to `events`).
+    fn main_thread_idle(&self, _events: &mut MainThreadEvents) {}
+    /// \[main\] The plugin has an editor window this backend can show (T-901).
+    fn has_editor(&self) -> bool {
+        false
+    }
+    /// \[main\] Opens the plugin's editor (T-901): embedded in a top-level window `host` creates
+    /// ([`EditorHost::create_window`]), or as the plugin's own floating window. Returns its size.
+    fn open_editor(&self, _host: &mut EditorHost<'_>) -> Result<(u32, u32), String> {
+        Err("the plugin has no window of its own".into())
+    }
+    /// \[main\] Destroys the editor (the sandbox then destroys its window).
+    fn close_editor(&self) {}
+    /// \[main\] The user resized an embedded editor's window to `width`×`height`: the size the
+    /// plugin accepts, when it differs (`None`: as is).
+    fn editor_resized(&self, _width: u32, _height: u32) -> Option<(u32, u32)> {
+        None
+    }
     /// \[audio\] The audio thread is about to stop serving (before `deactivate`; CLAP
     /// `stop_processing` belongs to the audio thread).
     fn audio_thread_stopping(&self) {}

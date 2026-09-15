@@ -16,7 +16,9 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 
 use vox_project::{ChunkStore, DocSnapshot, FreeSpaceProvider, SystemFreeSpace, TakeCapture};
-use vox_rack::{ModuleDescriptor, ModulePreset, ModuleState, RackModel, RackNotice, Registry};
+use vox_rack::{
+    EditorRequest, ModuleDescriptor, ModulePreset, ModuleState, RackModel, RackNotice, Registry,
+};
 
 use crate::analyzer::{AnalyzerResponse, AnalyzerSink, InspectorConfig, InspectorSink, VoiceSink};
 use crate::backend::{Backend, BufferRequest, DeviceSnapshot, HostId, app_now_ns};
@@ -342,6 +344,41 @@ impl EngineHandle {
     pub fn rack_command(&self, cmd: RackCommand) -> Result<RackSnapshot, RackApiError> {
         self.call(move |c| c.rack_apply(cmd))
             .unwrap_or(Err(RackApiError::Unavailable))
+    }
+
+    /// Opens slot `index`'s plugin window (T-901, ADR-008 §7): the rack hands over the slot's
+    /// editor handle, which then waits for the plugin's GUI **on the calling thread** (never the
+    /// control thread). Returns the snapshot with the window open.
+    pub fn rack_open_editor(
+        &self,
+        index: usize,
+        request: EditorRequest,
+    ) -> Result<RackSnapshot, RackApiError> {
+        let for_rack = request.clone();
+        let editor = self
+            .call(move |c| c.rack_editor_for_open(index, for_rack))
+            .unwrap_or(Err(RackApiError::Unavailable))?;
+        editor.open(&request).map_err(RackApiError::Editor)?;
+        Ok(self.rack_snapshot())
+    }
+
+    /// Captures the state of every plugin whose window was used (T-901: GUI-only state isn't a
+    /// parameter, so the rack's committed blob may be behind) and commits it, before a save
+    /// reads the rack. The round trips to the plugins run on the calling thread.
+    pub fn rack_capture_plugin_states(&self) {
+        let editors = self
+            .call(|c| c.rack_editors_to_capture())
+            .unwrap_or_default();
+        if editors.is_empty() {
+            return;
+        }
+        let states: Vec<_> = editors
+            .into_iter()
+            .filter_map(|(uid, e)| e.capture_state().map(|blob| (uid, blob)))
+            .collect();
+        if !states.is_empty() {
+            self.call(move |c| c.rack_apply_plugin_states(states));
+        }
     }
 
     /// The current rack as plain data (H-08 handoff: lets export build its offline chain from the

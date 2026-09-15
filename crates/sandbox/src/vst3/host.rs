@@ -3,23 +3,31 @@
 
 use std::cell::UnsafeCell;
 use std::ffi::{CStr, CString, c_char, c_void};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use vst3::Steinberg::Linux::{
+    FileDescriptor, IEventHandler, IEventHandlerTrait, IRunLoop, IRunLoopTrait, ITimerHandler,
+    ITimerHandlerTrait, TimerInterval,
+};
 use vst3::Steinberg::Vst::RestartFlags_::{
     kIoChanged, kLatencyChanged, kParamValuesChanged, kReloadComponent,
 };
 use vst3::Steinberg::Vst::{
-    IAttributeList, IAttributeListTrait, IComponentHandler, IComponentHandlerTrait,
-    IHostApplication, IHostApplicationTrait, IMessage, IMessageTrait, IParamValueQueue,
-    IParamValueQueueTrait, IParameterChanges, IParameterChangesTrait, ParamID, ParamValue,
-    String128, TChar,
+    IAttributeList, IAttributeListTrait, IComponentHandler, IComponentHandler2,
+    IComponentHandler2Trait, IComponentHandlerTrait, IHostApplication, IHostApplicationTrait,
+    IMessage, IMessageTrait, IParamValueQueue, IParamValueQueueTrait, IParameterChanges,
+    IParameterChangesTrait, ParamID, ParamValue, String128, TChar,
 };
 use vst3::Steinberg::{
-    FIDString, TUID, int32, int64, kInvalidArgument, kNoInterface, kResultFalse, kResultOk,
-    tresult, uint32,
+    FIDString, IPlugFrame, IPlugFrameTrait, IPlugView, IPlugViewTrait, TBool, TUID, ViewRect,
+    int32, int64, kInvalidArgument, kNoInterface, kResultFalse, kResultOk, kResultTrue, tresult,
+    uint32,
 };
-use vst3::{Class, ComWrapper, Interface};
+use vst3::{Class, ComRef, ComWrapper, Interface};
+
+use crate::gui::runloop;
 
 use super::params::Domain;
 
@@ -88,6 +96,8 @@ pub(crate) struct Shared {
     pub(crate) restart_requested: AtomicBool,
     /// `restartComponent(kParamValuesChanged)`: the main thread re-reads every value.
     pub(crate) values_changed: AtomicBool,
+    /// T-901: `IComponentHandler2::setDirty` (the state changed outside the parameters).
+    pub(crate) state_dirty: AtomicBool,
 }
 
 impl Shared {
@@ -112,6 +122,7 @@ impl Shared {
             edits_any: AtomicBool::new(false),
             restart_requested: AtomicBool::new(false),
             values_changed: AtomicBool::new(false),
+            state_dirty: AtomicBool::new(false),
         }
     }
 
@@ -195,7 +206,190 @@ pub(crate) struct ComponentHandler {
 }
 
 impl Class for ComponentHandler {
-    type Interfaces = (IComponentHandler,);
+    type Interfaces = (IComponentHandler, IComponentHandler2);
+}
+
+/// T-901: `setDirty` is how a VST3 plugin says its state changed outside its parameters (its
+/// editor); the sandbox then sends the state to the editor.
+impl IComponentHandler2Trait for ComponentHandler {
+    unsafe fn setDirty(&self, state: TBool) -> tresult {
+        if state != 0 {
+            self.shared.state_dirty.store(true, Ordering::Release);
+        }
+        kResultOk
+    }
+
+    /// The window opens from the rack only.
+    unsafe fn requestOpenEditor(&self, _name: FIDString) -> tresult {
+        kResultFalse
+    }
+
+    unsafe fn startGroupEdit(&self) -> tresult {
+        kResultOk
+    }
+
+    unsafe fn finishGroupEdit(&self) -> tresult {
+        kResultOk
+    }
+}
+
+// --- IPlugFrame + Linux::IRunLoop (T-901) -------------------------------------------------------
+
+/// [`PlugFrame`]'s resize cell when there is no request.
+const NO_RESIZE: u64 = u64::MAX;
+
+/// The `IPlugFrame` an editor view is attached with (T-901): its resize requests, and — Linux —
+/// the `IRunLoop` its GUI registers timers and descriptors with, served by the sandbox's run loop
+/// on the main (UI) thread.
+pub(crate) struct PlugFrame {
+    /// `resizeView`: `(width << 32) | height` ([`NO_RESIZE`]: none).
+    resize: AtomicU64,
+    /// `(ITimerHandler*, run-loop timer id)`.
+    timers: Mutex<Vec<(usize, u32)>>,
+    /// `(IEventHandler*, descriptor)`.
+    handlers: Mutex<Vec<(usize, i32)>>,
+}
+
+impl PlugFrame {
+    pub(crate) fn new() -> Self {
+        Self {
+            resize: AtomicU64::new(NO_RESIZE),
+            timers: Mutex::new(Vec::new()),
+            handlers: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The size the view asked for since the last call.
+    pub(crate) fn take_resize(&self) -> Option<(u32, u32)> {
+        let r = self.resize.swap(NO_RESIZE, Ordering::AcqRel);
+        (r != NO_RESIZE).then_some(((r >> 32) as u32, r as u32))
+    }
+
+    /// Drops every timer and descriptor the view registered (it is going away).
+    pub(crate) fn clear(&self) {
+        for (_, id) in lock(&self.timers).drain(..) {
+            runloop::remove_timer(id);
+        }
+        for (_, fd) in lock(&self.handlers).drain(..) {
+            runloop::remove_fd(fd);
+        }
+        self.resize.store(NO_RESIZE, Ordering::Release);
+    }
+}
+
+impl Class for PlugFrame {
+    type Interfaces = (IPlugFrame, IRunLoop);
+}
+
+impl IPlugFrameTrait for PlugFrame {
+    unsafe fn resizeView(&self, view: *mut IPlugView, new_size: *mut ViewRect) -> tresult {
+        if new_size.is_null() {
+            return kInvalidArgument;
+        }
+        // SAFETY: the view's rect for the call.
+        let r = unsafe { &*new_size };
+        let (w, h) = (r.right - r.left, r.bottom - r.top);
+        if w <= 0 || h <= 0 {
+            return kInvalidArgument;
+        }
+        self.resize.store(
+            (u64::from(w as u32) << 32) | u64::from(h as u32),
+            Ordering::Release,
+        );
+        // The window follows on the main loop's next tick; the view gets its size now.
+        // SAFETY: the calling view (or null), borrowed for the call.
+        if let Some(v) = unsafe { ComRef::from_raw(view) } {
+            // SAFETY: UI thread; the rect lives for the call.
+            unsafe { v.onSize(new_size) };
+        }
+        kResultTrue
+    }
+}
+
+impl IRunLoopTrait for PlugFrame {
+    unsafe fn registerEventHandler(
+        &self,
+        handler: *mut IEventHandler,
+        fd: FileDescriptor,
+    ) -> tresult {
+        // SAFETY: the plugin's handler (or null); we keep a reference while registered.
+        let Some(h) = (unsafe { ComRef::from_raw(handler) }).map(|r| r.to_com_ptr()) else {
+            return kInvalidArgument;
+        };
+        let watched = runloop::add_fd(
+            fd,
+            runloop::FD_READ,
+            Rc::new(move |_| {
+                // SAFETY: UI thread (the run loop's); the handler is kept alive by `h`.
+                unsafe { h.onFDIsSet(fd) }
+            }),
+        );
+        if !watched {
+            return kResultFalse;
+        }
+        lock(&self.handlers).push((handler as usize, fd));
+        kResultTrue
+    }
+
+    unsafe fn unregisterEventHandler(&self, handler: *mut IEventHandler) -> tresult {
+        let mut hs = lock(&self.handlers);
+        let before = hs.len();
+        hs.retain(|&(p, fd)| {
+            let keep = p != handler as usize;
+            if !keep {
+                runloop::remove_fd(fd);
+            }
+            keep
+        });
+        if hs.len() != before {
+            kResultTrue
+        } else {
+            kInvalidArgument
+        }
+    }
+
+    unsafe fn registerTimer(
+        &self,
+        handler: *mut ITimerHandler,
+        milliseconds: TimerInterval,
+    ) -> tresult {
+        // SAFETY: as for descriptors.
+        let Some(h) = (unsafe { ComRef::from_raw(handler) }).map(|r| r.to_com_ptr()) else {
+            return kInvalidArgument;
+        };
+        let period = u32::try_from(milliseconds).unwrap_or(u32::MAX);
+        let id = runloop::add_timer(
+            period,
+            Rc::new(move |_| {
+                // SAFETY: UI thread (the run loop's); the handler is kept alive by `h`.
+                unsafe { h.onTimer() }
+            }),
+        );
+        match id {
+            Some(id) => {
+                lock(&self.timers).push((handler as usize, id));
+                kResultTrue
+            }
+            None => kResultFalse,
+        }
+    }
+
+    unsafe fn unregisterTimer(&self, handler: *mut ITimerHandler) -> tresult {
+        let mut ts = lock(&self.timers);
+        let before = ts.len();
+        ts.retain(|&(p, id)| {
+            let keep = p != handler as usize;
+            if !keep {
+                runloop::remove_timer(id);
+            }
+            keep
+        });
+        if ts.len() != before {
+            kResultTrue
+        } else {
+            kInvalidArgument
+        }
+    }
 }
 
 impl IComponentHandlerTrait for ComponentHandler {
@@ -803,6 +997,67 @@ mod tests {
         let mut sync = Vec::new();
         s.take_to_controller(|id, v| sync.push((id, v)));
         assert_eq!(sync, vec![(3, 0.75)]);
+    }
+
+    #[test]
+    fn the_plug_frame_serves_timers_and_resize_requests() {
+        use std::sync::atomic::AtomicU32;
+        use std::time::{Duration, Instant};
+
+        struct Tick(Arc<AtomicU32>);
+        impl Class for Tick {
+            type Interfaces = (ITimerHandler,);
+        }
+        impl ITimerHandlerTrait for Tick {
+            unsafe fn onTimer(&self) {
+                self.0.fetch_add(1, Ordering::AcqRel);
+            }
+        }
+
+        std::thread::spawn(|| {
+            runloop::mark_main_thread();
+            let frame = ComWrapper::new(PlugFrame::new());
+            let n = Arc::new(AtomicU32::new(0));
+            let tick = ComWrapper::new(Tick(n.clone()));
+            let handler = tick.as_com_ref::<ITimerHandler>().unwrap().as_ptr();
+            let run_loop = frame.as_com_ref::<IRunLoop>().unwrap();
+            // SAFETY: a live handler; UI thread.
+            unsafe { assert_eq!(run_loop.registerTimer(handler, 5), kResultTrue) };
+            runloop::fire_timers(Instant::now() + Duration::from_millis(10));
+            assert_eq!(n.load(Ordering::Acquire), 1);
+            // SAFETY: as above.
+            unsafe {
+                assert_eq!(run_loop.unregisterTimer(handler), kResultTrue);
+                assert_eq!(run_loop.unregisterTimer(handler), kInvalidArgument);
+            }
+            runloop::fire_timers(Instant::now() + Duration::from_secs(1));
+            assert_eq!(n.load(Ordering::Acquire), 1, "unregistered");
+            // A timer left registered is dropped with the view.
+            // SAFETY: as above.
+            unsafe { assert_eq!(run_loop.registerTimer(handler, 5), kResultTrue) };
+            frame.clear();
+            runloop::fire_timers(Instant::now() + Duration::from_secs(2));
+            assert_eq!(n.load(Ordering::Acquire), 1);
+
+            let plug_frame = frame.as_com_ref::<IPlugFrame>().unwrap();
+            let mut r = ViewRect {
+                left: 10,
+                top: 10,
+                right: 310,
+                bottom: 210,
+            };
+            // SAFETY: a valid rect; no view (null) to notify.
+            unsafe {
+                assert_eq!(
+                    plug_frame.resizeView(std::ptr::null_mut(), &mut r),
+                    kResultTrue
+                );
+            }
+            assert_eq!(frame.take_resize(), Some((300, 200)));
+            assert_eq!(frame.take_resize(), None);
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]

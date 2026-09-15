@@ -38,6 +38,16 @@ rtrb.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
+# T-901 (ADR-008 §7): the plugin editor's top-level HWND on Windows (compile-checked by
+# `just check-cross`). `windows-sys` is already a workspace dependency.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 # T-808 (ADR-007 amendment, ADR-008 Amendment 11): the JSFX backend — ysfx built from the vendored
 # sources (`third_party/ysfx`) by `vox-ysfx-sys`; linked into this binary only. Where the crate
 # doesn't build ysfx (not unix, or not x86-64/aarch64 — Windows included), JSFX is unsupported.

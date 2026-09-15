@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use vox_sandbox_ipc::protocol::{RequestBody, ResponseBody};
 use vox_sandbox_ipc::{Fault, Monitor, PeerStatus, SharedRegion};
 
+use crate::editor::Notifications;
 use crate::health::HealthStore;
 use crate::rpc::{Rpc, RpcError};
 
@@ -101,18 +102,24 @@ pub(crate) struct Sandbox {
     module_id: String,
     /// Runtime-crash flag store (T-804, ADR-008 §5); `None` records nothing.
     health: Option<Arc<HealthStore>>,
+    /// What the sandbox reports unsolicited (T-901: editor window, state, heartbeat).
+    pub(crate) notes: Arc<Notifications>,
+    /// While an editor window is open, a main thread silent this long is a hang (T-901).
+    editor_hang_timeout: Duration,
 }
 
 impl Sandbox {
     /// Spawns `cmd` (stdin/stdout piped) through the watchdog thread and starts its channel.
     /// `module_id` and `health` are ADR-008 §5's runtime-crash flag (T-804): the first fault
     /// this sandbox ever records increments `module_id`'s counter in `health`, if given.
+    /// `editor_hang_timeout`: T-901's GUI watchdog (see [`Self::poll`]).
     pub(crate) fn spawn(
         mut cmd: Command,
         region: SharedRegion,
         name: &str,
         module_id: &str,
         health: Option<Arc<HealthStore>>,
+        editor_hang_timeout: Duration,
     ) -> Result<Arc<Self>, String> {
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -124,7 +131,8 @@ impl Sandbox {
             let _ = child.wait();
             return Err("couldn't open the plugin sandbox's control channel".into());
         };
-        let rpc = match Rpc::start(stdin, stdout, name) {
+        let notes = Arc::new(Notifications::default());
+        let rpc = match Rpc::start(stdin, stdout, name, notes.clone()) {
             Ok(r) => r,
             Err(e) => {
                 let _ = child.kill();
@@ -143,6 +151,8 @@ impl Sandbox {
             retiring: AtomicBool::new(false),
             module_id: module_id.to_owned(),
             health,
+            notes,
+            editor_hang_timeout,
         });
         crate::watchdog::watch(&sandbox);
         Ok(sandbox)
@@ -198,6 +208,12 @@ impl Sandbox {
         r
     }
 
+    /// Sends a request without waiting for its answer (T-901: closing the editor window never
+    /// blocks the rack).
+    pub(crate) fn notify(&self, body: RequestBody) {
+        lock(&self.rpc).notify(body);
+    }
+
     /// A best-effort request (T-803: parameter text): a timeout is not a hang (the plugin's
     /// main thread may just be busy); a closed channel is still a crash.
     pub(crate) fn call_soft(
@@ -246,6 +262,13 @@ impl Sandbox {
         } else if status == PeerStatus::Exited {
             // Died while inactive (no monitor) or right after the monitor was removed.
             self.record(SandboxFault::Crashed);
+        } else if self.notes.is_open() && self.notes.silent_for() >= self.editor_hang_timeout {
+            // T-901: the plugin's GUI runs on the sandbox's main thread, which sends a heartbeat
+            // while its window is open. The audio thread may still be serving (so the channel
+            // monitor sees no hang), but a frozen window is a hung plugin: kill it, and the
+            // restart policy takes over.
+            self.notes.set_open(false);
+            self.record(SandboxFault::Hung);
         }
     }
 

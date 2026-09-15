@@ -12,7 +12,7 @@
 //! Every lilv call happens on the sandbox's main thread (discovery, instantiation, state); the
 //! audio thread only calls the plugin's descriptor.
 
-use std::ffi::{CStr, CString, OsString, c_char, c_int, c_void};
+use std::ffi::{CStr, CString, OsString, c_char, c_int, c_uint, c_void};
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -38,6 +38,10 @@ pub(crate) type SetPortValueFn = unsafe extern "C" fn(
     size: u32,
     type_: u32,
 );
+
+/// `LilvUISupportedFunc` (T-901: suil's `suil_ui_supported`).
+pub(crate) type UiSupportedFn =
+    unsafe extern "C" fn(container_type_uri: *const c_char, ui_type_uri: *const c_char) -> c_uint;
 
 /// Opaque lilv objects (`LilvWorld`, `LilvNode`, `LilvNodes`, `LilvPlugin`, …).
 type P = *const c_void;
@@ -126,6 +130,19 @@ lilv_api! {
     state_new_from_world: fn(M, *const LV2_URID_Map, P) -> M;
     state_restore: fn(P, *mut LilvInstanceImpl, Option<SetPortValueFn>, M, u32, *const *const LV2_Feature);
     state_free: fn(M);
+    // T-901: plugin UIs.
+    plugin_get_uis: fn(P) -> M;
+    uis_free: fn(M);
+    uis_begin: fn(P) -> M;
+    uis_get: fn(P, P) -> P;
+    uis_next: fn(P, M) -> M;
+    uis_is_end: fn(P, P) -> bool;
+    ui_get_uri: fn(P) -> P;
+    ui_is_supported: fn(P, Option<UiSupportedFn>, P, *mut P) -> c_uint;
+    ui_get_bundle_uri: fn(P) -> P;
+    ui_get_binary_uri: fn(P) -> P;
+    file_uri_parse: fn(*const c_char, *mut *mut c_char) -> *mut c_char;
+    free: fn(*mut c_void);
 }
 
 /// Where to look for lilv: `POWERVOICE_LILV` (a path) first, then the platform's names.
@@ -389,6 +406,81 @@ impl World {
     pub(crate) fn plugin_first_text(&self, plugin: P, predicate: &CStr) -> Option<String> {
         let nodes = self.plugin_values(plugin, predicate)?;
         nodes.items().first().and_then(|&n| self.api.text_of(n))
+    }
+}
+
+/// A plugin UI PowerVoice can show (T-901): what suil needs to instantiate it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct UiChoice {
+    /// The UI's URI.
+    pub(crate) uri: String,
+    /// Its widget type (e.g. `ui:X11UI`).
+    pub(crate) type_uri: String,
+    /// Its bundle directory.
+    pub(crate) bundle_path: String,
+    /// Its shared library.
+    pub(crate) binary_path: String,
+}
+
+impl World {
+    /// The plugin's first UI that `supported` (suil) can show in a `container` (T-901: an
+    /// `ui:X11UI` window).
+    pub(crate) fn plugin_ui(
+        &self,
+        plugin: P,
+        container: &CStr,
+        supported: UiSupportedFn,
+    ) -> Option<UiChoice> {
+        let api = self.api;
+        let container = self.uri(container);
+        // SAFETY: a plugin of this world; the UI collection is ours (freed below), its members
+        // and their nodes are borrowed from it.
+        unsafe {
+            let uis = (api.plugin_get_uis)(plugin);
+            if uis.is_null() {
+                return None;
+            }
+            let mut found = None;
+            let mut it = (api.uis_begin)(uis);
+            while found.is_none() && !(api.uis_is_end)(uis, it) {
+                let ui = (api.uis_get)(uis, it);
+                let mut ty: P = std::ptr::null();
+                if (api.ui_is_supported)(ui, Some(supported), container.ptr(), &mut ty) > 0 {
+                    found = Some(UiChoice {
+                        uri: api.uri_of((api.ui_get_uri)(ui)).unwrap_or_default(),
+                        type_uri: api.uri_of(ty).unwrap_or_default(),
+                        bundle_path: self
+                            .path_of((api.ui_get_bundle_uri)(ui))
+                            .unwrap_or_default(),
+                        binary_path: self
+                            .path_of((api.ui_get_binary_uri)(ui))
+                            .unwrap_or_default(),
+                    })
+                    .filter(|c| {
+                        !c.uri.is_empty() && !c.type_uri.is_empty() && !c.binary_path.is_empty()
+                    });
+                }
+                it = (api.uis_next)(uis, it);
+            }
+            (api.uis_free)(uis);
+            found
+        }
+    }
+
+    /// The local path of a `file:` URI node.
+    fn path_of(&self, node: P) -> Option<String> {
+        let uri = CString::new(self.api.uri_of(node)?).ok()?;
+        // SAFETY: a NUL-terminated URI; lilv returns an allocated string (or null), freed with
+        // `lilv_free`.
+        unsafe {
+            let p = (self.api.file_uri_parse)(uri.as_ptr(), std::ptr::null_mut());
+            if p.is_null() {
+                return None;
+            }
+            let s = CStr::from_ptr(p).to_string_lossy().into_owned();
+            (self.api.free)(p.cast());
+            Some(s)
+        }
     }
 }
 

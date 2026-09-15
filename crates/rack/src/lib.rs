@@ -58,10 +58,10 @@ pub use shim::DualMonoShim;
 /// `TelemetryKind` (H-03): the per-slot meter channels ([`SlotInfo::telemetry`],
 /// [`RackHost::read_telemetry`]).
 pub use vox_module_api::{
-    ActivateConfig, ChannelLayout, CurveHandle, GroupId, LocalizedText, ModuleDescriptor,
-    ModuleError, ModuleFactory, ModulePreset, ModuleState, NoiseProfile, ParamFlags, ParamGroup,
-    ParamId, ParamInfo, ProcessMode, ResponseCurve, Taper, Telemetry, TelemetryInfo, TelemetryKind,
-    Transport, Unit,
+    ActivateConfig, ChannelLayout, CurveHandle, EditorRequest, EditorUpdate, GroupId,
+    LocalizedText, ModuleDescriptor, ModuleError, ModuleFactory, ModulePreset, ModuleState,
+    NoiseProfile, ParamFlags, ParamGroup, ParamId, ParamInfo, PluginEditor, ProcessMode,
+    ResponseCurve, Taper, Telemetry, TelemetryInfo, TelemetryKind, Transport, Unit,
 };
 
 use vox_module_api::{DEFAULT_EVENT_CAPACITY, EventListError, SchemaError, StateError};
@@ -176,6 +176,13 @@ pub enum RackError {
     /// The rack already holds [`MAX_SLOTS`] slots.
     #[error("a rack holds at most {MAX_SLOTS} slots")]
     TooManySlots,
+    /// The slot's module has no editor window of its own (T-901): not a plugin, a plugin
+    /// without a GUI, or a slot that isn't running.
+    #[error("{name} has no plugin window")]
+    NoEditor {
+        /// Display name of the slot.
+        name: String,
+    },
     /// The module has no mono or dual-mono-capable layout.
     #[error("{name} has an unsupported channel layout")]
     UnsupportedLayout {

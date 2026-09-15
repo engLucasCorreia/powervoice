@@ -1,10 +1,13 @@
-//! Control-channel messages, protocol version 2 (T-802, ADR-008 §4 + Amendments 2–3; v2 = T-803:
-//! parameter text requests, `PluginInfo::param_text`, the scan report of `--scan`).
+//! Control-channel messages, protocol version 3 (T-802, ADR-008 §4 + Amendments 2–3; v2 = T-803:
+//! parameter text requests, `PluginInfo::param_text`, the scan report of `--scan`; v3 = T-901:
+//! plugin editor windows, `PluginInfo::editor`, unsolicited [`Notification`]s).
 //!
 //! Every host → sandbox [`Request`] gets exactly one [`Response`] with the same `id`, in order.
 //! Messages are JSON (`serde`; the parameter schema is the module API's own types, as in the
 //! sidecar); plugin state rides in the frame's binary payload ([`crate::control`]), never inside
-//! the JSON. The sandbox never sends anything unsolicited in v1 (its log goes to stderr).
+//! the JSON. Since v3 the sandbox also sends **unsolicited** responses with id [`NOTIFY_ID`] and a
+//! [`ResponseBody::Notify`] body (editor closed, state changed, parameters the plugin's window
+//! changed while inactive, main-thread heartbeat); the host routes them apart from the replies.
 //!
 //! Lifecycle (one sandbox process per plugin instance):
 //! `Hello` → `Load` → (`SetParams` | `LoadState` | `SaveState`)* → `Activate` → … →
@@ -20,7 +23,11 @@ use vox_module_api::{ParamGroup, ParamId, ParamInfo, ProcessMode};
 use crate::control::{Frame, read_frame, write_frame};
 
 /// Bumped on any incompatible message change; checked by `Hello`.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
+
+/// The `id` of an unsolicited sandbox → host message ([`ResponseBody::Notify`], T-901). Host
+/// request ids start at 1, so a reply never carries it.
+pub const NOTIFY_ID: u64 = 0;
 
 /// A host → sandbox request.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -96,6 +103,41 @@ pub enum RequestBody {
         /// Typed text.
         text: String,
     },
+    /// Opens the plugin's own editor as a floating window (T-901, ADR-008 §7), or raises it if
+    /// it is already open. → [`ResponseBody::EditorOpened`].
+    OpenEditor {
+        /// The window title ("‹Plugin› — PowerVoice", localized by the editor).
+        title: String,
+        /// The editor's own top-level window, when the platform lets the plugin window stay above
+        /// it: an X11 window id (only when the editor itself runs on X11), a Win32 `HWND` (the
+        /// owner). `None` on Wayland and macOS.
+        parent: Option<u64>,
+    },
+    /// Closes the editor window (no-op when closed). → [`ResponseBody::Ok`]. The sandbox then
+    /// also sends [`Notification::EditorClosed`] and a fresh [`Notification::StateChanged`].
+    CloseEditor,
+}
+
+/// An unsolicited sandbox → host message (T-901): a [`Response`] with id [`NOTIFY_ID`] and a
+/// [`ResponseBody::Notify`] body.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum Notification {
+    /// The editor window closed on its own (the user closed it, or the plugin did).
+    EditorClosed,
+    /// The plugin's state changed outside its parameters (CLAP `mark_dirty`, VST3 `setDirty`, an
+    /// editor that closed): the frame's payload is the new state (`SaveState`'s bytes).
+    StateChanged,
+    /// Parameters the plugin changed itself while **inactive** (its window, through a CLAP
+    /// `params.flush`, a VST3 `performEdit`, an LV2 UI port write). While active these travel as
+    /// output events on the event ring instead, with their chunk.
+    Params {
+        /// The new values.
+        values: Vec<ParamValue>,
+    },
+    /// The sandbox's main thread is alive (sent periodically while an editor is open): a GUI that
+    /// hangs the main thread stops it, and the host's watchdog kills the process.
+    Alive,
 }
 
 /// A sandbox → host response.
@@ -126,6 +168,9 @@ pub struct PluginInfo {
     /// answer it; T-803). `false`: the host formats with the module API's text rules.
     #[serde(default)]
     pub param_text: bool,
+    /// The plugin has an editor window this sandbox can show (T-901): `OpenEditor` works.
+    #[serde(default)]
+    pub editor: bool,
 }
 
 /// Response kinds.
@@ -167,6 +212,15 @@ pub enum ResponseBody {
         /// Plain value.
         value: Option<f64>,
     },
+    /// The editor window is open (`OpenEditor`), at this size in pixels.
+    EditorOpened {
+        /// Width.
+        width: u32,
+        /// Height.
+        height: u32,
+    },
+    /// An unsolicited message (id [`NOTIFY_ID`], T-901).
+    Notify(Notification),
     /// The request failed (the plugin or backend's message).
     Error {
         /// What went wrong.
@@ -403,6 +457,15 @@ mod tests {
                 id: ParamId(3),
                 text: "-6 dB".into(),
             },
+            RequestBody::OpenEditor {
+                title: "Gain — PowerVoice".into(),
+                parent: Some(0x0340_0007),
+            },
+            RequestBody::OpenEditor {
+                title: String::new(),
+                parent: None,
+            },
+            RequestBody::CloseEditor,
         ];
         let mut buf = Vec::new();
         for (i, body) in reqs.iter().enumerate() {
@@ -442,6 +505,7 @@ mod tests {
                     value: 0.1,
                 }],
                 param_text: true,
+                editor: true,
             }),
             ResponseBody::Activated {
                 latency_samples: 3,
@@ -459,6 +523,19 @@ mod tests {
                 texts: vec![Some("-6.0 dB".into()), None],
             },
             ResponseBody::Value { value: Some(0.25) },
+            ResponseBody::EditorOpened {
+                width: 640,
+                height: 360,
+            },
+            ResponseBody::Notify(Notification::EditorClosed),
+            ResponseBody::Notify(Notification::StateChanged),
+            ResponseBody::Notify(Notification::Params {
+                values: vec![ParamValue {
+                    id: ParamId(0),
+                    value: -12.0,
+                }],
+            }),
+            ResponseBody::Notify(Notification::Alive),
             ResponseBody::Error {
                 message: "nope".into(),
             },
@@ -526,12 +603,13 @@ mod tests {
         );
         let json = serde_json::to_string(&ScanReply::Error("no".into())).unwrap();
         assert_eq!(json, r#"{"error":"no"}"#);
-        // A v1 `Loaded` (no `param_text`) still parses.
+        // A v1 `Loaded` (no `param_text`, no `editor`) still parses.
         let info: PluginInfo = serde_json::from_str(
             r#"{"name":"G","vendor":"V","version":"1","params":[],"groups":[],"values":[]}"#,
         )
         .unwrap();
         assert!(!info.param_text);
+        assert!(!info.editor);
     }
 
     #[test]
@@ -542,5 +620,15 @@ mod tests {
         })
         .unwrap();
         assert_eq!(json, r#"{"id":3,"body":{"op":"deactivate"}}"#);
+        // T-901: notifications travel as responses with id 0.
+        let json = serde_json::to_string(&Response {
+            id: NOTIFY_ID,
+            body: ResponseBody::Notify(Notification::EditorClosed),
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            r#"{"id":0,"body":{"reply":"notify","event":"editor_closed"}}"#
+        );
     }
 }

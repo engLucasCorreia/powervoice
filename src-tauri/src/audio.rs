@@ -162,5 +162,14 @@ fn forward_rack_notice<R: Runtime>(app: &AppHandle<R>, notice: &RackNotice) -> t
                     .with_param("plugin", name),
             )
         }
+        // T-901: the engine follows both with a `rack_changed` snapshot / rack model refresh.
+        RackNotice::EditorChanged { index, open, .. } => {
+            tracing::info!(slot = index, open, "plugin window");
+            Ok(())
+        }
+        RackNotice::PluginStateChanged { index, .. } => {
+            tracing::debug!(slot = index, "plugin state changed outside its parameters");
+            Ok(())
+        }
     }
 }

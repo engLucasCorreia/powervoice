@@ -872,3 +872,16 @@ For any `Module`:
   - `RackHost::is_loading()` and `RackHost::param_texts(index)`.
   - The engine's `RackSlot.texts`, index-aligned with `values`.
   - See ADR-008 Amendment 3 §5.
+
+## Amendment 5 — `PluginEditor` extension (T-901, 2026-09-15)
+- New host-internal extension `ExtensionId::PluginEditor` → `Extension::PluginEditor(Arc<dyn
+  PluginEditor>)` (wire id `org.powervoice.plugin-editor/1`, never a CLAP extension), answered only
+  by out-of-process adapters whose plugin has its own window (the sandbox proxy, ADR-008
+  Amendment 13).
+- `PluginEditor`: `available()`, `open(&EditorRequest {title, parent})` (blocks for one control
+  round trip — call it off the rack's control thread), `close()` (never blocks), `is_open()`,
+  `poll() -> EditorUpdate {open, params, state}` (what the window did since the last poll: changes
+  made while the plugin wasn't processing, and a new state blob after a GUI-only change), and
+  `capture_state()` (the state right now, for saves).
+- Like the other handles it is `Send + Sync`, outlives its instance, and is captured by the rack
+  at `Loaded` construction and refreshed on replacement.

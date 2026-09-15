@@ -385,6 +385,11 @@ impl Host {
     pub(crate) fn map(&self) -> *const LV2_URID_Map {
         &raw const self.map
     }
+
+    /// `urid:unmap` (T-901: a plugin UI's features).
+    pub(crate) fn unmap(&self) -> *const LV2_URID_Unmap {
+        &raw const self.unmap
+    }
 }
 
 #[cfg(test)]

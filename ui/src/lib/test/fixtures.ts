@@ -234,6 +234,8 @@ export function rackSlotDto(overrides: Partial<RackSlotDto> = {}): RackSlotDto {
     curve_handles: null,
     telemetry: [],
     sandboxed: false,
+    has_editor: false,
+    editor_open: false,
     ...overrides,
   };
 }

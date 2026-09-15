@@ -78,8 +78,14 @@ pub struct SandboxOptions {
     pub hang_timeout: Duration,
     /// Offline: how long one block may take before the render aborts.
     pub offline_timeout: Duration,
-    /// Control requests (load, activate, state; ADR-008 §4: 5 s).
+    /// Control requests (load, activate, state, opening the editor window; ADR-008 §4: 5 s).
     pub request_timeout: Duration,
+    /// While the plugin's editor window is open, its main thread (the GUI's thread) not
+    /// answering for this long is a hang (T-901; default = `request_timeout`).
+    pub editor_hang_timeout: Duration,
+    /// Extra environment for every sandbox process (T-901 tests: `POWERVOICE_SANDBOX_GUI=
+    /// headless`, so an editor test never opens a window on a developer's screen).
+    pub env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
     /// Runtime-crash flag counters (T-804, ADR-008 §5): incremented once per fault, the first
     /// time a sandboxed instance of a module faults. `None` (the default) records nothing —
     /// tests and the CLI that don't care about the plugin manager's flags.
@@ -96,6 +102,8 @@ impl SandboxOptions {
             hang_timeout: Duration::from_millis(250),
             offline_timeout: Duration::from_secs(5),
             request_timeout: Duration::from_secs(5),
+            editor_hang_timeout: Duration::from_secs(5),
+            env: Vec::new(),
             health: None,
         }
     }

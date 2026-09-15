@@ -467,6 +467,10 @@ pub struct RackSlotDto {
     /// The module runs out of process (a sandboxed plugin, T-802): the slot header shows its
     /// status (Running / Restarting / Failed).
     pub sandboxed: bool,
+    /// The plugin has a window of its own (T-901): the slot offers "Open plugin window".
+    pub has_editor: bool,
+    /// That window is open.
+    pub editor_open: bool,
 }
 
 impl From<&EngineRackSlot> for RackSlotDto {
@@ -497,6 +501,8 @@ impl From<&EngineRackSlot> for RackSlotDto {
                 .map(|hs| hs.iter().map(Into::into).collect()),
             telemetry: info.telemetry.iter().map(Into::into).collect(),
             sandboxed: info.sandboxed,
+            has_editor: info.has_editor,
+            editor_open: info.editor_open,
         }
     }
 }
@@ -533,6 +539,10 @@ pub fn rack_ipc_error(err: RackApiError) -> IpcError {
         RackApiError::Rack(message) => {
             IpcError::new(IpcErrorCode::InvalidArgument, "error.rack_rejected")
                 .with_param("message", message)
+        }
+        RackApiError::Editor(reason) => {
+            IpcError::new(IpcErrorCode::Internal, "error.plugin_window.open_failed")
+                .with_param("reason", reason)
         }
     }
 }

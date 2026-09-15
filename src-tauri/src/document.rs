@@ -13,7 +13,7 @@ use std::time::Duration;
 use vox_engine::bake::BakeAttachment;
 use vox_engine::record::DropoutMark;
 use vox_engine::spectro::SpectroService;
-use vox_engine::{EngineHandle, PlaybackDoc, TransportCommand};
+use vox_engine::{EngineHandle, PlaybackDoc, RackCommand, TransportCommand};
 use vox_project::{
     CancelToken, DocumentIdentity, Edit, EditTarget, FinishedTake, ImportProbe,
     LufsNormalizeOutcome, Marker, MarkerId, MarkerItemModel, MarkerMetaTable, MarkerOp,
@@ -1297,6 +1297,8 @@ impl DocumentService {
             }
             guard.take()
         };
+        // T-901: "Close all plugin windows" on document close (a no-op without a live rack).
+        let _ = self.0.engine.rack_command(RackCommand::CloseAllEditors);
         self.0.engine.set_document(None);
         *self.0.clipboard.lock().unwrap() = None;
         if let Some(doc) = previous {
@@ -1794,6 +1796,9 @@ impl DocumentService {
         confirm_clip: bool,
         confirm_multichannel: bool,
     ) -> Result<DocumentInfo, IpcError> {
+        // T-901: state a plugin window changed outside the plugin's parameters reaches the rack's
+        // committed blobs before the sidecar is written (round trips off the document lock).
+        self.0.engine.rack_capture_plugin_states();
         let mut guard = self.0.open.lock().unwrap();
         let doc = guard.as_mut().ok_or_else(no_document)?;
         let path = doc.path.clone().ok_or_else(untitled)?;
@@ -1843,6 +1848,8 @@ impl DocumentService {
         if container == SaveContainer::Flac && bits == BitDepth::Bit32Float {
             return Err(invalid_flac_bit_depth());
         }
+        // T-901: see `save`.
+        self.0.engine.rack_capture_plugin_states();
         let mut guard = self.0.open.lock().unwrap();
         let doc = guard.as_mut().ok_or_else(no_document)?;
         if !confirm_clip && let Some(overs) = check_overs(doc, bits)? {

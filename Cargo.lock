@@ -3099,6 +3099,7 @@ dependencies = [
  "crc32fast",
  "directories",
  "hound",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "tauri",
@@ -3161,6 +3162,7 @@ dependencies = [
  "vox-voxmod-gain",
  "vox-ysfx-sys",
  "vst3",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5270,6 +5272,7 @@ name = "vox-test-clap"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "libloading 0.9.0",
  "vox-clap-abi",
  "vox-module-api",
  "vox-modules",

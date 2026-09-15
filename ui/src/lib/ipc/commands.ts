@@ -257,6 +257,21 @@ export async function rackRestart(slot: number): Promise<RackStateDto> {
   return invoke<RackStateDto>("rack_restart" satisfies CommandName, { slot });
 }
 
+/** T-901: opens a plugin slot's own window (run by its sandbox), titled `title`. */
+export async function rackEditorOpen(slot: number, title: string): Promise<RackStateDto> {
+  return invoke<RackStateDto>("rack_editor_open" satisfies CommandName, { slot, title });
+}
+
+/** T-901: closes a plugin slot's window. */
+export async function rackEditorClose(slot: number): Promise<RackStateDto> {
+  return invoke<RackStateDto>("rack_editor_close" satisfies CommandName, { slot });
+}
+
+/** T-901: closes every plugin window. */
+export async function rackEditorCloseAll(): Promise<RackStateDto> {
+  return invoke<RackStateDto>("rack_editor_close_all" satisfies CommandName);
+}
+
 /** S3-01: sets a parameter from a normalized `[0, 1]` slider position (SPEC-012 §2.4, §2.6). */
 export async function paramSetNormalized(
   slot: number,

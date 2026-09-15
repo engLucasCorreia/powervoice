@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 use rtrb::PushError;
 use serde_json::Map;
 use vox_module_api::{
-    ActivateConfig, AdapterHealth, CurveHandle, Module, ModuleDescriptor, ModuleError, ModuleRef,
-    ModuleState, NoiseProfile, ParamEvent, ParamFlags, ParamGroup, ParamId, ParamInfo, ParamText,
-    ResponseCurve, Telemetry, TelemetryInfo, adapter_health, noise_profile, param_text,
-    response_curve, telemetry,
+    ActivateConfig, AdapterHealth, CurveHandle, EditorRequest, Module, ModuleDescriptor,
+    ModuleError, ModuleRef, ModuleState, NoiseProfile, ParamEvent, ParamFlags, ParamGroup, ParamId,
+    ParamInfo, ParamText, PluginEditor, ResponseCurve, Telemetry, TelemetryInfo, adapter_health,
+    noise_profile, param_text, plugin_editor, response_curve, telemetry,
 };
 
 use crate::chain::PlanEntry;
@@ -99,6 +99,24 @@ pub enum RackNotice {
         index: usize,
         /// Display name, for the toast.
         name: String,
+    },
+    /// A plugin's own editor window opened or closed (T-901): through "Open plugin window",
+    /// the user closing it, the slot's removal, or its sandbox dying. The UI re-reads the rack.
+    EditorChanged {
+        /// Slot.
+        slot: SlotUid,
+        /// Slot index.
+        index: usize,
+        /// Whether the window is open now.
+        open: bool,
+    },
+    /// A plugin changed its state outside its parameters (a GUI-only change, T-901): the slot's
+    /// committed blob was refreshed, so the rack model (and the document's dirty state) changed.
+    PluginStateChanged {
+        /// Slot.
+        slot: SlotUid,
+        /// Slot index.
+        index: usize,
     },
 }
 
@@ -185,6 +203,10 @@ pub struct SlotInfo {
     /// The module runs out of process (it answers the `AdapterHealth` extension: a sandboxed
     /// plugin, T-802). `false` for placeholders.
     pub sandboxed: bool,
+    /// The module has an editor window of its own (T-901: a sandboxed plugin with a GUI).
+    pub has_editor: bool,
+    /// That window is open.
+    pub editor_open: bool,
 }
 
 /// One slot's current [`Telemetry`] values ([`RackHost::read_telemetry`]), in the order of its
@@ -232,6 +254,16 @@ struct Loaded {
     /// The newest instance's [`ParamText`] handle (a plugin that formats its own values,
     /// T-803): display text and typed-text parsing. Refreshed on replacement.
     text: Option<Arc<dyn ParamText>>,
+    /// The newest instance's [`PluginEditor`] handle, when its plugin has a window of its own
+    /// (T-901). Refreshed on replacement.
+    editor: Option<Arc<dyn PluginEditor>>,
+    /// The window's open state as last reported to the UI ([`RackNotice::EditorChanged`]).
+    editor_reported_open: bool,
+    /// How the window was last opened (reopened with it after a plugin-requested restart).
+    editor_request: Option<EditorRequest>,
+    /// The window was opened at least once: the plugin may hold GUI-only state, so a save
+    /// captures its state first ([`RackHost::editors_to_capture`]).
+    editor_used: bool,
 }
 
 /// A module's [`Telemetry`] handle and its channel descriptions.
@@ -275,6 +307,9 @@ struct HostSlot {
     /// The background instantiation in flight for this slot (T-803): its first instance
     /// ([`Kind::Loading`]) or a replacement of a loaded one.
     job: Option<PendingJob>,
+    /// T-901: the slot's editor window was open when the slot was moved; reopen it once the new
+    /// instance is loaded.
+    reopen_editor: Option<EditorRequest>,
 }
 
 impl HostSlot {
@@ -287,8 +322,20 @@ impl HostSlot {
             auto_restarts: 0,
             restart_due: None,
             job: None,
+            reopen_editor: None,
         }
     }
+}
+
+/// Reopens a plugin's editor window on a short-lived thread (T-901): opening waits for the
+/// plugin's GUI, which must never stall the rack's control thread.
+fn reopen_editor(editor: Arc<dyn PluginEditor>, request: EditorRequest) {
+    let spawned = std::thread::Builder::new()
+        .name("rack-editor-open".into())
+        .spawn(move || {
+            let _ = editor.open(&request);
+        });
+    drop(spawned);
 }
 
 /// A background instantiation a slot waits for (T-803).
@@ -415,6 +462,7 @@ fn loaded_from(module: Box<dyn Module>) -> Box<Loaded> {
     let (telemetry, telemetry_channels) = telemetry_of(module.as_ref());
     let health = adapter_health(module.as_ref());
     let text = param_text(module.as_ref());
+    let editor = plugin_editor(module.as_ref()).filter(|e| e.available());
     Box::new(Loaded {
         descriptor: module.descriptor().clone(),
         params,
@@ -430,6 +478,10 @@ fn loaded_from(module: Box<dyn Module>) -> Box<Loaded> {
         telemetry_channels,
         health,
         text,
+        editor,
+        editor_reported_open: false,
+        editor_request: None,
+        editor_used: false,
     })
 }
 
@@ -774,6 +826,9 @@ impl RackHost {
                 match done.result {
                     Ok(Resolved::Module(m)) => {
                         self.slots[k].kind = Kind::Loaded(loaded_from(m));
+                        if let Some(request) = self.slots[k].reopen_editor.take() {
+                            self.reopen_when_loaded(k, request);
+                        }
                         // The audio thread runs the dry stand-in: replace it (the instance
                         // fades in from the undelayed input once its output is valid).
                         if let Some(li) = self.layout_pos(uid)
@@ -932,6 +987,8 @@ impl RackHost {
                 curve_handles: l.response_curve.as_deref().map(|c| c.handles().to_vec()),
                 telemetry: l.telemetry_channels.clone(),
                 sandboxed: l.health.is_some(),
+                has_editor: l.editor.is_some(),
+                editor_open: l.editor.as_ref().is_some_and(|e| e.is_open()),
             },
             Kind::Placeholder {
                 model,
@@ -961,6 +1018,8 @@ impl RackHost {
                 curve_handles: None,
                 telemetry: Arc::from(Vec::new()),
                 sandboxed: false,
+                has_editor: false,
+                editor_open: false,
             },
             Kind::Loading { model, name } => SlotInfo {
                 uid: hs.uid,
@@ -976,6 +1035,8 @@ impl RackHost {
                 curve_handles: None,
                 telemetry: Arc::from(Vec::new()),
                 sandboxed: false,
+                has_editor: false,
+                editor_open: false,
             },
         })
     }
@@ -1235,10 +1296,15 @@ impl RackHost {
             });
         }
         let mut hs = self.slots.remove(index);
-        if let Kind::Loaded(l) = &mut hs.kind
-            && let Some(mut m) = l.fresh.take()
-        {
-            m.deactivate();
+        if let Kind::Loaded(l) = &mut hs.kind {
+            // T-901: the window goes with its slot at once (not when the fading instance is
+            // finally dropped).
+            if let Some(e) = &l.editor {
+                e.close();
+            }
+            if let Some(mut m) = l.fresh.take() {
+                m.deactivate();
+            }
         }
         if let Some(li) = self.layout_pos(hs.uid) {
             if self.layout[li].sent {
@@ -1269,6 +1335,13 @@ impl RackHost {
         }
         let hs = &self.slots[from];
         let (bypass, extra) = (hs.bypass, hs.extra.clone());
+        // T-901: a window open on the moved slot reopens on its new instance.
+        let reopen = match &hs.kind {
+            Kind::Loaded(l) if l.editor.as_ref().is_some_and(|e| e.is_open()) => {
+                l.editor_request.clone()
+            }
+            _ => None,
+        };
         let kind = match &hs.kind {
             Kind::Loaded(l) => {
                 let model =
@@ -1312,6 +1385,9 @@ impl RackHost {
         self.layout.insert(pos, LayoutEntry::new(uid));
         self.slots
             .insert(to, HostSlot::new(uid, bypass, extra, kind));
+        if let Some(request) = reopen {
+            self.reopen_when_loaded(to, request);
+        }
         self.start_pending_loads();
         self.dirty = true;
         self.flush();
@@ -1684,6 +1760,21 @@ impl RackHost {
         (l.telemetry, l.telemetry_channels) = telemetry_of(m.as_ref());
         l.health = adapter_health(m.as_ref());
         l.text = param_text(m.as_ref());
+        // T-901: a window still open on the outgoing instance (a plugin-requested restart, a
+        // preset or state load — not a crash, whose window died with its process) closes and
+        // reopens on the new instance.
+        let reopen = l
+            .editor
+            .as_ref()
+            .filter(|e| e.is_open())
+            .and(l.editor_request.clone());
+        if let Some(old) = &l.editor {
+            old.close();
+        }
+        l.editor = plugin_editor(m.as_ref()).filter(|e| e.available());
+        if let (Some(e), Some(request)) = (&l.editor, reopen) {
+            reopen_editor(e.clone(), request);
+        }
         if let Some(mut old) = l.fresh.replace(m) {
             old.deactivate();
         }
@@ -1702,6 +1793,171 @@ impl RackHost {
             .push(RackNotice::SlotRestarted { slot: uid, index });
         self.flush();
         self.check_latency();
+    }
+
+    // --- Plugin editor windows (T-901, ADR-008 §7) ------------------------------------------
+
+    /// Slot `index`'s editor handle, to open its window with `request` (the caller opens it off
+    /// the control thread: opening waits for the plugin's GUI). Remembers `request` (a restart
+    /// reopens the window with it) and that the window was used (saves capture the plugin's
+    /// state first). [`RackError::NoEditor`] for a slot without a window of its own.
+    pub fn editor_for_open(
+        &mut self,
+        index: usize,
+        request: EditorRequest,
+    ) -> Result<Arc<dyn PluginEditor>, RackError> {
+        let len = self.slots.len();
+        let hs = self
+            .slots
+            .get_mut(index)
+            .ok_or(RackError::IndexOutOfRange { index, len })?;
+        let name = match &hs.kind {
+            Kind::Loaded(l) => l.descriptor.name.text.clone(),
+            Kind::Loading { name, .. } => name.clone(),
+            Kind::Placeholder { model, .. } => model.module.clone(),
+        };
+        match &mut hs.kind {
+            Kind::Loaded(l) if l.failed.is_none() && hs.job.is_none() => {
+                let editor = l.editor.clone().ok_or(RackError::NoEditor { name })?;
+                l.editor_request = Some(request);
+                l.editor_used = true;
+                Ok(editor)
+            }
+            _ => Err(RackError::NoEditor { name }),
+        }
+    }
+
+    /// Closes slot `index`'s editor window (no-op without one; never blocks).
+    pub fn close_editor(&mut self, index: usize) -> Result<(), RackError> {
+        let len = self.slots.len();
+        let hs = self
+            .slots
+            .get(index)
+            .ok_or(RackError::IndexOutOfRange { index, len })?;
+        if let Kind::Loaded(l) = &hs.kind
+            && let Some(e) = &l.editor
+        {
+            e.close();
+        }
+        self.poll_editors();
+        Ok(())
+    }
+
+    /// Closes every plugin window (document close, app quit; never blocks).
+    pub fn close_all_editors(&mut self) {
+        for hs in &self.slots {
+            if let Kind::Loaded(l) = &hs.kind
+                && let Some(e) = &l.editor
+            {
+                e.close();
+            }
+        }
+        self.poll_editors();
+    }
+
+    /// The editors whose plugin state a save should capture first ([`PluginEditor::
+    /// capture_state`], one blocking round trip each — call it off the control thread and hand
+    /// the results to [`Self::apply_plugin_state`]): slots whose window was opened at least once,
+    /// so they may hold GUI-only state the committed blob doesn't have yet.
+    pub fn editors_to_capture(&self) -> Vec<(SlotUid, Arc<dyn PluginEditor>)> {
+        self.slots
+            .iter()
+            .filter_map(|hs| match &hs.kind {
+                Kind::Loaded(l) if l.editor_used => l.editor.clone().map(|e| (hs.uid, e)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Makes `blob` (the plugin's state, wrapped like its `save_state` blob) slot `uid`'s
+    /// committed blob — a no-op for a removed slot or an unchanged blob;
+    /// [`RackNotice::PluginStateChanged`] otherwise.
+    pub fn apply_plugin_state(&mut self, uid: SlotUid, blob: Vec<u8>) {
+        let Some(k) = self.index_of(uid) else {
+            return;
+        };
+        if let Kind::Loaded(l) = &mut self.slots[k].kind
+            && l.blob.as_ref() != Some(&blob)
+        {
+            l.blob = Some(blob);
+            self.notices.push(RackNotice::PluginStateChanged {
+                slot: uid,
+                index: k,
+            });
+        }
+    }
+
+    /// Opens slot `k`'s window with `request` once it is loaded (now, if it is).
+    fn reopen_when_loaded(&mut self, k: usize, request: EditorRequest) {
+        let hs = &mut self.slots[k];
+        match &mut hs.kind {
+            Kind::Loaded(l) => {
+                if let Some(e) = &l.editor {
+                    l.editor_request = Some(request.clone());
+                    l.editor_used = true;
+                    reopen_editor(e.clone(), request);
+                }
+            }
+            Kind::Loading { .. } => hs.reopen_editor = Some(request),
+            Kind::Placeholder { .. } => {}
+        }
+    }
+
+    /// Takes what every plugin window did since the last tick (T-901): parameters it changed
+    /// while its plugin was inactive go to the mirror (like a module's output events), a
+    /// GUI-only state change refreshes the committed blob, and an opened or closed window is
+    /// reported.
+    fn poll_editors(&mut self) {
+        for k in 0..self.slots.len() {
+            let uid = self.slots[k].uid;
+            let Kind::Loaded(l) = &mut self.slots[k].kind else {
+                continue;
+            };
+            let Some(editor) = l.editor.clone() else {
+                continue;
+            };
+            let update = editor.poll();
+            let mut changed = Vec::new();
+            for (id, value) in update.params {
+                if let Some(pi) = l.params.iter().position(|p| p.id == id) {
+                    let p = &l.params[pi];
+                    let v = if p.flags.contains(ParamFlags::READ_ONLY) {
+                        value
+                    } else {
+                        p.clamp_quantize(value)
+                    };
+                    if v.is_finite() {
+                        l.values[pi] = v;
+                        changed.push(pi);
+                    }
+                }
+            }
+            let state_changed = match update.state {
+                Some(blob) if l.blob.as_ref() != Some(&blob) => {
+                    l.blob = Some(blob);
+                    true
+                }
+                _ => false,
+            };
+            let open_changed = update.open != l.editor_reported_open;
+            l.editor_reported_open = update.open;
+            for pi in changed {
+                self.notice_param(k, pi);
+            }
+            if state_changed {
+                self.notices.push(RackNotice::PluginStateChanged {
+                    slot: uid,
+                    index: k,
+                });
+            }
+            if open_changed {
+                self.notices.push(RackNotice::EditorChanged {
+                    slot: uid,
+                    index: k,
+                    open: update.open,
+                });
+            }
+        }
     }
 
     // --- Presets (T-406, ADR-005 §10/§12, SPEC-012 §2.7) ------------------------------------
@@ -2033,6 +2289,7 @@ impl RackHost {
             self.on_event(e);
         }
         self.drain_loads();
+        self.poll_editors();
         self.run_due_restarts(Instant::now());
         // H-40: cheap poll — only worth walking the slots when the registry actually changed
         // since the last tick (install, rescan, unblock, re-enable all bump its generation).
@@ -2081,6 +2338,8 @@ impl RackHost {
     /// `live` (stream stopped): deactivates and drops every chain — installed, retired, queued —
     /// and every instance not yet handed over.
     pub fn teardown(mut self, live: LiveRack) {
+        // T-901: no plugin window outlives the rack.
+        self.close_all_editors();
         for mut chain in live.into_chains() {
             chain.deactivate();
         }

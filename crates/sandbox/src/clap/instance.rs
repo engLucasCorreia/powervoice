@@ -1,6 +1,6 @@
 //! One CLAP plugin as a sandbox [`PluginInstance`].
 
-use std::ffi::{CString, c_char, c_void};
+use std::ffi::{CString, c_char, c_ulong, c_void};
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -10,11 +10,12 @@ use vox_module_api::{ActivateConfig, ParamGroup, ParamId, ParamInfo};
 use vox_sandbox_ipc::protocol::{ParamValue, PluginInfo};
 use vox_sandbox_ipc::{Chunk, EventKind, WireEvent};
 
-use super::host::{HostBox, mark_audio_thread};
+use super::host::{HostBox, NO_RESIZE, mark_audio_thread};
 use super::library::ClapLibrary;
 use super::params::{self, RawParam};
 use super::stream;
-use crate::backend::{ActiveInfo, OUT_EVENT_CAPACITY, PluginInstance};
+use crate::backend::{ActiveInfo, MainThreadEvents, OUT_EVENT_CAPACITY, PluginInstance};
+use crate::gui::{Api, EditorHost, NativeWindow, runloop};
 
 /// Parameter events one chunk forwards at most (more are dropped; the segment's event ring is
 /// smaller anyway).
@@ -33,6 +34,8 @@ struct Ext {
     latency: *const clap_plugin_latency,
     tail: *const clap_plugin_tail,
     ports: *const clap_plugin_audio_ports,
+    /// T-901.
+    gui: *const clap_plugin_gui,
 }
 
 /// Channel counts of the plugin's audio ports and which one is main.
@@ -85,6 +88,8 @@ pub struct ClapInstance {
     ports: Ports,
     active: Mutex<bool>,
     audio: Mutex<Option<Box<AudioState>>>,
+    /// T-901: the editor is open (`Some(floating)`).
+    gui_open: Mutex<Option<bool>>,
     host: Box<HostBox>,
     /// Dropped last: `deinit` and unload after the plugin was destroyed.
     _library: ClapLibrary,
@@ -214,6 +219,10 @@ impl ClapInstance {
         if plugin.is_null() {
             return Err(format!("{name} couldn't be created"));
         }
+        // T-901: timer and descriptor callbacks call into the plugin.
+        host.state
+            .plugin
+            .store(plugin.cast_mut(), Ordering::Release);
         let mut me = Self {
             plugin,
             ext: Ext {
@@ -222,6 +231,7 @@ impl ClapInstance {
                 latency: std::ptr::null(),
                 tail: std::ptr::null(),
                 ports: std::ptr::null(),
+                gui: std::ptr::null(),
             },
             name,
             vendor,
@@ -233,6 +243,7 @@ impl ClapInstance {
             ports: Ports::default(),
             active: Mutex::new(false),
             audio: Mutex::new(None),
+            gui_open: Mutex::new(None),
             host,
             _library: library,
         };
@@ -247,6 +258,7 @@ impl ClapInstance {
             latency: me.extension(CLAP_EXT_LATENCY).cast(),
             tail: me.extension(CLAP_EXT_TAIL).cast(),
             ports: me.extension(CLAP_EXT_AUDIO_PORTS).cast(),
+            gui: me.extension(CLAP_EXT_GUI).cast(),
         };
         me.ports = me.read_ports()?;
         let raw = me.read_params();
@@ -459,10 +471,10 @@ impl ClapInstance {
             .collect()
     }
 
-    /// `params.flush` with `events` (main thread, inactive).
-    fn flush(&self, mut events: Vec<clap_event_param_value>) {
+    /// `params.flush` with `events` (main thread, inactive); returns what the plugin reported.
+    fn flush(&self, mut events: Vec<clap_event_param_value>) -> Vec<OutEvent> {
         let Some(flush) = self.params_ext().and_then(|e| e.flush) else {
-            return;
+            return Vec::new();
         };
         let mut sink: Vec<OutEvent> = Vec::with_capacity(64);
         let in_list = clap_input_events {
@@ -476,6 +488,77 @@ impl ClapInstance {
         };
         // SAFETY: inactive → main thread; the lists live for the call.
         unsafe { flush(self.plugin, &in_list, &out_list) };
+        sink
+    }
+
+    // --- T-901: the editor ---------------------------------------------------------------
+
+    fn gui_ext(&self) -> Option<&clap_plugin_gui> {
+        // SAFETY: null or the plugin's vtable, valid while the plugin lives.
+        unsafe { self.ext.gui.as_ref() }
+    }
+
+    fn gui_size(&self, gui: &clap_plugin_gui) -> Option<(u32, u32)> {
+        let get = gui.get_size?;
+        let (mut w, mut h) = (0u32, 0u32);
+        // SAFETY: main thread, a created GUI; writable outputs.
+        (unsafe { get(self.plugin, &mut w, &mut h) } && w > 0 && h > 0).then_some((w, h))
+    }
+
+    fn gui_resizable(&self, gui: &clap_plugin_gui) -> bool {
+        // SAFETY: main thread, a created GUI.
+        gui.can_resize.is_some_and(|f| unsafe { f(self.plugin) })
+    }
+
+    /// Embedded: our top-level window at the plugin's size, the GUI attached, shown.
+    fn attach_embedded(
+        &self,
+        gui: &clap_plugin_gui,
+        host: &mut EditorHost<'_>,
+    ) -> Result<(u32, u32), String> {
+        let (w, h) = self.gui_size(gui).unwrap_or((640, 400));
+        let window = host.create_window(w, h, self.gui_resizable(gui))?;
+        let cw = clap_window_of(window);
+        let set_parent = gui
+            .set_parent
+            .ok_or_else(|| format!("{} can't be embedded in a window", self.name))?;
+        // SAFETY: main thread, a created embedded GUI; `cw` lives for the call.
+        if !unsafe { set_parent(self.plugin, &cw) } {
+            return Err(format!("{} couldn't attach its window", self.name));
+        }
+        // SAFETY: as above.
+        unsafe {
+            if let Some(show) = gui.show {
+                show(self.plugin);
+            }
+        }
+        Ok((w, h))
+    }
+
+    /// Floating: the plugin's own window, above the editor's where the platform allows.
+    fn show_floating(
+        &self,
+        gui: &clap_plugin_gui,
+        host: &mut EditorHost<'_>,
+    ) -> Result<(u32, u32), String> {
+        if let (Some(t), Some(set_transient)) = (host.transient_for(), gui.set_transient) {
+            let cw = clap_window_of(t);
+            // SAFETY: main thread, a created floating GUI; `cw` lives for the call.
+            unsafe { set_transient(self.plugin, &cw) };
+        }
+        if let Some(suggest) = gui.suggest_title {
+            let title = CString::new(host.title().replace('\0', "")).unwrap_or_default();
+            // SAFETY: as above; NUL-terminated title.
+            unsafe { suggest(self.plugin, title.as_ptr()) };
+        }
+        let show = gui
+            .show
+            .ok_or_else(|| format!("{} can't show its window", self.name))?;
+        // SAFETY: as above.
+        if !unsafe { show(self.plugin) } {
+            return Err(format!("{} couldn't show its window", self.name));
+        }
+        Ok(self.gui_size(gui).unwrap_or((0, 0)))
     }
 
     fn build_audio(&self, max_block: usize) -> Box<AudioState> {
@@ -527,6 +610,7 @@ impl ClapInstance {
 impl PluginInstance for ClapInstance {
     fn info(&self) -> PluginInfo {
         PluginInfo {
+            editor: false,
             name: self.name.clone(),
             vendor: self.vendor.clone(),
             version: self.version.clone(),
@@ -729,7 +813,7 @@ impl PluginInstance for ClapInstance {
         }
     }
 
-    fn main_thread_idle(&self) {
+    fn main_thread_idle(&self, events: &mut MainThreadEvents) {
         let host = &self.host.state;
         if host.callback_requested.swap(false, Ordering::AcqRel) {
             // SAFETY: main thread, as requested by the plugin.
@@ -741,8 +825,127 @@ impl PluginInstance for ClapInstance {
         }
         if host.flush_requested.load(Ordering::Acquire) && !*lock(&self.active) {
             host.flush_requested.store(false, Ordering::Release);
-            self.flush(Vec::new());
+            // T-901: what the plugin reports while inactive (its window's edits) goes to the
+            // host as a notification (while active, as `process` output events).
+            for (_, kind, id, value) in self.flush(Vec::new()) {
+                if kind == EventKind::PARAM_VALUE && self.params.iter().any(|p| p.id.0 == id) {
+                    events.params.push(ParamValue {
+                        id: ParamId(id),
+                        value,
+                    });
+                }
+            }
         }
+        if host.state_dirty.swap(false, Ordering::AcqRel) {
+            events.state_dirty = true;
+        }
+        if lock(&self.gui_open).is_some() {
+            if host.gui_closed.swap(false, Ordering::AcqRel) {
+                events.editor_closed = true;
+            }
+            let r = host.resize_request.swap(NO_RESIZE, Ordering::AcqRel);
+            if r != NO_RESIZE {
+                events.editor_resize = Some(((r >> 32) as u32, r as u32));
+            }
+        }
+    }
+
+    fn has_editor(&self) -> bool {
+        let Some(supported) = self.gui_ext().and_then(|g| g.is_api_supported) else {
+            return false;
+        };
+        let api = Api::native().clap_name();
+        // SAFETY: main thread; a static C string.
+        unsafe {
+            supported(self.plugin, api.as_ptr(), false)
+                || supported(self.plugin, api.as_ptr(), true)
+        }
+    }
+
+    fn open_editor(&self, host: &mut EditorHost<'_>) -> Result<(u32, u32), String> {
+        let gui = self
+            .gui_ext()
+            .ok_or_else(|| "the plugin has no window of its own".to_owned())?;
+        let (Some(supported), Some(create)) = (gui.is_api_supported, gui.create) else {
+            return Err(format!("{} has an incomplete GUI extension", self.name));
+        };
+        let api = host.api()?.clap_name();
+        // SAFETY: main thread; a static C string.
+        let embedded = unsafe { supported(self.plugin, api.as_ptr(), false) };
+        // SAFETY: as above.
+        let floating = !embedded && unsafe { supported(self.plugin, api.as_ptr(), true) };
+        if !embedded && !floating {
+            return Err(format!("{} has no window for this system", self.name));
+        }
+        let st = &self.host.state;
+        st.gui_closed.store(false, Ordering::Release);
+        st.resize_request.store(NO_RESIZE, Ordering::Release);
+        // SAFETY: as above.
+        if !unsafe { create(self.plugin, api.as_ptr(), floating) } {
+            return Err(format!("{} couldn't create its window", self.name));
+        }
+        let shown = if embedded {
+            self.attach_embedded(gui, host)
+        } else {
+            self.show_floating(gui, host)
+        };
+        match shown {
+            Ok(size) => {
+                *lock(&self.gui_open) = Some(floating);
+                Ok(size)
+            }
+            Err(e) => {
+                // SAFETY: main thread; the GUI created above, destroyed once.
+                unsafe {
+                    if let Some(destroy) = gui.destroy {
+                        destroy(self.plugin);
+                    }
+                }
+                Err(e)
+            }
+        }
+    }
+
+    fn close_editor(&self) {
+        if lock(&self.gui_open).take().is_none() {
+            return;
+        }
+        if let Some(gui) = self.gui_ext() {
+            // SAFETY: main thread; the open GUI, hidden and destroyed once.
+            unsafe {
+                if let Some(hide) = gui.hide {
+                    hide(self.plugin);
+                }
+                if let Some(destroy) = gui.destroy {
+                    destroy(self.plugin);
+                }
+            }
+        }
+        let st = &self.host.state;
+        st.gui_closed.store(false, Ordering::Release);
+        st.resize_request.store(NO_RESIZE, Ordering::Release);
+    }
+
+    fn editor_resized(&self, width: u32, height: u32) -> Option<(u32, u32)> {
+        if *lock(&self.gui_open) != Some(false) {
+            return None;
+        }
+        let gui = self.gui_ext()?;
+        if !self.gui_resizable(gui) {
+            // Snap back to the plugin's size.
+            return self.gui_size(gui).filter(|&s| s != (width, height));
+        }
+        let (mut w, mut h) = (width, height);
+        // SAFETY: main thread, an open embedded GUI; writable sizes.
+        unsafe {
+            if let Some(adjust) = gui.adjust_size {
+                adjust(self.plugin, &mut w, &mut h);
+            }
+            if let Some(set) = gui.set_size {
+                set(self.plugin, w, h);
+            }
+        }
+        ((w, h) != (width, height)).then_some((w, h))
     }
 
     fn set_param(&self, id: ParamId, value: f64) -> Result<(), String> {
@@ -789,8 +992,30 @@ impl PluginInstance for ClapInstance {
     }
 }
 
+/// A `clap_window_t` for `w`.
+fn clap_window_of(w: NativeWindow) -> clap_window {
+    let handle = match w.api {
+        Api::X11 => clap_window_handle {
+            x11: w.raw as c_ulong,
+        },
+        Api::Win32 => clap_window_handle {
+            win32: w.raw as usize as *mut c_void,
+        },
+        Api::Cocoa => clap_window_handle {
+            cocoa: w.raw as usize as *mut c_void,
+        },
+    };
+    clap_window {
+        api: w.api.clap_name().as_ptr(),
+        handle,
+    }
+}
+
 impl Drop for ClapInstance {
     fn drop(&mut self) {
+        // T-901: the GUI goes first, and no timer or descriptor callback may outlive the plugin.
+        self.close_editor();
+        runloop::clear();
         if *lock(&self.active) {
             self.deactivate();
         }

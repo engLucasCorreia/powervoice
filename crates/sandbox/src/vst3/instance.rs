@@ -1,5 +1,6 @@
 //! One VST3 audio effect as a sandbox [`PluginInstance`].
 
+use std::ffi::c_void;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -14,6 +15,7 @@ use vst3::Steinberg::Vst::MediaTypes_::{kAudio, kEvent};
 use vst3::Steinberg::Vst::ProcessContext_::StatesAndFlags_::{kTempoValid, kTimeSigValid};
 use vst3::Steinberg::Vst::ProcessModes_::{kOffline, kRealtime};
 use vst3::Steinberg::Vst::SymbolicSampleSizes_::kSample32;
+use vst3::Steinberg::Vst::ViewType::kEditor;
 use vst3::Steinberg::Vst::{
     AudioBusBuffers, AudioBusBuffers__type0, BusDirection, BusInfo, IAudioProcessor,
     IAudioProcessorTrait, IComponent, IComponentHandler, IComponentTrait, IConnectionPoint,
@@ -21,16 +23,21 @@ use vst3::Steinberg::Vst::{
     IUnitInfoTrait, MediaType, ParameterInfo, ProcessContext, ProcessData, ProcessSetup,
     SpeakerArr, SpeakerArrangement, String128, TChar, UnitInfo, kInfiniteTail,
 };
-use vst3::Steinberg::{FUnknown, IPluginBaseTrait, TUID, kResultOk, kResultTrue};
+use vst3::Steinberg::{
+    FIDString, FUnknown, IPlugFrame, IPlugView, IPlugViewTrait, IPluginBaseTrait, TUID, ViewRect,
+    kPlatformTypeHWND, kPlatformTypeNSView, kPlatformTypeX11EmbedWindowID, kResultOk, kResultTrue,
+};
 use vst3::{ComPtr, ComWrapper};
 
 use super::host::{
-    ComponentHandler, HostApplication, ParamChanges, PluginEdit, Shared, changes_ptr, read_wstring,
+    ComponentHandler, HostApplication, ParamChanges, PlugFrame, PluginEdit, Shared, changes_ptr,
+    read_wstring,
 };
 use super::module::Vst3Module;
 use super::params::{self, Domain, RawParam};
 use super::{stream, uid};
-use crate::backend::{ActiveInfo, PluginInstance};
+use crate::backend::{ActiveInfo, MainThreadEvents, PluginInstance};
+use crate::gui::{Api, EditorHost};
 
 /// Parameters one block forwards at most (a queue each; more are dropped).
 const MAX_BLOCK_PARAMS: usize = 64;
@@ -159,6 +166,10 @@ pub struct Vst3Instance {
     pending: Mutex<Vec<(u32, f64)>>,
     active: Mutex<bool>,
     audio: Mutex<Option<Box<AudioState>>>,
+    /// T-901: the frame editor views are attached with (resize requests, Linux run loop).
+    frame: ComWrapper<PlugFrame>,
+    /// T-901: the open editor view.
+    view: Mutex<Option<ComPtr<IPlugView>>>,
     /// Dropped last: the module exit and unload run after every object was released.
     _module: Arc<Vst3Module>,
 }
@@ -237,6 +248,8 @@ impl Vst3Instance {
             pending: Mutex::new(Vec::new()),
             active: Mutex::new(false),
             audio: Mutex::new(None),
+            frame: ComWrapper::new(PlugFrame::new()),
+            view: Mutex::new(None),
             _module: module,
         };
         // From here on, `Drop` disconnects and terminates on every error path.
@@ -621,6 +634,7 @@ impl Vst3Instance {
 impl PluginInstance for Vst3Instance {
     fn info(&self) -> PluginInfo {
         PluginInfo {
+            editor: false,
             name: self.name.clone(),
             vendor: self.vendor.clone(),
             version: self.version.clone(),
@@ -820,7 +834,8 @@ impl PluginInstance for Vst3Instance {
         }
     }
 
-    fn main_thread_idle(&self) {
+    fn main_thread_idle(&self, events: &mut MainThreadEvents) {
+        self.editor_idle(events);
         let Some(c) = &self.controller else {
             return;
         };
@@ -838,6 +853,104 @@ impl PluginInstance for Vst3Instance {
                 }
             }
         }
+    }
+
+    fn has_editor(&self) -> bool {
+        // Whether the controller really has a view is only known once it's asked for one
+        // (`createView` builds the editor): a controller without one fails to open.
+        self.controller.is_some()
+    }
+
+    fn open_editor(&self, host: &mut EditorHost<'_>) -> Result<(u32, u32), String> {
+        let c = self
+            .controller
+            .as_ref()
+            .ok_or_else(|| "the plugin has no window of its own".to_owned())?;
+        let platform = platform_type(host.api()?);
+        // SAFETY: main (UI) thread; a static C string.
+        let raw = unsafe { c.createView(kEditor) };
+        // SAFETY: the owned reference `createView` returned (or null).
+        let view = unsafe { ComPtr::from_raw(raw) }
+            .ok_or_else(|| format!("{} has no window of its own", self.name))?;
+        // SAFETY: UI thread; a static C string.
+        if unsafe { view.isPlatformTypeSupported(platform) } != kResultTrue {
+            return Err(format!("{} has no window for this system", self.name));
+        }
+        let frame = self
+            .frame
+            .as_com_ref::<IPlugFrame>()
+            .map_or(std::ptr::null_mut(), |r| r.as_ptr());
+        // SAFETY: UI thread; the frame outlives the view's use of it (cleared on close).
+        unsafe { view.setFrame(frame) };
+        let mut rect = ViewRect {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        // SAFETY: UI thread; a writable rect.
+        let size = (unsafe { view.getSize(&mut rect) } == kResultOk)
+            .then(|| rect_size(&rect))
+            .flatten()
+            .unwrap_or((640, 400));
+        // SAFETY: UI thread.
+        let resizable = unsafe { view.canResize() } == kResultTrue;
+        let attached = host
+            .create_window(size.0, size.1, resizable)
+            .and_then(|window| {
+                // SAFETY: UI thread; our window's native handle and platform type.
+                let r = unsafe { view.attached(window.raw as usize as *mut c_void, platform) };
+                if r == kResultOk {
+                    Ok(())
+                } else {
+                    Err(format!("{} couldn't attach its window", self.name))
+                }
+            });
+        if let Err(e) = attached {
+            // SAFETY: UI thread.
+            unsafe { view.setFrame(std::ptr::null_mut()) };
+            self.frame.clear();
+            return Err(e);
+        }
+        self.frame.take_resize();
+        *lock(&self.view) = Some(view);
+        Ok(size)
+    }
+
+    fn close_editor(&self) {
+        let Some(view) = lock(&self.view).take() else {
+            return;
+        };
+        // SAFETY: UI thread; the attached view, detached once.
+        unsafe {
+            view.removed();
+            view.setFrame(std::ptr::null_mut());
+        }
+        drop(view);
+        self.frame.clear();
+    }
+
+    fn editor_resized(&self, width: u32, height: u32) -> Option<(u32, u32)> {
+        let view = lock(&self.view).clone()?;
+        let mut rect = ViewRect {
+            left: 0,
+            top: 0,
+            right: i32::try_from(width).unwrap_or(i32::MAX),
+            bottom: i32::try_from(height).unwrap_or(i32::MAX),
+        };
+        // SAFETY: UI thread; writable rects.
+        unsafe {
+            if view.canResize() != kResultTrue {
+                // Snap back to the view's size.
+                return (view.getSize(&mut rect) == kResultOk)
+                    .then(|| rect_size(&rect))
+                    .flatten()
+                    .filter(|&s| s != (width, height));
+            }
+            view.checkSizeConstraint(&mut rect);
+            view.onSize(&mut rect);
+        }
+        rect_size(&rect).filter(|&s| s != (width, height))
     }
 
     fn set_param(&self, id: ParamId, value: f64) -> Result<(), String> {
@@ -930,8 +1043,68 @@ impl PluginInstance for Vst3Instance {
     }
 }
 
+/// The VST3 platform type of `api`.
+fn platform_type(api: Api) -> FIDString {
+    match api {
+        Api::X11 => kPlatformTypeX11EmbedWindowID,
+        Api::Win32 => kPlatformTypeHWND,
+        Api::Cocoa => kPlatformTypeNSView,
+    }
+}
+
+/// A rect's positive size.
+fn rect_size(r: &ViewRect) -> Option<(u32, u32)> {
+    let (w, h) = (r.right - r.left, r.bottom - r.top);
+    (w > 0 && h > 0).then_some((w as u32, h as u32))
+}
+
+impl Vst3Instance {
+    /// T-901: what the editor did — edits made while inactive (nobody processes them: they go to
+    /// the host as a notification and to the processor at the next activation), `setDirty`, and
+    /// the view's resize requests.
+    fn editor_idle(&self, events: &mut MainThreadEvents) {
+        if !*lock(&self.active) {
+            let mut deliver = Vec::new();
+            self.shared.take_plugin_edits(|e| {
+                if let PluginEdit::Value {
+                    id,
+                    normalized,
+                    deliver: d,
+                } = e
+                    && let Some(slot) = self.shared.slot(id)
+                {
+                    events.params.push(ParamValue {
+                        id: ParamId(id),
+                        value: slot.domain.value_of(normalized),
+                    });
+                    if d {
+                        deliver.push((id, normalized));
+                    }
+                }
+            });
+            if !deliver.is_empty() {
+                let mut pending = lock(&self.pending);
+                for (id, n) in deliver {
+                    pending.retain(|(i, _)| *i != id);
+                    pending.push((id, n));
+                }
+            }
+        }
+        if self.shared.state_dirty.swap(false, Ordering::AcqRel) {
+            events.state_dirty = true;
+        }
+        if let Some(size) = self.frame.take_resize()
+            && lock(&self.view).is_some()
+        {
+            events.editor_resize = Some(size);
+        }
+    }
+}
+
 impl Drop for Vst3Instance {
     fn drop(&mut self) {
+        // T-901: the editor view goes before the controller is terminated.
+        self.close_editor();
         if *lock(&self.active) {
             self.deactivate();
         }

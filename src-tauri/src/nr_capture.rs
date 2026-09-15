@@ -127,6 +127,11 @@ fn nr_rack_error(err: RackApiError) -> IpcError {
             IpcError::new(IpcErrorCode::InvalidArgument, "error.rack_rejected")
                 .with_param("message", message)
         }
+        // T-901: never produced by the capture path (no plugin window is opened here).
+        RackApiError::Editor(reason) => {
+            IpcError::new(IpcErrorCode::Internal, "error.plugin_window.open_failed")
+                .with_param("reason", reason)
+        }
     }
 }
 

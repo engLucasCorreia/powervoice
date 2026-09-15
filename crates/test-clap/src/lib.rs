@@ -17,10 +17,16 @@
 //!   module API's own text rules, so tests can tell whose text the host shows.
 //! - A copy whose file name contains [`CRASH_ON_SCAN_MARKER`] aborts in `clap_entry.init`
 //!   (the "crashing bundle during scan" test); [`HANG_ON_SCAN_MARKER`] never returns from it.
+//! - **GUI** (T-901, [`gui`]): every variant has a trivial embedded X11 editor
+//!   ([`GUI_WIDTH`]×[`GUI_HEIGHT`]) whose timer makes one edit — `gain_db` =
+//!   [`GUI_EDIT_GAIN_DB`] and the GUI-only [`GUI_MARKER`] in the state (version 2). A copy named
+//!   with [`GUI_CRASH_MARKER`] crashes in that timer, [`GUI_HANG_MARKER`] hangs in it.
 
 use std::ffi::{CStr, c_char, c_void};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+
+mod gui;
 
 use vox_clap_abi::*;
 use vox_module_api::{
@@ -51,6 +57,23 @@ pub const CRASH_ON_SCAN_MARKER: &str = "crash-on-scan";
 pub const HANG_ON_SCAN_MARKER: &str = "hang-on-scan";
 /// State magic.
 pub const STATE_MAGIC: [u8; 4] = *b"PVTC";
+/// T-901: the editor's size in pixels.
+pub const GUI_WIDTH: u32 = 320;
+/// T-901: the editor's size in pixels.
+pub const GUI_HEIGHT: u32 = 200;
+/// T-901: the gain the editor sets on its first timer tick.
+pub const GUI_EDIT_GAIN_DB: f64 = -9.0;
+/// T-901: the GUI-only setting the editor stores in the state (version 2) on that tick.
+pub const GUI_MARKER: u32 = 0x00C0_FFEE;
+/// T-901: the editor's timer period.
+pub const GUI_TIMER_MS: u32 = 20;
+/// T-901: a copy whose file name contains this crashes in its editor's timer.
+pub const GUI_CRASH_MARKER: &str = "gui-crash";
+/// T-901: a copy whose file name contains this hangs in its editor's timer.
+pub const GUI_HANG_MARKER: &str = "gui-hang";
+
+/// The file name this library was loaded as (`clap_entry.init`), for the GUI's markers.
+static PLUGIN_FILE: OnceLock<String> = OnceLock::new();
 
 #[repr(transparent)]
 struct Descriptor(clap_plugin_descriptor);
@@ -124,6 +147,7 @@ unsafe extern "C" fn entry_init(plugin_path: *const c_char) -> bool {
         // SAFETY: CLAP passes a NUL-terminated path.
         let path = unsafe { CStr::from_ptr(plugin_path) }.to_string_lossy();
         let name = path.rsplit(['/', '\\']).next().unwrap_or("");
+        let _ = PLUGIN_FILE.set(name.to_owned());
         if name.contains(CRASH_ON_SCAN_MARKER) {
             crash_without_core_dump();
         }
@@ -235,6 +259,10 @@ unsafe extern "C" fn factory_create(
         latency_param: AtomicU32::new(LATENCY_SAMPLES),
         active_latency: AtomicU32::new(LATENCY_SAMPLES),
         audio: Mutex::new(Audio::new(kind)),
+        gui: Mutex::new(None),
+        gui_edit_pending: AtomicBool::new(false),
+        gui_marker: AtomicU32::new(0),
+        active: AtomicBool::new(false),
     });
     let raw = Box::into_raw(plugin);
     // SAFETY: `raw` is the live allocation just leaked; `clap` is its first field.
@@ -260,6 +288,14 @@ struct Plugin {
     /// Audio-side state (locked per block by the audio thread; by the main thread only while
     /// inactive or for a flush/state load).
     audio: Mutex<Audio>,
+    /// T-901: the open editor (main thread).
+    gui: Mutex<Option<gui::Gui>>,
+    /// T-901: the editor changed `gain_db`; report it (next `process` or `flush`).
+    gui_edit_pending: AtomicBool,
+    /// T-901: the GUI-only setting (state version 2).
+    gui_marker: AtomicU32,
+    /// Between `activate` and `deactivate`.
+    active: AtomicBool,
 }
 
 struct Audio {
@@ -304,6 +340,10 @@ unsafe fn this<'a>(p: *const clap_plugin) -> &'a Plugin {
 impl Plugin {
     fn audio(&self) -> MutexGuard<'_, Audio> {
         self.audio.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn gui(&self) -> MutexGuard<'_, Option<gui::Gui>> {
+        self.gui.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn gain_db(&self) -> f64 {
@@ -390,8 +430,58 @@ unsafe extern "C" fn plugin_init(_: *const clap_plugin) -> bool {
 }
 
 unsafe extern "C" fn plugin_destroy(p: *const clap_plugin) {
+    // SAFETY: a live plugin (a host that didn't destroy the GUI first).
+    gui::teardown(unsafe { this(p) });
     // SAFETY: `plugin_data` is the `Box` leaked in `factory_create`; destroy is called once.
     unsafe { drop(Box::from_raw((*p).plugin_data as *mut Plugin)) };
+}
+
+/// Pushes a `gain_db` change the editor made (gesture begin, value, end) to `out`.
+///
+/// # Safety
+/// `out` is null or a valid CLAP output event list for the call.
+unsafe fn report_gui_edit(out: *const clap_output_events, value: f64) {
+    if out.is_null() {
+        return;
+    }
+    // SAFETY: caller's contract.
+    let Some(push) = (unsafe { (*out).try_push }) else {
+        return;
+    };
+    let gesture = |type_: u16| clap_event_param_gesture {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_param_gesture>() as u32,
+            time: 0,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_,
+            flags: 0,
+        },
+        param_id: PARAM_GAIN,
+    };
+    let begin = gesture(CLAP_EVENT_PARAM_GESTURE_BEGIN);
+    let end = gesture(CLAP_EVENT_PARAM_GESTURE_END);
+    let v = clap_event_param_value {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_param_value>() as u32,
+            time: 0,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_PARAM_VALUE,
+            flags: 0,
+        },
+        param_id: PARAM_GAIN,
+        cookie: std::ptr::null_mut(),
+        note_id: -1,
+        port_index: -1,
+        channel: -1,
+        key: -1,
+        value,
+    };
+    // SAFETY: the host's list; the events live for the calls.
+    unsafe {
+        push(out, &begin.header);
+        push(out, &v.header);
+        push(out, &end.header);
+    }
 }
 
 unsafe extern "C" fn plugin_activate(
@@ -421,12 +511,14 @@ unsafe extern "C" fn plugin_activate(
     a.scratch = vec![0.0; max_frames as usize];
     a.steady = 0;
     this.active_latency.store(latency, Ordering::Release);
+    this.active.store(true, Ordering::Release);
     true
 }
 
 unsafe extern "C" fn plugin_deactivate(p: *const clap_plugin) {
     // SAFETY: a live plugin.
     let this = unsafe { this(p) };
+    this.active.store(false, Ordering::Release);
     for g in &mut this.audio().gains {
         g.deactivate();
     }
@@ -472,6 +564,18 @@ unsafe extern "C" fn plugin_process(
         return CLAP_PROCESS_ERROR;
     }
     a.events.clear();
+    // T-901: an edit the editor made applies from this block's first sample.
+    let gui_edit = this
+        .gui_edit_pending
+        .swap(false, Ordering::AcqRel)
+        .then(|| this.gain_db());
+    if let Some(v) = gui_edit {
+        let _ = a.events.push(ParamEvent {
+            offset: 0,
+            id: Gain::GAIN_DB,
+            value: v,
+        });
+    }
     // SAFETY: the host's list, valid during the call.
     for ev in unsafe { param_values(pr.in_events) } {
         match ev.param_id {
@@ -535,6 +639,10 @@ unsafe extern "C" fn plugin_process(
         }
     }
     *steady += n as u64;
+    if let Some(v) = gui_edit {
+        // SAFETY: the host's output list, valid during the call.
+        unsafe { report_gui_edit(pr.out_events, v) };
+    }
     CLAP_PROCESS_CONTINUE
 }
 
@@ -550,6 +658,15 @@ unsafe extern "C" fn plugin_get_extension(
     // SAFETY: NUL-terminated per CLAP; `p` is live.
     let (id, this) = unsafe { (CStr::from_ptr(id), this(p)) };
     let _ = this;
+    if id == CLAP_EXT_GUI {
+        return (&raw const gui::GUI).cast();
+    }
+    if id == CLAP_EXT_TIMER_SUPPORT {
+        return (&raw const gui::TIMER_SUPPORT).cast();
+    }
+    if cfg!(unix) && id == CLAP_EXT_POSIX_FD_SUPPORT {
+        return (&raw const gui::POSIX_FD_SUPPORT).cast();
+    }
     if id == CLAP_EXT_PARAMS {
         (&raw const PARAMS).cast()
     } else if id == CLAP_EXT_STATE {
@@ -674,13 +791,20 @@ unsafe extern "C" fn params_text_to_value(
 unsafe extern "C" fn params_flush(
     p: *const clap_plugin,
     in_events: *const clap_input_events,
-    _out: *const clap_output_events,
+    out: *const clap_output_events,
 ) {
     // SAFETY: a live plugin; the host's event list.
     let this = unsafe { this(p) };
     let mut a = this.audio();
     // SAFETY: forwarded.
     unsafe { this.apply_events(&mut a, in_events) };
+    // T-901: an edit the editor made while inactive.
+    if this.gui_edit_pending.swap(false, Ordering::AcqRel) {
+        let v = this.gain_db();
+        a.snap_gain(v);
+        // SAFETY: the host's output list, valid during the call.
+        unsafe { report_gui_edit(out, v) };
+    }
 }
 
 static STATE: clap_plugin_state = clap_plugin_state {
@@ -691,11 +815,12 @@ static STATE: clap_plugin_state = clap_plugin_state {
 unsafe extern "C" fn state_save(p: *const clap_plugin, stream: *const clap_ostream) -> bool {
     // SAFETY: a live plugin.
     let this = unsafe { this(p) };
-    let mut bytes = Vec::with_capacity(20);
+    let mut bytes = Vec::with_capacity(24);
     bytes.extend_from_slice(&STATE_MAGIC);
-    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend_from_slice(&2u32.to_le_bytes());
     bytes.extend_from_slice(&this.gain_db().to_le_bytes());
     bytes.extend_from_slice(&this.latency_param.load(Ordering::Acquire).to_le_bytes());
+    bytes.extend_from_slice(&this.gui_marker.load(Ordering::Acquire).to_le_bytes());
     let mut rest = bytes.as_slice();
     while !rest.is_empty() {
         // SAFETY: the host's stream, valid during the call.
@@ -732,11 +857,20 @@ unsafe extern "C" fn state_load(p: *const clap_plugin, stream: *const clap_istre
             n => bytes.extend_from_slice(&chunk[..(n as usize).min(chunk.len())]),
         }
     }
-    if bytes.len() != 20 || bytes[..4] != STATE_MAGIC || bytes[4..8] != 1u32.to_le_bytes() {
+    // Version 1 (T-803: 20 bytes) or 2 (T-901: + the GUI marker).
+    let v1 = bytes.len() == 20 && bytes[4..8] == 1u32.to_le_bytes();
+    let v2 = bytes.len() == 24 && bytes[4..8] == 2u32.to_le_bytes();
+    if !(v1 || v2) || bytes[..4] != STATE_MAGIC {
         return false;
     }
     let gain = f64::from_le_bytes(bytes[8..16].try_into().unwrap_or_default());
     let latency = u32::from_le_bytes(bytes[16..20].try_into().unwrap_or_default());
+    let marker = if v2 {
+        u32::from_le_bytes(bytes[20..24].try_into().unwrap_or_default())
+    } else {
+        0
+    };
+    this.gui_marker.store(marker, Ordering::Release);
     let mut a = this.audio();
     this.set_gain_db(&mut a, gain, true);
     if this.kind == Kind::Latency {

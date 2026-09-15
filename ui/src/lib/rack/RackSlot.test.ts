@@ -340,6 +340,8 @@ describe("slot status and Retry (T-802)", () => {
     const { target, teardown } = render({
       ...slotFixture(),
       sandboxed: true,
+      has_editor: false,
+      editor_open: false,
       status: { kind: "restarting", message: "Gain crashed and was bypassed" },
     });
     try {
@@ -358,6 +360,8 @@ describe("slot status and Retry (T-802)", () => {
     const { target, teardown } = render({
       ...slotFixture(),
       sandboxed: true,
+      has_editor: false,
+      editor_open: false,
       status: { kind: "failed", message: "Gain stopped responding and was bypassed" },
     });
     const calls: string[] = [];

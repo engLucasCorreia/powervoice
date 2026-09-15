@@ -191,6 +191,7 @@ impl JsfxInstance {
 impl PluginInstance for JsfxInstance {
     fn info(&self) -> PluginInfo {
         PluginInfo {
+            editor: false,
             name: self.name.clone(),
             vendor: self.vendor.clone(),
             version: self.version.clone(),

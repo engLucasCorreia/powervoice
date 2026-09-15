@@ -18,6 +18,10 @@
 //!   ([`state`]), plus the mirrored parameter values (which win on load).
 //! - **Text:** a plugin that formats its own values (CLAP) answers the host-internal
 //!   `ParamText` extension through the control channel (T-803).
+//! - **Editor window** ([`editor`], T-901): the plugin's own GUI is a floating window run by its
+//!   sandbox; the host-internal `PluginEditor` extension opens and closes it and hands the rack
+//!   what the window changed (parameters while inactive, GUI-only state). A GUI that freezes the
+//!   sandbox's main thread stops its heartbeat and the watchdog kills it.
 //! - **CLAP enumeration** ([`scan`], T-803): the standard CLAP paths, each file scanned in its
 //!   own `powervoice-sandbox --scan` process (a crashing file is reported, not fatal), cached
 //!   by path + size + mtime.
@@ -37,6 +41,7 @@
 
 pub mod blocklist;
 pub mod catalog;
+mod editor;
 mod factory;
 pub mod health;
 pub mod install;

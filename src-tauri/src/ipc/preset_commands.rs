@@ -3,14 +3,22 @@
 //! live rack forwards a `vox_engine::RackCommand` exactly like every other rack command
 //! (`rack_commands::apply`).
 
+use std::path::Path;
+
 use tauri::State;
 use vox_engine::RackCommand;
-use vox_rack::ModuleState;
+use vox_presets::{
+    ExportedPreset, ModulePresetStore, PresetError, RackPresetStore, export_to_file,
+    import_from_file,
+};
+use vox_rack::{ModuleState, RackModel};
 
 use crate::audio::AudioEngine;
 use crate::document::DocumentService;
 use crate::ipc::error::{IpcError, IpcErrorCode};
-use crate::ipc::preset_dto::{PresetEntryDto, PresetRefDto, preset_ipc_error};
+use crate::ipc::preset_dto::{
+    ModulePresetImportedDto, PresetEntryDto, PresetRefDto, preset_ipc_error,
+};
 use crate::ipc::rack_commands::apply;
 use crate::ipc::rack_dto::{LocalizedTextDto, RackStateDto, rack_ipc_error};
 use crate::presets::PresetStores;
@@ -93,7 +101,7 @@ pub async fn module_preset_save(
 }
 
 fn save_module_preset(
-    store: &vox_presets::ModulePresetStore,
+    store: &ModulePresetStore,
     module_id: &str,
     name: &str,
     state: &ModuleState,
@@ -101,7 +109,7 @@ fn save_module_preset(
 ) -> Result<PresetEntryDto, IpcError> {
     match store.save(module_id, name, state) {
         Ok(saved) => Ok(user_entry(saved)),
-        Err(vox_presets::PresetError::AlreadyExists(sanitized)) if overwrite => {
+        Err(PresetError::AlreadyExists(sanitized)) if overwrite => {
             store
                 .delete(module_id, &sanitized)
                 .map_err(preset_ipc_error)?;
@@ -112,6 +120,50 @@ fn save_module_preset(
         }
         Err(e) => Err(preset_ipc_error(e)),
     }
+}
+
+/// Writes user preset `name` (module `module_id`) to `path` (H-22, SPEC-012 §2.7 "Export…"): any
+/// filesystem path, chosen by the caller's native save dialog — a portable file another
+/// PowerVoice install (or this one, later) can import back with [`import_module_preset_bytes`].
+fn export_module_preset(
+    store: &ModulePresetStore,
+    module_id: &str,
+    name: &str,
+    dest: &Path,
+) -> Result<(), IpcError> {
+    let state = store.load(module_id, name).map_err(preset_ipc_error)?;
+    let exported = ExportedPreset::module(module_id, name, state);
+    export_to_file(&exported, dest).map_err(preset_ipc_error)
+}
+
+/// Parses an exported preset file's `bytes` and saves it as a user module preset (H-22 "Import…"):
+/// the `module_id`/`name` the file itself claims, sanitized the normal way by
+/// [`save_module_preset`] — never trusted verbatim. Rejects a rack-preset file (wrong `kind`)
+/// with the same `error.preset_rejected` shape as any other malformed input.
+fn import_module_preset_bytes(
+    store: &ModulePresetStore,
+    bytes: &[u8],
+    overwrite: bool,
+) -> Result<ModulePresetImportedDto, IpcError> {
+    match import_from_file(bytes).map_err(preset_ipc_error)? {
+        ExportedPreset::Module {
+            module_id,
+            name,
+            state,
+            ..
+        } => {
+            let entry = save_module_preset(store, &module_id, &name, &state, overwrite)?;
+            Ok(ModulePresetImportedDto { module_id, entry })
+        }
+        ExportedPreset::Rack { .. } => Err(wrong_kind_error()),
+    }
+}
+
+fn wrong_kind_error() -> IpcError {
+    IpcError::new(IpcErrorCode::InvalidArgument, "error.preset_rejected").with_param(
+        "message",
+        "not a preset file of the expected kind".to_owned(),
+    )
 }
 
 /// Loads a module preset into slot `slot` (SPEC-012 §2.7): a state with a blob replaces the
@@ -212,6 +264,41 @@ pub async fn module_preset_delete(
     .map_err(join_blocking_err)?
 }
 
+/// Exports user module preset `name` (of `module_id`) to `path` (H-22, Manage Presets… "Export…";
+/// `path` came from the caller's native save dialog).
+#[tauri::command]
+pub async fn module_preset_export(
+    presets: State<'_, PresetStores>,
+    module_id: String,
+    name: String,
+    path: String,
+) -> Result<(), IpcError> {
+    let store = presets.modules.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        export_module_preset(&store, &module_id, &name, Path::new(&path))
+    })
+    .await
+    .map_err(join_blocking_err)?
+}
+
+/// Imports a module preset file at `path` (H-22, Manage Presets… "Import…"; `path` came from the
+/// caller's native open dialog). `overwrite` replaces an existing preset of the same name, exactly
+/// like `module_preset_save`.
+#[tauri::command]
+pub async fn module_preset_import(
+    presets: State<'_, PresetStores>,
+    path: String,
+    overwrite: bool,
+) -> Result<ModulePresetImportedDto, IpcError> {
+    let store = presets.modules.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = std::fs::read(&path).map_err(IpcError::from)?;
+        import_module_preset_bytes(&store, &bytes, overwrite)
+    })
+    .await
+    .map_err(join_blocking_err)?
+}
+
 // --- Rack presets ------------------------------------------------------------------------------
 
 /// Factory rack presets ("Podcast voice", "Audiobook (ACX)", "Gentle cleanup", ...) first, then
@@ -238,6 +325,49 @@ pub async fn rack_presets_list(
     .map_err(join_blocking_err)?
 }
 
+fn save_rack_preset(
+    store: &RackPresetStore,
+    name: &str,
+    model: &RackModel,
+    overwrite: bool,
+) -> Result<PresetEntryDto, IpcError> {
+    match store.save(name, model) {
+        Ok(saved) => Ok(user_entry(saved)),
+        Err(PresetError::AlreadyExists(sanitized)) if overwrite => {
+            store.delete(&sanitized).map_err(preset_ipc_error)?;
+            store
+                .save(name, model)
+                .map(user_entry)
+                .map_err(preset_ipc_error)
+        }
+        Err(e) => Err(preset_ipc_error(e)),
+    }
+}
+
+/// Writes user rack preset `name` to `path` (H-22 "Export…"; any filesystem path, chosen by the
+/// caller's native save dialog).
+fn export_rack_preset(store: &RackPresetStore, name: &str, dest: &Path) -> Result<(), IpcError> {
+    let model = store.load(name).map_err(preset_ipc_error)?;
+    let exported = ExportedPreset::rack(name, model);
+    export_to_file(&exported, dest).map_err(preset_ipc_error)
+}
+
+/// Parses an exported preset file's `bytes` and saves it as a user rack preset (H-22 "Import…"):
+/// the `name` inside is sanitized the normal way by [`save_rack_preset`] — never trusted
+/// verbatim. An unknown module id in an imported rack round-trips exactly like any other stored
+/// rack preset (`RackModel`/`SlotModel` already handle that generically) — it becomes a
+/// placeholder slot with a notice only once the preset is actually loaded, not on import.
+fn import_rack_preset_bytes(
+    store: &RackPresetStore,
+    bytes: &[u8],
+    overwrite: bool,
+) -> Result<PresetEntryDto, IpcError> {
+    match import_from_file(bytes).map_err(preset_ipc_error)? {
+        ExportedPreset::Rack { name, rack, .. } => save_rack_preset(store, &name, &rack, overwrite),
+        ExportedPreset::Module { .. } => Err(wrong_kind_error()),
+    }
+}
+
 /// Saves the live rack as a new user rack preset named `name` (SPEC-012 "save the whole chain").
 /// `overwrite` replaces an existing preset of the same name instead of failing.
 #[tauri::command]
@@ -253,17 +383,7 @@ pub async fn rack_preset_save(
         let model = handle
             .rack_model()
             .ok_or_else(|| IpcError::new(IpcErrorCode::Internal, "error.rack_unavailable"))?;
-        match store.save(&name, &model) {
-            Ok(saved) => Ok(user_entry(saved)),
-            Err(vox_presets::PresetError::AlreadyExists(sanitized)) if overwrite => {
-                store.delete(&sanitized).map_err(preset_ipc_error)?;
-                store
-                    .save(&name, &model)
-                    .map(user_entry)
-                    .map_err(preset_ipc_error)
-            }
-            Err(e) => Err(preset_ipc_error(e)),
-        }
+        save_rack_preset(&store, &name, &model, overwrite)
     })
     .await
     .map_err(join_blocking_err)?
@@ -333,12 +453,47 @@ pub async fn rack_preset_delete(
         .map_err(join_blocking_err)?
 }
 
+/// Exports user rack preset `name` to `path` (H-22, Manage Presets… "Export…"; `path` came from
+/// the caller's native save dialog).
+#[tauri::command]
+pub async fn rack_preset_export(
+    presets: State<'_, PresetStores>,
+    name: String,
+    path: String,
+) -> Result<(), IpcError> {
+    let store = presets.racks.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        export_rack_preset(&store, &name, Path::new(&path))
+    })
+    .await
+    .map_err(join_blocking_err)?
+}
+
+/// Imports a rack preset file at `path` (H-22, Manage Presets… "Import…"; `path` came from the
+/// caller's native open dialog). `overwrite` replaces an existing preset of the same name, exactly
+/// like `rack_preset_save`.
+#[tauri::command]
+pub async fn rack_preset_import(
+    presets: State<'_, PresetStores>,
+    path: String,
+    overwrite: bool,
+) -> Result<PresetEntryDto, IpcError> {
+    let store = presets.racks.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = std::fs::read(&path).map_err(IpcError::from)?;
+        import_rack_preset_bytes(&store, &bytes, overwrite)
+    })
+    .await
+    .map_err(join_blocking_err)?
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp)] // exact values
 mod tests {
     use std::collections::BTreeMap;
 
-    use vox_presets::ModulePresetStore;
+    use vox_module_api::{ModuleRef, Version};
+    use vox_rack::SlotModel;
 
     use super::*;
 
@@ -400,5 +555,189 @@ mod tests {
             preset_ipc_error(vox_presets::PresetError::InvalidName("..".into())).code,
             IpcErrorCode::InvalidArgument
         );
+    }
+
+    /// H-22: `AlreadyExists` gets its own key (plus the conflicting name as a structured param)
+    /// so the UI can offer "Replace preset ‹name›?" instead of just reporting a generic failure.
+    #[test]
+    fn preset_ipc_error_gives_already_exists_its_own_key_and_carries_the_name() {
+        let err = preset_ipc_error(vox_presets::PresetError::AlreadyExists("Mine".into()));
+        assert_eq!(err.code, IpcErrorCode::InvalidArgument);
+        assert_eq!(err.key, "error.preset_already_exists");
+        assert_eq!(err.params.get("name").map(String::as_str), Some("Mine"));
+    }
+
+    fn gain_slot(db: f64) -> SlotModel {
+        SlotModel::new(
+            &ModuleRef {
+                id: "org.powervoice.gain".into(),
+                version: Version::new(1, 0, 0),
+            },
+            false,
+            &state(db),
+        )
+    }
+
+    #[test]
+    fn module_preset_export_then_import_round_trips_into_a_fresh_store() {
+        let store = ModulePresetStore::new(tmp_dir("export-module"));
+        save_module_preset(&store, "org.powervoice.gain", "Mine", &state(2.0), false).unwrap();
+        let dest = tmp_dir("export-module-file").join("Mine.json");
+        export_module_preset(&store, "org.powervoice.gain", "Mine", &dest).unwrap();
+
+        let fresh = ModulePresetStore::new(tmp_dir("import-module"));
+        let bytes = std::fs::read(&dest).unwrap();
+        let imported = import_module_preset_bytes(&fresh, &bytes, false).unwrap();
+        assert_eq!(imported.module_id, "org.powervoice.gain");
+        assert_eq!(imported.entry.key, "Mine");
+        assert_eq!(
+            fresh.load("org.powervoice.gain", "Mine").unwrap().params["gain_db"],
+            2.0
+        );
+    }
+
+    #[test]
+    fn importing_a_module_preset_over_an_existing_name_needs_overwrite() {
+        let dest = tmp_dir("import-conflict-file").join("Mine.json");
+        export_to_file(
+            &ExportedPreset::module("org.powervoice.gain", "Mine", state(9.0)),
+            &dest,
+        )
+        .unwrap();
+        let store = ModulePresetStore::new(tmp_dir("import-conflict"));
+        save_module_preset(&store, "org.powervoice.gain", "Mine", &state(1.0), false).unwrap();
+
+        let bytes = std::fs::read(&dest).unwrap();
+        let err = import_module_preset_bytes(&store, &bytes, false).unwrap_err();
+        assert_eq!(err.key, "error.preset_already_exists");
+        assert_eq!(
+            store.load("org.powervoice.gain", "Mine").unwrap().params["gain_db"],
+            1.0,
+            "the original is untouched without overwrite"
+        );
+
+        let imported = import_module_preset_bytes(&store, &bytes, true).unwrap();
+        assert_eq!(imported.entry.key, "Mine");
+        assert_eq!(
+            store.load("org.powervoice.gain", "Mine").unwrap().params["gain_db"],
+            9.0
+        );
+    }
+
+    #[test]
+    fn importing_malformed_bytes_is_rejected_not_a_panic() {
+        let store = ModulePresetStore::new(tmp_dir("import-malformed"));
+        let err = import_module_preset_bytes(&store, b"{ not json", false).unwrap_err();
+        assert_eq!(err.key, "error.preset_rejected");
+    }
+
+    #[test]
+    fn importing_a_rack_preset_file_as_a_module_preset_is_rejected() {
+        let store = ModulePresetStore::new(tmp_dir("import-wrong-kind"));
+        let dest = tmp_dir("import-wrong-kind-file").join("Rack.json");
+        export_to_file(
+            &ExportedPreset::rack("Some rack", RackModel { slots: vec![] }),
+            &dest,
+        )
+        .unwrap();
+        let bytes = std::fs::read(&dest).unwrap();
+        let err = import_module_preset_bytes(&store, &bytes, false).unwrap_err();
+        assert_eq!(err.code, IpcErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn importing_a_module_preset_file_as_a_rack_preset_is_rejected() {
+        let store = RackPresetStore::new(tmp_dir("import-wrong-kind-rack"));
+        let dest = tmp_dir("import-wrong-kind-rack-file").join("Module.json");
+        export_to_file(
+            &ExportedPreset::module("org.powervoice.gain", "Mine", state(0.0)),
+            &dest,
+        )
+        .unwrap();
+        let bytes = std::fs::read(&dest).unwrap();
+        let err = import_rack_preset_bytes(&store, &bytes, false).unwrap_err();
+        assert_eq!(err.code, IpcErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn importing_a_name_that_looks_like_path_traversal_never_escapes_the_module_store() {
+        let root = tmp_dir("import-traversal");
+        let store = ModulePresetStore::new(root.clone());
+        let dest = tmp_dir("import-traversal-file").join("evil.json");
+        export_to_file(
+            &ExportedPreset::module("org.powervoice.gain", "evil/../../etc", state(0.0)),
+            &dest,
+        )
+        .unwrap();
+        let bytes = std::fs::read(&dest).unwrap();
+        let imported = import_module_preset_bytes(&store, &bytes, false).unwrap();
+        // Whatever `sanitize_preset_name` turned the name into, it's still a single path
+        // component inside `org.powervoice.gain`'s own directory.
+        assert!(!imported.entry.key.contains('/') && !imported.entry.key.contains('\\'));
+        assert!(
+            !root
+                .parent()
+                .unwrap()
+                .join(format!("{}.json", imported.entry.key))
+                .exists()
+        );
+    }
+
+    #[test]
+    fn rack_preset_export_then_import_round_trips_an_unknown_module_id() {
+        // ADR-005 §2: importing never special-cases an unknown module id — the preset round-trips
+        // verbatim (`RackModel`/`SlotModel` already handle that) and only becomes a placeholder
+        // slot with a notice once it's actually loaded into the live rack, not on import.
+        let store = RackPresetStore::new(tmp_dir("export-rack"));
+        let rack = RackModel {
+            slots: vec![
+                gain_slot(-3.0),
+                SlotModel::new(
+                    &ModuleRef {
+                        id: "org.example.future-plugin".into(),
+                        version: Version::new(2, 0, 0),
+                    },
+                    false,
+                    &ModuleState::new(1),
+                ),
+            ],
+        };
+        save_rack_preset(&store, "Mine", &rack, false).unwrap();
+        let dest = tmp_dir("export-rack-file").join("Mine.json");
+        export_rack_preset(&store, "Mine", &dest).unwrap();
+
+        let fresh = RackPresetStore::new(tmp_dir("import-rack"));
+        let bytes = std::fs::read(&dest).unwrap();
+        let entry = import_rack_preset_bytes(&fresh, &bytes, false).unwrap();
+        assert_eq!(entry.key, "Mine");
+        assert_eq!(fresh.load("Mine").unwrap(), rack);
+    }
+
+    #[test]
+    fn importing_a_rack_preset_over_an_existing_name_needs_overwrite() {
+        let dest = tmp_dir("import-rack-conflict-file").join("Mine.json");
+        export_to_file(
+            &ExportedPreset::rack(
+                "Mine",
+                RackModel {
+                    slots: vec![gain_slot(6.0)],
+                },
+            ),
+            &dest,
+        )
+        .unwrap();
+        let store = RackPresetStore::new(tmp_dir("import-rack-conflict"));
+        let original = RackModel {
+            slots: vec![gain_slot(0.0)],
+        };
+        save_rack_preset(&store, "Mine", &original, false).unwrap();
+
+        let bytes = std::fs::read(&dest).unwrap();
+        let err = import_rack_preset_bytes(&store, &bytes, false).unwrap_err();
+        assert_eq!(err.key, "error.preset_already_exists");
+        assert_eq!(store.load("Mine").unwrap(), original);
+
+        import_rack_preset_bytes(&store, &bytes, true).unwrap();
+        assert_ne!(store.load("Mine").unwrap(), original);
     }
 }

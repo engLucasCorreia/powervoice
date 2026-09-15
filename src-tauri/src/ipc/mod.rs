@@ -94,7 +94,7 @@ pub use plugin_dto::{
     PluginInstallResultDto, PluginPortsDto, PluginStatusDto,
 };
 pub use preset_commands::*;
-pub use preset_dto::{PresetEntryDto, PresetRefDto};
+pub use preset_dto::{ModulePresetImportedDto, PresetEntryDto, PresetRefDto};
 pub use rack_commands::*;
 pub use rack_dto::{
     NoiseProfileStatusDto, ParamChangedDto, RackLatencyDto, RackStateDto, rack_ipc_error,
@@ -155,12 +155,16 @@ crate::ipc_commands!(
     module_preset_load,
     module_preset_rename,
     module_preset_delete,
+    module_preset_export,
+    module_preset_import,
     module_reset_default,
     rack_presets_list,
     rack_preset_save,
     rack_preset_load,
     rack_preset_rename,
     rack_preset_delete,
+    rack_preset_export,
+    rack_preset_import,
     analyzer_subscribe,
     analyzer_set_response,
     analyzer_unsubscribe,
@@ -269,12 +273,16 @@ crate::ipc_commands!(
     module_preset_load,
     module_preset_rename,
     module_preset_delete,
+    module_preset_export,
+    module_preset_import,
     module_reset_default,
     rack_presets_list,
     rack_preset_save,
     rack_preset_load,
     rack_preset_rename,
     rack_preset_delete,
+    rack_preset_export,
+    rack_preset_import,
     analyzer_subscribe,
     analyzer_set_response,
     analyzer_unsubscribe,

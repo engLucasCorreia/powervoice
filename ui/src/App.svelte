@@ -48,6 +48,7 @@
   import NormalizeLufsDialog from "./lib/normalize/NormalizeLufsDialog.svelte";
   import EffectsMenu from "./lib/rack/EffectsMenu.svelte";
   import BakeDialogs from "./lib/rack/BakeDialogs.svelte";
+  import ManagePresetsDialog from "./lib/rack/ManagePresetsDialog.svelte";
   import RackPanel from "./lib/rack/RackPanel.svelte";
   import { initNrCapture } from "./lib/rack/nrCapture.svelte";
   import NoticeHost from "./lib/notices/NoticeHost.svelte";
@@ -483,6 +484,7 @@
 <NormalizeDialog />
 <NormalizeLufsDialog />
 <BakeDialogs />
+<ManagePresetsDialog />
 <AboutDialog {version} />
 <CalibrationDialog />
 <WelcomeOffer />

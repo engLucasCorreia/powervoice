@@ -4,6 +4,7 @@ import type {
   EventName,
   IpcError,
   ModuleDescriptorDto,
+  ModulePresetImportedDto,
   ParamChangedDto,
   PresetEntryDto,
   PresetRefDto,
@@ -12,6 +13,8 @@ import type {
 } from "../ipc/bindings";
 import {
   modulePresetDelete,
+  modulePresetExport,
+  modulePresetImport,
   modulePresetLoad,
   modulePresetRename,
   modulePresetSave,
@@ -28,6 +31,8 @@ import {
   rackListModules,
   rackMove,
   rackPresetDelete,
+  rackPresetExport,
+  rackPresetImport,
   rackPresetLoad,
   rackPresetRename,
   rackPresetSave,
@@ -193,6 +198,89 @@ export function renameModulePreset(
 /** Deletes a user module preset. `false` on failure (already reported). */
 export async function deleteModulePreset(moduleId: string, name: string): Promise<boolean> {
   return (await runPreset(() => modulePresetDelete(moduleId, name).then(() => true))) ?? false;
+}
+
+/** The outcome of an attempted save/import that might collide with an existing preset name
+ * (H-22 "Overwrite-confirm on save"): `conflict` means a preset of that name already exists and
+ * nothing was written — the caller re-issues the same call with `overwrite: true` (or, for
+ * import, calls {@link importModulePreset}/{@link importRackPreset} with `overwrite: true`) once
+ * the user confirms "Replace preset ‹name›?". `name` is only present when the caller couldn't
+ * already know it (an imported file's own name) — a typed "Save as…" name is already known to
+ * the caller. */
+export type PresetWriteOutcome<T> =
+  | { status: "ok"; value: T }
+  | { status: "conflict"; name?: string }
+  | { status: "failed" };
+
+function conflictName(err: IpcError): string | undefined {
+  return err.params.name;
+}
+
+async function runConflictAware<T>(command: () => Promise<T>): Promise<PresetWriteOutcome<T>> {
+  try {
+    return { status: "ok", value: await command() };
+  } catch (err) {
+    if (isIpcError(err) && err.key === "error.preset_already_exists") {
+      return { status: "conflict", name: conflictName(err) };
+    }
+    report(err);
+    return { status: "failed" };
+  }
+}
+
+/** Attempts to save slot `index`'s current state as a new user preset without overwriting
+ * (SPEC-012 §2.7 "Save as…"): `conflict` when `name` is already taken — re-save with
+ * `saveModulePreset(index, name, includeNoisePrint, true)` once the user confirms. */
+export function trySaveModulePreset(
+  index: number,
+  name: string,
+  includeNoisePrint: boolean,
+): Promise<PresetWriteOutcome<PresetEntryDto>> {
+  return runConflictAware(() => modulePresetSave(index, name, includeNoisePrint, false));
+}
+
+/** Attempts to save the live rack as a new user rack preset without overwriting: `conflict` when
+ * `name` is already taken — re-save with `saveRackPreset(name, true)` once confirmed. */
+export function trySaveRackPreset(name: string): Promise<PresetWriteOutcome<PresetEntryDto>> {
+  return runConflictAware(() => rackPresetSave(name, false));
+}
+
+/** Exports user module preset `name` (of `moduleId`) to `path` (H-22 "Export…"). `false` on
+ * failure (already reported). */
+export async function exportModulePreset(moduleId: string, name: string, path: string): Promise<boolean> {
+  return (await runPreset(() => modulePresetExport(moduleId, name, path).then(() => true))) ?? false;
+}
+
+/** Attempts to import a module preset file at `path` without overwriting: `conflict` (with the
+ * file's own preset `name`) when that name is already taken — re-import with
+ * `importModulePreset(path, true)` once confirmed. */
+export function tryImportModulePreset(path: string): Promise<PresetWriteOutcome<ModulePresetImportedDto>> {
+  return runConflictAware(() => modulePresetImport(path, false));
+}
+
+/** Imports a module preset file at `path`, replacing an existing same-named preset when
+ * `overwrite` is set. `null` on failure (already reported). */
+export function importModulePreset(path: string, overwrite = true): Promise<ModulePresetImportedDto | null> {
+  return runPreset(() => modulePresetImport(path, overwrite));
+}
+
+/** Exports user rack preset `name` to `path` (H-22 "Export…"). `false` on failure (already
+ * reported). */
+export async function exportRackPreset(name: string, path: string): Promise<boolean> {
+  return (await runPreset(() => rackPresetExport(name, path).then(() => true))) ?? false;
+}
+
+/** Attempts to import a rack preset file at `path` without overwriting: `conflict` (with the
+ * file's own preset `name`) when that name is already taken — re-import with
+ * `importRackPreset(path, true)` once confirmed. */
+export function tryImportRackPreset(path: string): Promise<PresetWriteOutcome<PresetEntryDto>> {
+  return runConflictAware(() => rackPresetImport(path, false));
+}
+
+/** Imports a rack preset file at `path`, replacing an existing same-named preset when `overwrite`
+ * is set. `null` on failure (already reported). */
+export function importRackPreset(path: string, overwrite = true): Promise<PresetEntryDto | null> {
+  return runPreset(() => rackPresetImport(path, overwrite));
 }
 
 /** Factory rack presets first, then user-saved ones — Effects → Rack Presets. `null` on failure

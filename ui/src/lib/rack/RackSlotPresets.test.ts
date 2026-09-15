@@ -3,6 +3,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PresetEntryDto, RackSlotDto } from "../ipc/bindings";
 import { paramInfoDto, rackSlotDto, rackStateDto } from "../test/fixtures";
+import { closeManagePresets, managePresetsState, resetManagePresetsForTest } from "./managePresets.svelte";
 import { resetRackForTest } from "./rack.svelte";
 import RackSlot from "./RackSlot.svelte";
 
@@ -23,6 +24,7 @@ const emptyRack = rackStateDto();
 afterEach(() => {
   clearMocks();
   resetRackForTest();
+  resetManagePresetsForTest();
   document.body.innerHTML = "";
 });
 
@@ -261,6 +263,126 @@ describe("slot preset menu (T-406, SPEC-012 §2.7)", () => {
     flushSync();
     expect(target.querySelector('[data-testid="rack-slot-presets"]')).toBeNull();
     expect(target.querySelector('[data-testid="rack-slot-reset-default"]')).toBeNull();
+    teardown();
+  });
+
+  // H-22: saving under an existing name asks "Replace preset ‹name›?" instead of just failing.
+  describe("overwrite-confirm on save (H-22)", () => {
+    async function openSaveForm(target: HTMLElement): Promise<void> {
+      await openPresetsSubmenu(target);
+      target.querySelector<HTMLButtonElement>('[data-testid="rack-slot-preset-save"]')!.click();
+      flushSync();
+      const input = target.querySelector<HTMLInputElement>('[data-testid="rack-slot-preset-name"]')!;
+      input.value = "Mine";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      flushSync();
+    }
+
+    it("asks to replace when the name already exists, and does nothing until confirmed", async () => {
+      const calls: Array<[string, unknown]> = [];
+      const { target, teardown } = render(slotFixture(), (cmd, args) => {
+        calls.push([cmd, args]);
+        if (cmd === "module_presets_list") {
+          return [{ key: "Mine", name: { text: "Mine", key: null }, is_factory: false }];
+        }
+        if (cmd === "module_preset_save") {
+          if ((args as { overwrite: boolean }).overwrite) {
+            return { key: "Mine", name: { text: "Mine", key: null }, is_factory: false };
+          }
+          throw { code: "invalid_argument", key: "error.preset_already_exists", params: { name: "Mine" } };
+        }
+        throw new Error(`unexpected command ${cmd}`);
+      });
+
+      await openSaveForm(target);
+      target.querySelector<HTMLButtonElement>('[data-testid="rack-slot-preset-save-confirm"]')!.click();
+      flushSync();
+      await settle();
+
+      expect(calls).toContainEqual([
+        "module_preset_save",
+        { slot: 2, name: "Mine", includeNoisePrint: false, overwrite: false },
+      ]);
+      const message = target.querySelector('[data-testid="rack-slot-preset-overwrite-message"]');
+      expect(message?.textContent).toContain("Mine");
+      expect(target.querySelector('[data-testid="rack-slot-preset-overwrite-confirm"]')).not.toBeNull();
+      teardown();
+    });
+
+    it("cancel returns to the name field without saving", async () => {
+      const { target, teardown } = render(slotFixture(), (cmd) => {
+        if (cmd === "module_presets_list") {
+          return [{ key: "Mine", name: { text: "Mine", key: null }, is_factory: false }];
+        }
+        if (cmd === "module_preset_save") {
+          throw { code: "invalid_argument", key: "error.preset_already_exists", params: { name: "Mine" } };
+        }
+        throw new Error(`unexpected command ${cmd}`);
+      });
+
+      await openSaveForm(target);
+      target.querySelector<HTMLButtonElement>('[data-testid="rack-slot-preset-save-confirm"]')!.click();
+      flushSync();
+      await settle();
+      target.querySelector<HTMLButtonElement>('[data-testid="rack-slot-preset-overwrite-cancel"]')!.click();
+      flushSync();
+
+      expect(target.querySelector('[data-testid="rack-slot-preset-overwrite-message"]')).toBeNull();
+      expect(target.querySelector<HTMLInputElement>('[data-testid="rack-slot-preset-name"]')).not.toBeNull();
+      teardown();
+    });
+
+    it("replace overwrites the existing preset", async () => {
+      const calls: Array<[string, unknown]> = [];
+      const { target, teardown } = render(slotFixture(), (cmd, args) => {
+        calls.push([cmd, args]);
+        if (cmd === "module_presets_list") {
+          return [{ key: "Mine", name: { text: "Mine", key: null }, is_factory: false }];
+        }
+        if (cmd === "module_preset_save") {
+          if ((args as { overwrite: boolean }).overwrite) {
+            return { key: "Mine", name: { text: "Mine", key: null }, is_factory: false };
+          }
+          throw { code: "invalid_argument", key: "error.preset_already_exists", params: { name: "Mine" } };
+        }
+        throw new Error(`unexpected command ${cmd}`);
+      });
+
+      await openSaveForm(target);
+      target.querySelector<HTMLButtonElement>('[data-testid="rack-slot-preset-save-confirm"]')!.click();
+      flushSync();
+      await settle();
+      target.querySelector<HTMLButtonElement>('[data-testid="rack-slot-preset-overwrite-confirm"]')!.click();
+      flushSync();
+      await settle();
+
+      expect(calls).toContainEqual([
+        "module_preset_save",
+        { slot: 2, name: "Mine", includeNoisePrint: false, overwrite: true },
+      ]);
+      expect(target.querySelector('[data-testid="rack-slot-preset-overwrite-message"]')).toBeNull();
+      teardown();
+    });
+  });
+
+  it("opening Manage presets… from the submenu opens the Manage Presets dialog on the Module tab", async () => {
+    const { target, teardown } = render(slotFixture(), (cmd) => {
+      if (cmd === "module_presets_list") {
+        return [];
+      }
+      throw new Error(`unexpected command ${cmd}`);
+    });
+
+    await openPresetsSubmenu(target);
+    expect(managePresetsState().open).toBe(false);
+    target.querySelector<HTMLButtonElement>('[data-testid="rack-slot-preset-manage"]')!.click();
+    flushSync();
+
+    expect(managePresetsState().open).toBe(true);
+    expect(managePresetsState().tab).toBe("module");
+    expect(managePresetsState().moduleId).toBe("org.powervoice.gain");
+
+    closeManagePresets();
     teardown();
   });
 });

@@ -23,12 +23,14 @@
   import { localized } from "./localized";
   import { canCapture } from "./nrCapture.svelte";
   import { canBake, startBake } from "../state/bake.svelte";
+  import { openManagePresets } from "./managePresets.svelte";
   import {
     deleteRackPreset,
     listRackPresets,
     loadRackPreset,
     rackState,
     saveRackPreset,
+    trySaveRackPreset,
   } from "./rack.svelte";
 
   /**
@@ -57,6 +59,8 @@
   let savingRackPreset = $state(false);
   let rackPresetName = $state("");
   let confirmingRackPreset = $state<PresetRefDto | null>(null);
+  // H-22: a same-named user rack preset already exists — "Replace preset ‹name›?" before overwriting.
+  let saveConflict = $state(false);
 
   function refOf(entry: PresetEntryDto): PresetRefDto {
     return entry.is_factory ? { kind: "factory", key: entry.key } : { kind: "user", name: entry.key };
@@ -68,6 +72,7 @@
 
   function onRackPresetsOpen(): void {
     savingRackPreset = false;
+    saveConflict = false;
     confirmingRackPreset = null;
     void refreshRackPresets();
   }
@@ -78,6 +83,7 @@
 
   function startSaveRackPreset(): void {
     savingRackPreset = true;
+    saveConflict = false;
     rackPresetName = "";
   }
 
@@ -86,9 +92,27 @@
     if (!name) {
       return;
     }
-    const saved = await saveRackPreset(name);
+    const outcome = await trySaveRackPreset(name);
+    if (outcome.status === "ok") {
+      savingRackPreset = false;
+      saveConflict = false;
+      rackPresetName = "";
+      await refreshRackPresets();
+    } else if (outcome.status === "conflict") {
+      saveConflict = true;
+    }
+  }
+
+  /** Replaces the existing rack preset once the user confirms "Replace preset ‹name›?". */
+  async function confirmOverwriteRackPreset(): Promise<void> {
+    const name = rackPresetName.trim();
+    if (!name) {
+      return;
+    }
+    const saved = await saveRackPreset(name, true);
     if (saved) {
       savingRackPreset = false;
+      saveConflict = false;
       rackPresetName = "";
       await refreshRackPresets();
     }
@@ -146,6 +170,14 @@
         });
       }
     }
+    list.push({ kind: "separator", id: "sep-manage" });
+    list.push({
+      kind: "item",
+      id: "manage",
+      label: t("rack_preset.manage"),
+      testid: "rack-preset-manage",
+      onselect: () => openManagePresets({ tab: "rack" }),
+    });
     list.push({ kind: "separator", id: "sep-save" });
     list.push(
       savingRackPreset
@@ -278,25 +310,44 @@
 {/snippet}
 
 {#snippet saveForm()}
-  <input
-    type="text"
-    placeholder={t("rack_preset.name_placeholder")}
-    aria-label={t("rack_preset.name_placeholder")}
-    data-testid="rack-preset-name"
-    bind:value={rackPresetName}
-    onkeydown={(e) => {
-      if (e.key === "Enter") void confirmSaveRackPreset();
-    }}
-    {@attach (node) => node.focus()}
-  />
-  <div class="actions">
-    <Button size="sm" onclick={() => (savingRackPreset = false)}>
-      {t("rack_preset.cancel_button")}
-    </Button>
-    <Button size="sm" variant="primary" testid="rack-preset-save-confirm" onclick={() => void confirmSaveRackPreset()}>
-      {t("rack_preset.save_button")}
-    </Button>
-  </div>
+  {#if saveConflict}
+    <p data-testid="rack-preset-overwrite-message">
+      {t("rack_preset.confirm_overwrite", { name: rackPresetName.trim() })}
+    </p>
+    <div class="actions">
+      <Button size="sm" testid="rack-preset-overwrite-cancel" onclick={() => (saveConflict = false)}>
+        {t("rack_preset.cancel_button")}
+      </Button>
+      <Button
+        size="sm"
+        variant="primary"
+        testid="rack-preset-overwrite-confirm"
+        onclick={() => void confirmOverwriteRackPreset()}
+      >
+        {t("rack_preset.overwrite_button")}
+      </Button>
+    </div>
+  {:else}
+    <input
+      type="text"
+      placeholder={t("rack_preset.name_placeholder")}
+      aria-label={t("rack_preset.name_placeholder")}
+      data-testid="rack-preset-name"
+      bind:value={rackPresetName}
+      onkeydown={(e) => {
+        if (e.key === "Enter") void confirmSaveRackPreset();
+      }}
+      {@attach (node) => node.focus()}
+    />
+    <div class="actions">
+      <Button size="sm" onclick={() => (savingRackPreset = false)}>
+        {t("rack_preset.cancel_button")}
+      </Button>
+      <Button size="sm" variant="primary" testid="rack-preset-save-confirm" onclick={() => void confirmSaveRackPreset()}>
+        {t("rack_preset.save_button")}
+      </Button>
+    </div>
+  {/if}
 {/snippet}
 
 <MenuBarMenu

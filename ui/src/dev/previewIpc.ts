@@ -784,6 +784,23 @@ export function installPreviewIpc(options: PreviewOptions): void {
         case "module_presets_list":
         case "rack_presets_list":
           return [{ key: "voice_warmth", name: text("Voice warmth"), is_factory: true }, { key: "My booth", name: text("My booth"), is_factory: false }];
+        case "module_preset_load":
+        case "rack_preset_load":
+        case "module_reset_default":
+          return rack;
+        case "module_preset_save":
+        case "module_preset_rename":
+        case "rack_preset_save":
+        case "rack_preset_rename":
+        case "rack_preset_import":
+          return { key: "My booth", name: text("My booth"), is_factory: false };
+        case "module_preset_import":
+          return { module_id: "org.powervoice.gain", entry: { key: "My booth", name: text("My booth"), is_factory: false } };
+        case "module_preset_delete":
+        case "rack_preset_delete":
+        case "module_preset_export":
+        case "rack_preset_export":
+          return null;
         case "loudness_analyze_start":
           return { job_id: 7 };
         case "acx_check":

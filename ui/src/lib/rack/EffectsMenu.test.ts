@@ -10,6 +10,7 @@ import { resetRecordForTest } from "../state/record.svelte";
 import { resetSelectionForTest, setSelectionFromResult } from "../state/selection.svelte";
 import { rackSlotDto, rackStateDto } from "../test/fixtures";
 import EffectsMenu from "./EffectsMenu.svelte";
+import { closeManagePresets, managePresetsState, resetManagePresetsForTest } from "./managePresets.svelte";
 import { resetNrCaptureForTest } from "./nrCapture.svelte";
 import { loadRack, resetRackForTest } from "./rack.svelte";
 import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
@@ -27,6 +28,7 @@ afterEach(() => {
   resetRecordForTest();
   resetSelectionForTest();
   resetRackForTest();
+  resetManagePresetsForTest();
 });
 
 function mountMenu(): { target: HTMLElement; app: ReturnType<typeof mount> } {
@@ -351,6 +353,128 @@ describe("EffectsMenu (H-19)", () => {
       const submenu = target.querySelector('[data-testid="rack-presets-submenu"]')!;
       expect(submenu.textContent).toContain("No saved presets");
 
+      unmount(app);
+      target.remove();
+    });
+
+    // H-22: saving under an existing name asks "Replace preset ‹name›?" instead of just failing.
+    describe("overwrite-confirm on save (H-22)", () => {
+      async function openSaveForm(target: HTMLElement): Promise<void> {
+        openRackPresets(target);
+        await settle();
+        target.querySelector<HTMLButtonElement>('[data-testid="rack-preset-save"]')!.click();
+        flushSync();
+        const input = target.querySelector<HTMLInputElement>('[data-testid="rack-preset-name"]')!;
+        input.value = "Mine";
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        flushSync();
+      }
+
+      it("asks to replace when the name already exists, and does nothing until confirmed", async () => {
+        const calls: Array<[string, unknown]> = [];
+        mockIPC((cmd, args) => {
+          calls.push([cmd, args]);
+          if (cmd === "rack_presets_list") {
+            return [{ key: "Mine", name: { text: "Mine", key: null }, is_factory: false }];
+          }
+          if (cmd === "rack_preset_save") {
+            if (args && (args as { overwrite: boolean }).overwrite) {
+              return { key: "Mine", name: { text: "Mine", key: null }, is_factory: false };
+            }
+            throw { code: "invalid_argument", key: "error.preset_already_exists", params: { name: "Mine" } };
+          }
+          throw new Error(`unmocked command: ${cmd}`);
+        });
+        const { target, app } = mountMenu();
+        await openSaveForm(target);
+        target.querySelector<HTMLButtonElement>('[data-testid="rack-preset-save-confirm"]')!.click();
+        flushSync();
+        await settle();
+
+        expect(calls).toContainEqual(["rack_preset_save", { name: "Mine", overwrite: false }]);
+        const message = target.querySelector('[data-testid="rack-preset-overwrite-message"]');
+        expect(message?.textContent).toContain("Mine");
+        expect(target.querySelector('[data-testid="rack-preset-overwrite-confirm"]')).not.toBeNull();
+
+        unmount(app);
+        target.remove();
+      });
+
+      it("cancel returns to the name field without saving", async () => {
+        mockIPC((cmd) => {
+          if (cmd === "rack_presets_list") {
+            return [{ key: "Mine", name: { text: "Mine", key: null }, is_factory: false }];
+          }
+          if (cmd === "rack_preset_save") {
+            throw { code: "invalid_argument", key: "error.preset_already_exists", params: { name: "Mine" } };
+          }
+          throw new Error(`unmocked command: ${cmd}`);
+        });
+        const { target, app } = mountMenu();
+        await openSaveForm(target);
+        target.querySelector<HTMLButtonElement>('[data-testid="rack-preset-save-confirm"]')!.click();
+        flushSync();
+        await settle();
+        target.querySelector<HTMLButtonElement>('[data-testid="rack-preset-overwrite-cancel"]')!.click();
+        flushSync();
+
+        expect(target.querySelector('[data-testid="rack-preset-overwrite-message"]')).toBeNull();
+        expect(target.querySelector<HTMLInputElement>('[data-testid="rack-preset-name"]')).not.toBeNull();
+
+        unmount(app);
+        target.remove();
+      });
+
+      it("replace overwrites the existing preset", async () => {
+        const calls: Array<[string, unknown]> = [];
+        mockIPC((cmd, args) => {
+          calls.push([cmd, args]);
+          if (cmd === "rack_presets_list") {
+            return [{ key: "Mine", name: { text: "Mine", key: null }, is_factory: false }];
+          }
+          if (cmd === "rack_preset_save") {
+            if ((args as { overwrite: boolean }).overwrite) {
+              return { key: "Mine", name: { text: "Mine", key: null }, is_factory: false };
+            }
+            throw { code: "invalid_argument", key: "error.preset_already_exists", params: { name: "Mine" } };
+          }
+          throw new Error(`unmocked command: ${cmd}`);
+        });
+        const { target, app } = mountMenu();
+        await openSaveForm(target);
+        target.querySelector<HTMLButtonElement>('[data-testid="rack-preset-save-confirm"]')!.click();
+        flushSync();
+        await settle();
+        target.querySelector<HTMLButtonElement>('[data-testid="rack-preset-overwrite-confirm"]')!.click();
+        flushSync();
+        await settle();
+
+        expect(calls).toContainEqual(["rack_preset_save", { name: "Mine", overwrite: true }]);
+        expect(target.querySelector('[data-testid="rack-preset-overwrite-message"]')).toBeNull();
+
+        unmount(app);
+        target.remove();
+      });
+    });
+
+    it("opening Manage presets… from the submenu opens the Manage Presets dialog on the Rack tab", async () => {
+      mockIPC((cmd) => {
+        if (cmd === "rack_presets_list") {
+          return [];
+        }
+        throw new Error(`unmocked command: ${cmd}`);
+      });
+      const { target, app } = mountMenu();
+      openRackPresets(target);
+      await settle();
+      expect(managePresetsState().open).toBe(false);
+      target.querySelector<HTMLButtonElement>('[data-testid="rack-preset-manage"]')!.click();
+      flushSync();
+
+      expect(managePresetsState().open).toBe(true);
+      expect(managePresetsState().tab).toBe("rack");
+
+      closeManagePresets();
       unmount(app);
       target.remove();
     });

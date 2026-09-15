@@ -22,6 +22,7 @@ import type {
   MarkerDto,
   MarkerRangeKindDto,
   ModuleDescriptorDto,
+  ModulePresetImportedDto,
   NormalizeJobStartedDto,
   NrCaptureStartedDto,
   PeaksRequestDto,
@@ -277,6 +278,18 @@ export async function modulePresetDelete(moduleId: string, name: string): Promis
   return invoke<void>("module_preset_delete" satisfies CommandName, { moduleId, name });
 }
 
+/** Exports user module preset `name` (of `moduleId`) to `path` (H-22, Manage Presets… "Export…";
+ * `path` came from the caller's native save dialog). */
+export async function modulePresetExport(moduleId: string, name: string, path: string): Promise<void> {
+  return invoke<void>("module_preset_export" satisfies CommandName, { moduleId, name, path });
+}
+
+/** Imports a module preset file at `path` (H-22, Manage Presets… "Import…"; `path` came from the
+ * caller's native open dialog). `overwrite` replaces an existing preset of the same name. */
+export async function modulePresetImport(path: string, overwrite = false): Promise<ModulePresetImportedDto> {
+  return invoke<ModulePresetImportedDto>("module_preset_import" satisfies CommandName, { path, overwrite });
+}
+
 /** Resets every writable parameter of slot `slot` to its schema default (a committed blob, e.g.
  * a noise print, is kept). */
 export async function moduleResetDefault(slot: number): Promise<RackStateDto> {
@@ -315,6 +328,18 @@ export async function rackPresetRename(oldName: string, newName: string): Promis
 /** Deletes a user rack preset. */
 export async function rackPresetDelete(name: string): Promise<void> {
   return invoke<void>("rack_preset_delete" satisfies CommandName, { name });
+}
+
+/** Exports user rack preset `name` to `path` (H-22, Manage Presets… "Export…"; `path` came from
+ * the caller's native save dialog). */
+export async function rackPresetExport(name: string, path: string): Promise<void> {
+  return invoke<void>("rack_preset_export" satisfies CommandName, { name, path });
+}
+
+/** Imports a rack preset file at `path` (H-22, Manage Presets… "Import…"; `path` came from the
+ * caller's native open dialog). `overwrite` replaces an existing preset of the same name. */
+export async function rackPresetImport(path: string, overwrite = false): Promise<PresetEntryDto> {
+  return invoke<PresetEntryDto>("rack_preset_import" satisfies CommandName, { path, overwrite });
 }
 
 /**

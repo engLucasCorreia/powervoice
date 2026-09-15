@@ -7,12 +7,14 @@
 
 mod atomic;
 mod error;
+mod export;
 mod factory_rack;
 mod module_store;
 mod name;
 mod rack_store;
 
 pub use error::PresetError;
+pub use export::{ExportedPreset, export_to_file, import_from_file};
 pub use factory_rack::{FactoryRackPreset, factory_rack_presets};
 pub use module_store::{ModulePresetStore, StoredModulePreset};
 pub use name::{sanitize_module_id, sanitize_preset_name};

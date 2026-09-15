@@ -33,18 +33,42 @@ pub enum PresetRefDto {
     User { name: String },
 }
 
+/// One imported module preset (`module_preset_import`, H-22): which module it belongs to (the
+/// file's own `module_id`, not necessarily whichever module tab the Manage Presets dialog had
+/// open) plus the saved entry, so the UI can switch to — and refresh — the right list.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct ModulePresetImportedDto {
+    pub module_id: String,
+    pub entry: PresetEntryDto,
+}
+
 /// Maps a preset-storage failure to the shared IPC error shape (ADR-003). Every variant's
 /// message is pre-rendered English text carrying the (already sanitized) preset name — like
 /// [`crate::ipc::rack_dto::rack_ipc_error`]'s `Rack` variant, not something the UI has an i18n
-/// key for.
+/// key for. `AlreadyExists` gets its own key (plus the conflicting `name` as a structured param)
+/// so a save/import can offer "Replace preset ‹name›?" instead of just reporting the failure
+/// (H-22) — every other variant keeps the original generic key.
 pub fn preset_ipc_error(err: PresetError) -> IpcError {
-    let code = match err {
-        PresetError::NotFound(_) => IpcErrorCode::NotFound,
-        PresetError::InvalidName(_) | PresetError::AlreadyExists(_) => {
-            IpcErrorCode::InvalidArgument
+    let message = err.to_string();
+    match err {
+        PresetError::NotFound(_) => IpcError::new(IpcErrorCode::NotFound, "error.preset_rejected")
+            .with_param("message", message),
+        PresetError::AlreadyExists(name) => {
+            IpcError::new(IpcErrorCode::InvalidArgument, "error.preset_already_exists")
+                .with_param("message", message)
+                .with_param("name", name)
         }
-        PresetError::Corrupt { .. } | PresetError::TooNew { .. } => IpcErrorCode::Internal,
-        PresetError::Io(_) => IpcErrorCode::Io,
-    };
-    IpcError::new(code, "error.preset_rejected").with_param("message", err.to_string())
+        PresetError::InvalidName(_) => {
+            IpcError::new(IpcErrorCode::InvalidArgument, "error.preset_rejected")
+                .with_param("message", message)
+        }
+        PresetError::Corrupt { .. } | PresetError::TooNew { .. } => {
+            IpcError::new(IpcErrorCode::Internal, "error.preset_rejected")
+                .with_param("message", message)
+        }
+        PresetError::Io(_) => {
+            IpcError::new(IpcErrorCode::Io, "error.preset_rejected").with_param("message", message)
+        }
+    }
 }

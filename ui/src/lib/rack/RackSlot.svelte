@@ -9,6 +9,7 @@
   import NoiseReductionSection from "./NoiseReductionSection.svelte";
   import { openPluginManager, pluginCrashCount } from "../plugins/plugins.svelte";
   import ParamGroupSection from "./ParamGroupSection.svelte";
+  import { openManagePresets } from "./managePresets.svelte";
   import {
     deleteModulePreset,
     listModulePresets,
@@ -20,6 +21,7 @@
     saveModulePreset,
     setBypass,
     slotTelemetry,
+    trySaveModulePreset,
   } from "./rack.svelte";
 
   /**
@@ -86,10 +88,13 @@
   let savingPreset = $state(false);
   let presetName = $state("");
   let includeNoisePrint = $state(false);
+  // H-22: a same-named user preset already exists — "Replace preset ‹name›?" before overwriting.
+  let saveConflict = $state(false);
 
   function closeMenu(): void {
     menuOpen = false;
     savingPreset = false;
+    saveConflict = false;
   }
 
   async function openPresetsSubmenu(): Promise<void> {
@@ -107,6 +112,7 @@
 
   function startSavePreset(): void {
     savingPreset = true;
+    saveConflict = false;
     presetName = "";
     includeNoisePrint = false;
   }
@@ -116,9 +122,27 @@
     if (!name || !slot.module_id) {
       return;
     }
-    const saved = await saveModulePreset(index, name, includeNoisePrint);
+    const outcome = await trySaveModulePreset(index, name, includeNoisePrint);
+    if (outcome.status === "ok") {
+      savingPreset = false;
+      saveConflict = false;
+      presetName = "";
+      await refreshPresets();
+    } else if (outcome.status === "conflict") {
+      saveConflict = true;
+    }
+  }
+
+  /** Replaces the existing preset once the user confirms "Replace preset ‹name›?". */
+  async function confirmOverwritePreset(): Promise<void> {
+    const name = presetName.trim();
+    if (!name || !slot.module_id) {
+      return;
+    }
+    const saved = await saveModulePreset(index, name, includeNoisePrint, true);
     if (saved) {
       savingPreset = false;
+      saveConflict = false;
       presetName = "";
       await refreshPresets();
     }
@@ -171,6 +195,14 @@
         });
       }
     }
+    list.push({ kind: "separator", id: "sep-manage" });
+    list.push({
+      kind: "item",
+      id: "manage",
+      label: t("rack.slot.preset.manage"),
+      testid: "rack-slot-preset-manage",
+      onselect: () => openManagePresets({ tab: "module", moduleId: slot.module_id ?? undefined }),
+    });
     list.push({ kind: "separator", id: "sep-save" });
     list.push(
       savingPreset
@@ -272,31 +304,50 @@
 </script>
 
 {#snippet savePresetForm()}
-  <input
-    type="text"
-    placeholder={t("rack.slot.preset.name_placeholder")}
-    aria-label={t("rack.slot.preset.name_placeholder")}
-    data-testid="rack-slot-preset-name"
-    bind:value={presetName}
-    onkeydown={(e) => {
-      if (e.key === "Enter") void confirmSavePreset();
-    }}
-    {@attach (node) => node.focus()}
-  />
-  {#if slot.noise_profile !== null}
-    <label>
-      <input type="checkbox" bind:checked={includeNoisePrint} />
-      {t("rack.slot.preset.include_noise_print")}
-    </label>
+  {#if saveConflict}
+    <p data-testid="rack-slot-preset-overwrite-message">
+      {t("rack.slot.preset.confirm_overwrite", { name: presetName.trim() })}
+    </p>
+    <div class="actions">
+      <Button size="sm" testid="rack-slot-preset-overwrite-cancel" onclick={() => (saveConflict = false)}>
+        {t("rack.slot.preset.cancel_button")}
+      </Button>
+      <Button
+        size="sm"
+        variant="primary"
+        testid="rack-slot-preset-overwrite-confirm"
+        onclick={() => void confirmOverwritePreset()}
+      >
+        {t("rack.slot.preset.overwrite_button")}
+      </Button>
+    </div>
+  {:else}
+    <input
+      type="text"
+      placeholder={t("rack.slot.preset.name_placeholder")}
+      aria-label={t("rack.slot.preset.name_placeholder")}
+      data-testid="rack-slot-preset-name"
+      bind:value={presetName}
+      onkeydown={(e) => {
+        if (e.key === "Enter") void confirmSavePreset();
+      }}
+      {@attach (node) => node.focus()}
+    />
+    {#if slot.noise_profile !== null}
+      <label>
+        <input type="checkbox" bind:checked={includeNoisePrint} />
+        {t("rack.slot.preset.include_noise_print")}
+      </label>
+    {/if}
+    <div class="actions">
+      <Button size="sm" onclick={() => (savingPreset = false)}>
+        {t("rack.slot.preset.cancel_button")}
+      </Button>
+      <Button size="sm" variant="primary" testid="rack-slot-preset-save-confirm" onclick={() => void confirmSavePreset()}>
+        {t("rack.slot.preset.save_button")}
+      </Button>
+    </div>
   {/if}
-  <div class="actions">
-    <Button size="sm" onclick={() => (savingPreset = false)}>
-      {t("rack.slot.preset.cancel_button")}
-    </Button>
-    <Button size="sm" variant="primary" testid="rack-slot-preset-save-confirm" onclick={() => void confirmSavePreset()}>
-      {t("rack.slot.preset.save_button")}
-    </Button>
-  </div>
 {/snippet}
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->

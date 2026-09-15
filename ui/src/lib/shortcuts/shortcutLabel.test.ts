@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { formatBinding, shortcutLabelForAction } from "./shortcutLabel";
+import { formatBinding, shortcutLabelForAction, shortcutRows } from "./shortcutLabel";
+import { SHORTCUTS } from "./registry";
 
 describe("shortcutLabel (H-19)", () => {
   it("formats a plain letter binding for non-mac and mac", () => {
@@ -36,5 +37,31 @@ describe("shortcutLabel (H-19)", () => {
   it("formatBinding matches shortcutLabelForAction for the same binding", () => {
     const binding = { action: "history.undo" as const, code: "KeyZ", mod: true };
     expect(formatBinding(binding, false)).toBe(shortcutLabelForAction("history.undo", false));
+  });
+
+  // T-701: the Help ▸ Keyboard Shortcuts dialog's data source — one row per registry entry, in
+  // order, each with its platform-formatted display label attached.
+  describe("shortcutRows", () => {
+    it("returns one row per registry entry, in order, with a non-empty display label", () => {
+      const rows = shortcutRows(false);
+      expect(rows).toHaveLength(SHORTCUTS.length);
+      rows.forEach((row, i) => {
+        expect(row.entry).toBe(SHORTCUTS[i]);
+        expect(row.display.length).toBeGreaterThan(0);
+      });
+    });
+
+    it("formats the same entry differently for mac vs. non-mac", () => {
+      const [nonMac] = shortcutRows(false, [SHORTCUTS[0]!]);
+      const [mac] = shortcutRows(true, [SHORTCUTS[0]!]);
+      expect(nonMac!.display).toBe("Space");
+      expect(mac!.display).toBe("Space");
+      // Pick an entry where mac/non-mac actually differ to prove the flag is honored.
+      const undo = SHORTCUTS.find((s) => s.action === "history.undo")!;
+      const [undoNonMac] = shortcutRows(false, [undo]);
+      const [undoMac] = shortcutRows(true, [undo]);
+      expect(undoNonMac!.display).toBe("Ctrl+Z");
+      expect(undoMac!.display).toBe("⌘Z");
+    });
   });
 });

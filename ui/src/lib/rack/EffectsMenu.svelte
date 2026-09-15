@@ -1,8 +1,8 @@
 <script lang="ts">
   import { t } from "../i18n";
   import type { PresetEntryDto, PresetRefDto } from "../ipc/bindings";
-  import { dispatchAction } from "../keymap";
-  import { shortcutLabelForAction } from "../keymap/shortcutLabel";
+  import { dispatchAction } from "../shortcuts";
+  import { shortcutLabelForAction } from "../shortcuts/shortcutLabel";
   import MenuBarMenu from "../menu/MenuBarMenu.svelte";
   import { closeAllMenus, focusMenuTrigger, MENU_MNEMONICS } from "../menu/menubar.svelte";
   import {

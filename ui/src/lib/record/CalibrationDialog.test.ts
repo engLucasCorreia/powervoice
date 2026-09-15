@@ -3,7 +3,7 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CalibrationResultDto, RecordOffsetDto } from "../ipc/bindings";
-import { clearActionHandlers } from "../keymap";
+import { clearActionHandlers } from "../shortcuts";
 import { initRecord, openCalibration, recordState, resetRecordForTest } from "../state/record.svelte";
 import { recordStateDto } from "../test/fixtures";
 import CalibrationDialog from "./CalibrationDialog.svelte";

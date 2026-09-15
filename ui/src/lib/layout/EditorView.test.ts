@@ -3,7 +3,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import type { DocumentDto } from "../ipc/bindings";
-import { clearActionHandlers } from "../keymap";
+import { clearActionHandlers } from "../shortcuts";
 import { resetSelectionForTest, selectionState } from "../state/selection.svelte";
 import { resetSpectralForTest, spectralState } from "../state/spectral.svelte";
 import { docDto, transportStateDto } from "../test/fixtures";

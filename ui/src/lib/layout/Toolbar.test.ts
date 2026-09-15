@@ -1,7 +1,7 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { attachKeymap, clearActionHandlers } from "../keymap";
+import { attachKeymap, clearActionHandlers } from "../shortcuts";
 import { initTransport, resetTransportForTest } from "../state/transport.svelte";
 import { resetWaveformViewForTest, setTimeRulerFormat } from "../state/waveformView.svelte";
 import { transportStateDto } from "../test/fixtures";

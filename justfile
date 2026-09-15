@@ -8,6 +8,7 @@ check:
     cargo test --workspace
     just check-types
     python3 scripts/notices/generate.py --check
+    @if [ -f ui/package.json ]; then node scripts/docs/generate_shortcuts.mjs --check; fi
     @if [ -f ui/package.json ]; then npm --prefix ui run check; fi
     @if [ -f ui/package.json ]; then npm --prefix ui test -- --run; fi
 
@@ -65,8 +66,9 @@ check-types:
 notices:
     python3 scripts/notices/generate.py
 
-# Regenerate docs/user-guide.md's shortcuts table from ui/src/lib/keymap/bindings.ts (T-705). Run
-# after any keymap change and commit the result.
+# Regenerate docs/shortcuts.md from ui/src/lib/shortcuts/registry.ts (T-705, rehomed to its own
+# file and checked by `just check` at T-701). Run after any registry/label change and commit the
+# result.
 shortcuts-table:
     node scripts/docs/generate_shortcuts.mjs
 

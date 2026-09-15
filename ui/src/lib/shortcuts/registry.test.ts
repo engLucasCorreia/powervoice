@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_KEYMAP } from "./bindings";
 import {
   attachKeymap,
   clearActionHandlers,
   dispatchAction,
   isEditableTarget,
+  isModalDialogOpen,
   registerAction,
 } from "./listener";
-import { findDuplicateBindings, isPlatformMac, matchBinding } from "./registry";
+import { findDuplicateBindings, isPlatformMac, matchBinding, SHORTCUTS } from "./registry";
 
 function key(
   code: string,
@@ -55,7 +55,7 @@ describe("default keymap bindings", () => {
   });
 
   it("Silence has no default binding (SPEC-008 §2.11: menu only)", () => {
-    expect(DEFAULT_KEYMAP.some((b) => (b.action as string) === "edit.silence")).toBe(false);
+    expect(SHORTCUTS.some((b) => (b.action as string) === "edit.silence")).toBe(false);
   });
 
   // S3-06, SPEC-014 §2.3: Shift+P captures a noise print (provisional, SPEC-019).
@@ -117,13 +117,61 @@ describe("default keymap bindings", () => {
     expect(matchBinding(key("ArrowLeft", { meta: true, alt: true }), true)).toBe("marker.prev");
   });
 
-  it("every default binding is unique by (code, shift, mod)", () => {
-    expect(findDuplicateBindings(DEFAULT_KEYMAP)).toEqual([]);
+  it("every default binding is unique by (code, shift, mod, alt) within its dispatch group", () => {
+    expect(findDuplicateBindings(SHORTCUTS)).toEqual([]);
+  });
+
+  // T-701: "no two commands share a binding in the same scope" — checked per scope (the literal
+  // ticket requirement) and jointly for "global"+"waveform" (the stricter, actually-required rule:
+  // both dispatch through the one `matchBinding` table below at the same time, so a same-key entry
+  // in each would make the second permanently unreachable — see `registry.ts`'s `dispatchGroup`).
+  it("every scope's own bindings are unique, and global+waveform are unique together", () => {
+    for (const scope of ["global", "waveform", "dialog", "text-input"] as const) {
+      expect(findDuplicateBindings(SHORTCUTS.filter((s) => s.scope === scope))).toEqual([]);
+    }
+    expect(
+      findDuplicateBindings(SHORTCUTS.filter((s) => s.scope === "global" || s.scope === "waveform")),
+    ).toEqual([]);
   });
 
   it("detects a duplicate binding when given a deliberately colliding table", () => {
-    const withDuplicate = [...DEFAULT_KEYMAP, { action: "marker.add" as const, code: "Space" }];
-    expect(findDuplicateBindings(withDuplicate)).toEqual(["Space|shift=false|mod=false|alt=false"]);
+    const withDuplicate = [
+      ...SHORTCUTS,
+      { action: "marker.add" as const, code: "Space", scope: "global" as const, labelKey: "shortcut.marker.add" as const },
+    ];
+    expect(findDuplicateBindings(withDuplicate)).toEqual(["shared|Space|shift=false|mod=false|alt=false"]);
+  });
+
+  it("does NOT flag a binding reused across a shared-dispatch scope and a locally-matched one (dialog/text-input)", () => {
+    const reusedAcrossGroups = [
+      ...SHORTCUTS,
+      {
+        action: "marker.add" as const,
+        code: "KeyQ",
+        scope: "dialog" as const,
+        labelKey: "shortcut.marker.add" as const,
+      },
+      {
+        action: "marker.add" as const,
+        code: "KeyQ",
+        scope: "text-input" as const,
+        labelKey: "shortcut.marker.add" as const,
+      },
+    ];
+    expect(findDuplicateBindings(reusedAcrossGroups)).toEqual([]);
+  });
+
+  // T-701/A-020: keyboard nudge (plain arrow) and extend (Shift+arrow) — waveform scope, no
+  // Audition default found (see `actions.ts`).
+  it("resolves the T-701 nudge/extend bindings (non-mac and mac)", () => {
+    expect(matchBinding(key("ArrowLeft"), false)).toBe("selection.nudge_left");
+    expect(matchBinding(key("ArrowRight"), false)).toBe("selection.nudge_right");
+    expect(matchBinding(key("ArrowLeft", { shift: true }), false)).toBe("selection.extend_left");
+    expect(matchBinding(key("ArrowRight", { shift: true }), false)).toBe("selection.extend_right");
+    expect(matchBinding(key("ArrowLeft"), true)).toBe("selection.nudge_left");
+    expect(matchBinding(key("ArrowRight", { shift: true }), true)).toBe("selection.extend_right");
+    // Distinct from marker navigation (Ctrl/⌘+Alt+arrow) and from nothing at all with Alt held.
+    expect(matchBinding(key("ArrowLeft", { alt: true }), false)).toBeNull();
   });
 });
 
@@ -282,5 +330,46 @@ describe("attachKeymap + dispatch", () => {
     unregister();
     detach();
     input.remove();
+  });
+
+  // T-701 conflict rule: "Shortcuts respect dialogs, which are modal."
+  describe("isModalDialogOpen / modal gating", () => {
+    it("is false with nothing in the DOM, true while an aria-modal='true' element exists", () => {
+      expect(isModalDialogOpen()).toBe(false);
+      const dialog = document.createElement("div");
+      dialog.setAttribute("aria-modal", "true");
+      document.body.appendChild(dialog);
+      expect(isModalDialogOpen()).toBe(true);
+      dialog.remove();
+      expect(isModalDialogOpen()).toBe(false);
+    });
+
+    it("does not flag a non-modal aria-modal='false' element (e.g. the tour card)", () => {
+      const card = document.createElement("div");
+      card.setAttribute("aria-modal", "false");
+      document.body.appendChild(card);
+      expect(isModalDialogOpen()).toBe(false);
+      card.remove();
+    });
+
+    it("does not dispatch Space (or any bound key) while a modal dialog is open", () => {
+      const dialog = document.createElement("div");
+      dialog.setAttribute("aria-modal", "true");
+      document.body.appendChild(dialog);
+
+      const detach = attachKeymap(window, { isMac: false });
+      const handler = vi.fn();
+      const unregister = registerAction("transport.play_pause", handler);
+
+      window.dispatchEvent(new KeyboardEvent("keydown", { code: "Space", bubbles: true }));
+      expect(handler).not.toHaveBeenCalled();
+
+      dialog.remove();
+      window.dispatchEvent(new KeyboardEvent("keydown", { code: "Space", bubbles: true }));
+      expect(handler).toHaveBeenCalledTimes(1);
+
+      unregister();
+      detach();
+    });
   });
 });

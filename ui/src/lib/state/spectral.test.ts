@@ -1,7 +1,7 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Settings } from "../ipc/bindings";
-import { clearActionHandlers, dispatchAction } from "../keymap";
+import { clearActionHandlers, dispatchAction } from "../shortcuts";
 import {
   applyRestoredSpectralView,
   applySpectralDefaults,

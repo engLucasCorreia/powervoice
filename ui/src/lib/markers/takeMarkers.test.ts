@@ -1,7 +1,7 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it } from "vitest";
 import type { MarkerDto } from "../ipc/bindings";
-import { clearActionHandlers } from "../keymap";
+import { clearActionHandlers } from "../shortcuts";
 import { clearNotices } from "../state/notices.svelte";
 import { applyRecordStateForTest, resetRecordForTest } from "../state/record.svelte";
 import { resetSelectionForTest, selectAllOf } from "../state/selection.svelte";

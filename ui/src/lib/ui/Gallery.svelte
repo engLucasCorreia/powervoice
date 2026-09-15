@@ -1,6 +1,6 @@
 <script lang="ts">
   import { t } from "../i18n";
-  import { shortcutLabelForAction } from "../keymap/shortcutLabel";
+  import { shortcutLabelForAction } from "../shortcuts/shortcutLabel";
   import Badge from "./Badge.svelte";
   import Button from "./Button.svelte";
   import EmptyState from "./EmptyState.svelte";

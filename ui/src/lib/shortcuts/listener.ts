@@ -77,9 +77,25 @@ export interface AttachKeymapOptions {
 }
 
 /**
+ * T-701 (conflict rule: "Shortcuts respect dialogs, which are modal"): `true` while any modal
+ * dialog is open. Every dialog in the app renders through the shared `Dialog.svelte` shell (or,
+ * for the couple that predate it, the same `aria-modal="true"` convention by hand — e.g.
+ * `RecoveryDialog.svelte`) — the same convention `tour/targets.ts`'s `blockingModal` already
+ * relies on for a different purpose (the tour stepping aside). Checking it here, centrally, means
+ * a dialog that forgets to `stopPropagation()` its own `onkeydown` (an easy miss — most do it, one
+ * didn't: `NormalizeProgressDialog.svelte` had no `onkeydown` at all, so e.g. Space would have
+ * reached the transport's play/pause while it was showing) still can't leak a global/waveform
+ * shortcut through, without relying on every dialog author remembering to guard it themselves.
+ */
+export function isModalDialogOpen(root: ParentNode = document): boolean {
+  return root.querySelector('[aria-modal="true"]') !== null;
+}
+
+/**
  * Attaches the keydown listener to `target` (defaults to `window`). Ignores events while an
- * editable element has focus, resolves the rest against the default keymap, and dispatches the
- * matched action. Returns a cleanup function that removes the listener.
+ * editable element has focus or a modal dialog is open, resolves the rest against the shortcut
+ * registry, and dispatches the matched action. Returns a cleanup function that removes the
+ * listener.
  */
 export function attachKeymap(
   target: Window = window,
@@ -87,7 +103,7 @@ export function attachKeymap(
 ): () => void {
   const isMac = options.isMac ?? isPlatformMac();
   const onKeyDown = (event: KeyboardEvent) => {
-    if (isEditableTarget(event.target)) {
+    if (isEditableTarget(event.target) || isModalDialogOpen()) {
       return;
     }
     const action = matchBinding(event, isMac);

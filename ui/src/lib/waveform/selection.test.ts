@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import { pixelAtSample, sampleAtPixel } from "./coords";
 import {
   extendSelection,
+  extendSelectionEdge,
   hitTestHandle,
   isEmptySelection,
   normalizeSelection,
+  nudgeSelectionRange,
   selectAll,
   SELECTION_HANDLE_HIT_PX,
 } from "./selection";
@@ -81,6 +83,90 @@ describe("hitTestHandle (SPEC-006 §2.9/§3, AC-8)", () => {
 
   it("start wins on an exact tie (identical start/end pixels)", () => {
     expect(hitTestHandle(100, 100, 100)).toBe("start");
+  });
+});
+
+// T-701/A-020: keyboard nudge — moves the whole selection, length unchanged, clamped to the
+// document.
+describe("nudgeSelectionRange (Left/Right Arrow, T-701/A-020)", () => {
+  it("moves both edges by the same delta, preserving length", () => {
+    expect(nudgeSelectionRange({ startSample: 100, endSample: 200 }, 50, 1_000)).toEqual({
+      startSample: 150,
+      endSample: 250,
+    });
+    expect(nudgeSelectionRange({ startSample: 100, endSample: 200 }, -50, 1_000)).toEqual({
+      startSample: 50,
+      endSample: 150,
+    });
+  });
+
+  it("clamps at the start of the document without shrinking the selection", () => {
+    expect(nudgeSelectionRange({ startSample: 10, endSample: 60 }, -30, 1_000)).toEqual({
+      startSample: 0,
+      endSample: 50,
+    });
+  });
+
+  it("clamps at the end of the document without shrinking the selection", () => {
+    expect(nudgeSelectionRange({ startSample: 950, endSample: 990 }, 30, 1_000)).toEqual({
+      startSample: 960,
+      endSample: 1_000,
+    });
+  });
+
+  it("a delta of 0 is a no-op", () => {
+    expect(nudgeSelectionRange({ startSample: 100, endSample: 200 }, 0, 1_000)).toEqual({
+      startSample: 100,
+      endSample: 200,
+    });
+  });
+});
+
+// T-701/A-020: keyboard extend — grows the selection from the edge in `direction`; never shrinks.
+describe("extendSelectionEdge (Shift+Left/Right Arrow, T-701/A-020)", () => {
+  it("with no selection, starts a new one from the cursor extending in `direction`", () => {
+    expect(extendSelectionEdge(null, 500, 1, 50, 10_000)).toEqual({
+      startSample: 500,
+      endSample: 550,
+    });
+    expect(extendSelectionEdge(null, 500, -1, 50, 10_000)).toEqual({
+      startSample: 450,
+      endSample: 500,
+    });
+  });
+
+  it("an empty (zero-length) selection is treated the same as no selection", () => {
+    expect(extendSelectionEdge({ startSample: 500, endSample: 500 }, 500, 1, 50, 10_000)).toEqual({
+      startSample: 500,
+      endSample: 550,
+    });
+  });
+
+  it("direction 1 (Shift+Right) grows the end edge rightward, start unchanged", () => {
+    const current = { startSample: 100, endSample: 200 };
+    expect(extendSelectionEdge(current, 999, 1, 30, 10_000)).toEqual({
+      startSample: 100,
+      endSample: 230,
+    });
+  });
+
+  it("direction -1 (Shift+Left) grows the start edge leftward, end unchanged", () => {
+    const current = { startSample: 100, endSample: 200 };
+    expect(extendSelectionEdge(current, 999, -1, 30, 10_000)).toEqual({
+      startSample: 70,
+      endSample: 200,
+    });
+  });
+
+  it("clamps the moved edge to the document bounds", () => {
+    expect(extendSelectionEdge({ startSample: 0, endSample: 20 }, 999, -1, 100, 10_000)).toEqual({
+      startSample: 0,
+      endSample: 20,
+    });
+    expect(extendSelectionEdge({ startSample: 9_900, endSample: 10_000 }, 1, 1, 500, 10_000)).toEqual({
+      startSample: 9_900,
+      endSample: 10_000,
+    });
   });
 });
 

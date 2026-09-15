@@ -4,13 +4,13 @@
   import { t } from "../i18n";
   import { peaksGet } from "../ipc/commands";
   import { recordPeaksGet } from "../ipc/record_commands";
-  import { registerAction } from "../keymap";
+  import { registerAction } from "../shortcuts";
   import type { MarkerDto } from "../ipc/bindings";
   import { isTakeMarker, markersState } from "../markers/markers.svelte";
   import { openNewRecordingPrompt, recordState } from "../state/record.svelte";
   import { settingsState } from "../state/settings.svelte";
-  import { dispatchAction } from "../keymap";
-  import { shortcutLabelForAction } from "../keymap/shortcutLabel";
+  import { dispatchAction } from "../shortcuts";
+  import { shortcutLabelForAction } from "../shortcuts/shortcutLabel";
   import type { DefaultFormatDto } from "../ipc/bindings";
   import { Button, EmptyState } from "../ui";
   import {
@@ -21,6 +21,7 @@
     endDrag,
     endHandleDrag,
     handleDragTo,
+    hasSelection,
     isSelectionLocked,
     selectAllOf,
     selectionState,
@@ -30,7 +31,7 @@
   import { seek, transportState } from "../state/transport.svelte";
   import { audioKeyFor, consumePendingRestore } from "../state/waveformView.svelte";
   import { amplitudeTicksDbfs, centerlineY } from "./amplitudeAxis";
-  import { hitTestHandle, normalizeSelection } from "./selection";
+  import { extendSelectionEdge, hitTestHandle, normalizeSelection, nudgeSelectionRange } from "./selection";
   import { snapSampleToZeroCrossing } from "./zeroCrossing";
   import { fitGutterLabels } from "../ui/axisLabels";
   import {
@@ -857,6 +858,65 @@
     return snapSampleToZeroCrossing(peaksGet, doc.current.audio_rev, lenSamples, sample);
   }
 
+  /** T-701/A-020: one keyboard step — one *view* pixel worth of samples, so a nudge/extend moves
+   * exactly as far as it visibly looks like it should at the current zoom (never less than one
+   * sample, so it's never a no-op even fully zoomed in). */
+  function keyboardStepSamples(): number {
+    return Math.max(1, Math.round(samplesPerPixel));
+  }
+
+  /** Left/Right Arrow (T-701/A-020): with a selection, nudges the whole selection (length
+   * unchanged); with none, nudges the cursor/playhead instead (the same `seek` a click uses). No
+   * zero-crossing snap — only the extend commands below snap (T-206: "applies to
+   * keyboard-extended selection edges"). */
+  function nudgeKeyboard(direction: 1 | -1): void {
+    if (!isOpen || isSelectionLocked()) {
+      return;
+    }
+    const delta = keyboardStepSamples() * direction;
+    const current = selection.current;
+    if (current && hasSelection()) {
+      const moved = nudgeSelectionRange(current, delta, lenSamples);
+      setSelectionFromResult([moved.startSample, moved.endSample]);
+      return;
+    }
+    const next = Math.max(0, Math.min(transport.playheadSamples + delta, lenSamples));
+    void seek(next);
+  }
+
+  /** Shift+Left/Right Arrow (T-701/A-020): grows the selection from the edge in `direction`
+   * (`waveform/selection.ts::extendSelectionEdge`), then applies the same zero-crossing snap as a
+   * handle-drag-end/Shift+click (`maybeSnapToZeroCrossing`) to the edge that moved — never to the
+   * edge that stayed put. */
+  function extendKeyboard(direction: 1 | -1): void {
+    if (!isOpen || isSelectionLocked()) {
+      return;
+    }
+    const step = keyboardStepSamples();
+    const target = extendSelectionEdge(selection.current, transport.playheadSamples, direction, step, lenSamples);
+    if (!target) {
+      return;
+    }
+    const movedEdge = direction === 1 ? target.endSample : target.startSample;
+    const fixedEdge = direction === 1 ? target.startSample : target.endSample;
+    const applyEdge = (finalEdge: number): void => {
+      const range = normalizeSelection(fixedEdge, finalEdge);
+      setSelectionFromResult(range ? [range.startSample, range.endSample] : null);
+    };
+    const snapped = maybeSnapToZeroCrossing(movedEdge);
+    if (typeof snapped === "number") {
+      applyEdge(snapped);
+      return;
+    }
+    const seq = ++selectionSnapSeq;
+    void snapped.then((sample) => {
+      if (seq !== selectionSnapSeq) {
+        return; // superseded by a newer gesture (SPEC-006 §2.3-style staleness guard)
+      }
+      applyEdge(sample);
+    });
+  }
+
   /** Mousedown (SPEC-006 §2.9): a hit on an existing selection's handle starts a handle drag;
    * Shift+click extends the far selection edge on pointerup; a plain mousedown starts a
    * live-updating click-drag (`state/selection.svelte.ts`), which a plain click (no movement)
@@ -1039,6 +1099,10 @@
         }
       }),
       registerAction("waveform.deselect", () => clearSelection()),
+      registerAction("selection.nudge_left", () => nudgeKeyboard(-1)),
+      registerAction("selection.nudge_right", () => nudgeKeyboard(1)),
+      registerAction("selection.extend_left", () => extendKeyboard(-1)),
+      registerAction("selection.extend_right", () => extendKeyboard(1)),
     ];
 
     const requestFrame: (cb: () => void) => number =

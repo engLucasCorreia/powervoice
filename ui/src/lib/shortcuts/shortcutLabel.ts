@@ -1,12 +1,11 @@
 import type { ActionId } from "./actions";
-import { DEFAULT_KEYMAP, type KeyBinding } from "./bindings";
-import { isPlatformMac } from "./registry";
+import { isPlatformMac, SHORTCUTS, type KeyBinding, type ShortcutDef } from "./registry";
 
 /**
  * H-19: the menu bar's "shortcut shown next to each item" requirement — a small pure formatter on
- * top of the keymap registry (the single source of truth for bindings, T-104/CLAUDE.md: "Types
+ * top of the shortcut registry (the single source of truth for bindings, T-104/CLAUDE.md: "Types
  * shared with Rust are generated, never hand-copied" doesn't apply here, but the same spirit does
- * for the keymap — never hand-type a shortcut string in a menu component). Platform-aware like
+ * for shortcuts — never hand-type a shortcut string in a menu component). Platform-aware like
  * `matchBinding` itself (⌘ on macOS, Ctrl elsewhere).
  */
 
@@ -26,7 +25,7 @@ const CODE_LABELS: Record<string, string> = {
 
 /** `KeyboardEvent.code` → a short display label: the mapped table above, else the trailing letter
  * of `KeyX`/digit of `DigitN`, else the raw code as a last resort (never seen today — every
- * binding in {@link DEFAULT_KEYMAP} is covered by one of the first two cases). */
+ * binding in {@link SHORTCUTS} is covered by one of the first two cases). */
 function keyLabel(code: string): string {
   const mapped = CODE_LABELS[code];
   if (mapped) {
@@ -75,16 +74,30 @@ export function formatBinding(binding: KeyBinding, isMac: boolean): string {
 
 /**
  * The display label for `action`'s default binding, or `undefined` if it has none (e.g. Silence,
- * the normalize favorites — "menu only" per `bindings.ts`). Every action has at most one default
+ * the normalize favorites — "menu only" per `registry.ts`). Every action has at most one default
  * binding today (`findDuplicateBindings` would catch two bindings sharing a (code, shift, mod,
  * alt) identity, but nothing stops two different identities from targeting the same action — this
- * picks the first, which is exactly one for every action currently in {@link DEFAULT_KEYMAP}).
+ * picks the first, which is exactly one for every action currently in {@link SHORTCUTS}).
  */
 export function shortcutLabelForAction(
   action: ActionId,
   isMac: boolean = isPlatformMac(),
-  bindings: readonly KeyBinding[] = DEFAULT_KEYMAP,
+  bindings: readonly KeyBinding[] = SHORTCUTS,
 ): string | undefined {
   const binding = bindings.find((b) => b.action === action);
   return binding ? formatBinding(binding, isMac) : undefined;
+}
+
+/** T-701: one row for the Help ▸ Keyboard Shortcuts dialog (and reused by its test) — every
+ * registry entry with its platform-formatted display label attached, in registry order. */
+export interface ShortcutRow {
+  readonly entry: ShortcutDef;
+  readonly display: string;
+}
+
+export function shortcutRows(
+  isMac: boolean = isPlatformMac(),
+  entries: readonly ShortcutDef[] = SHORTCUTS,
+): ShortcutRow[] {
+  return entries.map((entry) => ({ entry, display: formatBinding(entry, isMac) }));
 }

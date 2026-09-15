@@ -10,7 +10,7 @@ import {
   historyRedo,
   historyUndo,
 } from "../ipc/commands";
-import { registerAction } from "../keymap";
+import { registerAction } from "../shortcuts";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { hasSelection, selectionState, setSelectionFromResult } from "./selection.svelte";
 import { pushNotice } from "./notices.svelte";

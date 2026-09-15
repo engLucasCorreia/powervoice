@@ -15,10 +15,11 @@
   import EditMenu from "./lib/edit/EditMenu.svelte";
   import ExportDialog from "./lib/export/ExportDialog.svelte";
   import AboutDialog from "./lib/help/AboutDialog.svelte";
+  import ShortcutsDialog from "./lib/help/ShortcutsDialog.svelte";
   import HelpMenu from "./lib/help/HelpMenu.svelte";
   import { t } from "./lib/i18n";
   import { getAppInfo } from "./lib/ipc/commands";
-  import { attachKeymap } from "./lib/keymap";
+  import { attachKeymap } from "./lib/shortcuts";
   import EditorView from "./lib/layout/EditorView.svelte";
   import {
     applyLayoutPrefs,
@@ -486,6 +487,7 @@
 <BakeDialogs />
 <ManagePresetsDialog />
 <AboutDialog {version} />
+<ShortcutsDialog />
 <CalibrationDialog />
 <WelcomeOffer />
 <TourOverlay />

@@ -4,7 +4,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App.svelte";
 import type { LayoutPrefsDto, Settings } from "./lib/ipc/bindings";
-import { clearActionHandlers } from "./lib/keymap";
+import { clearActionHandlers } from "./lib/shortcuts";
 import { resetLayoutForTest } from "./lib/layout/layoutSettings.svelte";
 import { resetRackForTest } from "./lib/rack/rack.svelte";
 import { resetSettingsStateForTest } from "./lib/state/settings.svelte";

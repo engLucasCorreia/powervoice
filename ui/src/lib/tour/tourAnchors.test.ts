@@ -2,7 +2,7 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
 import App from "../../App.svelte";
-import { clearActionHandlers } from "../keymap";
+import { clearActionHandlers } from "../shortcuts";
 import { resetLayoutForTest } from "../layout/layoutSettings.svelte";
 import { closePluginManager, resetPluginsForTest } from "../plugins/plugins.svelte";
 import { resetRackForTest } from "../rack/rack.svelte";

@@ -3,7 +3,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyAnalyzerPrefs, resetAnalyzerForTest } from "../analyzer/analyzer.svelte";
 import type { Settings } from "../ipc/bindings";
-import { clearActionHandlers, registerAction } from "../keymap";
+import { clearActionHandlers, registerAction } from "../shortcuts";
 import { resetMenuBarForTest } from "../menu/menubar.svelte";
 import { rendererPref, resetRendererPrefForTest } from "../state/rendererPref.svelte";
 import { loadSettings, resetSettingsStateForTest, settingsState } from "../state/settings.svelte";

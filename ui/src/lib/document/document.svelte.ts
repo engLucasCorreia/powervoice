@@ -20,7 +20,7 @@ import {
   documentSave,
   documentSaveAs,
 } from "../ipc/commands";
-import { registerAction } from "../keymap";
+import { registerAction } from "../shortcuts";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { t } from "../i18n";
 import { pushNotice } from "../state/notices.svelte";

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { documentState, hasDocument } from "../document/document.svelte";
   import { t } from "../i18n";
-  import { shortcutLabelForAction } from "../keymap/shortcutLabel";
+  import { shortcutLabelForAction } from "../shortcuts/shortcutLabel";
   import { EmptyState, IconButton, PanelHeader } from "../ui";
   import {
     addMarker,

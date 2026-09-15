@@ -3,12 +3,16 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { VXTM_FLAGS, type TelemetryFrame } from "../ipc/telemetry";
-import { clearActionHandlers } from "../keymap";
+import { clearActionHandlers } from "../shortcuts";
 import { initDocument, openDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import { clearNotices } from "../state/notices.svelte";
 import { initRecord, onInputTelemetry, resetRecordForTest } from "../state/record.svelte";
 import { resetSelectionForTest, selectionState } from "../state/selection.svelte";
-import { docDto, recordStateDto } from "../test/fixtures";
+import { loadSettings, resetSettingsStateForTest } from "../state/settings.svelte";
+import { resetTransportForTest, transportState } from "../state/transport.svelte";
+import { docDto, recordStateDto, settingsFixture } from "../test/fixtures";
+import { RAW_SPP } from "./coords";
+import { VXPK_FLAGS } from "./vxpk";
 import WaveformView from "./WaveformView.svelte";
 import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 
@@ -20,6 +24,8 @@ afterEach(() => {
   resetWaveformViewForTest();
   resetRecordForTest();
   resetSelectionForTest();
+  resetSettingsStateForTest();
+  resetTransportForTest();
 });
 
 function headerOnlyVxpk(): ArrayBuffer {
@@ -496,7 +502,7 @@ describe("WaveformView selection (S2-01)", () => {
 
     // Ctrl+A -> "waveform.select_all" is exercised in `keymap.test.ts`; here we only check
     // `WaveformView`'s registered handler, so no `attachKeymap()` listener is needed.
-    const { dispatchAction } = await import("../keymap");
+    const { dispatchAction } = await import("../shortcuts");
     dispatchAction("waveform.select_all");
     flushSync();
 
@@ -522,10 +528,215 @@ describe("WaveformView selection (S2-01)", () => {
     flushSync();
     expect(selectionState().current).not.toBeNull();
 
-    const { dispatchAction } = await import("../keymap");
+    const { dispatchAction } = await import("../shortcuts");
     dispatchAction("waveform.deselect");
     flushSync();
     expect(selectionState().current).toBeNull();
+
+    unmount(app);
+    target.remove();
+  });
+});
+
+// T-701/A-020: keyboard nudge (Left/Right Arrow) and extend (Shift+Left/Right Arrow).
+describe("WaveformView keyboard nudge/extend (T-701/A-020)", () => {
+  const widthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+
+  function stubWidth(px: number): void {
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get: () => px,
+    });
+  }
+
+  afterEach(() => {
+    if (widthDescriptor) {
+      Object.defineProperty(HTMLElement.prototype, "clientWidth", widthDescriptor);
+    }
+  });
+
+  /** A raw `VXPK` frame (mirrors `zeroCrossing.test.ts`'s own helper — kept local since that
+   * file's helper isn't exported). */
+  function buildRawVxpk(opts: { audioRev: number; startSample: number; samples: number[] }): ArrayBuffer {
+    const buf = new ArrayBuffer(48 + opts.samples.length * 4);
+    const dv = new DataView(buf);
+    dv.setUint8(0, 0x56);
+    dv.setUint8(1, 0x58);
+    dv.setUint8(2, 0x50);
+    dv.setUint8(3, 0x4b);
+    dv.setUint16(4, 1, true);
+    dv.setUint16(6, 48, true);
+    dv.setUint32(8, 1, true);
+    dv.setUint32(12, VXPK_FLAGS.RAW, true);
+    dv.setUint32(16, opts.audioRev >>> 0, true);
+    dv.setUint32(24, opts.startSample >>> 0, true);
+    dv.setUint32(32, 1, true);
+    dv.setUint32(36, opts.samples.length, true);
+    dv.setUint32(40, 48_000, true);
+    opts.samples.forEach((v, i) => dv.setFloat32(48 + i * 4, v, true));
+    return buf;
+  }
+
+  /** `snapToZeroCrossing` off by default (no settings loaded, matching the S2-01 fixtures above);
+   * `rawSamples`, when given, answers the RAW (`spp === RAW_SPP`) request with a real crossing —
+   * everything else (the view's own bucketed peaks) gets the generic header-only response. */
+  async function openFixture(lenSamples: number, rawSamples?: number[]): Promise<void> {
+    const fixture = docDto({ len_samples: lenSamples });
+    mockIPC((cmd, args) => {
+      if (cmd === "document_open") {
+        return fixture;
+      }
+      if (cmd === "settings_get") {
+        return settingsFixture({ snap_to_zero_crossing: rawSamples !== undefined });
+      }
+      if (cmd === "transport_seek") {
+        const positionSamples = (args as { positionSamples: number }).positionSamples;
+        return { ...transportState().state, playhead_samples: positionSamples, playing: false };
+      }
+      if (cmd === "peaks_get") {
+        const request = (args as { request: { spp: number } }).request;
+        if (rawSamples && request.spp === RAW_SPP) {
+          return buildRawVxpk({ audioRev: fixture.audio_rev, startSample: 0, samples: rawSamples });
+        }
+        return headerOnlyVxpk();
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    await openDocument("/home/user/take.wav");
+    if (rawSamples !== undefined) {
+      await loadSettings();
+    }
+  }
+
+  async function mountView(): Promise<{ app: object; target: HTMLElement }> {
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(WaveformView, { target });
+    flushSync();
+    return { app, target };
+  }
+
+  it("Left/Right Arrow nudges the whole selection, length unchanged, no snap", async () => {
+    stubWidth(800);
+    await openFixture(8_000); // samplesPerPixel = 10 (zoom-full fit)
+    const { app, target } = await mountView();
+    const container = target.querySelector('[data-testid="waveform-canvas"]')!.parentElement as HTMLElement;
+    container.dispatchEvent(new PointerEvent("pointerdown", { clientX: 10, bubbles: true }));
+    container.dispatchEvent(new PointerEvent("pointermove", { clientX: 50, bubbles: true }));
+    container.dispatchEvent(new PointerEvent("pointerup", { clientX: 50, bubbles: true }));
+    flushSync();
+    expect(selectionState().current).toEqual({ startSample: 100, endSample: 500 });
+
+    const { dispatchAction } = await import("../shortcuts");
+    dispatchAction("selection.nudge_right");
+    flushSync();
+    expect(selectionState().current).toEqual({ startSample: 110, endSample: 510 });
+
+    dispatchAction("selection.nudge_left");
+    dispatchAction("selection.nudge_left");
+    flushSync();
+    expect(selectionState().current).toEqual({ startSample: 90, endSample: 490 });
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Left/Right Arrow nudges the cursor (seeks) when there is no selection", async () => {
+    stubWidth(800);
+    await openFixture(8_000);
+    const { app, target } = await mountView();
+    expect(selectionState().current).toBeNull();
+    // `document.svelte.ts` fires its own (fire-and-forget) restore-cursor seek on open — let that
+    // settle before capturing the baseline, so this test's own nudges aren't racing it.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    const before = transportState().playheadSamples;
+
+    const { dispatchAction } = await import("../shortcuts");
+    dispatchAction("selection.nudge_right");
+    await vi.waitFor(() => {
+      flushSync();
+      expect(transportState().playheadSamples).toBe(before + 10);
+    });
+
+    dispatchAction("selection.nudge_left");
+    await vi.waitFor(() => {
+      flushSync();
+      expect(transportState().playheadSamples).toBe(before);
+    });
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Shift+Right Arrow extends a fresh selection from the cursor (no selection yet)", async () => {
+    stubWidth(800);
+    await openFixture(8_000);
+    const { app, target } = await mountView();
+    expect(selectionState().current).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    const cursor = transportState().playheadSamples;
+
+    const { dispatchAction } = await import("../shortcuts");
+    dispatchAction("selection.extend_right");
+    flushSync();
+    // cursor .. cursor + one step (10 samples).
+    expect(selectionState().current).toEqual({ startSample: cursor, endSample: cursor + 10 });
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Shift+Right Arrow grows the end edge, Shift+Left Arrow grows the start edge (no snap)", async () => {
+    stubWidth(800);
+    await openFixture(8_000);
+    const { app, target } = await mountView();
+    const container = target.querySelector('[data-testid="waveform-canvas"]')!.parentElement as HTMLElement;
+    container.dispatchEvent(new PointerEvent("pointerdown", { clientX: 10, bubbles: true }));
+    container.dispatchEvent(new PointerEvent("pointermove", { clientX: 50, bubbles: true }));
+    container.dispatchEvent(new PointerEvent("pointerup", { clientX: 50, bubbles: true }));
+    flushSync();
+    expect(selectionState().current).toEqual({ startSample: 100, endSample: 500 });
+
+    const { dispatchAction } = await import("../shortcuts");
+    dispatchAction("selection.extend_right");
+    flushSync();
+    expect(selectionState().current).toEqual({ startSample: 100, endSample: 510 });
+
+    dispatchAction("selection.extend_left");
+    flushSync();
+    expect(selectionState().current).toEqual({ startSample: 90, endSample: 510 });
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Shift+Right Arrow snaps the extended edge to the nearest zero crossing when the setting is on (T-206)", async () => {
+    stubWidth(800);
+    // Filler at 0.5 everywhere (never itself a crossing), with a real sign change at
+    // 507 -> 508 — closer to the unsnapped edge (510) than to the selection's other edge (100), so
+    // the result is unambiguous.
+    const samples = new Array(1_023).fill(0.5);
+    samples[507] = 0.2;
+    samples[508] = -0.2;
+    await openFixture(8_000, samples);
+    const { app, target } = await mountView();
+    const container = target.querySelector('[data-testid="waveform-canvas"]')!.parentElement as HTMLElement;
+    container.dispatchEvent(new PointerEvent("pointerdown", { clientX: 10, bubbles: true }));
+    container.dispatchEvent(new PointerEvent("pointermove", { clientX: 50, bubbles: true }));
+    container.dispatchEvent(new PointerEvent("pointerup", { clientX: 50, bubbles: true }));
+    flushSync();
+    expect(selectionState().current).toEqual({ startSample: 100, endSample: 500 });
+
+    const { dispatchAction } = await import("../shortcuts");
+    dispatchAction("selection.extend_right"); // unsnapped target: 500 + 10 = 510
+    // Snapped to the 507/508 crossing (508 is the nearer side found first), not the raw 510 — and
+    // the *other* (fixed) edge, 100, is untouched.
+    await vi.waitFor(() => {
+      flushSync();
+      expect(selectionState().current).toEqual({ startSample: 100, endSample: 508 });
+    });
 
     unmount(app);
     target.remove();

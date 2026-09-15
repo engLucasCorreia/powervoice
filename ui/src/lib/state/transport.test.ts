@@ -1,7 +1,7 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it } from "vitest";
 import type { TransportStateDto } from "../ipc/bindings";
-import { clearActionHandlers } from "../keymap";
+import { clearActionHandlers } from "../shortcuts";
 import { transportStateDto } from "../test/fixtures";
 import {
   extrapolatedPositionAt,

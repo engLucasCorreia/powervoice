@@ -7,7 +7,7 @@ import {
   markerSetRange,
   markersGet,
 } from "../ipc/commands";
-import { registerAction } from "../keymap";
+import { registerAction } from "../shortcuts";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { pushNotice } from "../state/notices.svelte";
 import { recordState } from "../state/record.svelte";

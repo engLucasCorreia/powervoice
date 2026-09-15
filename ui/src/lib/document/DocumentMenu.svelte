@@ -2,9 +2,9 @@
   import type { DefaultFormatDto } from "../ipc/bindings";
   import { openExportDialog } from "../export/export.svelte";
   import { t } from "../i18n";
-  import { dispatchAction } from "../keymap";
-  import { isPlatformMac } from "../keymap/registry";
-  import { shortcutLabelForAction } from "../keymap/shortcutLabel";
+  import { dispatchAction } from "../shortcuts";
+  import { isPlatformMac } from "../shortcuts/registry";
+  import { shortcutLabelForAction } from "../shortcuts/shortcutLabel";
   import MenuBarMenu from "../menu/MenuBarMenu.svelte";
   import { closeAllMenus, MENU_MNEMONICS } from "../menu/menubar.svelte";
   import { openPreferences } from "../preferences/preferences.svelte";

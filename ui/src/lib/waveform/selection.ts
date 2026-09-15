@@ -54,6 +54,54 @@ export function isEmptySelection(selection: SelectionRange | null): boolean {
   return selection === null || selection.startSample === selection.endSample;
 }
 
+/**
+ * T-701/A-020: Left/Right Arrow — moves the whole selection by `deltaSamples` (negative = left),
+ * keeping its length exactly unchanged, clamped to `[0, lenSamples)` (the clamp shortens the
+ * *movement*, not the selection, by capping `deltaSamples` at whichever edge would otherwise run
+ * past the document — SPEC-006 §4.1's "the document" bound). Only meaningful for a non-empty
+ * `current`; callers with no selection nudge the cursor/playhead instead (SPEC-003's `seek`).
+ */
+export function nudgeSelectionRange(
+  current: SelectionRange,
+  deltaSamples: number,
+  lenSamples: number,
+): SelectionRange {
+  let delta = deltaSamples;
+  if (delta < 0) {
+    delta = Math.max(delta, -current.startSample);
+  } else if (delta > 0) {
+    delta = Math.min(delta, lenSamples - current.endSample);
+  }
+  return { startSample: current.startSample + delta, endSample: current.endSample + delta };
+}
+
+/**
+ * T-701/A-020: Shift+Left/Right Arrow — extends the selection by `stepSamples` from the edge in
+ * `direction` (`1` = right/end edge, `-1` = left/start edge), clamped to `[0, lenSamples]`. This
+ * only ever grows the selection (the ticket's own example, "Shift+arrow extends" — no Audition
+ * default was found to confirm or contradict this, see `shortcuts/actions.ts`), never shrinks it:
+ * Shift+Right always pushes the end edge further right, Shift+Left always pushes the start edge
+ * further left. With no current selection (or an empty one), starts a new one between
+ * `cursorSample` (the anchor — unaffected by a later zero-crossing snap of the *moved* edge, same
+ * as `extendSelection`'s no-current-selection branch above) and one step in `direction`.
+ */
+export function extendSelectionEdge(
+  current: SelectionRange | null,
+  cursorSample: number,
+  direction: 1 | -1,
+  stepSamples: number,
+  lenSamples: number,
+): SelectionRange | null {
+  if (!current || isEmptySelection(current)) {
+    const target = Math.max(0, Math.min(cursorSample + direction * stepSamples, lenSamples));
+    return normalizeSelection(cursorSample, target);
+  }
+  if (direction === 1) {
+    return { startSample: current.startSample, endSample: Math.min(lenSamples, current.endSample + stepSamples) };
+  }
+  return { startSample: Math.max(0, current.startSample - stepSamples), endSample: current.endSample };
+}
+
 /** SPEC-006 §2.9/§3 `selection_handle_hit_px`: a selection boundary's grab-handle hit width. */
 export const SELECTION_HANDLE_HIT_PX = 6;
 

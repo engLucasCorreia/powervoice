@@ -2,7 +2,7 @@ import { emit } from "@tauri-apps/api/event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it } from "vitest";
 import type { MarkerDto } from "../ipc/bindings";
-import { clearActionHandlers, dispatchAction } from "../keymap";
+import { clearActionHandlers, dispatchAction } from "../shortcuts";
 import { clearNotices } from "../state/notices.svelte";
 import { resetSelectionForTest, selectAllOf } from "../state/selection.svelte";
 import { resetTransportForTest } from "../state/transport.svelte";

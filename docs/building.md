@@ -180,13 +180,12 @@ verified by an actual Windows build (see above).
 ## Notices and the shortcuts table
 
 Two generated files are committed (not built fresh every time, so `git diff` shows exactly what
-changed when a dependency or the keymap changes):
+changed when a dependency or the shortcut registry changes):
 
 - `THIRD_PARTY_NOTICES` (+ its copy at `ui/src/lib/help/thirdPartyNotices.generated.txt`, shown in
   Help → About) — regenerate with `just notices` after any dependency change.
-- The shortcuts table in `docs/user-guide.md` — regenerate with `just shortcuts-table` after any
-  change to `ui/src/lib/keymap/bindings.ts`.
+- `docs/shortcuts.md` (T-701) — regenerate with `just shortcuts-table` after any change to
+  `ui/src/lib/shortcuts/registry.ts` or a `shortcut.*` label in `ui/src/lib/i18n/en.json`.
 
-`just check` fails if `THIRD_PARTY_NOTICES` is stale; it does not check the shortcuts table (kept
-out of the standard checked-on-every-run set since it needs a docs file, not a dependency graph, to
-go stale — regenerate it by hand when you touch the keymap).
+`just check` fails if either is stale (`python3 scripts/notices/generate.py --check` and
+`node scripts/docs/generate_shortcuts.mjs --check`, T-701).

@@ -3,7 +3,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
 import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import type { MarkerDto } from "../ipc/bindings";
-import { clearActionHandlers } from "../keymap";
+import { clearActionHandlers } from "../shortcuts";
 import { initMarkers, resetMarkersForTest } from "../markers/markers.svelte";
 import { resetWaveformViewForTest, setTimeRulerFormat } from "../state/waveformView.svelte";
 import { docDto } from "../test/fixtures";

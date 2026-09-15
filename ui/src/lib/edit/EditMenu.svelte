@@ -1,9 +1,9 @@
 <script lang="ts">
   import { hasDocument, documentState } from "../document/document.svelte";
   import { t, tDynamic } from "../i18n";
-  import { dispatchAction } from "../keymap";
-  import { isPlatformMac } from "../keymap/registry";
-  import { shortcutLabelForAction } from "../keymap/shortcutLabel";
+  import { dispatchAction } from "../shortcuts";
+  import { isPlatformMac } from "../shortcuts/registry";
+  import { shortcutLabelForAction } from "../shortcuts/shortcutLabel";
   import MenuBarMenu from "../menu/MenuBarMenu.svelte";
   import { MENU_MNEMONICS } from "../menu/menubar.svelte";
   import { markersState } from "../markers/markers.svelte";

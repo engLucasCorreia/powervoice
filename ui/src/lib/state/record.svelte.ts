@@ -27,7 +27,7 @@ import {
   recordStop,
 } from "../ipc/record_commands";
 import { VXTM_FLAGS, type TelemetryFrame } from "../ipc/telemetry";
-import { registerAction } from "../keymap";
+import { registerAction } from "../shortcuts";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { PeakBallistics } from "../record/ballistics";
 import { DISK_WARN_MINUTES } from "../record/format";

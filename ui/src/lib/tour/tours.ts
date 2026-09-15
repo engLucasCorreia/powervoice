@@ -7,11 +7,11 @@
  * older version is offered it again (`progress.ts`).
  */
 import type { MessageKey, MessageParams } from "../i18n";
-import { shortcutLabelForAction } from "../keymap/shortcutLabel";
+import { shortcutLabelForAction } from "../shortcuts/shortcutLabel";
 import { setDockTab } from "../layout/layoutSettings.svelte";
 import { openPluginManager, pluginsState, setManagerTab } from "../plugins/plugins.svelte";
 import { recordState } from "../state/record.svelte";
-import type { ActionId } from "../keymap/actions";
+import type { ActionId } from "../shortcuts/actions";
 import type { IconName } from "../ui/icons";
 import type { TourPlacement } from "./tourPlacement";
 

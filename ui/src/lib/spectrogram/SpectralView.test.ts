@@ -4,7 +4,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
 import type { SpectroRequestDto } from "../ipc/bindings";
 import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
-import { clearActionHandlers } from "../keymap";
+import { clearActionHandlers } from "../shortcuts";
 import { initRecord, resetRecordForTest } from "../state/record.svelte";
 import { resetSpectralForTest, spectralState } from "../state/spectral.svelte";
 import { docDto, recordStateDto } from "../test/fixtures";

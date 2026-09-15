@@ -10,7 +10,7 @@ import {
   recordStateDto,
   transportStateDto,
 } from "../test/fixtures";
-import { attachKeymap, clearActionHandlers } from "../keymap";
+import { attachKeymap, clearActionHandlers } from "../shortcuts";
 import {
   initRecord,
   onInputTelemetry,

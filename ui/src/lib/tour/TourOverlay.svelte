@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
   import { t } from "../i18n";
-  import { isEditableTarget } from "../keymap";
+  import { isEditableTarget } from "../shortcuts";
   import { Button, Icon } from "../ui";
   import type { AnchorRect, Size } from "../ui/placement";
   import { blockingModal, findTourTarget, visibleRect } from "./targets";

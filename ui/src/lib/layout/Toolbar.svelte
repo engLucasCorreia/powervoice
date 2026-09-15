@@ -1,7 +1,7 @@
 <script lang="ts">
   import AudioDevicesDialog from "../devices/AudioDevicesDialog.svelte";
   import { t } from "../i18n";
-  import { shortcutLabelForAction } from "../keymap/shortcutLabel";
+  import { shortcutLabelForAction } from "../shortcuts/shortcutLabel";
   import NormalizeToolbarButtons from "../normalize/NormalizeToolbarButtons.svelte";
   import RecordControls from "../record/RecordControls.svelte";
   import { recordState } from "../state/record.svelte";

@@ -72,6 +72,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-32 | EQ graph draws grid but no curve/labels at 2126×850 (all themes; first-layout measuring bug) — found in T-708 screenshots | S | done |
 | H-33 | Small fixes (H-22): `sanitize_preset_name` must never yield a leading `.` (hidden by `list_json_names` as an atomic temp file), de-flake `WelcomeOffer.test.ts` (full-suite-only failure) | S | done |
 | H-34 | Plugin polish (T-806): de-flake `sandbox/tests/teardown.rs::nothing_outlives_its_owner` (fd baseline after warm-up release), Linux Install Module wording for picking a file inside a `.vst3` bundle, rename scan cache to `plugin-scan.json` with migration | S | done |
+| H-35 | Zoom commands (T-701 found SPEC-006 §2.6 claims them but they don't exist): Zoom to Selection, Zoom Full, vertical amplitude zoom (Alt+= / Alt+-) with Audition bindings, View menu + toolbar entries | S | in progress |
 | H-18 | Shared test factories for DTOs (`ui/src/lib/test/fixtures.ts` + Rust builders) so a new DTO field touches one helper, not 20 test literals (merge-friction fix) | H | done |
 | H-17 | Recovery follow-ups (T-301): dialog stays open for remaining sessions (A-015), AC-3/AC-11 timing on a real disk (test-big), compaction off the document lock, markers during an interrupted take, Memory-for-audio UI, `/tmp/vox-project-*` sweep | S | done |
 | H-15 | Sidecar follow-ups (T-306): recent-file-missing dialog, read-only folder matrix (AC-13), SIGKILL-during-sidecar-save test (AC-6), per-slot leniency for a malformed rack slot, perf budget (AC-18) | S | done |
@@ -168,7 +169,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 ## M7 — Polish & packaging
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
-| T-701 | Shortcut map audit (Audition-compatible) | W1 | S | M6 | in progress |
+| T-701 | Shortcut map audit (Audition-compatible) | W1 | S | M6 | done |
 | T-702 | i18n audit | W1 | H | M6 | todo |
 | T-703 | Settings audit | W1 | S | M6 | todo |
 | T-704 | Performance tuning vs targets | W1 | O | M6 | todo |

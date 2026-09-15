@@ -5,11 +5,13 @@ import { resetTourForTest, tourState } from "../tour/tour.svelte";
 import { TOUR_IDS } from "../tour/tours";
 import { aboutState, resetAboutForTest } from "./about.svelte";
 import HelpMenu from "./HelpMenu.svelte";
+import { resetShortcutsDialogForTest, shortcutsDialogState } from "./shortcutsDialog.svelte";
 
 afterEach(() => {
   resetMenuBarForTest();
   resetAboutForTest();
   resetTourForTest();
+  resetShortcutsDialogForTest();
 });
 
 function mountMenu(): { target: HTMLElement; app: ReturnType<typeof mount> } {
@@ -54,6 +56,20 @@ describe("HelpMenu (H-19)", () => {
     flushSync();
 
     expect(aboutState().open).toBe(true);
+    expect(target.querySelector('[data-testid="help-menu"]')).toBeNull();
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Keyboard Shortcuts opens the shortcuts dialog and closes the menu (T-701)", () => {
+    const { target, app } = mountMenu();
+    target.querySelector<HTMLButtonElement>('[data-testid="menu-trigger-help"]')!.click();
+    flushSync();
+    target.querySelector<HTMLButtonElement>('[data-testid="menu-shortcuts"]')!.click();
+    flushSync();
+
+    expect(shortcutsDialogState().open).toBe(true);
     expect(target.querySelector('[data-testid="help-menu"]')).toBeNull();
 
     unmount(app);

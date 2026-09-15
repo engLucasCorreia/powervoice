@@ -2,7 +2,7 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RecordStartedDto } from "../ipc/bindings";
-import { clearActionHandlers } from "../keymap";
+import { clearActionHandlers } from "../shortcuts";
 import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import { clearNotices } from "../state/notices.svelte";
 import { recordState, resetRecordForTest, toggleRecord } from "../state/record.svelte";

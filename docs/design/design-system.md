@@ -201,7 +201,7 @@ bar 24 px.
 | Main action of a dialog/panel (max one per group) | `Button variant="primary"` |
 | Other actions | `Button` (secondary) · `Button variant="ghost"` in headers/toolbars |
 | Destructive confirmation | `Button variant="danger"` (in the confirm dialog, not on the first click) |
-| Frequent action with a conventional icon | `IconButton` (label = name + tooltip, `shortcut` from the keymap) |
+| Frequent action with a conventional icon | `IconButton` (label = name + tooltip, `shortcut` from the shortcut registry) |
 | On/off view state in a toolbar (Spectral, Loop, A/B) | `ToggleButton` or `IconButton pressed` |
 | Setting that applies immediately | `Toggle` (switch) |
 | One of 2–4 short options | `SegmentedControl` |

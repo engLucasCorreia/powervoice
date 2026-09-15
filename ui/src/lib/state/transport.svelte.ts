@@ -13,7 +13,7 @@ import {
   transportStop,
 } from "../ipc/commands";
 import { VXTM_FLAGS, decodeVxtm, toArrayBuffer, type TelemetryFrame } from "../ipc/telemetry";
-import { registerAction } from "../keymap";
+import { registerAction } from "../shortcuts";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { ClockSync, PlayheadExtrapolator } from "../transport/playhead";
 import { pushNotice } from "./notices.svelte";

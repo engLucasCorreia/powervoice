@@ -1,8 +1,8 @@
 <script lang="ts">
   import { analyzerState, setAnalyzerVisible } from "../analyzer/analyzer.svelte";
   import { t, tDynamic } from "../i18n";
-  import { dispatchAction } from "../keymap";
-  import { shortcutLabelForAction } from "../keymap/shortcutLabel";
+  import { dispatchAction } from "../shortcuts";
+  import { shortcutLabelForAction } from "../shortcuts/shortcutLabel";
   import MenuBarMenu from "../menu/MenuBarMenu.svelte";
   import { MENU_MNEMONICS } from "../menu/menubar.svelte";
   import type { RendererPreference } from "../render/rendererMode";

@@ -2,7 +2,7 @@ import { emit } from "@tauri-apps/api/event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ClipboardChangedDto, EditResultDto } from "../ipc/bindings";
-import { clearActionHandlers } from "../keymap";
+import { clearActionHandlers } from "../shortcuts";
 import { clearNotices } from "./notices.svelte";
 import { editState, initEdit, paste, resetEditForTest } from "./edit.svelte";
 import { resetSelectionForTest, selectAllOf, selectionState } from "./selection.svelte";

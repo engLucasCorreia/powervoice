@@ -1,5 +1,5 @@
 import { sidecarViewSetSpectral } from "../ipc/commands";
-import { registerAction } from "../keymap";
+import { registerAction } from "../shortcuts";
 import type { ColormapName } from "../spectrogram/colormap";
 import type { FreqScale } from "../spectrum/freqAxis";
 import { saveSettings } from "./settings.svelte";

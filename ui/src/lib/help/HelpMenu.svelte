@@ -6,6 +6,7 @@
   import { startTour } from "../tour/tour.svelte";
   import { TOUR_IDS, TOURS } from "../tour/tours";
   import { openAbout } from "./about.svelte";
+  import { openShortcutsDialog } from "./shortcutsDialog.svelte";
 
   /** Help menu (H-19; T-709 adds Take the Tour and Tours ▸): "About PowerVoice…", with the app version (SPEC-000-adjacent
    * `app_info` — the ticket's "About with version"). H-26: on the shared menu. */
@@ -27,6 +28,14 @@
           onselect: () => startTour(id),
         }),
       ),
+    },
+    { kind: "separator", id: "sep-shortcuts" },
+    {
+      kind: "item",
+      id: "shortcuts",
+      label: t("menu.help.shortcuts"),
+      testid: "menu-shortcuts",
+      onselect: openShortcutsDialog,
     },
     { kind: "separator", id: "sep-about" },
     { kind: "item", id: "about", label: t("menu.help.about"), testid: "menu-about", onselect: openAbout },

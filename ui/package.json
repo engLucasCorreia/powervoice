@@ -22,6 +22,7 @@
     "@sveltejs/vite-plugin-svelte": "7.3.0",
     "@tauri-apps/cli": "2.11.4",
     "@tsconfig/svelte": "5.0.8",
+    "@types/node": "^26.5.1",
     "jsdom": "30.0.1",
     "svelte-check": "4.7.6",
     "typescript": "6.0.3",

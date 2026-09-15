@@ -76,7 +76,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-36 | Fix flaky LV2 test `crates/sandbox/tests/lv2.rs::a_latency_change_goes_through_the_worker_and_asks_for_a_restart` (offline worker round trip fails 8/10 in isolation on main) | S | done |
 | H-37 | Loop playback (SPEC-003 AC-4; engine has none — found by T-401): loop region = selection, seamless wrap, playhead history across the wrap (ADR-002 §8), Loop transport button + shortcut | O | done |
 | H-38 | Packaging (T-807, A-022): deb Recommends `liblilv-0-0`, Arch optdepends `lilv`, AppImage note; user-guide note that LV2 needs lilv | H | done |
-| H-39 | Loop in the menus (H-37): Loop Playback checkbox item (View or a Transport section, shared Menu + Ctrl/⌘+L chip), tour step mention | H | todo |
+| H-39 | Loop in the menus (H-37): Loop Playback checkbox item (View or a Transport section, shared Menu + Ctrl/⌘+L chip), tour step mention | H | in progress |
 | H-18 | Shared test factories for DTOs (`ui/src/lib/test/fixtures.ts` + Rust builders) so a new DTO field touches one helper, not 20 test literals (merge-friction fix) | H | done |
 | H-17 | Recovery follow-ups (T-301): dialog stays open for remaining sessions (A-015), AC-3/AC-11 timing on a real disk (test-big), compaction off the document lock, markers during an interrupted take, Memory-for-audio UI, `/tmp/vox-project-*` sweep | S | done |
 | H-15 | Sidecar follow-ups (T-306): recent-file-missing dialog, read-only folder matrix (AC-13), SIGKILL-during-sidecar-save test (AC-6), per-slot leniency for a malformed rack slot, perf budget (AC-18) | S | done |
@@ -174,8 +174,8 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
 | T-701 | Shortcut map audit (Audition-compatible) | W1 | S | M6 | done |
-| T-702 | i18n audit | W1 | H | M6 | in progress |
-| T-703 | Settings audit | W1 | S | M6 | todo |
+| T-702 | i18n audit | W1 | H | M6 | done |
+| T-703 | Settings audit | W1 | S | M6 | in progress |
 | T-704 | Performance tuning vs targets | W1 | O | M6 | todo |
 | T-705 | AppImage/deb, Win/mac build docs, README/user guide | W2 | S | T-701..T-704 | done (Win/mac installers documented, not built) |
 | T-706 | Complete architecture & developer docs (owner req.): docs hub, C4/crate/threading/sequence Mermaid diagrams, data/IPC/DSP/plugins/UI docs, contributing guide, ADR index, docs check script | W3 | O | T-809 | todo |

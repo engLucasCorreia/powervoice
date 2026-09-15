@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "../i18n";
   import { estimateLabelWidthPx, fitAxisLabels } from "../ui/axisLabels";
   import { documentState, hasDocument } from "../document/document.svelte";
   import SpectralView from "../spectrogram/SpectralView.svelte";
@@ -225,7 +226,7 @@
       data-testid="editor-divider"
       role="separator"
       aria-orientation="horizontal"
-      aria-label="Resize the spectral pane"
+      aria-label={t("editor.spectral_resize")}
       onpointerdown={onDividerPointerDown}
       onpointermove={onDividerPointerMove}
       onpointerup={onDividerPointerUp}

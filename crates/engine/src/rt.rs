@@ -21,6 +21,12 @@ pub(crate) const FADE_MS: f64 = 5.0;
 pub(crate) const PREBUFFER_MS: f64 = 20.0;
 /// Reader read-ahead (ADR-002 §1).
 pub(crate) const READ_AHEAD_MS: u64 = 200;
+/// H-46 (SPEC-003 Amendment 2): the rack pre-roll runs at most this many times faster than real
+/// time — per callback of n frames, at most `n × PREROLL_SPEED` pre-roll frames go through the
+/// rack. It bounds the burst's cost per callback (the voice rack at ~1 % of a core stays under a
+/// third of the deadline) while a typical pre-roll (2 × 2.3k samples) fits in one 256-frame
+/// callback.
+pub(crate) const PREROLL_SPEED: u64 = 32;
 
 /// [`Packet::flags`] bits.
 pub(crate) mod packet_flags {
@@ -30,6 +36,10 @@ pub(crate) mod packet_flags {
     /// `doc_pos` is the loop start, and the previous packet ended at the loop end. The stream is
     /// seamless: no fade, no epoch change and no rack reset.
     pub(crate) const LOOP_WRAP: u16 = 1 << 1;
+    /// H-46 (SPEC-003 Amendment 2): rack warm-up audio before the play position (the rack's
+    /// latency's worth). Fed to the rack before the start, never heard; dropped when the start
+    /// doesn't reset the rack. Warm-up packets come first in an epoch and never carry another flag.
+    pub(crate) const PREROLL: u16 = 1 << 2;
 }
 
 /// H-37 (SPEC-003 §3): a loop shorter than this (at the document rate) is inert.
@@ -62,9 +72,12 @@ impl Packet {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AudioCmd {
     /// Start playing `epoch` from `pos` once the prebuffer is queued; `reset` the rack first
-    /// (not on a resume from pause, SPEC-003 §4).
+    /// (not on a resume from pause, SPEC-003 §4). H-46: the rack is pre-rolled so that `pos` is
+    /// the first sample heard, with no added rack latency (the reader started the epoch
+    /// [`packet_flags::PREROLL`] packets earlier).
     Play { epoch: u32, pos: u64, reset: bool },
-    /// Fade out, drop the old epoch, reset the rack, fade in at `pos`.
+    /// Fade out (H-46: after the rack, at once), drop the old epoch, reset and pre-roll the rack,
+    /// fade in at `pos`.
     Seek { epoch: u32, pos: u64 },
     /// Fade out and go idle (reports [`RtEvent::Stopped`]).
     Stop,
@@ -89,9 +102,11 @@ pub(crate) enum AudioCmd {
 /// Output callback → control (ADR-002 §4 step 5, §7).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum RtEvent {
-    /// One per callback. `heard_pos`: heard document position of the first frame (`None` when
-    /// not playing); `heard_time_ns`: app-clock time it is heard (cpal `playback` instant);
-    /// `latency_ns`: `playback − callback` (T-107: the monitoring latency readout).
+    /// One per callback. `heard_pos`: heard document position of the first playing frame (`None`
+    /// when not playing); `heard_time_ns`: app-clock time that frame is heard (cpal `playback`
+    /// instant of the callback's first frame, later by the frames before it when playback starts
+    /// mid-callback, H-46); `latency_ns`: `playback − callback` of the first frame (T-107: the
+    /// monitoring latency readout).
     Block {
         epoch: u32,
         heard_pos: Option<u64>,

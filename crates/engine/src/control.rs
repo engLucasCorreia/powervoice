@@ -738,16 +738,38 @@ impl Control {
         self.transport_state()
     }
 
+    /// H-46 (SPEC-003 Amendment 2): the rack warm-up the reader streams before a play position —
+    /// the rack's latency, at the document rate (rounded up). The output callback also feeds the
+    /// rack that latency's worth of the stream ahead of time, so the play position is the first
+    /// sample heard.
+    fn preroll_samples(&self) -> u64 {
+        let Some(o) = self.output.as_ref() else {
+            return 0;
+        };
+        let latency = u64::from(o.rack.total_latency_samples());
+        (latency * u64::from(self.doc_rate().max(1))).div_ceil(u64::from(o.rate_hz.max(1)))
+    }
+
     fn execute(&mut self, action: Action) {
         match action {
             Action::Start { epoch, pos, reset } => {
                 self.anchor = None;
-                self.reader_send(ReaderCmd::Start { epoch, pos });
+                let preroll = self.preroll_samples();
+                self.reader_send(ReaderCmd::Start {
+                    epoch,
+                    pos,
+                    preroll,
+                });
                 self.audio_cmd(AudioCmd::Play { epoch, pos, reset });
             }
             Action::Seek { epoch, pos } => {
                 self.anchor = None;
-                self.reader_send(ReaderCmd::Start { epoch, pos });
+                let preroll = self.preroll_samples();
+                self.reader_send(ReaderCmd::Start {
+                    epoch,
+                    pos,
+                    preroll,
+                });
                 self.audio_cmd(AudioCmd::Seek { epoch, pos });
             }
             Action::Stop => {
@@ -2291,10 +2313,12 @@ impl Control {
             let epoch = self.transport.next_run_epoch();
             let pos = spec.start_v(plan.preroll_samples);
             self.anchor = None;
+            let preroll = self.preroll_samples();
             self.reader_send(ReaderCmd::StartRun {
                 epoch,
                 pos,
                 run: spec,
+                preroll,
             });
             self.audio_cmd(AudioCmd::Play {
                 epoch,

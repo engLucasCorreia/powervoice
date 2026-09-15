@@ -289,3 +289,61 @@ Conservative, Audition-like readings of what §2.1/§3/§4/AC-4 left open or con
   resampler at the seam, so the resampled output stays continuous; packet positions follow the
   exact input-time of each device frame, so the playhead does not drift over passes.
 - **Export and bake** render the document range and never loop.
+
+## Amendment 2 — H-46 rack pre-roll on Play and seek (2026-09-15, autonomous; A-026)
+
+Decided by A-026 ("pre-roll the rack on Play/seek so rack latency isn't added to the playback
+start"); what it left open is read the conservative, Audition-like way. Supersedes the rack part
+of §2.3's budget, §4 "Start" and "Return to Start / seek", and §4 "Transport clock"'s clamp window;
+the engine side is ADR-002 Amendment 4, the rack side SPEC-012 §2.5.2.
+
+- **Pre-roll.** Every start — Play, Play from start, a seek or Return to Start while playing, a
+  record operation's playback run (SPEC-022 §4.4) — pre-rolls the rack, so its latency L (the
+  installed chain's total, SPEC-012 §2.5) is not added to the start:
+  - **warm-up:** the reader starts L samples (at the document rate, rounded up) before the play
+    position; the rack gets that audio first, and it is never heard. Near the document start there
+    is less of it (nothing before sample 0: the rack then starts from its reset state, i.e. from
+    silence, as before). Only a start that resets the rack uses it; a resume at the pause position
+    (no reset, §4) keeps the rack's own state and drops the warm-up.
+  - **look-ahead:** the rack then gets L samples from the play position ahead of time, so the play
+    position is the next sample out of the rack.
+  - Both run off the device timeline, faster than real time, with the rack's output discarded. The
+    heard output starts **exactly at the play position**, with the ~5 ms fade-in applied **after**
+    the rack (the rack sees the unfaded audio, as in an export). Nothing before the play position
+    is heard, and the meters only see what is heard.
+- **Start time (§2.3, AC-1).** The pre-roll runs inside the output callback at up to 32× real time
+  per callback (the voice rack's ~2 × 2.3k samples fit in one 256-frame callback, or three 64-frame
+  ones), so a start takes what it takes with an empty rack, plus at most a few callbacks for a very
+  long latency or a tiny buffer. If the pre-roll outruns the reader (L beyond ~90 ms), it resumes
+  in a later callback: the device gets silence and the rack is not advanced in between, never fed
+  silence inside the stream. AC-1's < 50 ms therefore holds with any realistic rack; the
+  `playback_start` bench asserts the voice rack within 5 ms of the empty rack.
+- **Seek while playing** (§2.1, §4; also a Play during a Pause/Stop fade-out): **re-pre-roll, no
+  crossfade.** The heard output fades out (~5 ms) **at once, after the rack** — not after the rack
+  has played out its latency — then the rack is reset, pre-rolled at the target, and the target
+  fades in. What the rack still held of the old position (≤ L) is dropped under the fade-out, as
+  any seek drops the rest of the old position. A Play after a Pause/Stop whose tail is still
+  coming out of the rack (≤ L after its fade-out) still waits for that tail: nothing heard is cut
+  (T-401).
+- **Commands during a pre-roll** (Play, seek, Stop before the first sample is heard) abandon it and
+  reset the rack (it holds only unheard audio); Stop then reports the play position, as a Stop
+  before the start always did.
+- **Document end inside the look-ahead** (a start less than L before the end): the rest of the
+  look-ahead is silence, so the remaining audio is heard at once; the end is reported once its
+  last sample is heard (SPEC-012 §2.5.1).
+- **Loop** (Amendment 1): the pre-roll never wraps. A Play at or after the loop end whose warm-up
+  reaches back across it plays on; a Play inside the loop (or from its start) warms up with the real
+  audio before the play position, also before the loop start. Wraps inside the look-ahead are
+  seamless as before.
+- **Through-rack monitoring** (SPEC-002 §2.7): while the live input flows through the rack, a start
+  is as before — no reset, no pre-roll, the fades before the rack, the rack latency added — because
+  a reset or a burst would cut the talent's monitored voice.
+- **Punch-in and record runs** (SPEC-022): the run's own pre-roll (§2.2: playback from `S − pre`) is
+  unchanged; the rack pre-roll comes before it and only makes the run heard L sooner. The take's
+  alignment uses the heard time of `at` (SPEC-022 §2.13), which stays exact.
+- **Heard position** (§4 "Transport clock", ADR-002 §8): same formula, `heard_pos = p_in − L_rack`,
+  with rack-input frames counting the pre-roll, so the first heard sample reads the play position
+  and the playhead is exact from the first frame. The window where the playhead sat "clamped to the
+  play start" for L after a start is gone. The telemetry anchor of a callback in which playback
+  starts part-way through is stamped with that frame's heard time.
+- **Export and bake** (offline, SPEC-012 §2.8.1) are unchanged.

@@ -149,6 +149,26 @@ T-103's chain already met most of §2.5; T-401 filled the gaps marked *new*).
   (the rack header) and marks the SPEC-002 §2.7 monitoring readout for a recompute on the same
   control tick (≤ 16 ms, instead of the next 0.5 s refresh).
 
+#### 2.5.2 Amendment (H-46, 2026-09-15): a pre-roll instead of a latency at playback start
+Per A-026 and SPEC-003 Amendment 2.
+- **Playback start and seeks no longer wait for the rack latency.** The engine pre-rolls the rack:
+  L samples of warm-up before the play position, then L samples of look-ahead from it, output
+  discarded, so the play position is the first sample heard. The heard-position compensation of
+  §2.5.1 is unchanged and stays exact (rack-input frames count the pre-roll).
+- **Which L.** The warm-up length is the rack total when the command is sent
+  (`RackHost::total_latency_samples`, converted to the document rate); the look-ahead is the live
+  chain's latency when the start happens. A latency change during a pre-roll only shifts the heard
+  audio as any latency change does (§2.5.1).
+- **Modules** see nothing new: a start that resets the rack still calls `reset()` (now before the
+  warm-up); the pre-roll is ordinary `process()` calls with `playing = true` and the pre-roll's own
+  `position_samples` (before the play position during the warm-up), faster than real time. Modules
+  must already accept any number of `process()` calls per device callback (T-103 sub-blocks).
+- **Not while the live input flows through the rack** (T-107, SPEC-002 §2.7): the start is as
+  before, with the latency.
+- **Offline renders** (§2.8, §2.8.1) are unchanged: the real-time warm-up is only the rack latency,
+  not the offline 30–60 s, so a stateful module with long time constants can still differ from an
+  export for its first second or so after a start (the heard audio is still exactly positioned).
+
 ### 2.6 Generic parameter UI (M4, T-405), derived only from the schema
 - **Layout** (ADR-005 §13):
   - Ungrouped parameters come first, then groups in declaration order. One nesting level is rendered;

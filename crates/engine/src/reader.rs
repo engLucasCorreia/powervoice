@@ -16,6 +16,13 @@
 //! start as its `doc_pos` (with resampling, the first device frame whose input time reaches the
 //! jump). The resampler is never reset at a seam, so the resampled stream stays continuous. Loop
 //! off during a pass ends the stream at the old loop end (an END packet there).
+//!
+//! H-46 (SPEC-003 Amendment 2): **rack pre-roll.** A start reads `preroll` samples (the rack's
+//! latency at the document rate) before the play position — fewer near position 0 — and flags
+//! the packets carrying them [`packet_flags::PREROLL`] (a packet never straddles the play
+//! position). The output callback feeds them to the rack as warm-up, never to the device. Loop
+//! decisions treat the pre-roll as being at the play position: it never wraps, so a Play at or
+//! after the loop end still plays on (a pre-roll reaching back across the loop end is plain audio).
 
 use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -40,10 +47,17 @@ pub(crate) enum ReaderCmd {
     Detach,
     /// The document to play (`None`: nothing).
     SetDoc(Option<PlaybackDoc>),
-    /// Stream `epoch` from document position `pos`.
-    Start { epoch: u32, pos: u64 },
-    /// T-304: stream a record operation's run `epoch` from virtual position `pos`.
-    StartRun { epoch: u32, pos: u64, run: RunSpec },
+    /// Stream `epoch` from document position `pos`, after up to `preroll` samples of rack
+    /// warm-up before it (H-46).
+    Start { epoch: u32, pos: u64, preroll: u64 },
+    /// T-304: stream a record operation's run `epoch` from virtual position `pos` (H-46: after up
+    /// to `preroll` virtual samples of rack warm-up).
+    StartRun {
+        epoch: u32,
+        pos: u64,
+        run: RunSpec,
+        preroll: u64,
+    },
     /// Stop streaming.
     Stop,
     /// H-37: the effective loop region (`None`: not looping). `finish`: loop was turned off
@@ -75,6 +89,10 @@ struct Active {
     segs: VecDeque<Seg>,
     /// H-37: loop turned off mid-pass — the stream ends at this document position.
     end_at: Option<u64>,
+    /// H-46: input samples of rack warm-up before the play position (the first `warm_in` fed).
+    warm_in: u64,
+    /// H-46: the play position (document, or virtual for a run).
+    play_in: u64,
     done: bool,
     /// T-304: a record operation's run (positions are virtual).
     run: Option<RunSpec>,
@@ -87,12 +105,22 @@ fn first_frame(virt: u64, num: u128, den: u128) -> u64 {
 }
 
 impl Active {
+    /// H-46: the position loop decisions use — the play position while the warm-up is read (the
+    /// pre-roll never wraps), then the read position.
+    fn read_pos(&self) -> u64 {
+        if self.fed < self.warm_in {
+            self.play_in
+        } else {
+            self.next_in
+        }
+    }
+
     /// Fills `buf` with the next input samples, jumping from the loop end back to the loop start
     /// (`looping`, only while the read position is before the loop end) and queueing each jump.
     fn feed(&mut self, reader: &mut SnapshotReader, looping: Option<(u64, u64)>, buf: &mut [f32]) {
         let mut off = 0;
         while off < buf.len() {
-            let wrap = looping.filter(|&(_, e)| self.next_in < e);
+            let wrap = looping.filter(|&(_, e)| self.read_pos() < e);
             let mut n = buf.len() - off;
             if let Some((_, e)) = wrap {
                 n = n.min((e - self.next_in) as usize);
@@ -177,20 +205,23 @@ impl Reader {
         self.resampler = built.ok().flatten();
     }
 
-    fn start(&mut self, epoch: u32, pos: u64, run: Option<RunSpec>) {
+    fn start(&mut self, epoch: u32, pos: u64, preroll: u64, run: Option<RunSpec>) {
+        let warm = preroll.min(pos);
         let mut segs = VecDeque::with_capacity(8);
         segs.push_back(Seg {
             virt: 0,
-            doc: pos,
+            doc: pos - warm,
             wrap: false,
         });
         self.active = Some(Active {
             epoch,
-            next_in: pos,
+            next_in: pos - warm,
             emitted: 0,
             fed: 0,
             segs,
             end_at: None,
+            warm_in: warm,
+            play_in: pos,
             done: false,
             run,
         });
@@ -234,8 +265,17 @@ impl Reader {
                 }
                 self.rebuild_resampler();
             }
-            ReaderCmd::Start { epoch, pos } => self.start(epoch, pos, None),
-            ReaderCmd::StartRun { epoch, pos, run } => self.start(epoch, pos, Some(run)),
+            ReaderCmd::Start {
+                epoch,
+                pos,
+                preroll,
+            } => self.start(epoch, pos, preroll, None),
+            ReaderCmd::StartRun {
+                epoch,
+                pos,
+                run,
+                preroll,
+            } => self.start(epoch, pos, preroll, Some(run)),
             ReaderCmd::Stop => {
                 self.active = None;
                 if let Some(r) = self.reader.as_mut() {
@@ -251,7 +291,7 @@ impl Reader {
                 {
                     a.end_at = match (finish, old) {
                         // SPEC-003 §2.1: the pass finishes, then the stream ends at the old end.
-                        (true, Some((_, e))) if a.next_in <= e => Some(e),
+                        (true, Some((_, e))) if a.read_pos() <= e => Some(e),
                         (true, _) => a.end_at,
                         (false, _) => None,
                     };
@@ -297,6 +337,8 @@ impl Reader {
             Some(run) => run.end_v(),
             None => Some(a.end_at.map_or(*len, |e| e.min(*len))),
         };
+        // H-46: output frames before this one carry the warm-up.
+        let warm_end = first_frame(a.warm_in, num, den);
         let mut pushed = 0;
         while !a.done && prod.slots() > 0 && PLAYBACK_RING_PACKETS - prod.slots() < target {
             let mut pkt = Packet::new(a.epoch);
@@ -313,13 +355,13 @@ impl Reader {
                 Some(a.segs[1].virt)
             } else {
                 looping
-                    .filter(|&(_, e)| a.next_in < e)
+                    .filter(|&(_, e)| a.read_pos() < e)
                     .map(|(_, e)| a.fed + (e - a.next_in))
             };
             // The stream end, in the newest segment — unless the input wraps before reaching it.
             let back = a.segs.back().copied().unwrap_or(seg);
             let end_frame = limit
-                .filter(|&l| !looping.is_some_and(|(_, e)| a.next_in < e && e <= l))
+                .filter(|&l| !looping.is_some_and(|(_, e)| a.read_pos() < e && e <= l))
                 .map(|l| first_frame(back.virt + l.saturating_sub(back.doc), num, den));
             if end_frame.is_some_and(|f| j >= f) {
                 pkt.flags = packet_flags::END;
@@ -327,6 +369,10 @@ impl Reader {
                 a.done = true;
             } else {
                 let mut n = PACKET_FRAMES as u64;
+                if j < warm_end {
+                    n = n.min(warm_end - j);
+                    pkt.flags |= packet_flags::PREROLL;
+                }
                 if let Some(f) = end_frame {
                     n = n.min(f - j);
                 }

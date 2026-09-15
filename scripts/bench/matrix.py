@@ -94,13 +94,16 @@ GROUPS: list[tuple[str, str, str, list[str]]] = [
         "PROMPT §2 / SPEC-003 AC-1 — playback start < 50 ms (Play → first non-silent frame written "
         "to the device buffer)",
         "`vox-engine` `playback_start`: `ManualEngine` on the `FakeBackend` clock, stream open and "
-        "idle, worst of 8 Play phases, 0.1 ms resolution; empty rack and the default voice rack.",
+        "idle, worst of 8 Play phases, 0.1 ms resolution; empty rack and the default voice rack. "
+        "H-46: the rack is pre-rolled, so the voice rack's overhead over the empty rack is "
+        "asserted too (≤ 5 ms).",
         "just bench",
         [
             f"playback_start_{rack}_{b}f_written_max_ms"
             for rack in ("empty_rack", "voice_rack")
             for b in (64, 256, 1024)
-        ],
+        ]
+        + [f"playback_start_voice_rack_{b}f_overhead_max_ms" for b in (64, 256, 1024)],
     ),
     (
         "PROMPT §2 — full rack at 48 kHz < 20 % of one core",

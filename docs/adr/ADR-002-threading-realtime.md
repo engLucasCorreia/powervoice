@@ -336,3 +336,30 @@ Amendment 1:
   current start it clamps to it. No allocation, bounded loops.
 - **Minimum loop length** 10 ms at the document rate (shorter selections are inert), which keeps
   the 64-packet ring's read-ahead above the prebuffer and bounds the history per rack latency.
+
+## Amendment 4 — rack pre-roll on start (H-46, 2026-09-15)
+Per SPEC-003 Amendment 2 (A-026). Refines §5's start/seek sequence and §8:
+- **Reader.** `ReaderCmd::Start`/`StartRun` carry `preroll` (the rack total at the document rate).
+  The reader reads `min(preroll, pos)` samples before the play position first and flags those
+  packets `packet_flags::PREROLL`; a packet never straddles the play position (resampled: the first
+  device frame whose input time reaches it). Loop decisions treat the pre-roll as being at the play
+  position, so it never wraps.
+- **Output callback.** A new mode, `Prerolling`, sits between Waiting and Playing. Once the start is
+  ready (the 20 ms prebuffer queued and, after a Stop, the rack's tail drained), the callback resets
+  the rack if asked, then feeds it — output discarded — the `PREROLL` packets (only after a reset;
+  any other start drops them) and L frames of the stream (the look-ahead). At most
+  `PREROLL_SPEED` (32) × the callback's frames go through per callback. When the ring runs dry the
+  pre-roll resumes in a later callback: the device gets silence meanwhile, and the rack is neither
+  advanced nor fed silence inside the stream. Then the prebuffer must be queued again, and playback
+  fades in after the rack (`out_gain`). A start while audible fades out after the rack at once
+  (`post_fade`) and resets the rack at the end of the fade, instead of fading the rack input and
+  waiting for the rack to drain. Play/Seek/Stop during a pre-roll reset the rack. All state is
+  preallocated; every loop is bounded (budget, ring size); no allocation, no locks.
+- **§8.** `heard_pos = p_in − L_rack` holds with rack-input frames counting the pre-roll; the H-37
+  history marks the frame where the play position enters the rack, so the first heard frame maps
+  to the play position exactly and the "clamped to the play start" window disappears.
+  `RtEvent::Block::heard_time_ns` is now the heard time of the callback's first *playing* frame
+  (later than the first frame when playback starts part-way through the callback); `latency_ns`
+  still uses the callback's first frame.
+- **Through-rack monitoring** (T-107) keeps the previous sequence: no reset, no pre-roll, the fades
+  at the rack input.

@@ -656,8 +656,10 @@ fn host_switch_while_playing_pauses_the_transport() {
     assert_eq!(r.fake.rt_violations(), 0);
 }
 
-/// Blocking 3: a seek with a 480-sample-latency module in the rack. The rack reset waits until
-/// the delayed fade-out has left the rack: no cut, §4.3 passes at the transition.
+/// Blocking 3: a seek with a 480-sample-latency module in the rack: no cut, §4.3 passes at the
+/// transition. H-46 (SPEC-003 Amendment 2): the seek's fade-out is applied after the rack, at
+/// once — the 480 samples still in the rack are dropped under it, not played out first — and it
+/// reaches the device in full.
 #[test]
 fn seek_with_rack_latency_does_not_cut_the_fade_out() {
     let src = tone(5 * 48_000);
@@ -677,13 +679,13 @@ fn seek_with_rack_latency_does_not_cut_the_fade_out() {
     assert!(r.eng.transport_state().playing);
     let rec = r.recorded();
     assert_no_click(&rec, at);
-    // The fade-out reached the device in full: 480 samples of tone (latency) then 240 faded.
+    // The fade-out reached the device in full (240 faded samples), right after the command.
     let z0 = (at..rec.len() - 1)
         .find(|&i| rec[i] == 0.0 && rec[i + 1] == 0.0)
         .unwrap();
     assert!(
-        z0 >= at + DELAY as usize + FADE - 1,
-        "fade-out cut at {z0} (command at {at})"
+        (at + FADE - 1..=at + FADE + 1).contains(&z0),
+        "fade-out ended at {z0} (command at {at})"
     );
     assert_eq!(r.fake.rt_violations(), 0);
 }

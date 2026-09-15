@@ -11,15 +11,20 @@
 //!
 //! Worst of [`RUNS`] runs, each with Play landing at a different phase of the callback period,
 //! for 64/256/1024-frame device buffers (SPEC-001's range), with an empty rack and with the
-//! typical voice rack (gate → NR → EQ → dynamics → limiter at their defaults). The rack's own
-//! latency is not pre-rolled: the first audible frame comes out after the rack latency (NR N = 2048
-//! alone is 42.7 ms, SPEC-014 §2.7; the limiter adds 257 samples), so the voice-rack rows are the
-//! engine's start time plus ~48 ms (T-704 finding: at the edge of the 50 ms budget).
+//! typical voice rack (gate → NR → EQ → dynamics → limiter at their defaults, ~48 ms of latency:
+//! NR N = 2048 is 42.7 ms, SPEC-014 §2.7, the limiter adds 257 samples).
+//!
+//! H-46 (SPEC-003 Amendment 2): the rack is pre-rolled, so its latency is no longer added to the
+//! start (T-704 measured 49.4 ms with the voice rack before). `overhead` = the voice rack's worst
+//! start minus the empty rack's, per buffer size, asserted ≤ [`OVERHEAD_BUDGET_MS`]; `callback` =
+//! the slowest output callback between Play and the first audible frame (the pre-roll burst runs
+//! in it), informational, to compare with the buffer's deadline.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
 
 use vox_engine::backend::fake::{FakeBackend, FakeDevice, FakeDirection};
 use vox_engine::{Direction, EngineConfig, HostId, ManualEngine, PlaybackDoc, TransportCommand};
@@ -38,6 +43,9 @@ const WATCH_MS: u64 = 120;
 const RUNS: u64 = 8;
 const BUFFERS: [u32; 3] = [64, 256, 1024];
 const BUDGET_MS: f64 = 50.0;
+/// H-46: how much later than with an empty rack the voice rack may start (a few callbacks of
+/// pre-roll at most).
+const OVERHEAD_BUDGET_MS: f64 = 5.0;
 
 /// A scratch directory removed on drop.
 struct Scratch(PathBuf);
@@ -106,6 +114,8 @@ fn voice_rack() -> RackModel {
 struct Measured {
     written_ms: f64,
     heard_ms: f64,
+    /// The slowest output callback from Play to the first audible frame, µs of wall time.
+    callback_max_us: f64,
 }
 
 fn recorded(fake: &FakeBackend) -> Option<vox_engine::backend::fake::RecordedOutput> {
@@ -131,6 +141,21 @@ fn measure(buffer: u32, rack: &RackModel, phase_us: u64) -> Measured {
                 .record_output(),
         ),
     );
+    // Wall time of the callbacks while `armed` (Play → first audible frame): the pre-roll burst.
+    let slowest_ns = Arc::new(AtomicU64::new(0));
+    let armed = Arc::new(AtomicBool::new(false));
+    {
+        let (slowest, armed) = (slowest_ns.clone(), armed.clone());
+        fake.set_rt_guard(move |f| {
+            let started = Instant::now();
+            f();
+            if armed.load(Ordering::Relaxed) {
+                let ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                slowest.fetch_max(ns, Ordering::Relaxed);
+            }
+            0
+        });
+    }
     let dir = Scratch::new();
     let store = ChunkStore::create(&dir.0, 0, StoreOptions::with_memory_budget(64 << 20))
         .expect("create store");
@@ -165,6 +190,7 @@ fn measure(buffer: u32, rack: &RackModel, phase_us: u64) -> Measured {
     );
 
     let t0 = fake.now_ns();
+    armed.store(true, Ordering::Relaxed);
     assert!(eng.transport(TransportCommand::Play).playing);
     let mut written_ns = None;
     for _ in 0..WATCH_MS * MS / TICK_NS {
@@ -175,6 +201,7 @@ fn measure(buffer: u32, rack: &RackModel, phase_us: u64) -> Measured {
             break;
         }
     }
+    armed.store(false, Ordering::Relaxed);
     let out = recorded(&fake).expect("recorded output");
     let first = out
         .samples
@@ -185,6 +212,7 @@ fn measure(buffer: u32, rack: &RackModel, phase_us: u64) -> Measured {
     Measured {
         written_ms: (written_ns.expect("audible output") - t0) as f64 / 1e6,
         heard_ms: heard_ns.saturating_sub(t0) as f64 / 1e6,
+        callback_max_us: slowest_ns.load(Ordering::Relaxed) as f64 / 1e3,
     }
 }
 
@@ -196,18 +224,23 @@ fn main() {
         ("empty_rack", RackModel { slots: Vec::new() }),
         ("voice_rack", voice_rack()),
     ];
+    let mut empty_written = [0.0f64; BUFFERS.len()];
     for (rack_name, rack) in &racks {
-        for buffer in BUFFERS {
+        for (bi, buffer) in BUFFERS.into_iter().enumerate() {
             let mut written = 0.0f64;
             let mut heard = 0.0f64;
+            let mut callback_us = 0.0f64;
             for run in 0..RUNS {
                 let m = measure(buffer, rack, run * 1_000 / RUNS);
                 written = written.max(m.written_ms);
                 heard = heard.max(m.heard_ms);
+                callback_us = callback_us.max(m.callback_max_us);
             }
+            let deadline_us = f64::from(buffer) * 1e6 / f64::from(RATE);
             println!(
                 "  {rack_name}, {buffer}-frame buffer: written {written:.2} ms, heard {heard:.2} ms \
-                 (budget {BUDGET_MS} ms to written)"
+                 (budget {BUDGET_MS} ms to written); slowest start callback {callback_us:.0} µs \
+                 (deadline {deadline_us:.0} µs)"
             );
             bench_report::result(
                 "vox-engine",
@@ -223,6 +256,25 @@ fn main() {
                 "ms",
                 None,
             );
+            bench_report::result(
+                "vox-engine",
+                &format!("playback_start_{rack_name}_{buffer}f_callback_max_us"),
+                callback_us,
+                "us",
+                None,
+            );
+            if *rack_name == "empty_rack" {
+                empty_written[bi] = written;
+            } else {
+                // H-46: the pre-roll keeps the rack latency out of the start.
+                bench_report::result(
+                    "vox-engine",
+                    &format!("playback_start_{rack_name}_{buffer}f_overhead_max_ms"),
+                    written - empty_written[bi],
+                    "ms",
+                    Some(Target::le(OVERHEAD_BUDGET_MS)),
+                );
+            }
         }
     }
 }

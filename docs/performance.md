@@ -111,16 +111,21 @@ How: Same sweep with `scene=spectral` (split view). Reproduce: `just bench-ui`.
 
 ### PROMPT §2 / SPEC-003 AC-1 — playback start < 50 ms (Play → first non-silent frame written to the device buffer)
 
-How: `vox-engine` `playback_start`: `ManualEngine` on the `FakeBackend` clock, stream open and idle, worst of 8 Play phases, 0.1 ms resolution; empty rack and the default voice rack. Reproduce: `just bench`.
+How: `vox-engine` `playback_start`: `ManualEngine` on the `FakeBackend` clock, stream open and idle, worst of 8 Play phases, 0.1 ms resolution; empty rack and the default voice rack. H-46: the rack is pre-rolled, so the voice rack's overhead over the empty rack is asserted too (≤ 5 ms). Reproduce: `just bench`.
 
 | metric | measured | target | margin | status |
 |---|---|---|---|---|
 | `playback_start_empty_rack_64f_written_max_ms` | 1.4 ms | ≤ 50 | +97 % | pass |
 | `playback_start_empty_rack_256f_written_max_ms` | 1.4 ms | ≤ 50 | +97 % | pass |
 | `playback_start_empty_rack_1024f_written_max_ms` | 6.7 ms | ≤ 50 | +87 % | pass |
-| `playback_start_voice_rack_64f_written_max_ms` | 49.4 ms | ≤ 50 | +1 % | tight |
-| `playback_start_voice_rack_256f_written_max_ms` | 49.4 ms | ≤ 50 | +1 % | tight |
-| `playback_start_voice_rack_1024f_written_max_ms` | 49.4 ms | ≤ 50 | +1 % | tight |
+| `playback_start_voice_rack_64f_written_max_ms` | 2.7 ms | ≤ 50 | +95 % | pass |
+| `playback_start_voice_rack_256f_written_max_ms` | 1.4 ms | ≤ 50 | +97 % | pass |
+| `playback_start_voice_rack_1024f_written_max_ms` | 6.7 ms | ≤ 50 | +87 % | pass |
+| `playback_start_voice_rack_64f_overhead_max_ms` | 1.3 ms | ≤ 5 | +74 % | pass |
+| `playback_start_voice_rack_256f_overhead_max_ms` | 0 ms | ≤ 5 | +100 % | pass |
+| `playback_start_voice_rack_1024f_overhead_max_ms` | 0 ms | ≤ 5 | +100 % | pass |
+
+_H-46 rows re-measured 2026-09-15 with `cargo bench -p vox-engine --bench playback_start` (before: 49.4 ms at every buffer size). The rest of the matrix is from the T-704 run: `just perf-matrix` was not re-run, because this worktree has no `test-big`/`bench-ui` logs and it would have reset those rows to "not run"._
 
 ### PROMPT §2 — full rack at 48 kHz < 20 % of one core
 
@@ -285,13 +290,14 @@ Each code change has a regression test:
 
 ## Findings and open items
 
-- **Playback start with the default voice rack is 49.4 ms, a 1.2 % margin.** The engine itself
-  starts in 1.4–6.7 ms (64–1024-frame buffers). The rack's latency is not pre-rolled, though, so
-  the first audible frame waits for it: Noise Reduction adds 2048 samples (42.7 ms) and the
-  limiter 257 more. PROMPT §2's "NR latency ≤ 50 ms" and "playback start < 50 ms" therefore add
-  up instead of both holding. The proposed fix is to pre-roll the rack by its latency on Play and
-  seek. That is a SPEC-003/SPEC-012 semantics change (heard position, telemetry anchor) in the RT
-  engine, so it is left for a spec decision.
+- **Playback start with the default voice rack: fixed by H-46 (was 49.4 ms, a 1.2 % margin).** The
+  rack's latency (NR 2048 samples = 42.7 ms, plus 257 for the limiter) used to be added to every
+  start. The rack is now pre-rolled (SPEC-003 Amendment 2, A-026): L samples of warm-up before
+  the play position, then L of look-ahead, fed faster than real time and never heard. The voice
+  rack starts in 1.4–6.7 ms, the same as the empty rack except +1.3 ms at 64 frames, where the
+  pre-roll takes three callbacks (at most 32× real time per callback). The slowest start callback
+  takes 243 µs of a 1333 µs deadline at 64 frames, 297 µs of 5333 µs at 256 frames, and 439 µs of
+  21 333 µs at 1024 frames (`playback_start_*_callback_max_us`, informational).
 - **Split view frame time (SPEC-007 AC-10) still misses.**
   - WebGL2, the default renderer, has p50 4–7 ms and p95 10–20 ms. Its p99 is 110–130 ms, with
     22–29 frames over 50 ms per 10 s sweep. The spikes cluster on tile arrivals; texture uploads

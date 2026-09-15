@@ -59,9 +59,11 @@ fn project_dirs() -> Option<directories::ProjectDirs> {
     directories::ProjectDirs::from("app", "powervoice", "powervoice")
 }
 
-/// `<cache dir>/clap-scan.json`.
+/// `<cache dir>/plugin-scan.json` (H-34: renamed from `clap-scan.json`, which held only CLAP
+/// results before T-806 added VST3 to the same scan/cache). [`catalog`] migrates a leftover
+/// legacy file the first time this path is used.
 fn cache_path() -> Option<PathBuf> {
-    project_dirs().map(|d| d.cache_dir().join("clap-scan.json"))
+    project_dirs().map(|d| d.cache_dir().join(vox_plugin_host::scan::CACHE_FILE_NAME))
 }
 
 /// `<cache dir>/plugin-blocklist.json` (T-804, ADR-008 §5).
@@ -80,10 +82,14 @@ fn catalog() -> &'static Arc<PluginCatalog> {
     CATALOG.get_or_init(|| {
         let mut sandbox_options = SandboxOptions::beside_current_exe();
         sandbox_options.health = Some(Arc::new(HealthStore::load(health_path())));
+        let cache = cache_path();
+        if let Some(cache) = &cache {
+            vox_plugin_host::scan::migrate_cache_file_name(cache);
+        }
         Arc::new(PluginCatalog::new(
             sandbox_options,
             CatalogPaths {
-                cache: cache_path(),
+                cache,
                 blocklist: blocklist_path(),
             },
         ))

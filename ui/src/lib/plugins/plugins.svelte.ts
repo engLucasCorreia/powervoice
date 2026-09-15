@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { t } from "../i18n";
+import { currentPlatform } from "../ui/platform";
 import type {
   BlockCauseDto,
   EventName,
@@ -386,11 +387,16 @@ export async function startInstall(): Promise<void> {
   if (install.phase === "installing") {
     return;
   }
+  // Linux can't select a `.vst3` bundle directory in this picker (H-34): the title and filter
+  // name explain that any file inside it (its binary, say) stands for the whole bundle.
+  const linux = currentPlatform() === "linux";
   const picked = await openDialog({
     multiple: false,
     directory: false,
-    title: t("plugins.install.pick_title"),
-    filters: [{ name: t("plugins.install.filter"), extensions: [...INSTALL_EXTENSIONS] }],
+    title: t(linux ? "plugins.install.pick_title_linux" : "plugins.install.pick_title"),
+    filters: [
+      { name: t(linux ? "plugins.install.filter_linux" : "plugins.install.filter"), extensions: [...INSTALL_EXTENSIONS] },
+    ],
   });
   if (typeof picked !== "string") {
     return;

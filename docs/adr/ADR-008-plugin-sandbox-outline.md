@@ -968,9 +968,32 @@ dumps off first); `hang-on-scan` never returns from it.
   processor and the mirror, but the committed blob isn't refreshed at save time (Amendment 3 §8).
 - **Moduleinfo accuracy.** A moduleinfo-indexed bundle whose `moduleinfo.json` doesn't match its
   binary is only found out at load (a failed slot); a full rescan doesn't re-read the binary.
-- **Naming.** The cache file keeps its T-803 name (`clap-scan.json`) although it now holds both
-  formats.
+- **Naming.** ~~The cache file keeps its T-803 name (`clap-scan.json`) although it now holds both
+  formats.~~ Renamed to `plugin-scan.json`, H-34 (Amendment 7).
 - **Platforms.** The macOS entry (`CFBundleCreate` + `bundleEntry`) isn't compiled in CI here.
   Windows is only compile-checked (`just check-cross`).
 - **Real plugins.** No real VST3 plugin is installed on the development machine. The opt-in smoke
   test `POWERVOICE_TEST_REAL_VST3=<bundle or folder>` exists but hasn't run against one.
+
+## Amendment 7 — H-34 plugin polish, as implemented (2026-09-15)
+
+Three follow-ups after T-806, no new crates or dependencies.
+
+1. **Teardown test flakiness.** `crates/sandbox/tests/teardown.rs::nothing_outlives_its_owner`
+   could read "file descriptors leaked" on a loaded machine: its baseline was taken right after
+   dropping the warm-up proxy, before the watchdog had actually finished closing that sandbox's
+   pipes and reaping it. The baseline is now taken after a bounded poll confirms the warm-up
+   sandbox's fd count has settled (unchanged for a short window), not a fixed sleep; the leak
+   check itself is unchanged (still an exact `fd_count() == baseline`). Run 20× back to back,
+   interleaved with the rest of the sandbox crate's tests under `cargo test`, all green.
+2. **Install dialog wording on Linux.** The native file picker (`plugin:dialog|open`,
+   `directory: false`) can't select a `.vst3` bundle directory; per §7, a file picked *inside* it
+   already stands for the bundle. On Linux only (`ui/src/lib/ui/platform.ts::currentPlatform`),
+   the picker's title and filter-name strings now say so directly, and the plugin manager shows a
+   standing hint under the Install button explaining the same thing. No change to the filter's
+   extensions (still `clap`, `vst3`) or to `plugin_root`'s resolution.
+3. **Cache rename.** `clap-scan.json` → `plugin-scan.json` (`vox_plugin_host::scan::CACHE_FILE_NAME`).
+   `vox_plugin_host::scan::migrate_cache_file_name` renames a leftover legacy file into the new
+   path once, only when the new path doesn't exist yet (never overwrites real data); `src-tauri`'s
+   `plugins::catalog()` calls it before constructing `CatalogPaths`, so an upgrade doesn't force a
+   full rescan.

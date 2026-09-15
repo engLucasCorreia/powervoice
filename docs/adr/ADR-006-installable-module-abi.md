@@ -229,7 +229,7 @@ dependency request.
    file is renamed aside first and kept until the new one has scanned.
 4. **Only the new file is scanned** (one `powervoice-sandbox --scan`, the 30 s timeout), under the
    catalog's scan lock, so an install and a rescan never overwrite each other's cache.
-5. At least one audio effect: the scan result goes into the cache (`clap-scan.json`), the effects
+5. At least one audio effect: the scan result goes into the cache (`plugin-scan.json`), the effects
    join the catalog snapshot (the newest install wins an id) and hot-add into every observed
    registry, so they're in Add module at once. The old file, if any, is deleted.
 6. No audio effect, or a failed scan: **roll back**. The new file is deleted and a replaced one is

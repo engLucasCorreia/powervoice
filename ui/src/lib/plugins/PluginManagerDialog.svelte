@@ -291,6 +291,10 @@
     </Button>
   </div>
 
+  {#if platform === "linux"}
+    <p class="install-hint" data-testid="plugins-install-linux-hint">{t("plugins.install.linux_hint")}</p>
+  {/if}
+
   {#if ps.scan}
     <div class="scan" role="status" data-testid="plugins-scan-progress">
       {#if ps.scan.total > 0}
@@ -604,6 +608,13 @@
 
   .search input::placeholder {
     color: var(--pv-text-tertiary);
+  }
+
+  .install-hint {
+    flex: none;
+    margin: 0;
+    color: var(--pv-text-tertiary);
+    font-size: var(--pv-text-sm);
   }
 
   .scan {

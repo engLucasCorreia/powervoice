@@ -4,6 +4,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
 import { clearNotices } from "../state/notices.svelte";
 import { FLAGGED_ID, folderFixture, pluginEntry, pluginFixtures } from "../test/fixtures";
+import { setPlatformForTest } from "../ui/platform";
 import PluginManagerDialog from "./PluginManagerDialog.svelte";
 import { initPlugins, openPluginManager, pluginsState, resetPluginsForTest } from "./plugins.svelte";
 import { settle } from "./testing";
@@ -50,6 +51,7 @@ afterEach(() => {
   clearMocks();
   clearNotices();
   resetPluginsForTest();
+  setPlatformForTest(null);
 });
 
 const q = <T extends Element = HTMLElement>(root: ParentNode, id: string) => root.querySelector<T>(`[data-testid="${id}"]`);
@@ -340,5 +342,19 @@ describe("Plugin manager (T-809)", () => {
     flushSync();
     expect(pluginsState().open).toBe(false);
     expect(q(root, "plugin-manager")).toBeNull();
+  });
+
+  it("explains the Linux VST3-bundle picker quirk under the Install button, on Linux (H-34)", async () => {
+    mock();
+    setPlatformForTest("linux");
+    const root = await open();
+    expect(text(q(root, "plugins-install-linux-hint"))).toContain(".vst3");
+  });
+
+  it.each(["mac", "windows"] as const)("shows no Linux picker hint on %s (H-34)", async (platform) => {
+    mock();
+    setPlatformForTest(platform);
+    const root = await open();
+    expect(q(root, "plugins-install-linux-hint")).toBeNull();
   });
 });

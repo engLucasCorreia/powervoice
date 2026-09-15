@@ -3,6 +3,7 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PluginInstallResultDto } from "../ipc/bindings";
 import { clearNotices } from "../state/notices.svelte";
+import { setPlatformForTest } from "../ui/platform";
 import {
   addPluginFolder,
   blockPlugin,
@@ -60,6 +61,7 @@ afterEach(() => {
   clearMocks();
   clearNotices();
   resetPluginsForTest();
+  setPlatformForTest(null);
 });
 
 describe("plugins store (T-809)", () => {
@@ -267,6 +269,25 @@ describe("plugins store (T-809)", () => {
       await startInstall();
       expect(calls.some((c) => c.cmd === "plugins_install")).toBe(false);
       expect(pluginsState().install.phase).toBe("idle");
+    });
+
+    it("H-34: the picker's title and filter name explain the .vst3-bundle quirk on Linux only", async () => {
+      setPlatformForTest("linux");
+      let calls = mock({ "plugin:dialog|open": () => null });
+      await startInstall();
+      let open = calls.find((c) => c.cmd === "plugin:dialog|open")!;
+      let options = open.args.options as { title: string; filters: { name: string; extensions: string[] }[] };
+      expect(options.title).toContain(".vst3");
+      expect(options.filters[0]!.name).toContain(".vst3");
+      expect(options.filters[0]!.extensions).toEqual(["clap", "vst3"]);
+
+      setPlatformForTest("mac");
+      calls = mock({ "plugin:dialog|open": () => null });
+      await startInstall();
+      open = calls.find((c) => c.cmd === "plugin:dialog|open")!;
+      options = open.args.options as { title: string; filters: { name: string; extensions: string[] }[] };
+      expect(options.title).not.toContain(".vst3");
+      expect(options.filters[0]!.name).not.toContain(".vst3");
     });
   });
 });

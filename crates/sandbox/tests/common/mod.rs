@@ -94,6 +94,35 @@ pub fn fd_count() -> usize {
     std::fs::read_dir("/proc/self/fd").map_or(0, |d| d.count())
 }
 
+/// [`fd_count`], but only once it has stopped changing for `settle` — a bounded poll, not a fixed
+/// sleep (H-34). A dropped proxy's `live_instances().is_empty()` only means the proxy removed its
+/// own bookkeeping; the sandbox's pipes/shm close and the watchdog reaps its process slightly
+/// later, on other threads. A baseline taken right after `is_empty()` can still include those
+/// about-to-close descriptors, so a later, truly-settled count reads as *fewer* than the
+/// baseline ("leaked: 5 → 4" — the count went down, not up) even though nothing actually leaked.
+/// Waiting here for the count to hold steady avoids catching it mid-teardown. Gives up and
+/// returns the last-seen count after `timeout` (the caller's own leak assertion still catches a
+/// real leak either way; this only avoids a baseline taken too early).
+pub fn stable_fd_count(timeout: Duration) -> usize {
+    const SETTLE: Duration = Duration::from_millis(50);
+    let deadline = Instant::now() + timeout;
+    let mut last = fd_count();
+    let mut unchanged_since = Instant::now();
+    loop {
+        std::thread::sleep(Duration::from_millis(5));
+        let now = fd_count();
+        if now != last {
+            last = now;
+            unchanged_since = Instant::now();
+        } else if unchanged_since.elapsed() >= SETTLE {
+            return last;
+        }
+        if Instant::now() >= deadline {
+            return last;
+        }
+    }
+}
+
 /// Deterministic noise in [−0.5, 0.5).
 pub fn noise(n: usize, seed: u32) -> Vec<f32> {
     let mut s = seed;

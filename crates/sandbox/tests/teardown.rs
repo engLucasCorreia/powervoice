@@ -41,13 +41,16 @@ fn spin(p: &mut dyn Module) {
 
 #[test]
 fn nothing_outlives_its_owner() {
-    // Warm up the watchdog thread (lives for the process) before taking the baseline.
+    // Warm up the watchdog thread (lives for the process) before taking the baseline. The
+    // proxy's own bookkeeping (`live_instances`) clears before its sandbox has actually finished
+    // closing its pipes/shm and getting reaped (H-34), so the fd baseline is taken only once the
+    // count has settled — a bounded poll, never a fixed sleep.
     let f = factory("gain", "gain", exact_options());
     drop(f.create().unwrap());
     assert!(wait_until(Duration::from_secs(3), || f
         .live_instances()
         .is_empty()));
-    let fds = fd_count();
+    let fds = stable_fd_count(Duration::from_secs(3));
     let shm = pvs_shm_objects();
 
     let mut proxies: Vec<Box<dyn Module>> = (0..3).map(|_| f.create().unwrap()).collect();

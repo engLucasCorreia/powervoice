@@ -53,6 +53,32 @@ const MAX_DEPTH: usize = 8;
 /// registry entry with zeroed ports that were never actually checked.
 const CACHE_VERSION: u32 = 2;
 
+/// The cache file's name (H-34): renamed from [`LEGACY_CACHE_FILE_NAME`] once VST3 (T-806)
+/// started sharing it — the old name only made sense back when it held CLAP results alone.
+pub const CACHE_FILE_NAME: &str = "plugin-scan.json";
+
+/// The cache file's name before H-34 (T-803 through T-806). A leftover file under this name is
+/// migrated to [`CACHE_FILE_NAME`] once, by [`migrate_cache_file_name`].
+pub const LEGACY_CACHE_FILE_NAME: &str = "clap-scan.json";
+
+/// One-shot migration (H-34): if `new_path` (expected to end in [`CACHE_FILE_NAME`]) doesn't
+/// exist yet, but a file named [`LEGACY_CACHE_FILE_NAME`] sits next to it, that file is renamed
+/// into place — so a cache built before the rename survives it instead of forcing a full
+/// rescan. A no-op when there's nothing to migrate (already migrated, first run, or no cache
+/// directory yet); never overwrites an existing `new_path`.
+pub fn migrate_cache_file_name(new_path: &Path) {
+    if new_path.exists() {
+        return;
+    }
+    let Some(dir) = new_path.parent() else {
+        return;
+    };
+    let old_path = dir.join(LEGACY_CACHE_FILE_NAME);
+    if old_path.is_file() {
+        let _ = std::fs::rename(&old_path, new_path);
+    }
+}
+
 /// How to scan.
 #[derive(Clone, Debug)]
 pub struct ScanOptions {
@@ -1534,6 +1560,97 @@ pub(crate) mod tests {
         options.force = true;
         let forced = scan_clap_files(&[file], &options);
         assert_eq!((forced.cached, forced.scanned), (0, 1));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- H-34: `clap-scan.json` → `plugin-scan.json` -------------------------------------------
+
+    /// A leftover cache from before the rename is picked up: its content survives under the new
+    /// name, and the old file is gone (so it's never read again).
+    #[test]
+    fn migrate_cache_file_name_renames_a_leftover_legacy_file() {
+        let dir = temp_dir("migrate-hit");
+        let old_path = dir.join(LEGACY_CACHE_FILE_NAME);
+        let new_path = dir.join(CACHE_FILE_NAME);
+        std::fs::write(&old_path, b"{\"version\":2,\"entries\":[]}").unwrap();
+
+        migrate_cache_file_name(&new_path);
+
+        assert!(new_path.is_file(), "new cache file should exist");
+        assert!(!old_path.exists(), "legacy file should be gone");
+        assert_eq!(
+            std::fs::read_to_string(&new_path).unwrap(),
+            "{\"version\":2,\"entries\":[]}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// No legacy file: a first run (or an already-migrated one with no cache at all) is a no-op,
+    /// not an error.
+    #[test]
+    fn migrate_cache_file_name_is_a_no_op_without_a_legacy_file() {
+        let dir = temp_dir("migrate-miss");
+        let new_path = dir.join(CACHE_FILE_NAME);
+
+        migrate_cache_file_name(&new_path);
+
+        assert!(!new_path.exists());
+        assert!(!dir.join(LEGACY_CACHE_FILE_NAME).exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A cache already sitting under the new name always wins — even a leftover legacy file
+    /// (which shouldn't happen in practice, but this keeps the migration one-shot and
+    /// never-destructive) is left alone rather than overwriting real data.
+    #[test]
+    fn migrate_cache_file_name_never_overwrites_an_existing_new_file() {
+        let dir = temp_dir("migrate-existing");
+        let old_path = dir.join(LEGACY_CACHE_FILE_NAME);
+        let new_path = dir.join(CACHE_FILE_NAME);
+        std::fs::write(&old_path, b"old").unwrap();
+        std::fs::write(&new_path, b"new").unwrap();
+
+        migrate_cache_file_name(&new_path);
+
+        assert_eq!(std::fs::read_to_string(&new_path).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(&old_path).unwrap(), "old");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The migration also works end to end through [`scan_clap_files`]'s cache: entries written
+    /// under the legacy name are found (and re-persisted under the new one) after migrating.
+    #[test]
+    fn a_migrated_cache_still_answers_scan_clap_files_from_cache() {
+        let dir = temp_dir("migrate-e2e");
+        let file = dir.join("plugin.clap");
+        std::fs::write(&file, b"x").unwrap();
+        let legacy_cache = dir.join(LEGACY_CACHE_FILE_NAME);
+        let st = stamp(&file).unwrap();
+        let seeded = serde_json::json!({
+            "version": CACHE_VERSION,
+            "entries": [{
+                "path": file.to_string_lossy(),
+                "format": "clap",
+                "size": st.size,
+                "mtime_s": st.mtime_s,
+                "mtime_ns": st.mtime_ns,
+                "plugins": [],
+            }],
+        });
+        std::fs::write(&legacy_cache, serde_json::to_vec(&seeded).unwrap()).unwrap();
+
+        let new_cache = dir.join(CACHE_FILE_NAME);
+        migrate_cache_file_name(&new_cache);
+        assert!(new_cache.is_file());
+
+        let mut options = ScanOptions::new(PathBuf::from("/nonexistent/powervoice-sandbox"));
+        options.cache = Some(new_cache);
+        let out = scan_clap_files(std::slice::from_ref(&file), &options);
+        assert_eq!((out.cached, out.scanned), (1, 0), "{out:?}");
 
         std::fs::remove_dir_all(&dir).ok();
     }

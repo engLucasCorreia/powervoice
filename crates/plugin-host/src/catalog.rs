@@ -28,7 +28,7 @@ use crate::scan::{
 /// Where the catalog persists its state.
 #[derive(Clone, Debug)]
 pub struct CatalogPaths {
-    /// The scan cache (`clap-scan.json`).
+    /// The scan cache (`plugin-scan.json`, H-34; migrated once from the old `clap-scan.json`).
     pub cache: Option<PathBuf>,
     /// The blocklist (`plugin-blocklist.json`).
     pub blocklist: Option<PathBuf>,

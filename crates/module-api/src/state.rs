@@ -17,6 +17,15 @@ pub struct ModuleState {
     /// External plugins are blob-only: `params` is empty.
     pub params: BTreeMap<String, f64>,
     /// Opaque module data (noise profile, external plugin chunk). JSON: standard base64 string.
+    ///
+    /// **Size (T-810 audit):** there is no cap on `blob` itself. In practice it is bounded by
+    /// whatever carries it: the sandbox control channel's `MAX_FRAME_BYTES` (64 MiB,
+    /// `vox_sandbox_ipc::control`, ADR-008 Amendment 2 §2) for a live out-of-process plugin's
+    /// save/load round trip, and the sidecar's `SIDECAR_MAX_BYTES` (64 MiB,
+    /// `vox_project::sidecar`, SPEC-018 §2.6.6) for what a document can persist — both comfortably
+    /// hold blobs an order of magnitude larger than any plugin state seen so far (tested to 10
+    /// MiB, see `vox_presets::module_store` and the sandboxed `*_rack` tests). A user or module
+    /// preset file (`vox_presets`) has no read-size cap of its own; it inherits the filesystem's.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "blob_base64")]
     pub blob: Option<Vec<u8>>,
 }

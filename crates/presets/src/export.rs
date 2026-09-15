@@ -151,6 +151,60 @@ mod tests {
         assert_eq!(imported, exported);
     }
 
+    /// T-810: H-22 export/import only ever exercised param-only states. A module preset that
+    /// carries a blob (an external plugin's chunk, or a noise print) must round trip the same
+    /// way — this is what a user exports from a slot that actually has one.
+    #[test]
+    fn a_module_preset_with_a_blob_round_trips_through_a_file_byte_exact() {
+        let dir = tmp_dir("module-blob-roundtrip");
+        let path = dir.join("Mine.json");
+        let mut state = module_state(-6.0);
+        state.blob = Some(vec![0, 1, 2, 250, 255, 128, 64]);
+        let exported = ExportedPreset::module("org.powervoice.gain", "Mine", state.clone());
+        export_to_file(&exported, &path).unwrap();
+
+        let bytes = std::fs::read(&path).unwrap();
+        let imported = import_from_file(&bytes).unwrap();
+        assert_eq!(imported, exported);
+        let ExportedPreset::Module { state: got, .. } = imported else {
+            panic!("expected a module preset");
+        };
+        assert_eq!(got.blob, state.blob, "blob bytes must survive verbatim");
+    }
+
+    /// T-810: same gap as above, for a whole rack preset whose slot carries a blob.
+    #[test]
+    fn a_rack_preset_with_a_slot_blob_round_trips_through_a_file_byte_exact() {
+        let dir = tmp_dir("rack-blob-roundtrip");
+        let path = dir.join("Mine.json");
+        let mut state = module_state(-3.0);
+        state.blob = Some(vec![9, 8, 7, 0, 255]);
+        let rack = RackModel {
+            slots: vec![SlotModel::new(
+                &ModuleRef {
+                    id: "org.powervoice.gain".into(),
+                    version: Version::new(1, 0, 0),
+                },
+                false,
+                &state,
+            )],
+        };
+        let exported = ExportedPreset::rack("Mine", rack);
+        export_to_file(&exported, &path).unwrap();
+
+        let bytes = std::fs::read(&path).unwrap();
+        let imported = import_from_file(&bytes).unwrap();
+        assert_eq!(imported, exported);
+        let ExportedPreset::Rack { rack, .. } = imported else {
+            panic!("expected a rack preset");
+        };
+        let got_state: ModuleState = serde_json::from_value(rack.slots[0].state.clone()).unwrap();
+        assert_eq!(
+            got_state.blob, state.blob,
+            "blob bytes must survive verbatim"
+        );
+    }
+
     #[test]
     fn a_rack_preset_round_trips_through_a_file_including_an_unknown_module_id() {
         // ADR-005 §2: a rack preset naming a module this build doesn't have still round-trips

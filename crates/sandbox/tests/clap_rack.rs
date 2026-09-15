@@ -17,7 +17,7 @@ use vox_module_api::{
     ProcessContext, ProcessMode, Transport,
 };
 use vox_modules::Gain;
-use vox_plugin_host::state::unwrap;
+use vox_plugin_host::state::{StateHeader, unwrap, wrap};
 use vox_presets::ModulePresetStore;
 use vox_rack::{
     LiveRack, MAX_BLOCK, RackHost, RackModel, RackNotice, RackOptions, SlotModel, SlotStatus,
@@ -291,4 +291,139 @@ fn clap_state_round_trips_through_the_sidecar_json_and_a_module_preset() {
     assert!(wait_until(Duration::from_secs(3), || pids
         .iter()
         .all(|p| !pid_exists(*p))));
+}
+
+/// T-810 — version and identity (ADR-008 Amendment 2 §7 "a blob whose id or format differs is
+/// refused"; loading applies the blob first, then the values):
+/// - a state blob wrapped for a **different plugin id** is refused before its bytes ever reach
+///   the plugin — the slot fails gracefully (never a crash), and the foreign blob round-trips
+///   verbatim for the sidecar to keep (it is never dropped or reconstructed);
+/// - a blob whose header names a **different version** of the *same* id is not refused by that
+///   identity check (only `format`/`id` are compared) — it reaches the plugin's own
+///   `LoadState`, which here accepts it (real bytes, real id, only the label differs);
+/// - bytes the plugin's own loader actually rejects fail the same graceful way, with the
+///   original (real, well-formed) blob kept for write-back.
+#[test]
+fn a_state_blob_for_a_different_plugin_id_is_refused_a_different_version_is_not() {
+    let f = clap_factory(tc::ID_GAIN, exact_options());
+    let registry = registry_with(std::slice::from_ref(&f));
+    let gain_ref: ModuleRef = format!("{GAIN_ID}@1.2.3").parse().unwrap();
+
+    // Capture a real, valid wrapped blob from a live instance.
+    let (mut host, live) = RackHost::new(
+        registry.clone(),
+        rt(),
+        RackOptions::default(),
+        &model(vec![clap_slot(GAIN_ID, -4.0)]),
+    )
+    .unwrap();
+    loaded(&mut host);
+    let good = host.slot_state(0).unwrap();
+    let good_blob = good.blob.clone().expect("wrapped plugin state");
+    let (header, data) = unwrap(&good_blob).unwrap();
+    host.teardown(live);
+
+    // --- Different id: refused, foreign blob kept verbatim. ---------------------------------
+    let foreign = ModuleState {
+        format_version: good.format_version,
+        params: good.params.clone(),
+        blob: Some(wrap(
+            &StateHeader {
+                format: header.format.clone(),
+                plugin: header.plugin.clone(),
+                id: "clap:org.powervoice.bogus".into(),
+                version: header.version.clone(),
+            },
+            data,
+        )),
+    };
+    let foreign_slot = SlotModel::new(&gain_ref, false, &foreign);
+    let original = serde_json::to_value(&foreign_slot).unwrap();
+    let (mut bad_host, bad_live) = RackHost::new(
+        registry.clone(),
+        rt(),
+        RackOptions::default(),
+        &model(vec![foreign_slot]),
+    )
+    .unwrap();
+    let notices = loaded(&mut bad_host);
+    let SlotStatus::Failed { message } = status(&bad_host) else {
+        panic!("expected Failed, got {:?}", status(&bad_host));
+    };
+    assert!(
+        message.contains("clap:org.powervoice.bogus"),
+        "message names the blob's own id: {message}"
+    );
+    assert!(
+        notices
+            .iter()
+            .any(|n| matches!(n, RackNotice::SlotFailed { .. })),
+        "a notice reaches the UI"
+    );
+    assert_eq!(
+        serde_json::to_value(&bad_host.model().slots[0]).unwrap(),
+        original,
+        "the foreign blob round-trips verbatim, never dropped"
+    );
+    bad_host.teardown(bad_live);
+
+    // --- Different version, same id: not refused by the identity check. --------------------
+    let different_version = ModuleState {
+        format_version: good.format_version,
+        params: good.params.clone(),
+        blob: Some(wrap(
+            &StateHeader {
+                format: header.format.clone(),
+                plugin: header.plugin.clone(),
+                id: header.id.clone(),
+                version: "9.9.9".into(),
+            },
+            data,
+        )),
+    };
+    let (mut ok_host, ok_live) = RackHost::new(
+        registry.clone(),
+        rt(),
+        RackOptions::default(),
+        &model(vec![SlotModel::new(&gain_ref, false, &different_version)]),
+    )
+    .unwrap();
+    loaded(&mut ok_host);
+    assert_eq!(status(&ok_host), SlotStatus::Active);
+    assert_eq!(
+        ok_host.param_value(0, ParamId(tc::PARAM_GAIN)),
+        Some(-4.0),
+        "a differently-versioned-but-real blob still loads"
+    );
+    ok_host.teardown(ok_live);
+
+    // --- Right id/format, bytes the plugin's own loader rejects. ---------------------------
+    let corrupt = ModuleState {
+        format_version: good.format_version,
+        params: good.params.clone(),
+        blob: Some(wrap(&header, b"not this plugin's real state bytes")),
+    };
+    let corrupt_slot = SlotModel::new(&gain_ref, false, &corrupt);
+    let corrupt_original = serde_json::to_value(&corrupt_slot).unwrap();
+    let (mut corrupt_host, corrupt_live) = RackHost::new(
+        registry,
+        rt(),
+        RackOptions::default(),
+        &model(vec![corrupt_slot]),
+    )
+    .unwrap();
+    loaded(&mut corrupt_host);
+    // Whether the test plugin's own loader is strict enough to reject arbitrary bytes is
+    // backend-specific; either way it must never crash the sandbox or the rack, and a rejection
+    // must keep the original blob verbatim, exactly like the foreign-id case above.
+    match status(&corrupt_host) {
+        SlotStatus::Failed { .. } => assert_eq!(
+            serde_json::to_value(&corrupt_host.model().slots[0]).unwrap(),
+            corrupt_original,
+            "a rejected blob round-trips verbatim too"
+        ),
+        SlotStatus::Active => {}
+        other => panic!("unexpected status: {other:?}"),
+    }
+    corrupt_host.teardown(corrupt_live);
 }

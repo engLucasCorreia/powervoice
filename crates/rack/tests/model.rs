@@ -4,13 +4,14 @@
 #![allow(clippy::float_cmp, clippy::needless_range_loop)] // exact values, indexed by sample time
 mod common;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use common::*;
 use serde_json::json;
 use vox_module_api::{
-    ActivateConfig, ChannelLayout, LocalizedText, Module, ModuleDescriptor, ModuleError,
+    ActivateConfig, ChannelLayout, LocalizedText, Module, ModuleDescriptor, ModuleError, ModuleRef,
     ModuleState, ParamId, ParamInfo, ProcessContext, ProcessStatus, StateError, Tail,
 };
 use vox_modules::Gain;
@@ -81,6 +82,54 @@ fn sidecar_slot_shape_and_rack_file_forms() {
 
 /// AC-13: an unknown module becomes a placeholder: bit-exact dry, latency 0, message, and the
 /// slot's JSON is written back unchanged.
+/// T-810 (2b): "when the plugin comes back (install or rescan), the slot recovers without
+/// losing its state." There is no *live* re-resolution of an already-open document's Missing
+/// placeholder (`restart`/Retry only handles a slot that already failed to *start*, not one
+/// whose module was never registered — `restart_retries_a_slot_that_failed_to_start_at_load`
+/// asserts `RackError::NotLoaded` for exactly that case). Recovery instead happens the way
+/// every other "stale until the next look" fact in this codebase does (ADR-008 Amendment 5 §2's
+/// shadow/uninstall staleness): reopening the document builds a fresh [`RackHost`] from the
+/// verbatim-preserved slot, which now resolves normally because the id is in the registry.
+#[test]
+fn a_missing_slots_state_survives_and_resolves_once_the_module_is_registered_again() {
+    let params: BTreeMap<String, f64> = [("gain_db".to_owned(), -12.5)].into_iter().collect();
+    let s = SlotModel::new(
+        &ModuleRef {
+            id: Gain::ID.into(),
+            version: vox_module_api::Version::new(1, 0, 0),
+        },
+        false,
+        &ModuleState {
+            format_version: 1,
+            params: params.clone(),
+            blob: None,
+        },
+    );
+    let m = model(vec![s]);
+
+    // Not yet registered: a verbatim Missing placeholder.
+    let empty = Arc::new(Registry::with_factories(Vec::new()).unwrap());
+    let (host, _live) = RackHost::new(empty, rt_config(), RackOptions::default(), &m).unwrap();
+    assert!(matches!(
+        host.slot_info(0).unwrap().status,
+        SlotStatus::Missing { .. }
+    ));
+    let preserved = host.model();
+    assert_eq!(preserved, m, "the slot round-trips verbatim while missing");
+
+    // The document is reopened (a fresh RackHost, exactly what closing and reopening does)
+    // after the module is registered again (install or rescan, T-804/H-29's `Registry::upsert`):
+    // the preserved model resolves normally, with the original parameter value intact.
+    let (reopened, _live2) =
+        RackHost::new(registry(), rt_config(), RackOptions::default(), &preserved).unwrap();
+    assert_eq!(reopened.slot_info(0).unwrap().status, SlotStatus::Active);
+    assert_eq!(
+        reopened.slot_state(0).unwrap().params["gain_db"],
+        -12.5,
+        "no state was lost across the gap"
+    );
+}
+
 #[test]
 fn ac13_missing_module_is_a_verbatim_placeholder() {
     let slot_json = json!({
@@ -209,6 +258,64 @@ impl Module for Failing {
     }
     fn load_state(&mut self, _: &ModuleState) -> Result<(), StateError> {
         Ok(())
+    }
+}
+
+/// T-810: a module that activates fine but refuses to *load* a state whose blob isn't its own —
+/// stands in for an out-of-process adapter refusing a corrupt or foreign-id blob
+/// (`vox_plugin_host::proxy::Proxy::load_state`, ADR-008 Amendment 2 §7). Any state whose blob
+/// isn't exactly [`RejectsState::GOOD`] is refused with [`StateError::InvalidBlob`].
+struct RejectsState;
+
+impl RejectsState {
+    const ID: &'static str = "org.powervoice.test-rejects-state";
+    const GOOD: &'static [u8] = b"good-state";
+}
+
+impl Module for RejectsState {
+    fn descriptor(&self) -> &ModuleDescriptor {
+        static D: std::sync::OnceLock<ModuleDescriptor> = std::sync::OnceLock::new();
+        D.get_or_init(|| descriptor(RejectsState::ID, "Rejects State"))
+    }
+    fn params(&self) -> &[ParamInfo] {
+        &[]
+    }
+    fn activate(&mut self, _c: &ActivateConfig) -> Result<(), ModuleError> {
+        Ok(())
+    }
+    fn deactivate(&mut self) {}
+    fn latency_samples(&self) -> u32 {
+        0
+    }
+    fn tail(&self) -> Tail {
+        Tail::Samples(0)
+    }
+    fn process(
+        &mut self,
+        _: &mut ProcessContext<'_>,
+        _: &[&[f32]],
+        _: &mut [&mut [f32]],
+    ) -> ProcessStatus {
+        ProcessStatus::Continue
+    }
+    fn reset(&mut self) {}
+    fn param_value(&self, _: ParamId) -> Option<f64> {
+        None
+    }
+    fn save_state(&self) -> Result<ModuleState, StateError> {
+        Ok(ModuleState {
+            format_version: 1,
+            params: Default::default(),
+            blob: Some(RejectsState::GOOD.to_vec()),
+        })
+    }
+    fn load_state(&mut self, s: &ModuleState) -> Result<(), StateError> {
+        match &s.blob {
+            Some(b) if b == RejectsState::GOOD => Ok(()),
+            _ => Err(StateError::InvalidBlob(
+                "corrupt or foreign state blob".into(),
+            )),
+        }
     }
 }
 
@@ -341,6 +448,7 @@ fn odd_registry() -> Arc<Registry> {
         Box::new(p)
     }))
     .unwrap();
+    r.register(factory(|| Box::new(RejectsState))).unwrap();
     Arc::new(r)
 }
 
@@ -444,6 +552,50 @@ fn load_time_failures_are_failed_slots_kept_verbatim() {
     assert_eq!(
         serde_json::to_value(&d.host.model().slots[0]).unwrap(),
         original
+    );
+}
+
+/// T-810 (SPEC-012 §2.2 "Failures at insertion", ADR-008 Amendment 2 §7 "a blob whose id or
+/// format differs is refused"): a corrupt or foreign-plugin state blob never crashes the rack or
+/// invalidates the document — it fails exactly like an activation failure (`RackError::State`
+/// takes the same `resolve_lenient` path as `RackError::Activate`/`Create`), the slot becomes
+/// `Failed` with its original module reference and blob kept byte-for-byte for write-back
+/// (never reconstructed, never dropped), and sibling slots are unaffected.
+#[test]
+fn a_corrupt_or_foreign_state_blob_fails_gracefully_and_keeps_the_blob_verbatim() {
+    let mut bad = slot(RejectsState::ID, &[]);
+    bad.state = serde_json::to_value(ModuleState {
+        format_version: 1,
+        params: Default::default(),
+        blob: Some(b"not this plugin's state".to_vec()),
+    })
+    .unwrap();
+    let original = serde_json::to_value(&bad).unwrap();
+    let x = white(13, 10_000);
+    let mut d = Driver::with_registry(
+        odd_registry(),
+        &model(vec![gain_slot(0.0), bad]),
+        4,
+        x.len(),
+    );
+    d.run_to_end(&x);
+    // Dry passthrough for the failed slot, gain slot at 0 dB: bit-exact either way.
+    assert!(bit_identical(&d.out, &x));
+    assert_eq!(d.host.slot_info(0).unwrap().status, SlotStatus::Active);
+    assert_eq!(
+        d.host.slot_info(1).unwrap().status,
+        SlotStatus::Failed {
+            message: format!(
+                "Couldn't start {}@1.0.0: module `{}`: invalid state blob: corrupt or foreign state blob",
+                RejectsState::ID,
+                RejectsState::ID
+            ),
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(&d.host.model().slots[1]).unwrap(),
+        original,
+        "the corrupt blob round-trips verbatim, never dropped or reconstructed"
     );
 }
 

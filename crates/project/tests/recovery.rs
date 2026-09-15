@@ -117,6 +117,51 @@ fn recovered_session_keeps_journaling_after_a_torn_tail() {
     assert_eq!(report.lost_changes, 0);
 }
 
+/// T-810: the journal's `state` record (ADR-004 §6) is the crash-recovery path for sidecar-level
+/// rack/view state, distinct from a normal sidecar save — a plugin's `state.blob` (base64) must
+/// survive it exactly, not just a saved-and-reopened sidecar (already covered per-format by
+/// `crates/sandbox/tests/{clap,vst3,lv2}_rack.rs`). `project` treats `rack` as opaque JSON
+/// (ADR-001 rule 4, SPEC-018 §2.6.4), so this never needs a live plugin: any JSON value with a
+/// base64 blob field exercises the same append/journal/replay path a real one would.
+#[test]
+fn ac9_a_journaled_rack_state_with_a_plugin_blob_survives_a_crash_verbatim() {
+    let dir = TempDir::new("state-blob-recovery");
+    let mut s = new_session(dir.path());
+    set_floor(&mut s, &noise(7, 20_000));
+    let rack_with_blob = serde_json::json!({
+        "slots": [{
+            "module": "clap:org.powervoice.test.gain@1.2.3",
+            "bypass": false,
+            "state": {
+                "format_version": 1,
+                "params": { "p0": -9.5 },
+                // Not valid base64 padding-wise matters not: `state` is opaque JSON to `project`.
+                "blob": "UFZQTFVHU1QBAAAAeyJmb3JtYXQiOiJjbGFwIn0AAQID/w==",
+            },
+        }],
+    });
+    s.append_state(rack_with_blob.clone()).unwrap();
+    let journal = s.journal_path().to_path_buf();
+    let session_dir = s.dir().to_path_buf();
+    drop(s); // crash: no `close`
+
+    let (s, report) = Session::recover(&session_dir, options()).unwrap();
+    assert_eq!(
+        report.state,
+        Some(rack_with_blob.clone()),
+        "the plugin's blob survives journal replay byte-for-byte"
+    );
+    drop(s);
+
+    // Also true after a torn tail past the `state` record's own line: recovery falls back to the
+    // last *complete* record, which is still this one (it wasn't followed by anything else).
+    let mut bytes = std::fs::read(&journal).unwrap();
+    bytes.extend_from_slice(b"deadbeef\t{\"type\":\"st");
+    std::fs::write(&journal, &bytes).unwrap();
+    let (_s, report) = Session::recover(&session_dir, options()).unwrap();
+    assert_eq!(report.state, Some(rack_with_blob));
+}
+
 /// SPEC-004 §2.7 "Damaged data": audio that fails its checksum sends recovery back to the
 /// newest state whose audio is intact, with the notice; a damaged undo floor leaves only
 /// Discard.

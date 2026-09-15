@@ -179,6 +179,35 @@ mod tests {
         assert_eq!(loaded, rack);
     }
 
+    /// T-810: a slot carrying a state blob (an external plugin's chunk, or a noise print) round
+    /// trips byte-exact as part of the whole rack, not just a lone module preset (T-406 covers
+    /// that; this closes the same gap for `RackPresetStore`, ADR-005 §10 "a rack preset is an
+    /// ordered list of slots").
+    #[test]
+    fn save_then_load_round_trips_a_slot_with_a_blob_byte_exact() {
+        let store = RackPresetStore::new(tmp_dir("roundtrip-blob"));
+        let mut with_blob = gain_slot(-3.0);
+        with_blob.state = serde_json::to_value(ModuleState {
+            format_version: 1,
+            params: [("gain_db".to_owned(), -3.0)].into_iter().collect(),
+            blob: Some(vec![0, 1, 2, 250, 255, 0, 128]),
+        })
+        .unwrap();
+        let rack = RackModel {
+            slots: vec![with_blob, gain_slot(6.0)],
+        };
+        store.save("With print", &rack).unwrap();
+        let loaded = store.load("With print").unwrap();
+        assert_eq!(loaded, rack);
+        let loaded_state: ModuleState =
+            serde_json::from_value(loaded.slots[0].state.clone()).unwrap();
+        assert_eq!(
+            loaded_state.blob,
+            Some(vec![0, 1, 2, 250, 255, 0, 128]),
+            "blob bytes must survive base64 round trip exactly"
+        );
+    }
+
     #[test]
     fn list_rename_delete_behave_like_the_module_store() {
         let store = RackPresetStore::new(tmp_dir("crud"));

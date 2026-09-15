@@ -194,6 +194,26 @@ mod tests {
         assert_eq!(loaded.blob, s.blob);
     }
 
+    /// T-810: a large external-plugin state blob (e.g. a big NAM/IR capture, or a VST3
+    /// component+controller state) round-trips byte-exact through the same atomic write/read
+    /// path the sidecar uses (`crate::atomic`, MEMORY T-306) — no per-blob size cap exists
+    /// (`vox_module_api::ModuleState::blob` docs), only the 64 MiB sandbox control-frame and
+    /// sidecar caps, so 10 MiB must hold comfortably.
+    #[test]
+    fn a_10_mib_blob_round_trips_byte_exact() {
+        let store = ModulePresetStore::new(tmp_dir("large-blob"));
+        let mut s = state(&[("gain_db", -3.0)]);
+        let big: Vec<u8> = (0..10 * 1024 * 1024).map(|i| (i % 256) as u8).collect();
+        s.blob = Some(big);
+        store.save("org.powervoice.gain", "Big", &s).unwrap();
+        let loaded = store.load("org.powervoice.gain", "Big").unwrap();
+        assert_eq!(
+            loaded.blob.as_ref().map(Vec::len),
+            s.blob.as_ref().map(Vec::len)
+        );
+        assert_eq!(loaded.blob, s.blob);
+    }
+
     #[test]
     fn save_twice_without_delete_fails_with_already_exists() {
         let store = ModulePresetStore::new(tmp_dir("dup"));

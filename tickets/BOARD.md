@@ -65,8 +65,8 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-25 | OWNER REQUEST: big-tech-quality visual design — design audit + design system + tokens + component kit (phase 1), applied across the app after H-24 (phase 2); ui-ux-designer agent | O | done (Windows button order, shared popover → follow-up) |
 | H-26 | Design follow-ups (H-25): Windows dialog button order (primary first), shared menu/popover component for all menus, migrate `lucide-svelte` (deprecated) → `@lucide/svelte`, Unicode minus in analyzer dB labels, analyzer "dBFS" unit label overlapping the top tick (−20), owner-verified screens with a file open and while recording | S | done |
 | H-27 | Playback playhead follow (SPEC-003 §2.1/§3, SPEC-006 §2.8 continuous band-follow; spec'd but never implemented — found by H-23), reconciled with H-23's record-head page-flip | S | done |
-| H-28 | Post-H-26/H-27 fixes: `?preview&scene=recording` `effect_update_depth_exceeded` in WaveformView follow effects, transport store null guard when telemetry precedes `transport_get`, View-menu toggle for `Settings.playhead_follow`, Normalize target fields in true minus | S | todo |
-| H-18 | Shared test factories for DTOs (`ui/src/lib/test/fixtures.ts` + Rust builders) so a new DTO field touches one helper, not 20 test literals (merge-friction fix) | H | todo |
+| H-28 | Post-H-26/H-27 fixes: `?preview&scene=recording` `effect_update_depth_exceeded` in WaveformView follow effects, transport store null guard when telemetry precedes `transport_get`, View-menu toggle for `Settings.playhead_follow`, Normalize target fields in true minus | S | in progress |
+| H-18 | Shared test factories for DTOs (`ui/src/lib/test/fixtures.ts` + Rust builders) so a new DTO field touches one helper, not 20 test literals (merge-friction fix) | H | in progress |
 | H-17 | Recovery follow-ups (T-301): dialog stays open for remaining sessions (A-015), AC-3/AC-11 timing on a real disk (test-big), compaction off the document lock, markers during an interrupted take, Memory-for-audio UI, `/tmp/vox-project-*` sweep | S | done |
 | H-15 | Sidecar follow-ups (T-306): recent-file-missing dialog, read-only folder matrix (AC-13), SIGKILL-during-sidecar-save test (AC-6), per-slot leniency for a malformed rack slot, perf budget (AC-18) | S | done |
 | H-13 | WebGL2 renderers (ADR-009 primary): spectrogram R8 textures + colormap shader, waveform; Canvas2D stays the fallback; FFT-size texture gating live | S+OR | done (renderer setting UI → H-19; owner smoke on real hardware pending) |
@@ -179,7 +179,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-806 | VST3 adapter (coupler vst3 + moduleinfo scan) | W4 | O | T-803, T-804 | todo |
 | T-807 | LV2 adapter (livi) | W4 | O | T-803, T-804 | todo |
 | T-808 | JSFX adapter (ysfx, sandbox-only) | W4 | O | T-803, T-804 | todo |
-| T-809 | Plugin manager UI + "Install module…" | W5 | S | T-804 | todo |
+| T-809 | Plugin manager UI + "Install module…" | W5 | S | T-804 | in progress |
 | T-810 | Plugin state in presets/sidecar | W5 | S | T-803 | todo |
 | T-811 | VST2 adapter (prefer Carla bridge) | W5 | O | T-803 + owner legal sign-off | gated |
 

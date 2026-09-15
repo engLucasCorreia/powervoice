@@ -13,10 +13,10 @@
   let { showStandard = true }: { showStandard?: boolean } = $props();
 
   const ps = pluginsState();
-  const install = $derived(ps.folders?.install ?? null);
+  const installs = $derived(ps.folders?.install_folders ?? []);
   const scanned = $derived.by(() => {
     const standard = ps.folders?.standard ?? [];
-    return install && !standard.includes(install) ? [install, ...standard] : standard;
+    return [...installs.filter((dir) => !standard.includes(dir)), ...standard];
   });
   const custom = $derived(ps.folders?.custom ?? []);
 
@@ -35,7 +35,7 @@
           <li data-testid="plugin-folder-standard">
             <Icon name="open" size="sm" />
             <span class="path" title={path}>{path}</span>
-            {#if path === install}
+            {#if installs.includes(path)}
               <Badge tone="accent" testid="plugin-folder-install-badge">{t("plugins.folders.install_badge")}</Badge>
             {:else}
               <Badge>{t("plugins.folders.standard_badge")}</Badge>

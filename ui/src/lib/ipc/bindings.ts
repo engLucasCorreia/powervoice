@@ -572,12 +572,17 @@ ports: PluginPortsDto | null, param_count: number, };
  */
 export type PluginFoldersDto = { 
 /**
- * Where "Install module…" copies plugins (the per-user CLAP folder); `None` if the
+ * The per-user CLAP folder "Install module…" copies `.clap` files into; `None` if the
  * environment names none.
  */
 install: string | null, 
 /**
- * The standard per-format folders (`$CLAP_PATH` first), always scanned.
+ * Every per-user install folder, one per format (T-806: the CLAP one and the VST3 one) —
+ * a file directly inside one offers "Uninstall…".
+ */
+install_folders: Array<string>, 
+/**
+ * The standard per-format folders (`$CLAP_PATH`/`$VST3_PATH` first), always scanned.
  */
 standard: Array<string>, 
 /**

@@ -21,7 +21,7 @@ use super::library::ClapLibrary;
 /// Whether `features` describes an audio effect (not an instrument or note effect) — mirrors
 /// `vox_plugin_host::scan::is_effect`, kept as its own tiny copy here since the sandbox binary
 /// doesn't link the editor-side `plugin-host` crate (ADR-008 §8: format code lives only here).
-fn looks_like_effect(features: &[String]) -> bool {
+pub(crate) fn looks_like_effect(features: &[String]) -> bool {
     let has = |f: &str| features.iter().any(|x| x == f);
     has(features::AUDIO_EFFECT) && !has("instrument") && !has("note-effect")
 }

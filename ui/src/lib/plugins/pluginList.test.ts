@@ -5,6 +5,7 @@ import {
   fileName,
   filterPlugins,
   formatLabel,
+  isInAnyInstallFolder,
   isInInstallFolder,
   portsKey,
   rowKey,
@@ -54,6 +55,14 @@ describe("plugin list logic (T-809)", () => {
     // A nested subfolder doesn't count either — installs are never nested.
     expect(isInInstallFolder("/home/u/.clap/nested/acme.clap", "/home/u/.clap")).toBe(false);
     expect(isInInstallFolder("/home/u/.clap/acme.clap", null)).toBe(false);
+  });
+
+  it("treats a file directly inside either format's install folder as installed (T-806)", () => {
+    const dirs = ["/home/u/.clap", "/home/u/.vst3"];
+    expect(isInAnyInstallFolder("/home/u/.vst3/Acme.vst3", dirs)).toBe(true);
+    expect(isInAnyInstallFolder("/home/u/.clap/acme.clap", dirs)).toBe(true);
+    expect(isInAnyInstallFolder("/usr/lib/vst3/Acme.vst3", dirs)).toBe(false);
+    expect(isInAnyInstallFolder("/home/u/.vst3/Acme.vst3", [])).toBe(false);
   });
 
   it("spells every backend's format badge and upper-cases unknown ones", () => {

@@ -196,6 +196,30 @@ impl ClapPluginRef {
     }
 }
 
+/// What the VST3 backend loads (T-806, ADR-008 Amendment 6): the `.vst3` bundle (a regular file
+/// is loaded as the module binary itself) and the class id of the audio processor inside it —
+/// 32 upper-case hex digits in the SDK's FUID string order, as `moduleinfo.json`'s `CID`.
+/// Travels as the `Load { plugin }` reference, JSON-encoded like [`ClapPluginRef`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Vst3PluginRef {
+    /// Path of the `.vst3` bundle (or single file).
+    pub path: String,
+    /// The processor's class id (32 hex digits).
+    pub cid: String,
+}
+
+impl Vst3PluginRef {
+    /// The `Load { plugin }` string.
+    pub fn to_reference(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// Parses a `Load { plugin }` string.
+    pub fn parse(reference: &str) -> Result<Self, String> {
+        serde_json::from_str(reference).map_err(|e| format!("bad VST3 plugin reference: {e}"))
+    }
+}
+
 /// One plugin a scanned file offers (`powervoice-sandbox --scan`, ADR-008 §6; T-803, richer
 /// fields T-804 Amendment 4).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -417,6 +441,12 @@ mod tests {
         };
         assert_eq!(ClapPluginRef::parse(&r.to_reference()).unwrap(), r);
         assert!(ClapPluginRef::parse("com.acme.deesser").is_err());
+        let v = Vst3PluginRef {
+            path: "/home/u/.vst3/Acme Gain.vst3".into(),
+            cid: "50565633544553544741494E00000001".into(),
+        };
+        assert_eq!(Vst3PluginRef::parse(&v.to_reference()).unwrap(), v);
+        assert!(Vst3PluginRef::parse(&r.to_reference()).is_err());
         let report = ScanReport {
             path: "/x.clap".into(),
             plugins: vec![ScannedPlugin {

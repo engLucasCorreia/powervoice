@@ -206,3 +206,79 @@ impl Drop for TempDir {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+
+// --- T-806: the test VST3 plugin -------------------------------------------------------------
+
+/// The test VST3 plugin's library (`vox-test-vst3`'s `cdylib`, built next to the tests like the
+/// CLAP one). A regular file is loaded as the module binary itself.
+pub fn test_vst3_library() -> std::path::PathBuf {
+    let dir = Path::new(SANDBOX)
+        .parent()
+        .expect("sandbox binary directory");
+    let name = format!(
+        "{}vox_test_vst3{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    );
+    [dir.join("deps").join(&name), dir.join(&name)]
+        .into_iter()
+        .find(|p| p.exists())
+        .unwrap_or_else(|| panic!("{name} not found next to {SANDBOX}"))
+}
+
+/// A real bundle `<dir>/<name>.vst3` (the platform layout) holding a copy of the test plugin.
+pub fn make_vst3_bundle(dir: &Path, name: &str) -> std::path::PathBuf {
+    let bundle = dir.join(format!("{name}.vst3"));
+    let arch = bundle
+        .join("Contents")
+        .join(vox_sandbox_ipc::vst3::arch_folder());
+    std::fs::create_dir_all(&arch).unwrap();
+    let file = if cfg!(target_os = "macos") {
+        name.to_owned()
+    } else if cfg!(windows) {
+        format!("{name}.vst3")
+    } else {
+        format!("{name}.so")
+    };
+    std::fs::copy(test_vst3_library(), arch.join(file)).unwrap();
+    bundle
+}
+
+/// A scanned-plugin record for test VST3 class `cid`.
+pub fn test_vst3_plugin(cid: &str) -> vox_plugin_host::scan::ScannedPlugin {
+    vox_plugin_host::scan::ScannedPlugin {
+        id: cid.to_owned(),
+        name: format!("Test {cid}"),
+        vendor: "PowerVoice".into(),
+        version: "1.2.3".into(),
+        description: String::new(),
+        url: None,
+        features: vec!["audio-effect".into(), "utility".into()],
+        ..vox_plugin_host::scan::ScannedPlugin::default()
+    }
+}
+
+/// A factory for test VST3 class `cid` loaded from `path`.
+pub fn vst3_factory_at(path: &Path, cid: &str, options: SandboxOptions) -> Arc<SandboxFactory> {
+    Arc::new(SandboxFactory::new(
+        vox_plugin_host::vst3_spec(path, &test_vst3_plugin(cid)),
+        options,
+    ))
+}
+
+/// A factory for test VST3 class `cid` (module id `vst3:<cid>`).
+pub fn vst3_factory(cid: &str, options: SandboxOptions) -> Arc<SandboxFactory> {
+    vst3_factory_at(&test_vst3_library(), cid, options)
+}
+
+/// A state setting the VST3 gain parameter (key `p0`, normalized) to `gain_db`.
+pub fn vst3_gain_state(gain_db: f64) -> ModuleState {
+    ModuleState {
+        format_version: 1,
+        params: std::collections::BTreeMap::from([(
+            "p0".to_owned(),
+            vox_test_vst3::gain_db_to_normalized(gain_db),
+        )]),
+        blob: None,
+    }
+}

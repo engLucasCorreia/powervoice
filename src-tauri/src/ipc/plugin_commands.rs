@@ -162,6 +162,10 @@ pub async fn plugins_folders(
     let text = |p: std::path::PathBuf| p.to_string_lossy().into_owned();
     Ok(PluginFoldersDto {
         install: crate::plugins::install_dir().map(text),
+        install_folders: crate::plugins::install_dirs()
+            .into_iter()
+            .map(text)
+            .collect(),
         standard: crate::plugins::standard_folders()
             .into_iter()
             .map(text)
@@ -170,7 +174,8 @@ pub async fn plugins_folders(
     })
 }
 
-/// "Install module…" (T-809): copies the picked `.clap` into the per-user plugin folder, scans
+/// "Install module…" (T-809, T-806): copies the picked `.clap` file or `.vst3` bundle (or a file
+/// inside one) into the per-user folder of its format, scans
 /// only that file (up to the 30 s scan timeout, off the async runtime) and registers it. A name
 /// collision comes back as `collision` without changing anything, until `replace` is set.
 #[tauri::command]

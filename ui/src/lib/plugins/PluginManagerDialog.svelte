@@ -22,7 +22,7 @@
     fileName,
     filterPlugins,
     formatLabel,
-    isInInstallFolder,
+    isInAnyInstallFolder,
     portsKey,
     rowKey,
     sortPlugins,
@@ -122,7 +122,7 @@
     }
     // "Uninstall…" (H-29) replaces "Block" for a file PowerVoice itself installed; a file found
     // anywhere else is never removed here, only blocked.
-    const installed = isInInstallFolder(entry.path, ps.folders?.install ?? null);
+    const installed = isInAnyInstallFolder(entry.path, ps.folders?.install_folders ?? []);
     const items: MenuEntry[] = [];
     if (entry.status.kind === "blocklisted") {
       items.push({

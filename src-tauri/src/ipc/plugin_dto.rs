@@ -7,8 +7,8 @@ use ts_rs::TS;
 use vox_plugin_host::blocklist::{BlockInfo, BlockReason};
 use vox_plugin_host::health::CrashFlag;
 use vox_plugin_host::install::InstallError;
-use vox_plugin_host::scan::{FailureKind, ShadowedPlugin};
-use vox_plugin_host::{ClapPluginRef, InstallReport, PluginDetails, SandboxSpec};
+use vox_plugin_host::scan::{FailureKind, ShadowedPlugin, format_of_path};
+use vox_plugin_host::{InstallReport, PluginDetails, SandboxSpec};
 
 /// Why a file is blocklisted (T-809: the UI words it through i18n; `reason` stays the log text).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -100,16 +100,23 @@ fn blocked_status(info: &BlockInfo) -> PluginStatusDto {
     }
 }
 
-/// A registered CLAP effect's plugin manager entry. `details`: what the scan learned (ports and
-/// parameter count; T-809 — unknown ports stay `None`).
-pub fn clap_entry(
+/// The backend of a file the registry doesn't know (a blocklisted or shadowed one), by its
+/// extension (T-806).
+fn file_format(path: &Path) -> String {
+    format_of_path(path).unwrap_or("clap").to_string()
+}
+
+/// A registered effect's plugin manager entry (CLAP or VST3). `details`: what the scan learned
+/// (ports and parameter count; T-809 — unknown ports stay `None`).
+pub fn plugin_entry(
     spec: &SandboxSpec,
     disabled: &[String],
     flag: CrashFlag,
     details: Option<PluginDetails>,
 ) -> PluginEntryDto {
-    let path = ClapPluginRef::parse(&spec.plugin)
-        .map(|r| r.path)
+    let path = spec
+        .path()
+        .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
     let status = if is_disabled(disabled, &spec.descriptor.id) {
         PluginStatusDto::Disabled
@@ -151,7 +158,7 @@ pub fn blocklisted_entry(path: &Path, info: &BlockInfo) -> PluginEntryDto {
         name,
         vendor: String::new(),
         version: String::new(),
-        format: "clap".to_string(),
+        format: file_format(path),
         path: path.to_string_lossy().into_owned(),
         status: blocked_status(info),
         ports: None,
@@ -169,7 +176,7 @@ pub fn shadowed_entry(shadow: &ShadowedPlugin) -> PluginEntryDto {
         name: shadow.plugin.name.clone(),
         vendor: shadow.plugin.vendor.clone(),
         version: shadow.plugin.version.clone(),
-        format: "clap".to_string(),
+        format: file_format(&shadow.path),
         path: shadow.path.to_string_lossy().into_owned(),
         status: PluginStatusDto::Shadowed {
             by: shadow.shadowed_by.to_string_lossy().into_owned(),
@@ -202,7 +209,7 @@ pub fn plugin_list(
         .iter()
         .map(|spec| {
             let id = &spec.descriptor.id;
-            let mut entry = clap_entry(spec, disabled, flag(id), details(id));
+            let mut entry = plugin_entry(spec, disabled, flag(id), details(id));
             if let Some(info) = blocked_info(&entry.path) {
                 entry.status = blocked_status(info);
             }
@@ -341,10 +348,13 @@ impl From<Result<InstallReport, InstallError>> for PluginInstallResultDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "bindings.ts")]
 pub struct PluginFoldersDto {
-    /// Where "Install module…" copies plugins (the per-user CLAP folder); `None` if the
+    /// The per-user CLAP folder "Install module…" copies `.clap` files into; `None` if the
     /// environment names none.
     pub install: Option<String>,
-    /// The standard per-format folders (`$CLAP_PATH` first), always scanned.
+    /// Every per-user install folder, one per format (T-806: the CLAP one and the VST3 one) —
+    /// a file directly inside one offers "Uninstall…".
+    pub install_folders: Vec<String>,
+    /// The standard per-format folders (`$CLAP_PATH`/`$VST3_PATH` first), always scanned.
     pub standard: Vec<String>,
     /// `Settings.plugins.custom_folders`.
     pub custom: Vec<String>,
@@ -354,6 +364,7 @@ pub struct PluginFoldersDto {
 mod tests {
     use super::*;
     use vox_module_api::{LocalizedText, MODULE_API_VERSION, ModuleDescriptor, Version};
+    use vox_plugin_host::ClapPluginRef;
 
     fn spec(id: &str, path: &str) -> SandboxSpec {
         SandboxSpec {
@@ -386,9 +397,38 @@ mod tests {
 
     const PATH: &str = "/usr/lib/clap/acme.clap";
 
+    /// T-806: a VST3 effect's row carries its format and its bundle path; blocklisted and
+    /// shadowed files get theirs from the extension.
+    #[test]
+    fn vst3_rows_carry_their_format() {
+        let spec = vox_plugin_host::vst3_spec(
+            Path::new("/usr/lib/vst3/Acme.vst3"),
+            &vox_plugin_host::scan::ScannedPlugin {
+                id: "84E8DE5F92554F5396FAE4133C935A18".into(),
+                name: "Acme".into(),
+                ..Default::default()
+            },
+        );
+        let e = plugin_entry(&spec, &[], CrashFlag::default(), None);
+        assert_eq!(
+            (e.format.as_str(), e.path.as_str()),
+            ("vst3", "/usr/lib/vst3/Acme.vst3")
+        );
+        let b = blocklisted_entry(
+            Path::new("/home/u/.vst3/Bad.vst3"),
+            &block(BlockReason::Crashed),
+        );
+        assert_eq!((b.format.as_str(), b.name.as_str()), ("vst3", "Bad"));
+        let c = blocklisted_entry(
+            Path::new("/home/u/.clap/bad.clap"),
+            &block(BlockReason::Crashed),
+        );
+        assert_eq!(c.format, "clap");
+    }
+
     #[test]
     fn ok_when_neither_disabled_nor_flagged() {
-        let e = clap_entry(
+        let e = plugin_entry(
             &spec("clap:com.acme.deesser", PATH),
             &[],
             CrashFlag::default(),
@@ -401,7 +441,7 @@ mod tests {
 
     #[test]
     fn ports_and_params_come_from_the_scan_details() {
-        let e = clap_entry(
+        let e = plugin_entry(
             &spec("clap:com.acme.deesser", PATH),
             &[],
             CrashFlag::default(),
@@ -423,7 +463,7 @@ mod tests {
 
     #[test]
     fn disabled_takes_priority_over_flagged() {
-        let e = clap_entry(
+        let e = plugin_entry(
             &spec("clap:com.acme.deesser", PATH),
             &["clap:com.acme.deesser".to_string()],
             CrashFlag {
@@ -437,7 +477,7 @@ mod tests {
 
     #[test]
     fn flagged_when_crashed_and_not_disabled() {
-        let e = clap_entry(
+        let e = plugin_entry(
             &spec("clap:com.acme.deesser", PATH),
             &[],
             CrashFlag {

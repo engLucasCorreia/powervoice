@@ -1,0 +1,29 @@
+[package]
+name = "vox-test-vst3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# T-806: the in-repo **test VST3 plugin** — a `cdylib` exporting `GetPluginFactory` (and the
+# per-OS module entry points), built on the `vst3` crate's plugin-side bindings (ADR-007 §6), so
+# the sandbox's VST3 backend is tested through a real dlopen without depending on installed
+# plugins. It hosts the built-in Gain (bit-exact with the in-process module) behind a fixed
+# latency. Never shipped. `rlib` too: test crates dev-depend on it, which makes cargo build the
+# `.so` next to them (`target/<profile>/deps/libvox_test_vst3.so`) and lets them use its constants.
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+vst3.workspace = true
+vox-module-api = { path = "../module-api" }
+vox-modules = { path = "../modules" }
+
+# The deliberate crash-on-scan abort disables core dumps first (setrlimit / prctl); `dladdr`
+# finds the library's own file name.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[lints]
+workspace = true

@@ -50,7 +50,7 @@ describe("Effects menu → plugins (T-809)", () => {
     item.click();
     await settle();
     expect(opened).toHaveLength(1);
-    expect((opened[0] as { filters: { extensions: string[] }[] }).filters[0]!.extensions).toEqual(["clap"]);
+    expect((opened[0] as { filters: { extensions: string[] }[] }).filters[0]!.extensions).toEqual(["clap", "vst3"]);
     expect(pluginsState().install.phase).toBe("idle");
     unmount(app);
     target.remove();

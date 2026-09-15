@@ -1,5 +1,6 @@
-//! Module registry composition (T-802, T-803, T-804): the built-in modules, the **installed
-//! CLAP effects** — found in the standard CLAP paths plus any configured custom folders
+//! Module registry composition (T-802, T-803, T-804, T-806): the built-in modules, the
+//! **installed CLAP and VST3 effects** — found in the standard CLAP/VST3 paths plus any configured
+//! custom folders (VST3 bundles with `moduleinfo.json` indexed without loading code)
 //! (ADR-008 §6), scanned in sandbox processes and cached by path + size + mtime, blocklisted on
 //! a crash/timeout (ADR-008 §5) — and, behind the developer flag [`DEV_PLUGINS_ENV`]`=1`, the
 //! sandboxed test plugins (`test:gain`, `test:crash`, `test:hang`). Every external plugin
@@ -28,7 +29,7 @@ use vox_rack::Registry;
 
 /// `POWERVOICE_DEV_PLUGINS=1` adds the sandboxed test plugins to the Add-module menu.
 pub const DEV_PLUGINS_ENV: &str = "POWERVOICE_DEV_PLUGINS";
-/// `POWERVOICE_NO_PLUGIN_SCAN=1` skips the CLAP scan (no external plugins in the registry).
+/// `POWERVOICE_NO_PLUGIN_SCAN=1` skips the plugin scan (no external plugins in the registry).
 pub const NO_PLUGIN_SCAN_ENV: &str = "POWERVOICE_NO_PLUGIN_SCAN";
 
 fn flag_on(value: Option<OsString>) -> bool {
@@ -157,7 +158,7 @@ pub fn start_background_scan(
     on_done: impl FnOnce(ScanSummary) + Send + 'static,
 ) {
     if flag_on(std::env::var_os(NO_PLUGIN_SCAN_ENV)) {
-        tracing::info!("CLAP plugin scan disabled");
+        tracing::info!("plugin scan disabled");
         on_done(ScanSummary::default());
         return;
     }
@@ -183,28 +184,57 @@ pub fn clear_flag(module_id: &str) {
     catalog().clear_flag(module_id);
 }
 
-/// The per-user plugin folder "Install module…" copies into (T-809; ADR-006 Amendment 1):
-/// `~/.clap`, `~/Library/Audio/Plug-Ins/CLAP` or `%LOCALAPPDATA%\Programs\Common\CLAP`.
+/// The per-user CLAP folder (T-809; ADR-006 Amendment 1): `~/.clap`,
+/// `~/Library/Audio/Plug-Ins/CLAP` or `%LOCALAPPDATA%\Programs\Common\CLAP`.
 pub fn install_dir() -> Option<PathBuf> {
     vox_plugin_host::install::user_clap_dir()
 }
 
-/// The standard per-format folders every scan searches (`$CLAP_PATH` first).
-pub fn standard_folders() -> Vec<PathBuf> {
-    vox_plugin_host::scan::clap_search_paths()
+/// Every per-user folder "Install module…" copies into, one per format (T-806: the CLAP folder
+/// and `~/.vst3`, `~/Library/Audio/Plug-Ins/VST3` or `%LOCALAPPDATA%\Programs\Common\VST3`).
+pub fn install_dirs() -> Vec<PathBuf> {
+    [
+        vox_plugin_host::install::user_clap_dir(),
+        vox_plugin_host::install::user_vst3_dir(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
-/// "Install module…" (T-809): copies `source` into [`install_dir`] — never a system folder —
-/// and scans only that file (`vox_plugin_host::PluginCatalog::install`).
+/// The standard per-format folders every scan searches (`$CLAP_PATH`, then the CLAP folders;
+/// `$VST3_PATH`, then the VST3 folders).
+pub fn standard_folders() -> Vec<PathBuf> {
+    let mut dirs = vox_plugin_host::scan::clap_search_paths();
+    for d in vox_plugin_host::scan::vst3_search_paths() {
+        if !dirs.contains(&d) {
+            dirs.push(d);
+        }
+    }
+    dirs
+}
+
+/// "Install module…" (T-809, T-806): copies `source` into the per-user folder of its format —
+/// never a system folder — and scans only that file (`vox_plugin_host::PluginCatalog::install`).
 pub fn install(source: &std::path::Path, replace: bool) -> Result<InstallReport, InstallError> {
-    let dir = install_dir().ok_or(InstallError::NoInstallDir)?;
+    let root = vox_plugin_host::install::plugin_root(source);
+    if vox_plugin_host::scan::format_of_path(&root).is_none() {
+        return Err(InstallError::NotAPlugin);
+    }
+    let dir =
+        vox_plugin_host::install::user_install_dir_for(&root).ok_or(InstallError::NoInstallDir)?;
     catalog().install(source, &dir, replace)
 }
 
-/// "Uninstall…" (H-29): removes `path` from [`install_dir`] — never a system folder — and drops
-/// it from the registry and the scan cache (`vox_plugin_host::PluginCatalog::uninstall`).
+/// "Uninstall…" (H-29, T-806): removes `path` from the per-user folder of its format — never a
+/// system folder — and drops it from the registry and the scan cache
+/// (`vox_plugin_host::PluginCatalog::uninstall`).
 pub fn uninstall(path: &std::path::Path) -> Result<(), UninstallError> {
-    let dir = install_dir().ok_or(UninstallError::NoInstallDir)?;
+    if vox_plugin_host::scan::format_of_path(path).is_none() {
+        return Err(UninstallError::OutsideInstallFolder);
+    }
+    let dir =
+        vox_plugin_host::install::user_install_dir_for(path).ok_or(UninstallError::NoInstallDir)?;
     catalog().uninstall(path, &dir)
 }
 
@@ -248,8 +278,8 @@ pub fn reveal(path: &std::path::Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vox_plugin_host::clap_spec;
     use vox_plugin_host::scan::ScannedPlugin;
+    use vox_plugin_host::{clap_spec, vst3_spec};
 
     #[test]
     fn the_dev_flag_adds_the_sandboxed_test_plugins() {
@@ -301,5 +331,47 @@ mod tests {
         let f = r.get("clap:com.acme.deesser").unwrap();
         assert!(f.loads_async());
         assert_eq!(f.descriptor().name.text, "De-esser");
+    }
+
+    #[test]
+    fn scanned_vst3_effects_are_registered_too() {
+        let spec = vst3_spec(
+            std::path::Path::new("/usr/lib/vst3/Acme.vst3"),
+            &ScannedPlugin {
+                id: "84E8DE5F92554F5396FAE4133C935A18".into(),
+                name: "Acme EQ".into(),
+                vendor: "Acme".into(),
+                version: "2.0".into(),
+                features: vec!["audio-effect".into(), "equalizer".into()],
+                ..ScannedPlugin::default()
+            },
+        );
+        let r = build(false, &[spec], &SandboxOptions::beside_current_exe()).unwrap();
+        let f = r.get("vst3:84E8DE5F92554F5396FAE4133C935A18").unwrap();
+        assert!(f.loads_async());
+        assert_eq!(f.descriptor().name.text, "Acme EQ");
+    }
+
+    #[test]
+    fn install_and_standard_folders_cover_both_formats() {
+        let standard = standard_folders();
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            assert!(standard.contains(&PathBuf::from("/usr/lib/clap")));
+            assert!(standard.contains(&PathBuf::from("/usr/lib/vst3")));
+        }
+        if std::env::var_os("HOME").is_some() && cfg!(all(unix, not(target_os = "macos"))) {
+            let dirs = install_dirs();
+            assert!(dirs.iter().any(|d| d.ends_with(".clap")));
+            assert!(dirs.iter().any(|d| d.ends_with(".vst3")));
+        }
+        assert!(matches!(
+            install(std::path::Path::new("/tmp/readme.txt"), false),
+            Err(InstallError::NotAPlugin)
+        ));
+        assert_eq!(
+            uninstall(std::path::Path::new("/tmp/readme.txt")),
+            Err(UninstallError::OutsideInstallFolder)
+        );
     }
 }

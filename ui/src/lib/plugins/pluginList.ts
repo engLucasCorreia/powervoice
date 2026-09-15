@@ -214,3 +214,9 @@ export function isInInstallFolder(path: string, installDir: string | null): bool
   const file = slashes(path);
   return file.startsWith(`${dir}/`) && !file.slice(dir.length + 1).includes("/");
 }
+
+/** Whether `path` is a direct child of any per-format install folder (T-806: the CLAP and the
+ * VST3 one) — see {@link isInInstallFolder}. */
+export function isInAnyInstallFolder(path: string, installDirs: readonly string[]): boolean {
+  return installDirs.some((dir) => isInInstallFolder(path, dir));
+}

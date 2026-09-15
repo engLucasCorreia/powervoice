@@ -315,7 +315,12 @@ describe("Plugin manager (T-809)", () => {
     foldersTab.click();
     await settle();
     expect(q(root, "plugin-manager-panel-folders")).not.toBeNull();
-    expect(all(root, "plugin-folder-standard").map(text)).toEqual(["/home/u/.clap Installs here", "/usr/lib/clap Standard"]);
+    expect(all(root, "plugin-folder-standard").map(text)).toEqual([
+      "/home/u/.clap Installs here",
+      "/usr/lib/clap Standard",
+      "/home/u/.vst3 Installs here",
+      "/usr/lib/vst3 Standard",
+    ]);
     expect(all(root, "plugin-folder-custom").map((li) => text(li.querySelector(".path")))).toEqual(["/media/plugins"]);
     q(root, "plugin-folder-remove")!.click();
     await settle();

@@ -4,9 +4,10 @@
 //! into every [`Registry`] that [`observe`](PluginCatalog::observe)s this catalog, so the
 //! Add-module list updates without a restart (ADR-008 §6, T-804 item 1).
 //!
-//! Format-agnostic in spirit (the sandbox already takes `--format` as a parameter, ADR-008 §6):
-//! this orchestrates CLAP today because CLAP is the only backend that exists (T-803). T-806/807/
-//! 808 add `vst3`/`lv2`/`jsfx` scanning the same way, without changing this module's shape.
+//! Formats (T-806): CLAP and VST3. Each format has its own H-29 search tiers (its per-user
+//! install folder, its standard paths, then the shared custom folders); both formats' files go
+//! through one scan (the format follows the extension), one cache and one blocklist. Module ids
+//! are format-prefixed (`clap:`, `vst3:`), so the duplicate-id policy applies within a format.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -20,9 +21,9 @@ use crate::factory::{SandboxFactory, SandboxOptions, SandboxSpec};
 use crate::health::HealthStore;
 use crate::install::{self, InstallError, UninstallError};
 use crate::scan::{
-    self, FoundPlugin, ScanFailure, ScanOptions, ScanOutcome, ScannedPlugin, ShadowedPlugin,
+    self, FoundPlugin, PluginFormat, ScanFailure, ScanOptions, ScanOutcome, ScannedPlugin,
+    ShadowedPlugin,
 };
-use vox_sandbox_ipc::protocol::ClapPluginRef;
 
 /// Where the catalog persists its state.
 #[derive(Clone, Debug)]
@@ -41,6 +42,8 @@ pub struct ScanSummary {
     pub scanned: usize,
     /// Files answered from the cache.
     pub cached: usize,
+    /// VST3 bundles indexed from their `moduleinfo.json`, without a sandbox (T-806).
+    pub indexed: usize,
     /// Files that failed (not blocklisted — see `blocklisted_now`).
     pub failed: usize,
     /// Files newly blocklisted by this scan (crash/timeout).
@@ -83,11 +86,9 @@ pub struct InstallReport {
     pub replaced: bool,
 }
 
-/// The plugin file a spec loads from (`None` for a non-CLAP reference).
+/// The plugin file a spec loads from (`None` for the test backend).
 fn spec_path(spec: &SandboxSpec) -> Option<PathBuf> {
-    ClapPluginRef::parse(&spec.plugin)
-        .ok()
-        .map(|r| PathBuf::from(r.path))
+    spec.path()
 }
 
 /// Per-effect details for `outcome`, keyed by module id; the first file wins for a duplicate id,
@@ -99,7 +100,7 @@ fn details_of(outcome: &ScanOutcome) -> HashMap<String, PluginDetails> {
         .iter()
         .filter(|f| scan::is_effect(&f.plugin))
     {
-        out.entry(format!("{}:{}", crate::CLAP_FORMAT, f.plugin.id))
+        out.entry(scan::spec_for(&f.path, &f.plugin).descriptor.id)
             .or_insert_with(|| PluginDetails::from(&f.plugin));
     }
     out
@@ -152,11 +153,26 @@ impl PluginCatalog {
             .unwrap_or_else(PoisonError::into_inner) = folders;
     }
 
-    /// The standard CLAP paths plus the configured custom folders (flat; for callers that don't
-    /// care about search priority). Scanning itself uses [`Self::search_tiers`], which keeps
-    /// them apart.
+    /// The standard CLAP and VST3 paths plus the configured custom folders (flat, without
+    /// duplicates; for callers that don't care about search priority). Scanning itself uses
+    /// [`Self::search_tiers`], which keeps them apart.
     pub fn search_dirs(&self) -> Vec<PathBuf> {
-        self.search_tiers().into_iter().flatten().collect()
+        let mut seen = std::collections::HashSet::new();
+        [PluginFormat::Clap, PluginFormat::Vst3]
+            .into_iter()
+            .flat_map(|f| self.search_tiers(f))
+            .flatten()
+            .filter(|d| seen.insert(d.clone()))
+            .collect()
+    }
+
+    /// Every plugin file of every format, each format in its H-29 priority order.
+    fn plugin_files(&self) -> Vec<PathBuf> {
+        let mut files = scan::find_clap_files_ranked(&self.search_tiers(PluginFormat::Clap));
+        files.extend(scan::find_vst3_files_ranked(
+            &self.search_tiers(PluginFormat::Vst3),
+        ));
+        files
     }
 
     /// [`Self::search_dirs`], grouped into H-29's duplicate-id priority tiers (ADR-008 Amendment
@@ -164,12 +180,16 @@ impl PluginCatalog {
     /// paths (`$CLAP_PATH` first — unchanged since T-803/T-804: it's one tier, not split
     /// further), then the configured custom folders. [`scan::find_clap_files_ranked`] turns this
     /// straight into "first occurrence wins" priority.
-    fn search_tiers(&self) -> Vec<Vec<PathBuf>> {
+    fn search_tiers(&self, format: PluginFormat) -> Vec<Vec<PathBuf>> {
         let mut tiers = Vec::new();
-        if let Some(install_dir) = install::user_clap_dir() {
+        let (install_dir, standard) = match format {
+            PluginFormat::Clap => (install::user_clap_dir(), scan::clap_search_paths()),
+            PluginFormat::Vst3 => (install::user_vst3_dir(), scan::vst3_search_paths()),
+        };
+        if let Some(install_dir) = install_dir {
             tiers.push(vec![install_dir]);
         }
-        tiers.push(scan::clap_search_paths());
+        tiers.push(standard);
         tiers.push(
             self.custom_folders
                 .lock()
@@ -226,7 +246,7 @@ impl PluginCatalog {
     /// knows, without spawning a single sandbox process. Never blocks on I/O beyond a directory
     /// walk and reading two small JSON files.
     pub fn load_cached(&self) {
-        let files = scan::find_clap_files_ranked(&self.search_tiers());
+        let files = self.plugin_files();
         let outcome = scan::cached_outcome(
             &files,
             self.paths.cache.as_deref(),
@@ -261,9 +281,9 @@ impl PluginCatalog {
             .scan_lock
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let files = scan::find_clap_files_ranked(&self.search_tiers());
+        let files = self.plugin_files();
         let options = self.scan_options(force);
-        let outcome: ScanOutcome = scan::scan_clap_files_with(&files, &options, on_progress);
+        let outcome: ScanOutcome = scan::scan_plugin_files_with(&files, &options, on_progress);
         let (new_specs, shadowed) = scan::effect_specs_with_shadows(&outcome);
 
         let previous_ids: std::collections::HashSet<String> =
@@ -301,6 +321,7 @@ impl PluginCatalog {
         ScanSummary {
             scanned: outcome.scanned,
             cached: outcome.cached,
+            indexed: outcome.indexed,
             failed: outcome.failures.len(),
             blocklisted_now: outcome
                 .failures
@@ -717,6 +738,55 @@ mod tests {
         assert!(registry.get("clap:com.acme.deesser").is_some());
         assert_eq!(c.specs().len(), 1);
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// T-806: "Install module…" of a `.vst3` bundle registers `vst3:<class id>` effects (with
+    /// their details) and "Uninstall…" removes the bundle directory and the registrations.
+    #[test]
+    fn a_vst3_bundle_installs_and_uninstalls() {
+        let dir = temp_dir("vst3-install");
+        let dest = dir.join("home").join(".vst3");
+        let bundle = crate::scan::tests::vst3_bundle(&dir.join("downloads"), "Acme", None);
+        let c = catalog(&dir);
+        let registry = Arc::new(Registry::new());
+        c.observe(&registry);
+        let cid = "84E8DE5F92554F5396FAE4133C935A18";
+        let report = c
+            .install_with(&bundle, &dest, false, |_| {
+                Ok(vec![crate::install::tests::effect(cid)])
+            })
+            .unwrap();
+        let target = dest.join("Acme.vst3");
+        assert_eq!(report.target, target);
+        let id = format!("vst3:{cid}");
+        assert_eq!(report.effects[0].descriptor.id, id);
+        assert_eq!(report.effects[0].format, "vst3");
+        assert!(registry.get(&id).is_some());
+        assert_eq!(c.details(&id).map(|d| d.param_count), Some(7));
+        assert_eq!(spec_path(&c.specs()[0]).as_deref(), Some(target.as_path()));
+
+        c.uninstall(&target, &dest).unwrap();
+        assert!(!target.exists());
+        assert!(registry.get(&id).is_none());
+        assert!(c.specs().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn search_dirs_cover_both_formats() {
+        let dir = temp_dir("dirs-formats");
+        let c = catalog(&dir);
+        let dirs = c.search_dirs();
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            assert!(dirs.contains(&PathBuf::from("/usr/lib/clap")));
+            assert!(dirs.contains(&PathBuf::from("/usr/lib/vst3")));
+        }
+        let mut unique = dirs.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), dirs.len(), "no duplicates");
         std::fs::remove_dir_all(&dir).ok();
     }
 

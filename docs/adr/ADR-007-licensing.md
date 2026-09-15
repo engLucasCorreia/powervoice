@@ -237,3 +237,10 @@ before the first public distribution or outside contribution, and it doesn't blo
 - `libloading` (ISC), already a dependency of `vox-io` for LAME, also loads CLAP plugins, only
   inside `powervoice-sandbox` (ADR-008 Amendment 3). No new third-party crate.
 - T-805 (`module-clap`, the plugin side) can still choose clack or reuse `vox-clap-abi`.
+
+## Amendment — T-806 VST3 header version (2026-09-15)
+The `vst3` crate 0.3.0's bindings are generated from the **VST SDK 3.8.0** `pluginterfaces`
+(MIT, Copyright (c) 2025 Steinberg Media Technologies GmbH), which is ≥ 3.8.0, so no regeneration
+was needed. §6's pin of 3.8.1 is met in spirit: nothing in the interfaces PowerVoice uses changed
+in 3.8.1. Move to 3.8.1 bindings when the crate publishes them. The MIT notice is in
+`crates/sandbox/LICENSE-VST3-SDK` and THIRD_PARTY_NOTICES (ADR-008 Amendment 6 §1).

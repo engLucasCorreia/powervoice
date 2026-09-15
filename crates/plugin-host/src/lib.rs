@@ -21,6 +21,9 @@
 //! - **CLAP enumeration** ([`scan`], T-803): the standard CLAP paths, each file scanned in its
 //!   own `powervoice-sandbox --scan` process (a crashing file is reported, not fatal), cached
 //!   by path + size + mtime.
+//! - **VST3 enumeration** (T-806, same module): the standard VST3 paths; a bundle with
+//!   `moduleinfo.json` is indexed from it without loading any code, anything else is scanned in
+//!   its own sandbox like a CLAP file. Cache, blocklist and plugin manager rows carry the format.
 //! - Instances are created off the rack's control thread (`ModuleFactory::loads_async`).
 //! - The **watchdog** thread (one per process, [`watchdog`]) spawns the sandboxes, polls every
 //!   channel's `Monitor` (crash, hang, clean exit), kills hung processes and reaps retired ones:
@@ -41,11 +44,11 @@ pub mod watchdog;
 pub use catalog::{CatalogPaths, InstallReport, PluginCatalog, PluginDetails, ScanSummary};
 pub use factory::{
     CLAP_FORMAT, SandboxFactory, SandboxInstance, SandboxOptions, SandboxSpec, TEST_FORMAT,
-    clap_spec, test_factories, test_spec,
+    VST3_FORMAT, clap_spec, test_factories, test_spec, vst3_spec,
 };
 pub use proxy::{MAX_TRANSPORT_BLOCK, ProxyModule};
 pub use sandbox::SandboxFault;
 // Re-exported so `src-tauri` (the plugin manager DTOs, T-804) can read a CLAP `SandboxSpec`'s
 // path without adding its own dependency on `vox-sandbox-ipc` (ADR-001 §3: format/protocol
 // crates stay behind `vox-plugin-host`, not linked directly by the editor's command layer).
-pub use vox_sandbox_ipc::protocol::ClapPluginRef;
+pub use vox_sandbox_ipc::protocol::{ClapPluginRef, Vst3PluginRef};

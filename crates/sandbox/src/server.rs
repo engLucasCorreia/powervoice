@@ -32,7 +32,7 @@ struct Args {
     host_pid: Option<u32>,
     /// `--scan <file>`: scan mode (T-803).
     scan: Option<String>,
-    /// `--format <clap>` for `--scan`.
+    /// `--format <clap|vst3>` for `--scan`.
     format: Option<String>,
 }
 
@@ -168,6 +168,10 @@ fn scan_mode(file: &str, format: &str) -> ExitCode {
     };
     let reply = match format {
         "clap" => match crate::clap::scan::scan(std::path::Path::new(file)) {
+            Ok(report) => ScanReply::Ok(report),
+            Err(e) => ScanReply::Error(e),
+        },
+        "vst3" => match crate::vst3::scan::scan(std::path::Path::new(file)) {
             Ok(report) => ScanReply::Ok(report),
             Err(e) => ScanReply::Error(e),
         },

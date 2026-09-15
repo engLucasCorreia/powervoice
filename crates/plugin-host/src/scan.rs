@@ -10,6 +10,18 @@
 //! - Windows: `%LOCALAPPDATA%\Programs\Common\CLAP`, `%COMMONPROGRAMFILES%\CLAP`;
 //!
 //! plus every directory of `$CLAP_PATH` (OS path-list syntax), searched first.
+//!
+//! **VST3** (T-806, ADR-008 Amendment 6): `.vst3` bundles (directories, never searched inside;
+//! Windows' legacy single files too) in `$VST3_PATH` then the SDK's standard paths —
+//! - Linux/BSD: `~/.vst3`, `/usr/lib/vst3`, `/usr/local/lib/vst3`;
+//! - macOS: `~/Library/Audio/Plug-Ins/VST3`, `/Library/Audio/Plug-Ins/VST3`;
+//! - Windows: `%LOCALAPPDATA%\Programs\Common\VST3`, `%COMMONPROGRAMFILES%\VST3`.
+//!
+//! A bundle with `Contents/Resources/moduleinfo.json` (and a binary for this platform) is
+//! **indexed from that file without loading any code** (ADR-008 §6); any other bundle is scanned
+//! in its own `powervoice-sandbox --scan <bundle> --format vst3`. Every scan function here takes
+//! files of either format (the format follows the extension); cache entries and blocklist
+//! entries carry it.
 
 use std::collections::HashSet;
 use std::io::Read;
@@ -24,8 +36,12 @@ use vox_module_api::{ModuleFactory, features};
 use vox_sandbox_ipc::protocol::ScanReply;
 pub use vox_sandbox_ipc::protocol::ScannedPlugin;
 
+use vox_sandbox_ipc::vst3::{AUDIO_MODULE_CLASS, binary_path, moduleinfo_path};
+
 use crate::blocklist::{BlockReason, Blocklist};
-use crate::factory::{SandboxFactory, SandboxOptions, SandboxSpec, clap_spec};
+use crate::factory::{
+    CLAP_FORMAT, SandboxFactory, SandboxOptions, SandboxSpec, VST3_FORMAT, clap_spec, vst3_spec,
+};
 
 /// ADR-008 §4: a scan may take 30 s.
 pub const SCAN_TIMEOUT: Duration = Duration::from_secs(30);
@@ -136,6 +152,45 @@ pub struct ScanOutcome {
     /// Files skipped because they're blocklisted (T-804, ADR-008 §5) — not scanned, not in
     /// `plugins`, not in `failures`.
     pub blocklisted: Vec<PathBuf>,
+    /// VST3 bundles indexed from their `moduleinfo.json` this time, without a sandbox (T-806;
+    /// not counted in `scanned`).
+    pub indexed: usize,
+}
+
+/// A plugin file format the scanner knows (T-806).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PluginFormat {
+    /// `.clap` files (macOS: bundles).
+    Clap,
+    /// `.vst3` bundles (Windows: also legacy single files).
+    Vst3,
+}
+
+impl PluginFormat {
+    /// The sandbox backend's name (`"clap"`, `"vst3"`).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Clap => CLAP_FORMAT,
+            Self::Vst3 => VST3_FORMAT,
+        }
+    }
+
+    /// The format of a plugin path, by its extension (any case).
+    pub fn of_path(path: &Path) -> Option<Self> {
+        let ext = path.extension()?;
+        if ext.eq_ignore_ascii_case("clap") {
+            Some(Self::Clap)
+        } else if ext.eq_ignore_ascii_case("vst3") {
+            Some(Self::Vst3)
+        } else {
+            None
+        }
+    }
+}
+
+/// [`PluginFormat::of_path`]'s backend name (`None`: not a plugin path).
+pub fn format_of_path(path: &Path) -> Option<&'static str> {
+    PluginFormat::of_path(path).map(PluginFormat::name)
 }
 
 /// The CLAP search paths for this OS, `$CLAP_PATH` first, without duplicates.
@@ -166,43 +221,87 @@ pub fn clap_search_paths() -> Vec<PathBuf> {
     dirs
 }
 
-/// Whether `path` names a CLAP plugin (`.clap`, any case).
-pub(crate) fn is_clap(path: &Path) -> bool {
-    path.extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("clap"))
+/// The VST3 search paths for this OS (the SDK's standard locations), `$VST3_PATH` first, without
+/// duplicates (T-806).
+pub fn vst3_search_paths() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::env::var_os("VST3_PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    let env_dir = |var: &str, rest: &[&str]| {
+        std::env::var_os(var).map(|base| rest.iter().fold(PathBuf::from(base), |p, r| p.join(r)))
+    };
+    #[cfg(target_os = "macos")]
+    {
+        dirs.extend(env_dir("HOME", &["Library", "Audio", "Plug-Ins", "VST3"]));
+        dirs.push(PathBuf::from("/Library/Audio/Plug-Ins/VST3"));
+    }
+    #[cfg(windows)]
+    {
+        dirs.extend(env_dir("LOCALAPPDATA", &["Programs", "Common", "VST3"]));
+        dirs.extend(env_dir("COMMONPROGRAMFILES", &["VST3"]));
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        dirs.extend(env_dir("HOME", &[".vst3"]));
+        dirs.push(PathBuf::from("/usr/lib/vst3"));
+        dirs.push(PathBuf::from("/usr/local/lib/vst3"));
+    }
+    let mut seen = HashSet::new();
+    dirs.retain(|d| !d.as_os_str().is_empty() && seen.insert(d.clone()));
+    dirs
 }
 
-fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+/// Whether `path` names a VST3 plugin (`.vst3`, any case).
+pub(crate) fn is_vst3(path: &Path) -> bool {
+    PluginFormat::of_path(path) == Some(PluginFormat::Vst3)
+}
+
+fn walk(dir: &Path, depth: usize, format: PluginFormat, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        // `metadata` follows symlinks (plugins are often linked into ~/.clap).
+        // `metadata` follows symlinks (plugins are often linked into ~/.clap or ~/.vst3).
         let Ok(meta) = std::fs::metadata(&path) else {
             continue;
         };
-        if is_clap(&path) {
-            // A macOS bundle is a directory; elsewhere the `.clap` is the library file.
-            if meta.is_file() || cfg!(target_os = "macos") {
+        if PluginFormat::of_path(&path) == Some(format) {
+            let keep = match format {
+                // A macOS bundle is a directory; elsewhere the `.clap` is the library file.
+                PluginFormat::Clap => meta.is_file() || cfg!(target_os = "macos"),
+                // A bundle directory (never searched inside), or a legacy single file.
+                PluginFormat::Vst3 => true,
+            };
+            if keep {
                 out.push(path);
             }
         } else if meta.is_dir() && depth < MAX_DEPTH {
-            walk(&path, depth + 1, out);
+            walk(&path, depth + 1, format, out);
         }
     }
 }
 
-/// Every `.clap` file below `dirs` (recursively), sorted, without duplicates.
-pub fn find_clap_files(dirs: &[PathBuf]) -> Vec<PathBuf> {
+fn find_files(format: PluginFormat, dirs: &[PathBuf]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for d in dirs {
-        walk(d, 0, &mut out);
+        walk(d, 0, format, &mut out);
     }
     let mut seen = HashSet::new();
     out.retain(|p| seen.insert(std::fs::canonicalize(p).unwrap_or_else(|_| p.clone())));
     out.sort();
     out
+}
+
+/// Every `.clap` file below `dirs` (recursively), sorted, without duplicates.
+pub fn find_clap_files(dirs: &[PathBuf]) -> Vec<PathBuf> {
+    find_files(PluginFormat::Clap, dirs)
+}
+
+/// Every `.vst3` bundle below `dirs` (recursively, never inside a bundle), sorted, without
+/// duplicates (T-806).
+pub fn find_vst3_files(dirs: &[PathBuf]) -> Vec<PathBuf> {
+    find_files(PluginFormat::Vst3, dirs)
 }
 
 /// [`find_clap_files`], applied to a list of priority **tiers** instead of one flat directory
@@ -217,10 +316,20 @@ pub fn find_clap_files(dirs: &[PathBuf]) -> Vec<PathBuf> {
 /// symlink, or a custom folder that happens to coincide with a standard one) keeps the position
 /// of its highest-priority (earliest) tier only.
 pub fn find_clap_files_ranked(tiers: &[Vec<PathBuf>]) -> Vec<PathBuf> {
+    find_files_ranked(PluginFormat::Clap, tiers)
+}
+
+/// [`find_clap_files_ranked`] for VST3 bundles (T-806: the same H-29 tiers and duplicate
+/// policy).
+pub fn find_vst3_files_ranked(tiers: &[Vec<PathBuf>]) -> Vec<PathBuf> {
+    find_files_ranked(PluginFormat::Vst3, tiers)
+}
+
+fn find_files_ranked(format: PluginFormat, tiers: &[Vec<PathBuf>]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     for tier in tiers {
-        for f in find_clap_files(tier) {
+        for f in find_files(format, tier) {
             let key = std::fs::canonicalize(&f).unwrap_or_else(|_| f.clone());
             if seen.insert(key) {
                 out.push(f);
@@ -242,8 +351,24 @@ pub(crate) struct Stamp {
     pub(crate) mtime_ns: u32,
 }
 
+/// The file whose size and mtime (and, for the blocklist, bytes) key a plugin: the file itself,
+/// or for a VST3 bundle directory its binary for this platform — else its `moduleinfo.json` —
+/// since a directory's own mtime doesn't change when the binary inside it is replaced (T-806).
+pub(crate) fn key_file(path: &Path) -> PathBuf {
+    if is_vst3(path) && path.is_dir() {
+        if let Some(binary) = binary_path(path) {
+            return binary;
+        }
+        let info = moduleinfo_path(path);
+        if info.is_file() {
+            return info;
+        }
+    }
+    path.to_path_buf()
+}
+
 pub(crate) fn stamp(path: &Path) -> Option<Stamp> {
-    let meta = std::fs::metadata(path).ok()?;
+    let meta = std::fs::metadata(key_file(path)).ok()?;
     let t = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
     Some(Stamp {
         size: meta.len(),
@@ -252,12 +377,23 @@ pub(crate) fn stamp(path: &Path) -> Option<Stamp> {
     })
 }
 
+fn clap_format() -> String {
+    CLAP_FORMAT.to_owned()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct CacheEntry {
     path: String,
+    /// The backend (T-806; entries written before it are CLAP's).
+    #[serde(default = "clap_format")]
+    format: String,
     #[serde(flatten)]
     stamp: Stamp,
     plugins: Vec<ScannedPlugin>,
+}
+
+fn format_name(path: &Path) -> String {
+    format_of_path(path).unwrap_or(CLAP_FORMAT).to_owned()
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -293,6 +429,15 @@ fn write_cache(path: &Path, entries: Vec<CacheEntry>) {
     }
 }
 
+/// Replaces the cache's entries of `formats` with `entries`, keeping every other format's
+/// (T-806: one cache file for every format; a scan of some formats never drops another's).
+fn store_cache(cache: &Path, formats: &HashSet<String>, entries: Vec<CacheEntry>) {
+    let mut all = read_cache(cache);
+    all.retain(|e| !formats.contains(&e.format));
+    all.extend(entries);
+    write_cache(cache, all);
+}
+
 /// Records one file's scan result in the cache (T-809: an installed plugin is known at the next
 /// start without another sandboxed scan), replacing any entry for the same path. Skipped when the
 /// file can't be stat'ed.
@@ -305,10 +450,156 @@ pub(crate) fn cache_upsert(cache: &Path, file: &Path, plugins: &[ScannedPlugin])
     entries.retain(|e| e.path != key);
     entries.push(CacheEntry {
         path: key,
+        format: format_name(file),
         stamp,
         plugins: plugins.to_vec(),
     });
     write_cache(cache, entries);
+}
+
+/// JSON with the relaxations the VST3 SDK's `moduleinfotool` output needs: `//` and `/* */`
+/// comments and trailing commas before `}`/`]` are dropped; strings are kept verbatim.
+fn relaxed_json(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    // Pass 1: comments out.
+    let mut no_comments = String::with_capacity(text.len());
+    let (mut i, mut in_str, mut escaped) = (0, false, false);
+    while i < chars.len() {
+        let c = chars[i];
+        if in_str {
+            no_comments.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            i += 1;
+        } else if c == '"' {
+            in_str = true;
+            no_comments.push(c);
+            i += 1;
+        } else if c == '/' && chars.get(i + 1) == Some(&'/') {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+        } else if c == '/' && chars.get(i + 1) == Some(&'*') {
+            i += 2;
+            while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
+                i += 1;
+            }
+            i += 2;
+        } else {
+            no_comments.push(c);
+            i += 1;
+        }
+    }
+    // Pass 2: trailing commas out.
+    let chars: Vec<char> = no_comments.chars().collect();
+    let mut out = String::with_capacity(no_comments.len());
+    let (mut in_str, mut escaped) = (false, false);
+    for (i, &c) in chars.iter().enumerate() {
+        if in_str {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+        } else if c == '"' {
+            in_str = true;
+        } else if c == ','
+            && matches!(
+                chars[i + 1..].iter().find(|x| !x.is_whitespace()),
+                Some('}' | ']')
+            )
+        {
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+#[derive(Default, Deserialize)]
+struct ModuleInfoFactory {
+    #[serde(rename = "Vendor", default)]
+    vendor: String,
+    #[serde(rename = "URL", default)]
+    url: String,
+}
+
+#[derive(Deserialize)]
+struct ModuleInfoClass {
+    #[serde(rename = "CID")]
+    cid: String,
+    #[serde(rename = "Category", default)]
+    category: String,
+    #[serde(rename = "Name", default)]
+    name: String,
+    #[serde(rename = "Vendor", default)]
+    vendor: String,
+    #[serde(rename = "Version", default)]
+    version: String,
+    #[serde(rename = "Sub Categories", default)]
+    sub_categories: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct ModuleInfo {
+    #[serde(rename = "Factory Info", default)]
+    factory: Option<ModuleInfoFactory>,
+    #[serde(rename = "Classes", default)]
+    classes: Vec<ModuleInfoClass>,
+}
+
+/// A VST3 bundle's audio processor classes from its `Contents/Resources/moduleinfo.json`,
+/// **without loading any code** (ADR-008 §6; T-806): every `Audio Module Class` with a valid
+/// class id, features from its sub-categories. Parameter and port counts stay 0 (unknown: only
+/// instantiating reveals them). `None` — not a bundle, no binary for this platform, no or an
+/// unreadable `moduleinfo.json` — means the caller scans the bundle in a sandbox instead.
+pub fn read_moduleinfo(bundle: &Path) -> Option<Vec<ScannedPlugin>> {
+    if !is_vst3(bundle) || !bundle.is_dir() || binary_path(bundle).is_none() {
+        return None;
+    }
+    let text = std::fs::read_to_string(moduleinfo_path(bundle)).ok()?;
+    let info: ModuleInfo = serde_json::from_str(&relaxed_json(&text)).ok()?;
+    let factory = info.factory.unwrap_or_default();
+    let url = (!factory.url.trim().is_empty()).then(|| factory.url.trim().to_owned());
+    Some(
+        info.classes
+            .into_iter()
+            .filter(|c| c.category == AUDIO_MODULE_CLASS)
+            .filter_map(|c| {
+                let id = c.cid.trim().to_ascii_uppercase();
+                if id.len() != 32 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return None;
+                }
+                let name = c.name.trim();
+                let vendor = c.vendor.trim();
+                Some(ScannedPlugin {
+                    name: if name.is_empty() {
+                        id.clone()
+                    } else {
+                        name.to_owned()
+                    },
+                    id,
+                    vendor: if vendor.is_empty() {
+                        factory.vendor.trim().to_owned()
+                    } else {
+                        vendor.to_owned()
+                    },
+                    version: c.version.trim().to_owned(),
+                    description: String::new(),
+                    url: url.clone(),
+                    features: vox_sandbox_ipc::vst3::features(&c.sub_categories.join("|")),
+                    ..ScannedPlugin::default()
+                })
+            })
+            .collect(),
+    )
 }
 
 /// Drops `file`'s entry from the scan cache (H-29 "Uninstall…"): the file is gone, so a later
@@ -345,13 +636,31 @@ fn describe_exit(status: std::process::ExitStatus) -> ScanFileError {
     }
 }
 
-/// Scans one file in a `powervoice-sandbox --scan` process (killed after `timeout`).
+/// Scans one file in a `powervoice-sandbox --scan` process (killed after `timeout`); a VST3
+/// bundle with `moduleinfo.json` is read from it instead, without a process (T-806).
 pub fn scan_file(
     binary: &Path,
     path: &Path,
     timeout: Duration,
 ) -> Result<Vec<ScannedPlugin>, String> {
-    scan_file_inner(binary, path, timeout).map_err(|e| e.message)
+    scan_any(binary, path, timeout)
+        .map(|(plugins, _)| plugins)
+        .map_err(|e| e.message)
+}
+
+/// One file's plugins, and whether they came from `moduleinfo.json` (no sandbox).
+fn scan_any(
+    binary: &Path,
+    path: &Path,
+    timeout: Duration,
+) -> Result<(Vec<ScannedPlugin>, bool), ScanFileError> {
+    let format = PluginFormat::of_path(path).unwrap_or(PluginFormat::Clap);
+    if format == PluginFormat::Vst3
+        && let Some(plugins) = read_moduleinfo(path)
+    {
+        return Ok((plugins, true));
+    }
+    scan_file_inner(binary, path, timeout, format).map(|plugins| (plugins, false))
 }
 
 /// Scans one file like [`scan_file`], keeping whether the failure was a crash, a timeout or
@@ -361,23 +670,26 @@ pub(crate) fn scan_one(
     path: &Path,
     timeout: Duration,
 ) -> Result<Vec<ScannedPlugin>, ScanFailure> {
-    scan_file_inner(binary, path, timeout).map_err(|e| ScanFailure {
-        path: path.to_path_buf(),
-        message: e.message,
-        kind: e.kind,
-    })
+    scan_any(binary, path, timeout)
+        .map(|(plugins, _)| plugins)
+        .map_err(|e| ScanFailure {
+            path: path.to_path_buf(),
+            message: e.message,
+            kind: e.kind,
+        })
 }
 
 fn scan_file_inner(
     binary: &Path,
     path: &Path,
     timeout: Duration,
+    format: PluginFormat,
 ) -> Result<Vec<ScannedPlugin>, ScanFileError> {
     let mut child = Command::new(binary)
         .arg("--scan")
         .arg(path)
         .arg("--format")
-        .arg("clap")
+        .arg(format.name())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -390,7 +702,7 @@ fn scan_file_inner(
     };
     let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
-        .name("clap-scan-rx".into())
+        .name("plugin-scan-rx".into())
         .spawn(move || {
             let mut buf = Vec::new();
             let _ = stdout.read_to_end(&mut buf);
@@ -425,9 +737,23 @@ fn scan_file_inner(
 }
 
 /// Scans `files` (blocklist first, then cache, then sandboxed scans in parallel) and refreshes
-/// the cache and blocklist.
+/// the cache and blocklist. Files of any format (T-806: the format follows the extension).
 pub fn scan_clap_files(files: &[PathBuf], options: &ScanOptions) -> ScanOutcome {
-    scan_clap_files_with(files, options, |_, _, _| {})
+    scan_plugin_files_with(files, options, |_, _, _| {})
+}
+
+/// [`scan_clap_files`] under its format-neutral name (T-806).
+pub fn scan_plugin_files(files: &[PathBuf], options: &ScanOptions) -> ScanOutcome {
+    scan_plugin_files_with(files, options, |_, _, _| {})
+}
+
+/// [`scan_plugin_files_with`] (the name T-804 gave it).
+pub fn scan_clap_files_with(
+    files: &[PathBuf],
+    options: &ScanOptions,
+    on_progress: impl Fn(usize, usize, &Path) + Sync,
+) -> ScanOutcome {
+    scan_plugin_files_with(files, options, on_progress)
 }
 
 /// [`scan_clap_files`], calling `on_progress(done, total, current_file)` once per **live**
@@ -436,7 +762,9 @@ pub fn scan_clap_files(files: &[PathBuf], options: &ScanOptions) -> ScanOutcome 
 /// `done` is a plain 1, 2, 3, … counter (a `fetch_add` result), so progress is always reported in
 /// increasing order even though the underlying scans run in parallel and can finish in any file
 /// order.
-pub fn scan_clap_files_with(
+///
+/// A VST3 bundle with `moduleinfo.json` is indexed from it (no sandbox, counted in `indexed`).
+pub fn scan_plugin_files_with(
     files: &[PathBuf],
     options: &ScanOptions,
     on_progress: impl Fn(usize, usize, &Path) + Sync,
@@ -497,7 +825,7 @@ pub fn scan_clap_files_with(
     let todo: Vec<usize> = (0..live.len()).filter(|&i| slots[i].1.is_none()).collect();
     outcome.cached = live.len() - todo.len();
     outcome.scanned = todo.len();
-    let results: Arc<Mutex<Vec<(usize, FileResult)>>> = Arc::new(Mutex::new(Vec::new()));
+    let results: Arc<Mutex<Vec<(usize, FileResult, bool)>>> = Arc::new(Mutex::new(Vec::new()));
     let next = AtomicUsize::new(0);
     let report = &report;
     std::thread::scope(|s| {
@@ -508,20 +836,26 @@ pub fn scan_clap_files_with(
                     let Some(&i) = todo.get(k) else {
                         return;
                     };
-                    let r = scan_file_inner(&options.binary, &live[i], options.timeout);
+                    let r = scan_any(&options.binary, &live[i], options.timeout);
                     report(&live[i]);
+                    let (r, indexed) = match r {
+                        Ok((plugins, indexed)) => (Ok(plugins), indexed),
+                        Err(e) => (Err(e), false),
+                    };
                     results
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
-                        .push((i, r));
+                        .push((i, r, indexed));
                 }
             });
         }
     });
     let results = std::mem::take(&mut *results.lock().unwrap_or_else(PoisonError::into_inner));
-    for (i, r) in results {
+    for (i, r, indexed) in results {
+        outcome.indexed += usize::from(indexed);
         slots[i].1 = Some(r);
     }
+    outcome.scanned -= outcome.indexed;
     let mut entries = Vec::new();
     for (file, (st, result)) in live.iter().zip(slots) {
         match result {
@@ -529,6 +863,7 @@ pub fn scan_clap_files_with(
                 if let Some(stamp) = st {
                     entries.push(CacheEntry {
                         path: file.to_string_lossy().into_owned(),
+                        format: format_name(file),
                         stamp,
                         plugins: plugins.clone(),
                     });
@@ -559,7 +894,8 @@ pub fn scan_clap_files_with(
     }
     // Failures aren't cached (retried at the next scan unless they got blocklisted above).
     if let Some(cache) = &options.cache {
-        write_cache(cache, entries);
+        let formats: HashSet<String> = files.iter().map(|f| format_name(f)).collect();
+        store_cache(cache, &formats, entries);
     }
     outcome
 }
@@ -640,19 +976,29 @@ pub fn effect_specs_with_shadows(outcome: &ScanOutcome) -> (Vec<SandboxSpec>, Ve
     let mut specs = Vec::new();
     let mut shadowed = Vec::new();
     for f in outcome.plugins.iter().filter(|f| is_effect(&f.plugin)) {
-        match winners.get(&f.plugin.id) {
+        let spec = spec_for(&f.path, &f.plugin);
+        match winners.get(&spec.descriptor.id) {
             Some(winner) => shadowed.push(ShadowedPlugin {
                 path: f.path.clone(),
                 plugin: f.plugin.clone(),
                 shadowed_by: winner.clone(),
             }),
             None => {
-                winners.insert(f.plugin.id.clone(), f.path.clone());
-                specs.push(clap_spec(&f.path, &f.plugin));
+                winners.insert(spec.descriptor.id.clone(), f.path.clone());
+                specs.push(spec);
             }
         }
     }
     (specs, shadowed)
+}
+
+/// The spec of `plugin` found in `path`, for the path's format (T-806: `vst3:` for a `.vst3`
+/// bundle, `clap:` otherwise).
+pub fn spec_for(path: &Path, plugin: &ScannedPlugin) -> SandboxSpec {
+    match PluginFormat::of_path(path) {
+        Some(PluginFormat::Vst3) => vst3_spec(path, plugin),
+        _ => clap_spec(path, plugin),
+    }
 }
 
 /// The specs of every audio effect in `outcome`; the first file wins for a duplicate id. See
@@ -672,7 +1018,7 @@ pub fn factories(specs: &[SandboxSpec], options: &SandboxOptions) -> Vec<Arc<dyn
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn plugin(id: &str, features: &[&str]) -> ScannedPlugin {
@@ -832,6 +1178,211 @@ mod tests {
         }
         #[cfg(all(unix, not(target_os = "macos")))]
         assert!(dirs.contains(&PathBuf::from("/usr/lib/clap")));
+    }
+
+    // --- T-806: VST3 --------------------------------------------------------------------------
+
+    /// A VST3 bundle `<dir>/<name>.vst3` with a binary for this platform (and `moduleinfo`).
+    pub(crate) fn vst3_bundle(dir: &Path, name: &str, moduleinfo: Option<&str>) -> PathBuf {
+        let bundle = dir.join(format!("{name}.vst3"));
+        let arch = bundle
+            .join("Contents")
+            .join(vox_sandbox_ipc::vst3::arch_folder());
+        std::fs::create_dir_all(&arch).unwrap();
+        let file = if cfg!(target_os = "macos") {
+            name.to_owned()
+        } else if cfg!(windows) {
+            format!("{name}.vst3")
+        } else {
+            format!("{name}.so")
+        };
+        std::fs::write(arch.join(file), b"binary").unwrap();
+        if let Some(text) = moduleinfo {
+            let res = bundle.join("Contents").join("Resources");
+            std::fs::create_dir_all(&res).unwrap();
+            std::fs::write(res.join("moduleinfo.json"), text).unwrap();
+        }
+        bundle
+    }
+
+    /// What the SDK's `moduleinfotool` writes (JSON5-style trailing commas), plus comments.
+    pub(crate) const MODULEINFO: &str = r#"{
+  // Written by moduleinfotool
+  "Name": "Acme",
+  "Version": "2.0.0",
+  "Factory Info": {
+    "Vendor": "Acme Audio",
+    "URL": "https://acme.example",
+    "E-Mail": "mailto:info@acme.example",
+    "Flags": { "Unicode": true, "Classes Discardable": false, },
+  },
+  "Compatibility": [ ],
+  "Classes": [
+    {
+      "CID": "84e8de5f92554f5396fae4133c935a18",
+      "Category": "Audio Module Class",
+      "Name": "Acme De-esser",
+      "Vendor": "",
+      "Version": "2.0.0",
+      "SDKVersion": "VST 3.8.0",
+      "Sub Categories": [ "Fx", "Dynamics", ],
+      "Class Flags": 1,
+      "Cardinality": 2147483647,
+      "Snapshots": [ ],
+    },
+    /* the controller class is not a plugin */
+    {
+      "CID": "D39D5B65D7AF42FA843F4AC841EB04F0",
+      "Category": "Component Controller Class",
+      "Name": "Acme De-esser Controller",
+      "Sub Categories": [ ],
+    },
+    {
+      "CID": "0000000000000000000000000000ABCD",
+      "Category": "Audio Module Class",
+      "Name": "Acme Synth, \"ten\" // voices",
+      "Vendor": "Acme Instruments",
+      "Version": "1.0",
+      "Sub Categories": [ "Instrument", "Synth", ],
+    },
+    { "CID": "not-a-cid", "Category": "Audio Module Class", "Name": "Broken", },
+  ],
+}"#;
+
+    #[test]
+    fn relaxed_json_drops_comments_and_trailing_commas_but_keeps_strings() {
+        let v: serde_json::Value = serde_json::from_str(&relaxed_json(
+            "{ // c\n \"a\": \"x, ] // /* kept\", /* c */ \"b\": [1, 2, ], }",
+        ))
+        .unwrap();
+        assert_eq!(v["a"], "x, ] // /* kept");
+        assert_eq!(v["b"], serde_json::json!([1, 2]));
+    }
+
+    #[test]
+    fn moduleinfo_lists_audio_classes_without_loading_the_bundle() {
+        let dir = temp_dir("moduleinfo");
+        let bundle = vst3_bundle(&dir, "Acme", Some(MODULEINFO));
+        let plugins = read_moduleinfo(&bundle).expect("indexed");
+        assert_eq!(plugins.len(), 2, "controller and broken classes skipped");
+        let fx = &plugins[0];
+        assert_eq!(fx.id, "84E8DE5F92554F5396FAE4133C935A18");
+        assert_eq!(
+            (fx.name.as_str(), fx.vendor.as_str(), fx.version.as_str()),
+            ("Acme De-esser", "Acme Audio", "2.0.0")
+        );
+        assert_eq!(fx.url.as_deref(), Some("https://acme.example"));
+        assert_eq!(fx.features, ["audio-effect", "compressor"]);
+        assert!(is_effect(fx));
+        assert_eq!(fx.param_count, 0, "unknown without instantiating");
+        let synth = &plugins[1];
+        assert_eq!(synth.name, "Acme Synth, \"ten\" // voices");
+        assert!(!is_effect(synth));
+        let spec = spec_for(&bundle, fx);
+        assert_eq!(spec.descriptor.id, "vst3:84E8DE5F92554F5396FAE4133C935A18");
+        assert_eq!(spec.format, "vst3");
+        assert_eq!(spec.path(), Some(bundle.clone()));
+
+        // No moduleinfo, no binary for this platform, or not a bundle: a sandbox scan instead.
+        assert!(read_moduleinfo(&vst3_bundle(&dir, "Plain", None)).is_none());
+        let no_binary = dir.join("NoBinary.vst3");
+        std::fs::create_dir_all(no_binary.join("Contents").join("Resources")).unwrap();
+        std::fs::write(moduleinfo_path(&no_binary), MODULEINFO).unwrap();
+        assert!(read_moduleinfo(&no_binary).is_none());
+        let broken = vst3_bundle(&dir, "Broken", Some("{ nope"));
+        assert!(read_moduleinfo(&broken).is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn vst3_bundles_are_found_but_never_searched_inside() {
+        let dir = temp_dir("vst3-find");
+        let a = vst3_bundle(&dir.join("vendor"), "Alpha", None);
+        // A bundle nested inside a bundle is not a plugin of its own.
+        vst3_bundle(&a.join("Contents").join("Resources"), "Inner", None);
+        let single = dir.join("Legacy.vst3");
+        std::fs::write(&single, b"dll").unwrap();
+        std::fs::write(dir.join("readme.txt"), b"x").unwrap();
+        assert_eq!(
+            find_vst3_files(std::slice::from_ref(&dir)),
+            vec![single.clone(), a.clone()]
+        );
+        assert!(find_clap_files(std::slice::from_ref(&dir)).is_empty());
+        assert_eq!(PluginFormat::of_path(&a), Some(PluginFormat::Vst3));
+        assert_eq!(format_of_path(Path::new("/x/y.CLAP")), Some("clap"));
+        assert_eq!(format_of_path(Path::new("/x/y.so")), None);
+        // Ranked like CLAP (H-29 tiers).
+        let install = dir.join("install");
+        let installed = vst3_bundle(&install, "Alpha", None);
+        let ranked = find_vst3_files_ranked(&[vec![install.clone()], vec![dir.join("vendor")]]);
+        assert_eq!(ranked, vec![installed, a]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_vst3_bundles_stamp_follows_its_binary() {
+        let dir = temp_dir("vst3-stamp");
+        let bundle = vst3_bundle(&dir, "Stamped", None);
+        let binary = binary_path(&bundle).unwrap();
+        assert_eq!(key_file(&bundle), binary);
+        let before = stamp(&bundle).unwrap();
+        std::fs::write(&binary, b"a longer, rebuilt binary").unwrap();
+        assert_ne!(
+            stamp(&bundle).unwrap(),
+            before,
+            "a rebuilt binary is a changed plugin"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_cache_keeps_other_formats_entries() {
+        let dir = temp_dir("cache-formats");
+        let cache = dir.join("cache.json");
+        let clap = dir.join("a.clap");
+        std::fs::write(&clap, b"x").unwrap();
+        let vst3 = vst3_bundle(&dir, "B", None);
+        cache_upsert(&cache, &clap, &[plugin("com.x.a", &["audio-effect"])]);
+        cache_upsert(
+            &cache,
+            &vst3,
+            &[plugin(
+                "00000000000000000000000000000001",
+                &["audio-effect"],
+            )],
+        );
+        let formats = |e: &[CacheEntry]| {
+            let mut f: Vec<String> = e.iter().map(|e| e.format.clone()).collect();
+            f.sort();
+            f
+        };
+        assert_eq!(formats(&read_cache(&cache)), ["clap", "vst3"]);
+        // A scan of only CLAP files replaces CLAP entries and keeps the VST3 ones.
+        store_cache(&cache, &HashSet::from(["clap".to_owned()]), Vec::new());
+        assert_eq!(formats(&read_cache(&cache)), ["vst3"]);
+        // An entry written before T-806 (no `format`) is CLAP's.
+        let st = stamp(&clap).unwrap();
+        let old = serde_json::json!({"version": CACHE_VERSION, "entries": [{
+            "path": clap.to_string_lossy(), "size": st.size, "mtime_s": st.mtime_s,
+            "mtime_ns": st.mtime_ns, "plugins": []}]});
+        std::fs::write(&cache, serde_json::to_vec(&old).unwrap()).unwrap();
+        assert_eq!(formats(&read_cache(&cache)), ["clap"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn search_paths_include_the_standard_vst3_folders() {
+        let dirs = vst3_search_paths();
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            assert!(dirs.contains(&PathBuf::from("/usr/lib/vst3")));
+            assert!(dirs.contains(&PathBuf::from("/usr/local/lib/vst3")));
+        }
+        if let Some(home) = std::env::var_os("HOME")
+            && cfg!(all(unix, not(target_os = "macos")))
+        {
+            assert!(dirs.contains(&PathBuf::from(home).join(".vst3")));
+        }
     }
 
     fn temp_dir(label: &str) -> PathBuf {

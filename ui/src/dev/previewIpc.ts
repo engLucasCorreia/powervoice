@@ -454,7 +454,8 @@ const PLUGINS: PluginEntryDto[] = [
 
 const PLUGIN_FOLDERS: PluginFoldersDto = {
   install: `${HOME}/.clap`,
-  standard: [`${HOME}/.clap`, "/usr/lib/clap"],
+  install_folders: [`${HOME}/.clap`, `${HOME}/.vst3`],
+  standard: [`${HOME}/.clap`, "/usr/lib/clap", `${HOME}/.vst3`, "/usr/lib/vst3"],
   custom: ["/media/plugins/voice-tools"],
 };
 

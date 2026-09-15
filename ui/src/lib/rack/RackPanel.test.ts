@@ -126,6 +126,28 @@ describe("RackPanel", () => {
     teardown();
   });
 
+  it("lists installed VST3 effects under Plugins (VST3), after Plugins (CLAP)", async () => {
+    const modules = [
+      moduleFixture("vst3:84E8DE5F92554F5396FAE4133C935A18", ["audio-effect", "compressor"]),
+      moduleFixture("clap:com.acme.eq", ["audio-effect", "equalizer"]),
+      moduleFixture("org.powervoice.gain", ["utility"]),
+    ];
+    const { target, el, teardown } = await setup(rackFixture([]), modules);
+    el("rack-add")?.click();
+    flushSync();
+    const groupTitles = [...target.querySelectorAll('[data-testid="rack-add-menu"] .heading')].map((g) => g.textContent);
+    expect(groupTitles).toEqual(["Utility", "Plugins (CLAP)", "Plugins (VST3)"]);
+    const items = [...target.querySelectorAll('[data-testid="rack-add-item"]')].map((i) =>
+      i.getAttribute("data-module-id"),
+    );
+    expect(items).toEqual([
+      "org.powervoice.gain",
+      "clap:com.acme.eq",
+      "vst3:84E8DE5F92554F5396FAE4133C935A18",
+    ]);
+    teardown();
+  });
+
   it("adding a module appends it at the end of the chain", async () => {
     const { target, el, teardown } = await setup(rackFixture([slotFixture(1)]), [
       moduleFixture("org.powervoice.gain", ["utility"]),

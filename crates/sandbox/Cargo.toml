@@ -7,7 +7,7 @@ publish.workspace = true
 
 # T-802 (ADR-008 + Amendment 2): the plugin sandbox process — one per plugin instance. Attaches
 # the T-801 segment, loads a plugin through a `PluginBackend` (the built-in test backend and,
-# T-803, CLAP; VST3/LV2/JSFX later — linked only into this binary, ADR-008 §8), runs the sandbox
+# T-803, CLAP; T-806, VST3; LV2/JSFX later — linked only into this binary, ADR-008 §8), runs the sandbox
 # audio thread and answers the host's control requests on stdin/stdout. T-803: also
 # `--scan <file> --format clap` (enumeration in a disposable process, ADR-008 §6).
 
@@ -26,6 +26,9 @@ vox-modules = { path = "../modules" }
 vox-clap-abi = { path = "../clap-abi" }
 libloading.workspace = true
 serde_json.workspace = true
+# T-806 (ADR-007 §6, ADR-008 Amendment 6): the VST3 backend — coupler-rs bindings generated from
+# the MIT VST 3 SDK 3.8.0 headers (never `vst3-sys`, GPL).
+vst3.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
@@ -42,6 +45,8 @@ vox-project = { path = "../project" }
 # T-803: the test CLAP plugin (`cdylib`): depending on it makes cargo build the `.so` the tests
 # load (`target/<profile>/deps/libvox_test_clap.so`).
 vox-test-clap = { path = "../test-clap" }
+# T-806: the test VST3 plugin (`cdylib`, `target/<profile>/deps/libvox_test_vst3.so`).
+vox-test-vst3 = { path = "../test-vst3" }
 serde_json.workspace = true
 
 [lints]

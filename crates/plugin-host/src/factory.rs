@@ -10,7 +10,7 @@ use vox_module_api::{
     Version, features,
 };
 use vox_sandbox_ipc::WaitBudget;
-use vox_sandbox_ipc::protocol::{ClapPluginRef, ScannedPlugin};
+use vox_sandbox_ipc::protocol::{ClapPluginRef, ScannedPlugin, Vst3PluginRef};
 
 use crate::health::HealthStore;
 use crate::proxy::ProxyModule;
@@ -20,6 +20,9 @@ use crate::sandbox::{Sandbox, SandboxFault};
 pub const TEST_FORMAT: &str = "test";
 /// The CLAP backend's format name (T-803); module ids are `clap:<plugin id>`.
 pub const CLAP_FORMAT: &str = "clap";
+/// The VST3 backend's format name (T-806); module ids are `vst3:<class id>` (the processor's
+/// 32 hex digits, ADR-005 §2).
+pub const VST3_FORMAT: &str = "vst3";
 
 /// What a sandboxed module is: its registry descriptor and how the sandbox loads it.
 #[derive(Clone, Debug)]
@@ -30,6 +33,22 @@ pub struct SandboxSpec {
     pub format: String,
     /// The backend's plugin reference.
     pub plugin: String,
+}
+
+impl SandboxSpec {
+    /// The plugin file or bundle this spec loads from (`None` for the test backend or an
+    /// unreadable reference).
+    pub fn path(&self) -> Option<PathBuf> {
+        match self.format.as_str() {
+            CLAP_FORMAT => ClapPluginRef::parse(&self.plugin)
+                .ok()
+                .map(|r| PathBuf::from(r.path)),
+            VST3_FORMAT => Vst3PluginRef::parse(&self.plugin)
+                .ok()
+                .map(|r| PathBuf::from(r.path)),
+            _ => None,
+        }
+    }
 }
 
 /// Editor-side knobs of the sandbox.
@@ -179,6 +198,30 @@ pub fn clap_spec(path: &Path, plugin: &ScannedPlugin) -> SandboxSpec {
         plugin: ClapPluginRef {
             path: path.to_string_lossy().into_owned(),
             id: plugin.id.clone(),
+        }
+        .to_reference(),
+    }
+}
+
+/// A VST3 plugin's spec (T-806): module id `vst3:<class id>`, the class's name, vendor, version
+/// (parsed leniently) and features (from its sub-categories); loaded from the bundle `path`.
+pub fn vst3_spec(path: &Path, plugin: &ScannedPlugin) -> SandboxSpec {
+    SandboxSpec {
+        descriptor: ModuleDescriptor {
+            id: format!("{VST3_FORMAT}:{}", plugin.id),
+            version: Version::parse_lenient(&plugin.version),
+            name: LocalizedText::plain(&plugin.name),
+            vendor: plugin.vendor.clone(),
+            description: LocalizedText::plain(&plugin.description),
+            url: plugin.url.clone(),
+            features: plugin.features.clone(),
+            state_format_version: 1,
+            api_version: MODULE_API_VERSION,
+        },
+        format: VST3_FORMAT.into(),
+        plugin: Vst3PluginRef {
+            path: path.to_string_lossy().into_owned(),
+            cid: plugin.id.clone(),
         }
         .to_reference(),
     }

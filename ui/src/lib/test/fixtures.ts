@@ -331,7 +331,8 @@ export function pluginFixtures(): PluginEntryDto[] {
 export function folderFixture(overrides: Partial<PluginFoldersDto> = {}): PluginFoldersDto {
   return {
     install: "/home/u/.clap",
-    standard: ["/home/u/.clap", "/usr/lib/clap"],
+    install_folders: ["/home/u/.clap", "/home/u/.vst3"],
+    standard: ["/home/u/.clap", "/usr/lib/clap", "/home/u/.vst3", "/usr/lib/vst3"],
     custom: ["/media/plugins"],
     ...overrides,
   };

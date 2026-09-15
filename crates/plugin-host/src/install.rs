@@ -1,5 +1,9 @@
 //! "Install module…" (T-809, ADR-006 §7 as amended by T-809): copy a plugin file the user picked
 //! into the **per-user** CLAP folder, scan only that file, and roll back if it can't be used.
+//! T-806: a `.vst3` bundle (a directory on every OS; Windows' legacy single file too) goes into
+//! the per-user VST3 folder the same way — [`user_install_dir_for`] picks the folder by format:
+//! `~/.vst3`, `~/Library/Audio/Plug-Ins/VST3` or `%LOCALAPPDATA%\Programs\Common\VST3`. A
+//! path picked *inside* a bundle (a file dialog can't select a directory) stands for the bundle.
 //!
 //! Where it goes — the standard per-user CLAP path (CLAP `entry.h`), already one of the folders
 //! [`crate::scan::clap_search_paths`] searches, so a later rescan (and other CLAP hosts) find it:
@@ -22,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::blocklist::{BlockReason, Blocklist};
-use crate::scan::{FailureKind, ScanFailure, ScannedPlugin, is_clap, is_effect};
+use crate::scan::{FailureKind, PluginFormat, ScanFailure, ScannedPlugin, is_effect};
 
 /// The per-user CLAP folder for this OS, from the environment (`HOME`, or `LOCALAPPDATA` on
 /// Windows). `None` when that variable is unset, empty or not absolute.
@@ -69,14 +73,56 @@ pub fn user_clap_dir_from(
     absolute(home).map(|h| h.join(".clap"))
 }
 
+/// The per-user VST3 folder for this OS (T-806), from the environment like [`user_clap_dir`].
+pub fn user_vst3_dir() -> Option<PathBuf> {
+    user_vst3_dir_from(
+        std::env::var_os("HOME").as_deref(),
+        std::env::var_os("LOCALAPPDATA").as_deref(),
+    )
+}
+
+/// [`user_vst3_dir`] for an explicit `HOME` / `LOCALAPPDATA` (tests use a temporary home).
+pub fn user_vst3_dir_from(home: Option<&OsStr>, local_app_data: Option<&OsStr>) -> Option<PathBuf> {
+    if cfg!(windows) {
+        absolute(local_app_data).map(|d| d.join("Programs").join("Common").join("VST3"))
+    } else if cfg!(target_os = "macos") {
+        absolute(home).map(|h| {
+            h.join("Library")
+                .join("Audio")
+                .join("Plug-Ins")
+                .join("VST3")
+        })
+    } else {
+        absolute(home).map(|h| h.join(".vst3"))
+    }
+}
+
+/// The per-user folder a plugin of `path`'s format installs into (`None`: not a plugin path,
+/// or no per-user folder in this environment).
+pub fn user_install_dir_for(path: &Path) -> Option<PathBuf> {
+    match PluginFormat::of_path(&plugin_root(path))? {
+        PluginFormat::Clap => user_clap_dir(),
+        PluginFormat::Vst3 => user_vst3_dir(),
+    }
+}
+
+/// `path`, or the `.vst3` bundle directory it lies inside (a file dialog can only pick a file of
+/// a Linux/Windows bundle, e.g. its binary or `moduleinfo.json`).
+pub fn plugin_root(path: &Path) -> PathBuf {
+    path.ancestors()
+        .find(|a| PluginFormat::of_path(a) == Some(PluginFormat::Vst3) && a.is_dir())
+        .unwrap_or(path)
+        .to_path_buf()
+}
+
 /// Why an install didn't happen. Every variant leaves the destination as it was.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum InstallError {
     /// The picked file doesn't exist (or can't be read).
     #[error("the file doesn't exist")]
     NotFound,
-    /// Not a `.clap` file (or, outside macOS, a directory).
-    #[error("not a CLAP plugin file")]
+    /// Not a `.clap` file (or, outside macOS, a directory), nor a `.vst3` bundle.
+    #[error("not a CLAP or VST3 plugin")]
     NotAPlugin,
     /// The picked file already *is* the installed copy.
     #[error("this plugin is already installed here")]
@@ -208,10 +254,17 @@ pub fn install_file(
     blocklist: &mut Blocklist,
     scan: impl FnOnce(&Path) -> Result<Vec<ScannedPlugin>, ScanFailure>,
 ) -> Result<Installed, InstallError> {
+    let source = &plugin_root(source);
     let meta = std::fs::metadata(source).map_err(|_| InstallError::NotFound)?;
     let is_dir = meta.is_dir();
-    // A `.clap` is a single file on Linux/Windows and a bundle directory on macOS.
-    if !is_clap(source) || (is_dir && !cfg!(target_os = "macos")) {
+    let supported = match PluginFormat::of_path(source) {
+        // A `.clap` is a single file on Linux/Windows and a bundle directory on macOS.
+        Some(PluginFormat::Clap) => !is_dir || cfg!(target_os = "macos"),
+        // A `.vst3` is a bundle directory everywhere; Windows also has legacy single files.
+        Some(PluginFormat::Vst3) => is_dir || cfg!(windows),
+        None => false,
+    };
+    if !supported {
         return Err(InstallError::NotAPlugin);
     }
     let name = source.file_name().ok_or(InstallError::NotAPlugin)?;
@@ -612,6 +665,78 @@ pub(crate) mod tests {
         assert_eq!(
             std::fs::read_link(copy.join("Contents").join("Current")).unwrap(),
             PathBuf::from("MacOS/X")
+        );
+    }
+
+    // --- T-806: VST3 bundles ----------------------------------------------------------------
+
+    #[test]
+    fn the_vst3_install_folder_is_per_user_and_picked_by_format() {
+        let home = TempDir::new("vst3-home");
+        let dir = user_vst3_dir_from(Some(home.0.as_os_str()), Some(home.0.as_os_str())).unwrap();
+        assert!(dir.starts_with(&home.0), "{dir:?}");
+        #[cfg(all(unix, not(target_os = "macos")))]
+        assert_eq!(dir, home.0.join(".vst3"));
+        assert_eq!(user_vst3_dir_from(None, None), None);
+        assert_eq!(user_install_dir_for(Path::new("/x/readme.txt")), None);
+    }
+
+    #[test]
+    fn installs_and_uninstalls_a_vst3_bundle() {
+        let root = TempDir::new("vst3-install");
+        let downloads = root.0.join("Downloads");
+        let bundle = crate::scan::tests::vst3_bundle(
+            &downloads,
+            "Acme Gain",
+            Some(crate::scan::tests::MODULEINFO),
+        );
+        let home = root.0.join("home");
+        let dest = user_vst3_dir_from(Some(home.as_os_str()), Some(home.as_os_str())).unwrap();
+        let mut blocklist = Blocklist::load(Some(root.0.join("blocklist.json")));
+        let scanned = RefCell::new(Vec::new());
+        let out = install_file(&bundle, &dest, false, &mut blocklist, |p| {
+            scanned.borrow_mut().push(p.to_path_buf());
+            Ok(vec![effect("84E8DE5F92554F5396FAE4133C935A18")])
+        })
+        .unwrap();
+        let target = dest.join("Acme Gain.vst3");
+        assert_eq!(out.target, target);
+        assert_eq!(*scanned.borrow(), vec![target.clone()]);
+        let binary = vox_sandbox_ipc::vst3::binary_path(&target).expect("the binary was copied");
+        assert_eq!(std::fs::read(binary).unwrap(), b"binary");
+        assert!(vox_sandbox_ipc::vst3::moduleinfo_path(&target).is_file());
+        assert_eq!(
+            visible_files(&dest),
+            vec!["Acme Gain.vst3"],
+            "no staging left behind"
+        );
+
+        // A file picked inside the bundle stands for the bundle: same name → a collision.
+        let inside = vox_sandbox_ipc::vst3::moduleinfo_path(&bundle);
+        assert_eq!(plugin_root(&inside), bundle);
+        assert_eq!(
+            install_file(&inside, &dest, false, &mut blocklist, |_| panic!("no scan")),
+            Err(InstallError::Collision {
+                target: target.clone()
+            })
+        );
+
+        assert_eq!(uninstall_file(&target, &dest), Ok(()));
+        assert!(!target.exists());
+        assert!(bundle.exists(), "the picked bundle is untouched");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_single_file_vst3_is_refused_outside_windows() {
+        let mut f = fixture("vst3-single", b"x");
+        let single = f.source.with_file_name("legacy.vst3");
+        std::fs::write(&single, b"dll").unwrap();
+        assert_eq!(
+            install_file(&single, &f.dest, false, &mut f.blocklist, |_| panic!(
+                "no scan"
+            )),
+            Err(InstallError::NotAPlugin)
         );
     }
 

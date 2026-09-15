@@ -61,6 +61,12 @@ Flagged components (ADR-007)
   is in `crates/clap-abi/LICENSE-CLAP`. Third-party CLAP plugins are not part of PowerVoice: they
   are loaded at runtime, only inside the separate `powervoice-sandbox` process (ADR-008), through
   `libloading` (ISC).
+- **VST 3 SDK interfaces, MIT** (Copyright (c) 2025, Steinberg Media Technologies GmbH). The
+  `vst3` crate's bindings (coupler-rs, MIT OR Apache-2.0) are generated from the VST 3 SDK 3.8.0
+  `pluginterfaces` headers; the full MIT license text is in `crates/sandbox/LICENSE-VST3-SDK`.
+  Only the separate `powervoice-sandbox` process links them (ADR-008); third-party VST3 plugins
+  are loaded at runtime there only. VST is a trademark of Steinberg Media Technologies GmbH;
+  PowerVoice hosts VST3 plugins and uses no VST logo.
 - **System libraries** (dynamically linked, provided by the OS, never bundled except where noted):
   WebKitGTK / GTK3 (Linux), ALSA `libasound.so.2` (Linux, LGPL-2.1-or-later), PipeWire / JACK
   client libraries (Linux, MIT / LGPL respectively), WebView2 (Windows, Microsoft), CoreAudio /

@@ -195,7 +195,7 @@ describe("plugins store (T-809)", () => {
       const open = calls.find((c) => c.cmd === "plugin:dialog|open")!;
       const options = open.args.options as { directory: boolean; filters: { extensions: string[] }[] };
       expect(options.directory).toBe(false);
-      expect(options.filters[0]!.extensions).toEqual(["clap"]);
+      expect(options.filters[0]!.extensions).toEqual(["clap", "vst3"]);
       expect(calls.find((c) => c.cmd === "plugins_install")?.args).toEqual({
         path: "/home/u/Downloads/acme.clap",
         replace: false,

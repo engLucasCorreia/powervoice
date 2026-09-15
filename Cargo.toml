@@ -16,6 +16,7 @@ members = [
     "crates/sandbox",
     "crates/clap-abi",
     "crates/test-clap",
+    "crates/test-vst3",
     "src-tauri",
 ]
 
@@ -78,3 +79,7 @@ symphonia = { version = "0.6.1", default-features = false, features = [
     "isomp4",
     "aac",
 ] }
+# T-806 (ADR-007 §6, ADR-008 Amendment 6): VST3 hosting — coupler-rs bindings generated from the
+# MIT VST 3 SDK 3.8.0 headers (MIT OR Apache-2.0; never `vst3-sys`, GPL). Only `powervoice-sandbox`
+# and the in-repo test plugin link it.
+vst3 = "0.3.0"

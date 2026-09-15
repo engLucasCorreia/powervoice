@@ -146,12 +146,13 @@ pub fn run() {
                     tracing::info!(
                         scanned = summary.scanned,
                         cached = summary.cached,
+                        indexed = summary.indexed,
                         failed = summary.failed,
                         blocklisted_now = summary.blocklisted_now,
                         blocklisted = summary.blocklisted,
                         effects = summary.effects,
                         newly_registered = summary.newly_registered.len(),
-                        "CLAP plugin scan finished"
+                        "plugin scan finished"
                     );
                     if let Err(e) = ipc::emit_plugin_scan_summary(&done_app, summary) {
                         tracing::warn!(error = %e, "plugin_scan_progress summary emit failed");

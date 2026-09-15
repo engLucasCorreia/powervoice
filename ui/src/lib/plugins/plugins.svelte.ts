@@ -61,10 +61,11 @@ export type InstallState =
     };
 
 /**
- * What "Install module…" accepts: the backends that exist (T-803 CLAP). T-806–T-808 add their
- * extensions here when their backends land.
+ * What "Install module…" accepts: the backends that exist (T-803 CLAP, T-806 VST3). A VST3 bundle
+ * is a folder on Linux and Windows: picking any file inside it installs the whole bundle.
+ * T-807–T-808 add their extensions here when their backends land.
  */
-export const INSTALL_EXTENSIONS: readonly string[] = ["clap"];
+export const INSTALL_EXTENSIONS: readonly string[] = ["clap", "vst3"];
 
 let open = $state(false);
 let tab = $state<ManagerTab>("plugins");

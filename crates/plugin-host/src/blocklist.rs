@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::scan::{Stamp, stamp};
+use crate::scan::{Stamp, format_of_path, key_file, stamp};
 
 /// Blocklist file format version.
 const BLOCKLIST_VERSION: u32 = 1;
@@ -50,6 +50,9 @@ pub struct BlockInfo {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Entry {
     path: String,
+    /// The plugin format (`"clap"`, `"vst3"`; T-806 — `None` in entries written before it).
+    #[serde(default)]
+    format: Option<String>,
     #[serde(flatten)]
     stamp: Stamp,
     /// CRC32 over the file's bytes at block time (`None`: unreadable at the time). A `None`
@@ -74,9 +77,9 @@ fn now_unix_ms() -> u64 {
         .unwrap_or_default()
 }
 
-/// CRC32 over `path`'s bytes, or `None` if it can't be read.
+/// CRC32 over `path`'s bytes (a VST3 bundle's binary, T-806), or `None` if it can't be read.
 fn content_hash(path: &Path) -> Option<u32> {
-    std::fs::read(path)
+    std::fs::read(key_file(path))
         .ok()
         .map(|bytes| crc32fast::hash(&bytes))
 }
@@ -162,6 +165,7 @@ impl Blocklist {
         self.entries.retain(|e| e.path != key);
         self.entries.push(Entry {
             path: key,
+            format: format_of_path(path).map(str::to_owned),
             stamp: st,
             hash: content_hash(path),
             reason,
@@ -279,6 +283,28 @@ mod tests {
         assert!(b.check(&file).is_none());
         assert!(!b.unblock(&file), "already gone");
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// T-806: a VST3 bundle directory is keyed by its binary (its own mtime doesn't change when
+    /// the binary is rebuilt), and the entry records the format.
+    #[test]
+    fn a_blocked_vst3_bundle_follows_its_binary_and_records_its_format() {
+        let dir = temp_dir("vst3");
+        let bundle = crate::scan::tests::vst3_bundle(&dir, "Bad", None);
+        let store = dir.join("blocklist.json");
+        let mut b = Blocklist::load(Some(store.clone()));
+        b.block(&bundle, BlockReason::Crashed);
+        assert!(b.check(&bundle).is_some());
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&store).unwrap()).unwrap();
+        assert_eq!(json["entries"][0]["format"], "vst3");
+        let binary = vox_sandbox_ipc::vst3::binary_path(&bundle).unwrap();
+        std::fs::write(&binary, b"rebuilt with a fix").unwrap();
+        assert!(
+            b.check(&bundle).is_none(),
+            "a changed binary clears the entry"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

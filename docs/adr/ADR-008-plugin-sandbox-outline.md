@@ -772,3 +772,205 @@ predict and the manager explains; "Install module…" finally has a way back.
 **Negative:** shadow and uninstall state can each be one rescan stale, as noted above — accepted
 for the same reason Amendment 4 accepted it for "missing" status: the alternative is a live
 filesystem watch, which is out of scope here.
+
+## Amendment 6 — T-806 VST3 backend, moduleinfo indexing, as implemented (2026-09-15)
+
+New crate `vox-test-vst3` (test plugin, never shipped); new dependency `vst3` 0.3.0 (coupler-rs,
+MIT OR Apache-2.0, as ADR-007 §6 names it). No other new crate.
+
+### 1. Bindings: the `vst3` crate, SDK 3.8.0 (refines §8)
+- `vst3` 0.3.0 ships pre-generated bindings (no build-time SDK) from the `pluginterfaces` of
+  **VST SDK 3.8.0** (coupler-rs/vst3_pluginterfaces commit "VST SDK 3.8.0", 2025-10-20), which
+  carry Steinberg's MIT license — so ADR-007 §6's "regenerate if they predate 3.8.0" doesn't
+  apply. 3.8.1 changed nothing in the interfaces used here; move to it when the crate does.
+- It has both halves we need: `ComPtr`/`ComRef` + generated `…Trait` impls to *call* plugin
+  interfaces, and `Class` + `ComWrapper` to *implement* the host's (`IHostApplication`,
+  `IComponentHandler`, `IMessage`, `IAttributeList`, `IBStream`, `IParameterChanges`,
+  `IParamValueQueue`). No hand-written bindings were needed.
+- Only `powervoice-sandbox` and the test plugin link it. The Steinberg MIT text is in
+  `crates/sandbox/LICENSE-VST3-SDK` and THIRD_PARTY_NOTICES.
+- The bundle layout and the sub-category vocabulary (`vox_sandbox_ipc::vst3`: `binary_path`,
+  `moduleinfo_path`, `features`) are shared by the sandbox and the editor. They are plain facts
+  about files, not plugin code.
+
+### 2. The backend (`crates/sandbox/src/vst3/`)
+**Identity.** The plugin reference is `Vst3PluginRef`, the JSON `{path, cid}`: the bundle and
+the processor class id as 32 upper-case hex digits in FUID string order (`moduleinfo.json`'s
+`CID`, the same on every OS; a Windows `TUID` is COM-ordered). The module id is `vst3:<cid>`.
+
+**Load** (main thread = the plugin's UI thread):
+1. The binary is `Contents/<arch>/<name>.so|.vst3`, or on macOS `Contents/MacOS/<name>`. The
+   SDK loader's fallback applies: any binary in the architecture folder. A regular file is loaded
+   as the binary itself (Windows' legacy layout; tests).
+2. The entry runs: `ModuleEntry(dlopen handle)` / `bundleEntry(CFBundleRef)` / `InitDll`. Then
+   `GetPluginFactory`, then `IPluginFactory2` classes when offered.
+3. The `Audio Module Class` component is created and initialised with the host context.
+4. It must be an `IAudioProcessor`.
+5. The controller is **combined** (the component answers `IEditController`) or **separate**
+   (`getControllerClassId` → create → initialise). A separate one is joined through
+   `IConnectionPoint` both ways, synced with `setComponentState(component state)`, and given the
+   `IComponentHandler`.
+6. The plugin needs at least one audio input and one audio output bus: effects only.
+7. Teardown order: deactivate, disconnect, terminate the controller, terminate the component,
+   release the factory, run the module exit, unload.
+
+**Host context.** `IHostApplication::createInstance` allocates the `IMessage`/`IAttributeList`
+that SDK-based components and controllers send each other. Messages are delivered directly
+between the two connection points, on the main thread.
+
+**Buses and the mono shim.**
+- Before each activation the host tries `setBusArrangements` with the main buses mono, then
+  stereo, then whatever the plugin reports.
+- Only the main audio buses are activated; aux inputs get silence and event buses are off.
+- The shim itself is CLAP's (Amendment 3 §2): upmix to every main-input channel, and the mean of
+  the main-output channels.
+
+**Processing.**
+- `setupProcessing` (`kRealtime`/`kOffline`, 32-bit, `max_block`, rate) runs, then
+  `setActive(true)`; latency (`getLatencySamples`) and tail (`kInfiniteTail` → infinite) are read
+  after it.
+- `setProcessing(true)` runs on the audio thread before the first block, and `setProcessing(false)`
+  when the audio thread stops (`audio_thread_stopping`). `RESET` = `setProcessing` off, then on.
+- `ProcessData` carries a `ProcessContext` (free-running: 120 BPM, 4/4, the stream position).
+
+**Parameter events.**
+- The ring's `PARAM_VALUE`s become points of **preallocated** `IParameterChanges` queues at their
+  chunk offsets: up to 64 parameters × 512 points per block in, 64 × 64 out, with no allocation.
+  This is sample-accurate.
+- Output parameter changes become wire events (mirror updates).
+
+**Threads, and keeping the controller in sync.** Lock-free per-parameter slots (`host::Shared`)
+cross between the threads:
+- *audio → main:* every value the processor got or reported is replayed to the controller with
+  `setParamNormalized` on the main thread's 10 ms idle tick, as DAWs do for automation. This is
+  also how a controller learns about a latency-changing value.
+- *main → audio:* `beginEdit` / `performEdit` / `endEdit` become `GESTURE_BEGIN` / processor input
+  + `PARAM_VALUE` / `GESTURE_END`. `restartComponent(kParamValuesChanged)` re-reads every value
+  into the mirror.
+- `restartComponent` with `kLatencyChanged`, `kIoChanged` or `kReloadComponent` →
+  `RESTART_REQUEST`, which the proxy turns into `HostRequest::Restart`, exactly as for CLAP. A
+  request made during activation is covered by it.
+
+**Values set while inactive** (VST3 has no inactive parameter call).
+- `SetParams` updates the controller.
+- If that differs from what the controller already reports, the value is queued. The next
+  activation first flushes the queue: `setActive(true)` → `setProcessing(true)` → a **zero-sample
+  `process`** carrying the queued changes → `setProcessing(false)` → `setActive(false)`. The real
+  activation follows.
+- So latency and state reflect them from the start. Without this, the rack's committed state
+  (mirror values + the blob captured at instantiation, values win) would restart a
+  latency-changing plugin forever.
+- The extra activation only happens when a value really differs from the blob.
+
+### 3. Parameters: normalized and step-index domains (refines ADR-005 §14)
+ADR-005 §14 expected the adapter to convert with `normalizedParamToPlain`. That is a controller
+(UI-thread) call, while host events reach the sandbox on its audio thread. The mirror therefore
+uses domains the adapter converts exactly, on any thread, without the plugin:
+- **Continuous** (`stepCount` 0): min 0, max 1, the value *is* the normalized value.
+- **Discrete** (`stepCount` n): min 0, max n, step 1, the value is the step index, using the SDK's
+  own conversions (`i / n` and `min(n, ⌊x·(n+1)⌋)`). n = 1 → `BOOL`; a list (`kIsList`, ≤ 64
+  entries) gets its labels from the plugin.
+
+What the user sees is the plugin's own text: `getParamStringByValue` plus the parameter's units
+("-6.00 dB"). Typed text goes through `getParamValueByString`, retried without the units. The
+sidecar stores normalized values for continuous VST3 parameters, the same convention DAWs use for
+VST3 automation.
+- `kCanAutomate` → `AUTOMATABLE`; `kIsReadOnly` → `READ_ONLY`; `kIsHidden`, `kIsBypass` and
+  `kIsProgramChange` → `HIDDEN`.
+- A non-root `IUnitInfo` unit becomes the group.
+
+### 4. State
+The plugin bytes are `PVV3`, `u32` version 1, then the component state (`IComponent::getState`)
+and the controller state (`IEditController::getState`), each as a little-endian `u64` length plus
+the bytes. The proxy wraps them with the identity, as for every format (Amendment 2 §7).
+
+Loading:
+1. `IComponent::setState`.
+2. For a separate controller, `setComponentState` with the same bytes.
+3. The controller's own state; a controller that refuses it keeps its defaults.
+
+### 5. Enumeration (refines §6 and Amendment 4 §1)
+**Paths.** `$VST3_PATH` first, then the SDK's standard folders:
+- Linux: `~/.vst3`, `/usr/lib/vst3`, `/usr/local/lib/vst3`;
+- macOS: `~/Library/Audio/Plug-Ins/VST3`, `/Library/…`;
+- Windows: `%LOCALAPPDATA%\Programs\Common\VST3`, `%COMMONPROGRAMFILES%\VST3`.
+
+Bundles are found like `.clap` files but never searched inside. Each format has its own H-29 tiers
+(its per-user install folder, its standard folders, then the shared custom folders). Module ids
+are format-prefixed, so the duplicate-id policy applies within a format.
+
+**`moduleinfo.json` indexing, without loading code.**
+- A bundle whose `Contents/Resources/moduleinfo.json` parses, and which has a binary for this
+  platform, is indexed by the **editor** from that file; no sandbox is spawned.
+- The SDK's `moduleinfotool` writes JSON5-style trailing commas, so a small relaxed-JSON pass
+  drops comments and trailing commas first.
+- Every `Audio Module Class` with a valid CID is listed, with features from its sub-categories:
+  `Fx` → `audio-effect`, `Instrument` → `instrument`, `EQ` → `equalizer`, `Tools` → `utility`, …
+  (`OnlyARA` classes are not effects).
+- Parameter and port counts stay unknown (0).
+- These count as `ScanOutcome::indexed` / `ScanSummary::indexed`, not `scanned`.
+
+**Sandboxed scan.** Any other bundle goes to `powervoice-sandbox --scan <bundle> --format vst3`,
+which lists the classes and instantiates each effect (never activated) for its parameter count and
+main bus channels. Crash, timeout and error handling, and blocklisting, are Amendment 4's.
+
+**Cache and blocklist.**
+- The scan functions take files of either format (by extension); `scan_plugin_files(_with)` is the
+  neutral name, and `scan_clap_files(_with)` remains.
+- One cache file holds both formats. Entries carry `format` (entries without it are CLAP's), and a
+  scan replaces only its own formats' entries.
+- Blocklist entries record `format` too.
+- A bundle's cache and blocklist key (stat, content hash) is its **binary**, else its
+  `moduleinfo.json`: a directory's mtime doesn't change when the binary inside is rebuilt.
+- Runtime crash flags are keyed by the format-prefixed module id.
+
+**Install / Uninstall.**
+- "Install module…" accepts a `.vst3` bundle, a directory on every OS (Windows also takes a legacy
+  single file). It goes into the per-user VST3 folder (`install::user_vst3_dir`,
+  `user_install_dir_for`) with the same staging, collision, scan-only-this-file, rollback and
+  blocklist rules as a `.clap`.
+- A file picked *inside* a bundle stands for the bundle (`install::plugin_root`). A Linux or
+  Windows file dialog can't select a directory.
+- "Uninstall…" removes the bundle directory.
+- `PluginFoldersDto.install_folders` lists both per-user folders, for the manager's Uninstall rule
+  and its install badge.
+
+### 6. UI
+- Add Module lists `vst3:*` modules under "Plugins (VST3)", after "Plugins (CLAP)".
+- The install dialog's file filter takes `.clap` and `.vst3`.
+- The manager's format badge already spelled VST3.
+
+### 7. Test plugin
+`vox-test-vst3` (`cdylib` + `rlib`, on the `vst3` crate's plugin side) offers three classes, all
+running the built-in Gain (bit-exact) behind a delay line:
+- a mono gain with a **separate** controller, connected through connection points;
+- a **stereo-only** gain whose component is its **own** controller (the mono shim and a combined
+  controller);
+- a gain with a discrete `Latency` parameter in an "Advanced" unit. Its processor tells the
+  controller its activation latency with an `IMessage` it allocates through the host. The
+  controller calls `restartComponent(kLatencyChanged)` when a value differs from it.
+
+Gain is continuous (−60 + 84·n dB, quantized to 0.001 dB so the tests' values round-trip exactly),
+with units "dB". A binary whose file name contains `crash-on-scan` aborts in `ModuleEntry` (core
+dumps off first); `hang-on-scan` never returns from it.
+
+### 8. Known limits (for T-807, T-808, T-901)
+- **Formats.** Effects only: no event buses or instruments, 32-bit audio only, no program lists or
+  `IUnitInfo` programs.
+- **Host interfaces not offered:** `IComponentHandler2`, `IPlugInterfaceSupport`, `IProgress`,
+  `IStreamAttributes`.
+- **The flush activation.** One extra `setActive` pair when a value set while inactive differs
+  from the blob. A plugin that treats a zero-sample `process` as a no-op still gets the value at
+  its first real block, but its latency is then only corrected by its own `restartComponent`.
+- **Deferred to the next instantiation:** `kParamTitlesChanged` and parameter-list changes, as for
+  CLAP.
+- **GUIs (T-901).** `createView` isn't used. `performEdit` from a GUI already reaches the
+  processor and the mirror, but the committed blob isn't refreshed at save time (Amendment 3 §8).
+- **Moduleinfo accuracy.** A moduleinfo-indexed bundle whose `moduleinfo.json` doesn't match its
+  binary is only found out at load (a failed slot); a full rescan doesn't re-read the binary.
+- **Naming.** The cache file keeps its T-803 name (`clap-scan.json`) although it now holds both
+  formats.
+- **Platforms.** The macOS entry (`CFBundleCreate` + `bundleEntry`) isn't compiled in CI here.
+  Windows is only compile-checked (`just check-cross`).
+- **Real plugins.** No real VST3 plugin is installed on the development machine. The opt-in smoke
+  test `POWERVOICE_TEST_REAL_VST3=<bundle or folder>` exists but hasn't run against one.

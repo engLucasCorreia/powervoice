@@ -27,6 +27,12 @@ Flagged components (ADR-007)
   is in `crates/clap-abi/LICENSE-CLAP`. Third-party CLAP plugins are not part of PowerVoice: they
   are loaded at runtime, only inside the separate `powervoice-sandbox` process (ADR-008), through
   `libloading` (ISC).
+- **VST 3 SDK interfaces, MIT** (Copyright (c) 2025, Steinberg Media Technologies GmbH). The
+  `vst3` crate's bindings (coupler-rs, MIT OR Apache-2.0) are generated from the VST 3 SDK 3.8.0
+  `pluginterfaces` headers; the full MIT license text is in `crates/sandbox/LICENSE-VST3-SDK`.
+  Only the separate `powervoice-sandbox` process links them (ADR-008); third-party VST3 plugins
+  are loaded at runtime there only. VST is a trademark of Steinberg Media Technologies GmbH;
+  PowerVoice hosts VST3 plugins and uses no VST logo.
 - **System libraries** (dynamically linked, provided by the OS, never bundled except where noted):
   WebKitGTK / GTK3 (Linux), ALSA `libasound.so.2` (Linux, LGPL-2.1-or-later), PipeWire / JACK
   client libraries (Linux, MIT / LGPL respectively), WebView2 (Windows, Microsoft), CoreAudio /
@@ -104,6 +110,7 @@ differently.
 - clap_derive 4.6.4 — MIT OR Apache-2.0 [transitive]
 - clap_lex 1.1.0 — MIT OR Apache-2.0 [transitive]
 - colorchoice 1.0.5 — MIT OR Apache-2.0 [transitive]
+- com-scrape-types 0.1.1 — MIT OR Apache-2.0 [transitive]
 - combine 4.6.8 — MIT [transitive]
 - cookie 0.18.2 — MIT OR Apache-2.0 [transitive]
 - cookie-factory 0.3.3 — MIT [transitive]
@@ -511,6 +518,7 @@ differently.
 - version-compare 0.2.1 — MIT [transitive]
 - version_check 0.9.5 — MIT/Apache-2.0 [transitive]
 - visibility 0.1.1 — Zlib OR MIT OR Apache-2.0 [transitive]
+- vst3 0.3.0 — MIT OR Apache-2.0 [normal]
 - vswhom 0.1.0 — MIT [transitive]
 - vswhom-sys 0.1.3 — MIT [transitive]
 - walkdir 2.5.0 — Unlicense/MIT [transitive]

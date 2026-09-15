@@ -17,6 +17,8 @@
 //! - [`test_plugins`]: the four test plugins behind `src/bin/vox-sbx-test-*.rs`.
 //! - [`control`] + [`protocol`] (T-802, ADR-008 Amendment 2): the control channel — framed
 //!   JSON requests/responses with a binary payload, over the sandbox's stdin/stdout pipes.
+//! - [`vst3`] (T-806): VST3 bundle layout and class-category vocabulary shared by the sandbox's
+//!   VST3 backend and the editor's scanner (no plugin code).
 //!
 //! # Protocol (per host callback of `n ≤ max_block` frames at input position `p`)
 //! 1. The host writes the input to `in[p, p+n)`, publishes `in_write_pos = p+n` and rings
@@ -42,6 +44,7 @@ mod plugin;
 pub mod protocol;
 pub mod shm;
 pub mod test_plugins;
+pub mod vst3;
 pub mod wakeup;
 
 pub use channel::{Channel, ChannelConfig, ChannelError};

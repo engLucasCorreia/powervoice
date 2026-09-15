@@ -7,6 +7,7 @@ check:
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
     just check-types
+    python3 scripts/packaging/test_check_bundle.py
     python3 scripts/notices/generate.py --check
     @if [ -f ui/package.json ]; then node scripts/docs/generate_shortcuts.mjs --check; fi
     @if [ -f ui/package.json ]; then npm --prefix ui run check; fi
@@ -84,8 +85,10 @@ shortcuts-table:
 # Build release binary (+ the Linux Tauri bundle: AppImage + .deb, T-705)
 build:
     cargo build --workspace --release
-    npm --prefix ui run tauri build
+    scripts/packaging/build_sandbox.sh
+    scripts/packaging/tauri_build.sh
     python3 scripts/packaging/check_desktop_entry.py
+    python3 scripts/packaging/check_bundle.py
 
 # Run benchmarks (T-110): `cargo bench --workspace`, then write target/bench/summary.md (each
 # metric against its PROMPT/SPEC target where one exists — not committed, T-704's baseline).

@@ -1,0 +1,54 @@
+# H-45: runs `just check` (fmt check + clippy -D warnings + all Rust tests + svelte-check +
+# vitest) on every push and PR to `main`, so regressions are caught before the orchestrator
+# merges a ticket branch. Same system packages as .github/workflows/release.yml, plus the
+# runtime libs some tests load dynamically at test time (`liblilv-0-0` for the LV2 backend,
+# T-807; `libmp3lame0` for MP3 export, ADR-007 §4) so those tests exercise the real code path
+# instead of skipping. Tests that need real audio devices or a display already skip themselves
+# (see MEMORY.md); nothing here works around a flaky one.
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    # `just check` runs the full Rust suite plus ~1,950 vitest tests; the default 6h GHA limit is
+    # plenty, but a stuck run (e.g. a hung test) shouldn't tie up a runner for hours.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev patchelf \
+            pkg-config libpipewire-0.3-dev libspa-0.2-dev libjack-jackd2-dev libclang-dev \
+            liblilv-0-0 libmp3lame0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install UI dependencies
+        run: npm ci --prefix ui
+
+      - uses: extractions/setup-just@v3
+
+      - name: just check
+        run: just check

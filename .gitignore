@@ -7,7 +7,11 @@ node_modules/
 # ui/src/lib/ipc/bindings.ts via `just gen-types` / `just check-types`.
 /src-tauri/bindings/
 /src-tauri/gen/
+# H-45: staged by scripts/packaging/build_sandbox.sh for `just build`'s Tauri externalBin; never
+# committed (built fresh per host/CI run).
+/src-tauri/binaries/
 /.claude/worktrees/
 *.vo.session
 *.log
 .DS_Store
+__pycache__/

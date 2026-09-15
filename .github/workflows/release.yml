@@ -1,8 +1,9 @@
 # Builds the Linux packages (AppImage + .deb) and publishes them as a GitHub pre-release when a
 # `v*` tag is pushed (or on a manual run). The plugin sandbox (`powervoice-sandbox`) is built
 # first and bundled next to the app as a Tauri external binary; the app looks for it beside its
-# own executable (vox_plugin_host::SandboxOptions::beside_current_exe). Local `just build` doesn't
-# bundle it yet — see tickets/BOARD.md H-45.
+# own executable (vox_plugin_host::SandboxOptions::beside_current_exe). H-45: `just build` does
+# the same locally, through the same scripts/packaging/{build_sandbox,tauri_build}.sh — one
+# source of truth for how the sandbox gets staged and bundled.
 name: Release
 
 on:
@@ -39,16 +40,13 @@ jobs:
         run: npm ci --prefix ui
 
       - name: Build the plugin sandbox
-        run: |
-          cargo build --release -p powervoice-sandbox
-          mkdir -p src-tauri/binaries
-          cp target/release/powervoice-sandbox \
-            src-tauri/binaries/powervoice-sandbox-x86_64-unknown-linux-gnu
+        run: scripts/packaging/build_sandbox.sh
 
       - name: Build AppImage and .deb
-        run: >
-          npm --prefix ui run tauri build -- --bundles appimage,deb
-          --config '{"bundle":{"externalBin":["binaries/powervoice-sandbox"]}}'
+        run: scripts/packaging/tauri_build.sh --bundles appimage,deb
+
+      - name: Verify the sandbox is bundled
+        run: python3 scripts/packaging/check_bundle.py
 
       - name: Publish the release
         if: startsWith(github.ref, 'refs/tags/')

@@ -59,6 +59,23 @@ produces, under `target/release/bundle/`:
 - (also `rpm/PowerVoice-<version>-1.x86_64.rpm`, a side effect of Tauri's default `"targets": "all"`
   — not a ticket requirement, untested on an actual RPM distro)
 
+### The plugin sandbox (H-45)
+
+Third-party plugins (CLAP/VST3/LV2/JSFX) run in a separate `powervoice-sandbox` process, which the
+app looks for beside its own executable
+(`vox_plugin_host::SandboxOptions::beside_current_exe`). `just build` builds that binary, stages it
+at `src-tauri/binaries/powervoice-sandbox-<host-triple>` (`scripts/packaging/build_sandbox.sh`, the
+triple from `rustc -vV`), and bundles it as a Tauri external binary
+(`scripts/packaging/tauri_build.sh`, passing `externalBin` on the `tauri build` command line
+instead of in `src-tauri/tauri.conf.json` — that keeps plain `cargo build`, `just check` and
+`just dev` working even when the staged binary doesn't exist yet, since `tauri-build` only
+validates `externalBin` paths that are actually declared). The AppImage and `.deb` both end up
+with `usr/bin/powervoice-sandbox` next to `usr/bin/powervoice-app`; `just build` checks that with
+`scripts/packaging/check_bundle.py` right after building (fails the build if it's missing).
+`src-tauri/binaries/` is never committed — it's rebuilt fresh by every `just build`/CI run, for the
+host's own triple. The GitHub release workflow (`.github/workflows/release.yml`) uses the same two
+scripts, so there's one source of truth for how the sandbox gets staged and bundled.
+
 ### If a bundler tool is missing or fails
 
 CLAUDE.md forbids this project's agents from installing system packages, so a ticket run that hits

@@ -1,0 +1,7 @@
+desc:PowerVoice Test Broken
+// Doesn't compile: listed by the scan, but never as an audio effect.
+in_pin:mono
+out_pin:mono
+
+@sample
+spl0 = (spl0 * ;

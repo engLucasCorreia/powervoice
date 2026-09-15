@@ -62,12 +62,13 @@ export type InstallState =
     };
 
 /**
- * What "Install module…" accepts: the backends that exist (T-803 CLAP, T-806 VST3, T-807 LV2). A
- * VST3 or LV2 bundle is a folder on Linux and Windows: picking any file inside it installs the
- * whole bundle — `ttl` lets the picker show an LV2 bundle's `manifest.ttl`. T-808 adds its
- * extension here when its backend lands.
+ * What "Install module…" accepts: the backends that exist (T-803 CLAP, T-806 VST3, T-807 LV2,
+ * T-808 JSFX). A VST3 or LV2 bundle is a folder on Linux and Windows: picking any file inside it
+ * installs the whole bundle — `ttl` lets the picker show an LV2 bundle's `manifest.ttl`. A JSFX
+ * script is a `.jsfx` file (its relative imports come along); REAPER's extensionless scripts are
+ * found by scanning their folder instead (Preferences → Plugins → folders).
  */
-export const INSTALL_EXTENSIONS: readonly string[] = ["clap", "vst3", "lv2", "ttl"];
+export const INSTALL_EXTENSIONS: readonly string[] = ["clap", "vst3", "lv2", "ttl", "jsfx"];
 
 let open = $state(false);
 let tab = $state<ManagerTab>("plugins");

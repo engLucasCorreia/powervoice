@@ -19,6 +19,7 @@ members = [
     "crates/test-vst3",
     "crates/lv2-abi",
     "crates/test-lv2",
+    "crates/ysfx-sys",
     "src-tauri",
 ]
 
@@ -85,6 +86,9 @@ symphonia = { version = "0.6.1", default-features = false, features = [
 # MIT VST 3 SDK 3.8.0 headers (MIT OR Apache-2.0; never `vst3-sys`, GPL). Only `powervoice-sandbox`
 # and the in-repo test plugin link it.
 vst3 = "0.3.0"
+# T-808 (ADR-007 amendment): builds the vendored ysfx/EEL2 C/C++ sources (`third_party/ysfx`) in
+# `vox-ysfx-sys`'s build script only — the one C/C++ build in the workspace.
+cc = "1.4"
 # T-110: divan benches (`just bench`), dev-dependency only. Plain `main()` (`harness = false`)
 # report binaries stay the source of truth for target/summary.md; divan gives the detailed
 # statistical `cargo bench` console output.

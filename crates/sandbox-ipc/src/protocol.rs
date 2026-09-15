@@ -243,6 +243,27 @@ impl Lv2PluginRef {
     }
 }
 
+/// What the JSFX backend loads (T-808, ADR-008 Amendment 11): the script file. Its import root
+/// is its effects root ([`crate::jsfx::effects_root`]). Travels as the `Load { plugin }`
+/// reference, JSON-encoded like [`ClapPluginRef`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JsfxPluginRef {
+    /// Path of the script.
+    pub path: String,
+}
+
+impl JsfxPluginRef {
+    /// The `Load { plugin }` string.
+    pub fn to_reference(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// Parses a `Load { plugin }` string.
+    pub fn parse(reference: &str) -> Result<Self, String> {
+        serde_json::from_str(reference).map_err(|e| format!("bad JSFX plugin reference: {e}"))
+    }
+}
+
 /// One plugin a scanned file offers (`powervoice-sandbox --scan`, ADR-008 §6; T-803, richer
 /// fields T-804 Amendment 4).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

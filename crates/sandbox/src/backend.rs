@@ -1,5 +1,5 @@
 //! The in-process plugin backend seam (T-802): the test backend, CLAP (T-803), VST3 (T-806) and
-//! LV2 (T-807); JSFX comes later behind the same trait.
+//! LV2 (T-807) and JSFX (T-808).
 
 use std::sync::Arc;
 
@@ -71,5 +71,6 @@ pub fn backends() -> Vec<Box<dyn PluginBackend>> {
         Box::new(crate::clap::ClapBackend),
         Box::new(crate::vst3::Vst3Backend),
         Box::new(crate::lv2::Lv2Backend),
+        Box::new(crate::jsfx::JsfxBackend),
     ]
 }

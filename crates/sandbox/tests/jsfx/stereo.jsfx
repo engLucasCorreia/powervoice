@@ -1,0 +1,22 @@
+desc:PowerVoice Test Gain (stereo)
+// @version 1.2.3
+author:PowerVoice
+tags:utility
+slider1:0<-60,24,0.1>Gain (dB)
+in_pin:left
+in_pin:right
+out_pin:left
+out_pin:right
+import lib/gain_core.jsfx-inc
+
+@init
+ext_nodenorm = 1;
+pv_gain_reset(slider1);
+
+@slider
+pv_gain_set(slider1);
+
+@sample
+g = pv_gain_next();
+spl0 = spl0 * g;
+spl1 = spl1 * g;

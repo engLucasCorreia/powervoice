@@ -24,6 +24,8 @@
 //! - **VST3 enumeration** (T-806, same module): the standard VST3 paths; a bundle with
 //!   `moduleinfo.json` is indexed from it without loading any code, anything else is scanned in
 //!   its own sandbox like a CLAP file. Cache, blocklist and plugin manager rows carry the format.
+//! - **LV2 and JSFX enumeration** (T-807, T-808, same module): `.lv2` bundles and JSFX scripts
+//!   (`.jsfx` or extensionless with a `desc:` line), each scanned in its own sandbox.
 //! - Instances are created off the rack's control thread (`ModuleFactory::loads_async`).
 //! - The **watchdog** thread (one per process, [`watchdog`]) spawns the sandboxes, polls every
 //!   channel's `Monitor` (crash, hang, clean exit), kills hung processes and reaps retired ones:
@@ -43,12 +45,13 @@ pub mod watchdog;
 
 pub use catalog::{CatalogPaths, InstallReport, PluginCatalog, PluginDetails, ScanSummary};
 pub use factory::{
-    CLAP_FORMAT, LV2_FORMAT, SandboxFactory, SandboxInstance, SandboxOptions, SandboxSpec,
-    TEST_FORMAT, VST3_FORMAT, clap_spec, lv2_spec, test_factories, test_spec, vst3_spec,
+    CLAP_FORMAT, JSFX_FORMAT, LV2_FORMAT, SandboxFactory, SandboxInstance, SandboxOptions,
+    SandboxSpec, TEST_FORMAT, VST3_FORMAT, clap_spec, jsfx_spec, lv2_spec, test_factories,
+    test_spec, vst3_spec,
 };
 pub use proxy::{MAX_TRANSPORT_BLOCK, ProxyModule};
 pub use sandbox::SandboxFault;
 // Re-exported so `src-tauri` (the plugin manager DTOs, T-804) can read a CLAP `SandboxSpec`'s
 // path without adding its own dependency on `vox-sandbox-ipc` (ADR-001 §3: format/protocol
 // crates stay behind `vox-plugin-host`, not linked directly by the editor's command layer).
-pub use vox_sandbox_ipc::protocol::{ClapPluginRef, Lv2PluginRef, Vst3PluginRef};
+pub use vox_sandbox_ipc::protocol::{ClapPluginRef, JsfxPluginRef, Lv2PluginRef, Vst3PluginRef};

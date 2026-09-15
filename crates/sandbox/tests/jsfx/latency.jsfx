@@ -1,0 +1,33 @@
+desc:PowerVoice Test Gain with latency
+// @version 1.2.3
+author:PowerVoice
+tags:utility delay
+slider1:0<-60,24,0.1>Gain (dB)
+slider2:64<0,1000,1>Latency (samples)
+in_pin:mono
+out_pin:mono
+import lib/gain_core.jsfx-inc
+
+@init
+ext_nodenorm = 1;
+pv_gain_reset(slider1);
+size = 1024;
+memset(0, 0, size);
+wp = 0;
+d = slider2;
+pdc_delay = d;
+pdc_bot_ch = 0;
+pdc_top_ch = 1;
+
+@slider
+pv_gain_set(slider1);
+d = slider2;
+pdc_delay = d;
+
+@sample
+wp[0] = spl0 * pv_gain_next();
+rp = wp - d;
+rp < 0 ? rp += size;
+spl0 = rp[0];
+wp += 1;
+wp >= size ? wp = 0;

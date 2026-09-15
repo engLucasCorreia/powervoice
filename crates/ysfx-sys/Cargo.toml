@@ -1,0 +1,22 @@
+[package]
+name = "vox-ysfx-sys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+links = "ysfx"
+
+# T-808 (ADR-007 amendment, ADR-008 Amendment 11): the **ysfx** JSFX host library (JoepVanlier
+# fork, Apache-2.0; WDL/EEL2 zlib; dr_libs Unlicense OR MIT-0), compiled from the pinned sources
+# vendored in `third_party/ysfx/` (library part only — never the fork's GPL plugin build) by
+# `build.rs` with the `cc` crate, and bound here by hand (the subset `powervoice-sandbox` uses).
+# Only `powervoice-sandbox` depends on it (ADR-007 §5: JSFX are JIT-compiled user scripts, so they
+# run in the sandbox only). Built for unix on x86_64 and aarch64 (EEL2's JIT back ends we vendor);
+# elsewhere — Windows included (`just check-cross`) — the crate is empty and nothing is compiled.
+
+[build-dependencies]
+cc.workspace = true
+
+[lints]
+workspace = true

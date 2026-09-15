@@ -1,0 +1,21 @@
+desc:PowerVoice Test Hang
+// @init never finishes (EEL2 caps each loop at 2^20 iterations; three nested ones are 2^60).
+in_pin:mono
+out_pin:mono
+
+@init
+i = 0;
+while (
+  j = 0;
+  while (
+    k = 0;
+    while ( k += 1; k < 1000000; );
+    j += 1;
+    j < 1000000;
+  );
+  i += 1;
+  i < 1000000;
+);
+
+@sample
+spl0 = spl0;

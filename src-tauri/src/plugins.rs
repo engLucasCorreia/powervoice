@@ -198,12 +198,14 @@ pub fn install_dir() -> Option<PathBuf> {
 
 /// Every per-user folder "Install module…" copies into, one per format (T-806: the CLAP folder
 /// and `~/.vst3`, `~/Library/Audio/Plug-Ins/VST3` or `%LOCALAPPDATA%\Programs\Common\VST3`;
-/// T-807: `~/.lv2` or `~/Library/Audio/Plug-Ins/LV2`, none on Windows).
+/// T-807: `~/.lv2` or `~/Library/Audio/Plug-Ins/LV2`, none on Windows; T-808: PowerVoice's JSFX
+/// folder, `<data dir>/Effects`, none on Windows).
 pub fn install_dirs() -> Vec<PathBuf> {
     [
         vox_plugin_host::install::user_clap_dir(),
         vox_plugin_host::install::user_vst3_dir(),
         vox_plugin_host::install::user_lv2_dir(),
+        vox_plugin_host::install::user_jsfx_dir(),
     ]
     .into_iter()
     .flatten()
@@ -211,12 +213,14 @@ pub fn install_dirs() -> Vec<PathBuf> {
 }
 
 /// The standard per-format folders every scan searches (`$CLAP_PATH`, then the CLAP folders;
-/// `$VST3_PATH`, then the VST3 folders; `$LV2_PATH`, then the LV2 folders — T-807).
+/// `$VST3_PATH`, then the VST3 folders; `$LV2_PATH`, then the LV2 folders — T-807; REAPER's
+/// effects folder when it exists — T-808).
 pub fn standard_folders() -> Vec<PathBuf> {
     let mut dirs = vox_plugin_host::scan::clap_search_paths();
     let others = vox_plugin_host::scan::vst3_search_paths()
         .into_iter()
-        .chain(vox_plugin_host::scan::lv2_search_paths());
+        .chain(vox_plugin_host::scan::lv2_search_paths())
+        .chain(vox_plugin_host::scan::jsfx_search_paths());
     for d in others {
         if !dirs.contains(&d) {
             dirs.push(d);

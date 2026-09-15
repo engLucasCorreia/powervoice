@@ -262,3 +262,44 @@ Resolves the ⚠ on the "LV2 spec, lilv / livi" row of §2.
   files, and a machine without lilv couldn't start the sandbox at all.
 - No new third-party crate (`rtrb`, used for the LV2 worker's rings, was already a workspace
   dependency). ADR-008 Amendment 8 records the design.
+
+## Amendment — T-808 ysfx: vendored library, built into the sandbox (2026-09-15)
+Resolves the ⚠ on the "ysfx (JoepVanlier fork) + WDL/EEL2, dr_libs, stb, json" row of §2 and §5's
+"T-808 re-verifies each `thirdparty/` license".
+- **Acquisition.** crates.io has no ysfx binding or `-sys` crate (searched 2026-09-15: `ysfx`,
+  `ysfx-sys`, `jsfx`, `eel2` — no results), and no system ysfx exists to load at run time. The
+  **library part** of https://github.com/JoepVanlier/ysfx is vendored unmodified at commit
+  `5c3452fee62583aa3d1b7e877d0c758c4024af89` (2026-08-19), with its `dr_libs` submodule at
+  `f13cbcfd06afe7287f99b1bb5982cefdf3d6a974`, in `third_party/ysfx/` (2.0 MB, 86 files; the
+  file list and update procedure are in `third_party/ysfx/PROVENANCE.txt`).
+- **Never vendored:** the fork's JUCE/CLAP plugin (`plugin/`, `plugin_license/`, GPL-3.0), the
+  GUI stack (LICE, SWELL, `stb`, `sources/lice_stb`), `thirdparty/json`,
+  `thirdparty/clap-juce-extensions`, tests and tools.
+- **Licenses, re-verified file by file:**
+  - ysfx `include/` + `sources/`: Apache-2.0 (Jean Pierre Cimalando, Joep Vanlier). Two files
+    inside carry their own: `sources/eel2-gas/` (EEL2's x86-64 JIT stubs in GAS syntax) zlib,
+    `sources/base64/Base64.hpp` ISC.
+  - WDL/EEL2 subset (the EEL2 compiler, lexer and parser, the aarch64 JIT stubs, `fft.c`, the
+    headers they include): zlib, Cockos Incorporated / Nullsoft.
+  - `eel2/y.tab.c`: Bison 2.3 output under the GPL-3.0 **with the Bison special exception**. The
+    exception lets it be distributed under any terms in a work that isn't itself a parser
+    generator, so it doesn't make anything GPL.
+  - `dr_wav.h` / `dr_flac.h`: public domain (Unlicense) or MIT-0.
+  - `stb` and `json` (MIT) are not vendored, so they're not relevant.
+- **Build and linking.** New crate `vox-ysfx-sys`:
+  - its `build.rs` compiles the vendored sources with the **`cc` crate** (1.4, MIT OR Apache-2.0,
+    already in the lockfile; now a direct build dependency) into one static archive, `libysfx.a`:
+    C for EEL2, C++17 for ysfx, `YSFX_NO_GFX`, `-O2` in every profile;
+  - its `lib.rs` hand-writes the ~45 functions of the C API PowerVoice uses.
+  - **Only `powervoice-sandbox` depends on it** (a target-specific dependency), so the editor
+    binary never links ysfx. The C++ runtime comes from the system (dynamic `libstdc++`, like
+    every C++ program).
+- **Platforms:** unix on x86-64 and aarch64, the EEL2 JIT back ends vendored. Elsewhere,
+  including Windows, `build.rs` compiles nothing, the crate is empty and the sandbox answers "JSFX
+  effects aren't supported on this platform". `just check-cross` therefore needs no C++ cross
+  toolchain. A Windows build (upstream uses MSVC + NASM, or its portable non-JIT EEL2) is a
+  follow-up.
+- **Notices.** The flagged section of `THIRD_PARTY_NOTICES` names every component above.
+  `scripts/notices/generate.py` now also fails when a `third_party/<name>` folder isn't named in
+  the notices.
+- ADR-008 Amendment 11 records the backend's design.

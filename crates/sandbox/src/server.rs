@@ -32,7 +32,7 @@ struct Args {
     host_pid: Option<u32>,
     /// `--scan <file>`: scan mode (T-803).
     scan: Option<String>,
-    /// `--format <clap|vst3|lv2>` for `--scan`.
+    /// `--format <clap|vst3|lv2|jsfx>` for `--scan`.
     format: Option<String>,
 }
 
@@ -176,6 +176,10 @@ fn scan_mode(file: &str, format: &str) -> ExitCode {
             Err(e) => ScanReply::Error(e),
         },
         "lv2" => match crate::lv2::scan::scan(std::path::Path::new(file)) {
+            Ok(report) => ScanReply::Ok(report),
+            Err(e) => ScanReply::Error(e),
+        },
+        "jsfx" => match crate::jsfx::scan::scan(std::path::Path::new(file)) {
             Ok(report) => ScanReply::Ok(report),
             Err(e) => ScanReply::Error(e),
         },

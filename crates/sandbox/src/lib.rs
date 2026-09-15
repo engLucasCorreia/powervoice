@@ -13,12 +13,13 @@
 //! - exits on `Shutdown`, when stdin closes (the host is gone), when the host process
 //!   disappears, and (Linux) when the host thread that spawned it dies (`PR_SET_PDEATHSIG`).
 //!
-//! `powervoice-sandbox --scan <file> --format clap|vst3|lv2` (T-803, T-806, T-807; ADR-008 §6) instead loads
+//! `powervoice-sandbox --scan <file> --format clap|vst3|lv2|jsfx` (T-803, T-806–T-808; ADR-008 §6) instead loads
 //! one plugin file, prints a [`vox_sandbox_ipc::protocol::ScanReply`] as JSON on its protocol output and
 //! exits: a file that crashes or hangs while being scanned takes only this process down.
 
 mod backend;
 pub mod clap;
+pub mod jsfx;
 pub mod lv2;
 mod rt;
 mod server;

@@ -10,7 +10,9 @@ use vox_module_api::{
     Version, features,
 };
 use vox_sandbox_ipc::WaitBudget;
-use vox_sandbox_ipc::protocol::{ClapPluginRef, Lv2PluginRef, ScannedPlugin, Vst3PluginRef};
+use vox_sandbox_ipc::protocol::{
+    ClapPluginRef, JsfxPluginRef, Lv2PluginRef, ScannedPlugin, Vst3PluginRef,
+};
 
 use crate::health::HealthStore;
 use crate::proxy::ProxyModule;
@@ -26,6 +28,9 @@ pub const VST3_FORMAT: &str = "vst3";
 /// The LV2 backend's format name (T-807); module ids are `lv2:<plugin URI>` (ADR-005 §2:
 /// `ModuleRef` splits at the last `@`, so a URI may contain one).
 pub const LV2_FORMAT: &str = "lv2";
+/// The JSFX backend's format name (T-808); module ids are `jsfx:<path relative to the effects
+/// root>` (ADR-005 §2; [`vox_sandbox_ipc::jsfx::plugin_id`]).
+pub const JSFX_FORMAT: &str = "jsfx";
 
 /// What a sandboxed module is: its registry descriptor and how the sandbox loads it.
 #[derive(Clone, Debug)]
@@ -50,6 +55,9 @@ impl SandboxSpec {
                 .ok()
                 .map(|r| PathBuf::from(r.path)),
             LV2_FORMAT => Lv2PluginRef::parse(&self.plugin)
+                .ok()
+                .map(|r| PathBuf::from(r.path)),
+            JSFX_FORMAT => JsfxPluginRef::parse(&self.plugin)
                 .ok()
                 .map(|r| PathBuf::from(r.path)),
             _ => None,
@@ -253,6 +261,30 @@ pub fn lv2_spec(path: &Path, plugin: &ScannedPlugin) -> SandboxSpec {
         plugin: Lv2PluginRef {
             path: path.to_string_lossy().into_owned(),
             uri: plugin.id.clone(),
+        }
+        .to_reference(),
+    }
+}
+
+/// A JSFX script's spec (T-808): module id `jsfx:<path relative to its effects root>`, the
+/// script's `desc:` name, `author:`, version (a `// @version` comment, parsed leniently) and
+/// features (from its pins and `tags:`); loaded from the script `path`.
+pub fn jsfx_spec(path: &Path, plugin: &ScannedPlugin) -> SandboxSpec {
+    SandboxSpec {
+        descriptor: ModuleDescriptor {
+            id: format!("{JSFX_FORMAT}:{}", plugin.id),
+            version: Version::parse_lenient(&plugin.version),
+            name: LocalizedText::plain(&plugin.name),
+            vendor: plugin.vendor.clone(),
+            description: LocalizedText::plain(&plugin.description),
+            url: plugin.url.clone(),
+            features: plugin.features.clone(),
+            state_format_version: 1,
+            api_version: MODULE_API_VERSION,
+        },
+        format: JSFX_FORMAT.into(),
+        plugin: JsfxPluginRef {
+            path: path.to_string_lossy().into_owned(),
         }
         .to_reference(),
     }

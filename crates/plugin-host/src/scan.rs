@@ -33,6 +33,13 @@
 //!
 //! Each bundle is scanned in its own `powervoice-sandbox --scan <bundle> --format lv2`; a
 //! bundle's stamp covers every file in it.
+//!
+//! **JSFX** (T-808, ADR-008 Amendment 11): scripts — `.jsfx` files, and extensionless files whose
+//! header has a `desc:` line ([`vox_sandbox_ipc::jsfx::is_script`]; `.jsfx-inc` imports never) —
+//! in PowerVoice's own JSFX folder (the install folder, [`crate::install::user_jsfx_dir`]), then
+//! REAPER's effects folder if it exists ([`jsfx_search_paths`]), then the custom folders. Each
+//! script is scanned in its own `powervoice-sandbox --scan <script> --format jsfx`. Unix only,
+//! like the backend.
 
 use std::collections::HashSet;
 use std::io::Read;
@@ -51,8 +58,8 @@ use vox_sandbox_ipc::vst3::{AUDIO_MODULE_CLASS, binary_path, moduleinfo_path};
 
 use crate::blocklist::{BlockReason, Blocklist};
 use crate::factory::{
-    CLAP_FORMAT, LV2_FORMAT, SandboxFactory, SandboxOptions, SandboxSpec, VST3_FORMAT, clap_spec,
-    lv2_spec, vst3_spec,
+    CLAP_FORMAT, JSFX_FORMAT, LV2_FORMAT, SandboxFactory, SandboxOptions, SandboxSpec, VST3_FORMAT,
+    clap_spec, jsfx_spec, lv2_spec, vst3_spec,
 };
 
 /// ADR-008 §4: a scan may take 30 s.
@@ -204,20 +211,35 @@ pub enum PluginFormat {
     Vst3,
     /// `.lv2` bundle directories (T-807).
     Lv2,
+    /// JSFX scripts: `.jsfx` files, or extensionless files with a `desc:` line (T-808).
+    Jsfx,
 }
 
 impl PluginFormat {
-    /// The sandbox backend's name (`"clap"`, `"vst3"`).
+    /// The sandbox backend's name (`"clap"`, `"vst3"`, `"lv2"`, `"jsfx"`).
     pub fn name(self) -> &'static str {
         match self {
             Self::Clap => CLAP_FORMAT,
             Self::Vst3 => VST3_FORMAT,
             Self::Lv2 => LV2_FORMAT,
+            Self::Jsfx => JSFX_FORMAT,
         }
     }
 
-    /// The format of a plugin path, by its extension (any case).
+    /// The format of a plugin path: by its extension (any case), or — an extensionless file —
+    /// JSFX when its header has a `desc:` line (T-808; reads the file's beginning).
     pub fn of_path(path: &Path) -> Option<Self> {
+        match Self::of_extension(path) {
+            Some(f) => Some(f),
+            None if path.extension().is_none() && vox_sandbox_ipc::jsfx::is_script(path) => {
+                Some(Self::Jsfx)
+            }
+            None => None,
+        }
+    }
+
+    /// The format of a plugin path by its extension alone (any case; no file access).
+    pub fn of_extension(path: &Path) -> Option<Self> {
         let ext = path.extension()?;
         if ext.eq_ignore_ascii_case("clap") {
             Some(Self::Clap)
@@ -225,6 +247,8 @@ impl PluginFormat {
             Some(Self::Vst3)
         } else if ext.eq_ignore_ascii_case("lv2") {
             Some(Self::Lv2)
+        } else if ext.eq_ignore_ascii_case(vox_sandbox_ipc::jsfx::EXTENSION) {
+            Some(Self::Jsfx)
         } else {
             None
         }
@@ -331,6 +355,40 @@ pub fn lv2_search_paths() -> Vec<PathBuf> {
     dirs
 }
 
+/// Whether this build hosts JSFX (the sandbox's backend is unix-only, T-808).
+pub const JSFX_SUPPORTED: bool = cfg!(unix);
+
+/// REAPER's effects folder for this OS, when it exists (T-808): JSFX scripts installed with
+/// REAPER (or ReaPack) are offered too. Linux `$XDG_CONFIG_HOME/REAPER/Effects` (default
+/// `~/.config/REAPER/Effects`), macOS `~/Library/Application Support/REAPER/Effects`. Empty on
+/// Windows: the sandbox hosts JSFX on unix only.
+pub fn jsfx_search_paths() -> Vec<PathBuf> {
+    if !JSFX_SUPPORTED {
+        return Vec::new();
+    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|h| h.is_absolute());
+    let mut dirs = Vec::new();
+    #[cfg(target_os = "macos")]
+    dirs.extend(home.map(|h| {
+        h.join("Library")
+            .join("Application Support")
+            .join("REAPER")
+            .join("Effects")
+    }));
+    #[cfg(not(target_os = "macos"))]
+    {
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|c| c.is_absolute())
+            .or_else(|| home.map(|h| h.join(".config")));
+        dirs.extend(config.map(|c| c.join("REAPER").join("Effects")));
+    }
+    dirs.retain(|d| d.is_dir());
+    dirs
+}
+
 /// Whether `path` is an LV2 bundle that declares a plugin: a `.lv2` directory whose
 /// `manifest.ttl` mentions `Plugin` (every plugin is declared there with `a lv2:Plugin`; LV2's
 /// specification and preset-only bundles aren't, so they never cost a sandbox).
@@ -360,7 +418,13 @@ fn walk(dir: &Path, depth: usize, format: PluginFormat, out: &mut Vec<PathBuf>) 
         let Ok(meta) = std::fs::metadata(&path) else {
             continue;
         };
-        if PluginFormat::of_path(&path) == Some(format) {
+        // Only a JSFX walk reads extensionless files' headers (T-808).
+        let here = if format == PluginFormat::Jsfx {
+            PluginFormat::of_path(&path)
+        } else {
+            PluginFormat::of_extension(&path)
+        };
+        if here == Some(format) {
             let keep = match format {
                 // A macOS bundle is a directory; elsewhere the `.clap` is the library file.
                 PluginFormat::Clap => meta.is_file() || cfg!(target_os = "macos"),
@@ -368,6 +432,8 @@ fn walk(dir: &Path, depth: usize, format: PluginFormat, out: &mut Vec<PathBuf>) 
                 PluginFormat::Vst3 => true,
                 // A bundle directory that declares a plugin (never searched inside).
                 PluginFormat::Lv2 => is_lv2_plugin_bundle(&path),
+                // A script file (`.jsfx`, or sniffed by `of_path`).
+                PluginFormat::Jsfx => meta.is_file(),
             };
             if keep {
                 out.push(path);
@@ -406,6 +472,11 @@ pub fn find_lv2_files(dirs: &[PathBuf]) -> Vec<PathBuf> {
     find_files(PluginFormat::Lv2, dirs)
 }
 
+/// Every JSFX script below `dirs` (recursively), sorted, without duplicates (T-808).
+pub fn find_jsfx_files(dirs: &[PathBuf]) -> Vec<PathBuf> {
+    find_files(PluginFormat::Jsfx, dirs)
+}
+
 /// [`find_clap_files`], applied to a list of priority **tiers** instead of one flat directory
 /// list (H-29, ADR-008 Amendment 5's duplicate-id policy): every file below one tier's
 /// directories is found and sorted (by path) before moving on to the next tier, so the returned
@@ -430,6 +501,11 @@ pub fn find_vst3_files_ranked(tiers: &[Vec<PathBuf>]) -> Vec<PathBuf> {
 /// [`find_clap_files_ranked`] for LV2 bundles (T-807: the same H-29 tiers and duplicate policy).
 pub fn find_lv2_files_ranked(tiers: &[Vec<PathBuf>]) -> Vec<PathBuf> {
     find_files_ranked(PluginFormat::Lv2, tiers)
+}
+
+/// [`find_clap_files_ranked`] for JSFX scripts (T-808: the same H-29 tiers and duplicate policy).
+pub fn find_jsfx_files_ranked(tiers: &[Vec<PathBuf>]) -> Vec<PathBuf> {
+    find_files_ranked(PluginFormat::Jsfx, tiers)
 }
 
 fn find_files_ranked(format: PluginFormat, tiers: &[Vec<PathBuf>]) -> Vec<PathBuf> {
@@ -815,8 +891,9 @@ fn scan_any(
 }
 
 /// Scans one file like [`scan_file`], keeping whether the failure was a crash, a timeout or
-/// anything else (T-809's "Install module…" blocklists only the first two, ADR-008 §5).
-pub(crate) fn scan_one(
+/// anything else (T-809's "Install module…" blocklists only the first two, ADR-008 §5). Public
+/// for [`crate::PluginCatalog::install_with`] callers that pick their own timeout (T-808 tests).
+pub fn scan_one(
     binary: &Path,
     path: &Path,
     timeout: Duration,
@@ -1149,6 +1226,7 @@ pub fn spec_for(path: &Path, plugin: &ScannedPlugin) -> SandboxSpec {
     match PluginFormat::of_path(path) {
         Some(PluginFormat::Vst3) => vst3_spec(path, plugin),
         Some(PluginFormat::Lv2) => lv2_spec(path, plugin),
+        Some(PluginFormat::Jsfx) => jsfx_spec(path, plugin),
         _ => clap_spec(path, plugin),
     }
 }

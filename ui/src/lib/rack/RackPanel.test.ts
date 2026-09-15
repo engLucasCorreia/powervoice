@@ -177,6 +177,28 @@ describe("RackPanel", () => {
     teardown();
   });
 
+  it("lists JSFX effects under Plugins (JSFX), after Plugins (LV2)", async () => {
+    const modules = [
+      moduleFixture("jsfx:utility/volume", ["audio-effect", "utility"]),
+      moduleFixture("lv2:http://lsp-plug.in/plugins/lv2/compressor_mono", ["audio-effect", "compressor"]),
+      moduleFixture("org.powervoice.gain", ["utility"]),
+    ];
+    const { target, el, teardown } = await setup(rackFixture([]), modules);
+    el("rack-add")?.click();
+    flushSync();
+    const groupTitles = [...target.querySelectorAll('[data-testid="rack-add-menu"] .heading')].map((g) => g.textContent);
+    expect(groupTitles).toEqual(["Utility", "Plugins (LV2)", "Plugins (JSFX)"]);
+    const items = [...target.querySelectorAll('[data-testid="rack-add-item"]')].map((i) =>
+      i.getAttribute("data-module-id"),
+    );
+    expect(items).toEqual([
+      "org.powervoice.gain",
+      "lv2:http://lsp-plug.in/plugins/lv2/compressor_mono",
+      "jsfx:utility/volume",
+    ]);
+    teardown();
+  });
+
   it("adding a module appends it at the end of the chain", async () => {
     const { target, el, teardown } = await setup(rackFixture([slotFixture(1)]), [
       moduleFixture("org.powervoice.gain", ["utility"]),

@@ -78,6 +78,8 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-38 | Packaging (T-807, A-022): deb Recommends `liblilv-0-0`, Arch optdepends `lilv`, AppImage note; user-guide note that LV2 needs lilv | H | done |
 | H-39 | Loop in the menus (H-37): Loop Playback checkbox item (View or a Transport section, shared Menu + Ctrl/⌘+L chip), tour step mention | H | done |
 | H-40 | Live recovery of Missing plugin slots (T-810): when an install or rescan registers a module that an open document's Missing slot references, re-resolve that slot in place with its kept state blob (no reopen needed), with a notice | S | done |
+| H-41 | Output level meter (owner req.): vertical, fixed-size (no analyzer resize), standard peak/RMS ballistics + peak hold, readable throttled numerals, clip latch — keep the lively jump | S | in progress |
+| H-42 | Analyzer diagnostics (owner req.): peak frequency labels (Hz + note), voice statistics panel (F0, sibilance → de-esser suggestion, mud/presence, hum, rumble, noise floor), LTAS over selection/document, compare/freeze snapshots, optional Spectrum Inspector window, "add EQ band here" | O | in progress |
 | H-18 | Shared test factories for DTOs (`ui/src/lib/test/fixtures.ts` + Rust builders) so a new DTO field touches one helper, not 20 test literals (merge-friction fix) | H | done |
 | H-17 | Recovery follow-ups (T-301): dialog stays open for remaining sessions (A-015), AC-3/AC-11 timing on a real disk (test-big), compaction off the document lock, markers during an interrupted take, Memory-for-audio UI, `/tmp/vox-project-*` sweep | S | done |
 | H-15 | Sidecar follow-ups (T-306): recent-file-missing dialog, read-only folder matrix (AC-13), SIGKILL-during-sidecar-save test (AC-6), per-slot leniency for a malformed rack slot, perf budget (AC-18) | S | done |
@@ -194,7 +196,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-805 | Our modules as CLAP packages (clack-plugin) | W4 | O | T-803 | in progress |
 | T-806 | VST3 adapter (coupler vst3 + moduleinfo scan) | W4 | O | T-803, T-804 | done |
 | T-807 | LV2 adapter (livi) | W4 | O | T-803, T-804 | done |
-| T-808 | JSFX adapter (ysfx, sandbox-only) | W4 | O | T-803, T-804 | in progress |
+| T-808 | JSFX adapter (ysfx, sandbox-only) | W4 | O | T-803, T-804 | done |
 | T-809 | Plugin manager UI + "Install module…" | W5 | S | T-804 | done |
 | T-810 | Plugin state in presets/sidecar | W5 | S | T-803 | done |
 | T-811 | VST2 adapter (prefer Carla bridge) | W5 | O | T-803 + owner legal sign-off | gated |

@@ -182,6 +182,19 @@ Manually: `sudo apt install liblilv-0-0` (Debian/Ubuntu), `sudo dnf install lilv
 **Overriding the library path**: set `POWERVOICE_LILV` to an absolute path to a custom lilv build
 (advanced use only; normally unnecessary).
 
+### JSFX support (vendored ysfx)
+
+JSFX effects are hosted through **ysfx** (the JoepVanlier fork's Apache-2.0 library, with Cockos'
+WDL/EEL2), vendored at a pinned commit in `third_party/ysfx/` (see its `PROVENANCE.txt`) and
+compiled from source by `crates/ysfx-sys/build.rs` with the `cc` crate — into
+`powervoice-sandbox` only. There is no runtime dependency to install, but **building needs a C and
+C++17 compiler** (`gcc`/`g++` or `clang`/`clang++`; Debian/Ubuntu `build-essential`, Arch
+`base-devel`, macOS Xcode command-line tools). It's built for unix on x86-64 and aarch64 (the EEL2
+JIT back ends vendored). **JSFX is not supported on Windows**: `vox-ysfx-sys` compiles nothing
+there (so `just check-cross` needs no C++ cross-compiler) and the sandbox answers "JSFX effects
+aren't supported on this platform". A Windows build would need upstream's MSVC + NASM (or its
+portable, non-JIT) EEL2 configuration — a follow-up.
+
 ## Cross-compiling a Windows check from Linux (`just check-cross`)
 
 `just check-cross` runs `cargo check --target x86_64-pc-windows-gnu` over every crate that has no

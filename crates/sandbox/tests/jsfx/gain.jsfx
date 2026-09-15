@@ -1,0 +1,21 @@
+desc:PowerVoice Test Gain
+// @version 1.2.3
+author:PowerVoice
+tags:utility
+slider1:0<-60,24,0.1>Gain (dB)
+slider2:0<0,2,1{Clean,Warm,Hot}>Mode
+slider3:1000<20,20000,1:log>Frequency
+slider4:0<0,1,1>-Hidden toggle
+in_pin:mono
+out_pin:mono
+import lib/gain_core.jsfx-inc
+
+@init
+ext_nodenorm = 1;
+pv_gain_reset(slider1);
+
+@slider
+pv_gain_set(slider1);
+
+@sample
+spl0 = spl0 * pv_gain_next();

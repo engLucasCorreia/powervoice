@@ -81,9 +81,11 @@ select 0.5–60 s of room tone/silence and use Capture Noise Print, provisionall
 compressor → limiter, compressor on by default), and a **True-Peak Limiter** (a safety ceiling for
 loudness delivery).
 
-**Third-party plugins**: PowerVoice also supports plugins in CLAP, VST3, and LV2 formats. Use the
-**Plugin Manager** or the **Add Module** menu's **Plugins** section to install and add them to your
-rack. If LV2 plugins aren't available, see [LV2 plugins are unavailable](#lv2-plugins-are-unavailable).
+**Third-party plugins**: PowerVoice also supports plugins in CLAP, VST3, and LV2 formats, and
+REAPER's JSFX effects. Use the **Plugin Manager** or the **Add Module** menu's **Plugins** section to
+install and add them to your rack. If LV2 plugins aren't available, see
+[LV2 plugins are unavailable](#lv2-plugins-are-unavailable). For JSFX, see
+[Where JSFX effects come from](#where-jsfx-effects-come-from).
 
 ### Rack presets
 
@@ -214,6 +216,27 @@ Install lilv:
 You don't need to restart PowerVoice: lilv is loaded the next time an LV2 plugin is scanned, so use
 **Rescan** in the Plugin Manager. Advanced: to use your own lilv build, set the `POWERVOICE_LILV`
 environment variable to its full path.
+
+### Where JSFX effects come from
+
+JSFX are REAPER's text-based effects. PowerVoice runs them with its own built-in JSFX engine, in the
+same protected helper process as other plugins, so a broken script can't take PowerVoice down. It
+finds them in three places:
+
+- **PowerVoice's own JSFX folder**, where **Install module…** copies a `.jsfx` file (with the
+  files it imports from its own folder): `~/.local/share/powervoice/Effects` on Linux,
+  `~/Library/Application Support/app.powervoice.powervoice/Effects` on macOS.
+- **REAPER's effects folder**, if REAPER is installed: `~/.config/REAPER/Effects` on Linux,
+  `~/Library/Application Support/REAPER/Effects` on macOS. REAPER's own effects have no file
+  extension; PowerVoice recognises them by their `desc:` line.
+- Any **custom folder** you add in the Plugin Manager's **Folders** tab.
+
+JSFX effects appear under **Add module → Plugins (JSFX)**. Their sliders are the effect's
+parameters, so you can automate them, and they're saved with your project and presets. Their
+custom graphics (`@gfx`) aren't shown yet: PowerVoice shows the sliders instead. A script that
+doesn't compile is listed in the Plugin Manager but not in **Add module**. A script that freezes
+while it's being checked is blocked, like any plugin that hangs. JSFX aren't supported on Windows
+yet.
 
 ### Recording sounds delayed / out of sync with playback
 

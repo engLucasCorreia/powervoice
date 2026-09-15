@@ -158,12 +158,17 @@ impl PluginCatalog {
     /// [`Self::search_tiers`], which keeps them apart.
     pub fn search_dirs(&self) -> Vec<PathBuf> {
         let mut seen = std::collections::HashSet::new();
-        [PluginFormat::Clap, PluginFormat::Vst3, PluginFormat::Lv2]
-            .into_iter()
-            .flat_map(|f| self.search_tiers(f))
-            .flatten()
-            .filter(|d| seen.insert(d.clone()))
-            .collect()
+        [
+            PluginFormat::Clap,
+            PluginFormat::Vst3,
+            PluginFormat::Lv2,
+            PluginFormat::Jsfx,
+        ]
+        .into_iter()
+        .flat_map(|f| self.search_tiers(f))
+        .flatten()
+        .filter(|d| seen.insert(d.clone()))
+        .collect()
     }
 
     /// Every plugin file of every format, each format in its H-29 priority order.
@@ -174,6 +179,9 @@ impl PluginCatalog {
         ));
         files.extend(scan::find_lv2_files_ranked(
             &self.search_tiers(PluginFormat::Lv2),
+        ));
+        files.extend(scan::find_jsfx_files_ranked(
+            &self.search_tiers(PluginFormat::Jsfx),
         ));
         files
     }
@@ -189,6 +197,7 @@ impl PluginCatalog {
             PluginFormat::Clap => (install::user_clap_dir(), scan::clap_search_paths()),
             PluginFormat::Vst3 => (install::user_vst3_dir(), scan::vst3_search_paths()),
             PluginFormat::Lv2 => (install::user_lv2_dir(), scan::lv2_search_paths()),
+            PluginFormat::Jsfx => (install::user_jsfx_dir(), scan::jsfx_search_paths()),
         };
         if let Some(install_dir) = install_dir {
             tiers.push(vec![install_dir]);

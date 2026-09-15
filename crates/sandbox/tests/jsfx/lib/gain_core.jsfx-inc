@@ -1,0 +1,45 @@
+// T-808 test scripts: the built-in Gain (crates/modules/src/gain.rs), bit for bit.
+// A change starts a linear ramp in linear gain that reaches the target round(20 ms x rate)
+// samples later; each sample's gain is rounded to a 32-bit float, as the Rust module does, so
+// the script's double-precision product rounds to exactly the Rust f32 product.
+@init
+function pv_db_to_gain(db) ( db <= -60 ? 0 : 10 ^ (db / 20); );
+
+// The nearest 32-bit float to x >= 0 (ties to even), like Rust's `x as f32`.
+function pv_to_f32(x) local(e, u, q, f, r) (
+  x <= 0 ? 0 : (
+    e = floor(log(x) / log(2));
+    2 ^ e > x ? e -= 1;
+    2 ^ (e + 1) <= x ? e += 1;
+    u = 2 ^ (e - 23);
+    q = x / u;
+    f = floor(q);
+    r = q - f;
+    (r > 0.5 || (r === 0.5 && (f - 2 * floor(f / 2)) === 1)) ? f += 1;
+    f * u;
+  );
+);
+
+function pv_gain_current() (
+  pv_pos >= pv_len ? pv_target : pv_start + (pv_target - pv_start) * pv_pos / pv_len;
+);
+
+function pv_gain_reset(db) (
+  pv_len = floor(srate * 20 / 1000 + 0.5);
+  pv_target = pv_db_to_gain(db);
+  pv_start = pv_target;
+  pv_pos = pv_len;
+);
+
+// Every change restarts the ramp from the current gain (Gain::apply).
+function pv_gain_set(db) local(cur) (
+  cur = pv_gain_current();
+  pv_start = cur;
+  pv_target = pv_db_to_gain(db);
+  pv_pos = 0;
+);
+
+function pv_gain_next() (
+  pv_pos < pv_len ? pv_pos += 1;
+  pv_to_f32(pv_gain_current());
+);

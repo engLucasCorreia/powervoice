@@ -7,6 +7,11 @@
 //! T-807: an `.lv2` bundle directory (unix) goes into the per-user LV2 folder — `~/.lv2`, or
 //! `~/Library/Audio/Plug-Ins/LV2` on macOS — the same way; picking its `manifest.ttl` (or any
 //! file inside it) stands for the bundle too.
+//! T-808: a JSFX script (`.jsfx`, or an extensionless script) goes into PowerVoice's own JSFX
+//! folder ([`user_jsfx_dir`], unix) — and the files it imports **relatively** (found under its
+//! own folder, e.g. `import lib/util.jsfx-inc`) are copied next to it, keeping their relative
+//! paths, and removed again if the install rolls back. "Uninstall…" removes the script only (an
+//! import may be shared by other scripts).
 //!
 //! Where it goes — the standard per-user CLAP path (CLAP `entry.h`), already one of the folders
 //! [`crate::scan::clap_search_paths`] searches, so a later rescan (and other CLAP hosts) find it:
@@ -117,6 +122,37 @@ pub fn user_lv2_dir_from(home: Option<&OsStr>) -> Option<PathBuf> {
     }
 }
 
+/// PowerVoice's own JSFX folder (T-808; `None` on Windows, where JSFX isn't hosted), from the
+/// environment like [`user_clap_dir`]: the app's data folder's `Effects` — the
+/// `directories::ProjectDirs::from("app", "powervoice", "powervoice")` data folder `src-tauri`
+/// uses — Linux `$XDG_DATA_HOME/powervoice/Effects` (default `~/.local/share/powervoice/Effects`),
+/// macOS `~/Library/Application Support/app.powervoice.powervoice/Effects`. Named `Effects`, so
+/// its scripts get REAPER-style ids and import root ([`vox_sandbox_ipc::jsfx::effects_root`]).
+pub fn user_jsfx_dir() -> Option<PathBuf> {
+    user_jsfx_dir_from(
+        std::env::var_os("HOME").as_deref(),
+        std::env::var_os("XDG_DATA_HOME").as_deref(),
+    )
+}
+
+/// [`user_jsfx_dir`] for an explicit `HOME` / `XDG_DATA_HOME` (tests use a temporary home).
+pub fn user_jsfx_dir_from(home: Option<&OsStr>, xdg_data_home: Option<&OsStr>) -> Option<PathBuf> {
+    if !crate::scan::JSFX_SUPPORTED {
+        None
+    } else if cfg!(target_os = "macos") {
+        absolute(home).map(|h| {
+            h.join("Library")
+                .join("Application Support")
+                .join("app.powervoice.powervoice")
+                .join("Effects")
+        })
+    } else {
+        absolute(xdg_data_home)
+            .or_else(|| absolute(home).map(|h| h.join(".local").join("share")))
+            .map(|d| d.join("powervoice").join("Effects"))
+    }
+}
+
 /// The per-user folder a plugin of `path`'s format installs into (`None`: not a plugin path,
 /// or no per-user folder in this environment).
 pub fn user_install_dir_for(path: &Path) -> Option<PathBuf> {
@@ -124,6 +160,7 @@ pub fn user_install_dir_for(path: &Path) -> Option<PathBuf> {
         PluginFormat::Clap => user_clap_dir(),
         PluginFormat::Vst3 => user_vst3_dir(),
         PluginFormat::Lv2 => user_lv2_dir(),
+        PluginFormat::Jsfx => user_jsfx_dir(),
     }
 }
 
@@ -148,8 +185,8 @@ pub enum InstallError {
     #[error("the file doesn't exist")]
     NotFound,
     /// Not a `.clap` file (or, outside macOS, a directory), nor a `.vst3` bundle, nor (unix) an
-    /// `.lv2` bundle.
-    #[error("not a CLAP, VST3 or LV2 plugin")]
+    /// `.lv2` bundle or a JSFX script.
+    #[error("not a CLAP, VST3, LV2 or JSFX plugin")]
     NotAPlugin,
     /// The picked file already *is* the installed copy.
     #[error("this plugin is already installed here")]
@@ -270,6 +307,78 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// A JSFX script's relative imports to copy next to its installed copy (T-808): `(source,
+/// destination)` for each one missing at the destination or different there. A different file
+/// already there is a collision unless `replace`.
+fn jsfx_imports(
+    source: &Path,
+    dest_dir: &Path,
+    replace: bool,
+) -> Result<Vec<(PathBuf, PathBuf)>, InstallError> {
+    let mut out = Vec::new();
+    for (rel, from) in vox_sandbox_ipc::jsfx::relative_imports(source) {
+        let to = dest_dir.join(&rel);
+        match (std::fs::read(&from), std::fs::read(&to)) {
+            (Ok(a), Ok(b)) if a == b => {}
+            (_, Ok(_)) if !replace => return Err(InstallError::Collision { target: to }),
+            _ => out.push((from, to)),
+        }
+    }
+    Ok(out)
+}
+
+/// The imports an install copied (T-808), undone if it rolls back.
+#[derive(Default)]
+struct PlacedImports {
+    created: Vec<PathBuf>,
+    /// `(backup, target)`: a different file that was there before.
+    backups: Vec<(PathBuf, PathBuf)>,
+    /// Folders the copies created, outermost first.
+    dirs: Vec<PathBuf>,
+}
+
+impl PlacedImports {
+    fn place(&mut self, from: &Path, to: &Path) -> std::io::Result<()> {
+        let (Some(dir), Some(name)) = (to.parent(), to.file_name()) else {
+            return Err(std::io::Error::other("bad import path"));
+        };
+        let missing: Vec<PathBuf> = dir
+            .ancestors()
+            .take_while(|a| !a.exists())
+            .map(Path::to_path_buf)
+            .collect();
+        std::fs::create_dir_all(dir)?;
+        self.dirs.extend(missing.into_iter().rev());
+        if std::fs::symlink_metadata(to).is_ok() {
+            let b = sibling(dir, name, "backup");
+            std::fs::rename(to, &b)?;
+            self.backups.push((b, to.to_path_buf()));
+        } else {
+            self.created.push(to.to_path_buf());
+        }
+        copy_any(from, to, false)
+    }
+
+    fn undo(&self) {
+        for c in &self.created {
+            let _ = remove_any(c);
+        }
+        for (b, t) in &self.backups {
+            let _ = remove_any(t);
+            let _ = std::fs::rename(b, t);
+        }
+        for d in self.dirs.iter().rev() {
+            let _ = std::fs::remove_dir(d);
+        }
+    }
+
+    fn commit(&self) {
+        for (b, _) in &self.backups {
+            let _ = remove_any(b);
+        }
+    }
+}
+
 /// Installs `source` into `dest_dir` (see the module docs). `scan` is called **once**, with the
 /// installed path only — the rest of the plugin folders are never rescanned for an install
 /// (production: one `powervoice-sandbox --scan` process). `blocklist` is checked for the picked
@@ -291,6 +400,8 @@ pub fn install_file(
         Some(PluginFormat::Vst3) => is_dir || cfg!(windows),
         // An `.lv2` is a bundle directory; the sandbox hosts LV2 on unix only.
         Some(PluginFormat::Lv2) => is_dir && cfg!(unix),
+        // A JSFX script is a file; the sandbox hosts JSFX on unix only.
+        Some(PluginFormat::Jsfx) => !is_dir && crate::scan::JSFX_SUPPORTED,
         None => false,
     };
     if !supported {
@@ -308,6 +419,11 @@ pub fn install_file(
     if exists && !replace {
         return Err(InstallError::Collision { target });
     }
+    let imports = if PluginFormat::of_path(source) == Some(PluginFormat::Jsfx) {
+        jsfx_imports(source, dest_dir, replace)?
+    } else {
+        Vec::new()
+    };
 
     std::fs::create_dir_all(dest_dir).map_err(io)?;
     let mut staging = Cleanup(Some(sibling(dest_dir, name, "staging")));
@@ -328,14 +444,23 @@ pub fn install_file(
     }
     staging.0 = None;
 
-    let rollback = || {
+    let mut placed = PlacedImports::default();
+    let rollback = |placed: &PlacedImports| {
+        placed.undo();
         let _ = remove_any(&target);
         if let Some(b) = &backup {
             let _ = std::fs::rename(b, &target);
         }
     };
+    for (from, to) in &imports {
+        if let Err(e) = placed.place(from, to) {
+            rollback(&placed);
+            return Err(io(e));
+        }
+    }
     match scan(&target) {
         Ok(plugins) if plugins.iter().any(is_effect) => {
+            placed.commit();
             if let Some(b) = &backup {
                 let _ = remove_any(b);
             }
@@ -346,11 +471,11 @@ pub fn install_file(
             })
         }
         Ok(_) => {
-            rollback();
+            rollback(&placed);
             Err(InstallError::NoEffects)
         }
         Err(failure) => {
-            rollback();
+            rollback(&placed);
             let reason = match failure.kind {
                 FailureKind::Crashed => Some(BlockReason::Crashed),
                 FailureKind::TimedOut => Some(BlockReason::TimedOut),
@@ -494,6 +619,96 @@ pub(crate) mod tests {
             .unwrap_or_default();
         names.sort();
         names
+    }
+
+    /// T-808: a JSFX script goes into PowerVoice's JSFX folder with the files it imports
+    /// relatively; a different import already there is a collision unless replacing; a failed
+    /// scan removes the copied imports (and the folders they created) again.
+    #[test]
+    fn installs_a_jsfx_script_with_its_relative_imports() {
+        if !crate::scan::JSFX_SUPPORTED {
+            return;
+        }
+        let root = TempDir::new("jsfx");
+        let home = root.0.join("home");
+        let src = home.join("Downloads").join("fx");
+        std::fs::create_dir_all(src.join("lib")).unwrap();
+        let script = src.join("deesser.jsfx");
+        std::fs::write(
+            &script,
+            "desc:De-esser\nimport lib/util.jsfx-inc\n@sample\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("lib").join("util.jsfx-inc"),
+            "import deep.jsfx-inc\n@init\n",
+        )
+        .unwrap();
+        std::fs::write(src.join("lib").join("deep.jsfx-inc"), "@init\n").unwrap();
+        let dest = user_jsfx_dir_from(Some(home.as_os_str()), None).unwrap();
+        assert!(
+            dest.starts_with(&home) && dest.ends_with("Effects"),
+            "{dest:?}"
+        );
+        if !cfg!(target_os = "macos") {
+            // `$XDG_DATA_HOME` wins over `~/.local/share`.
+            assert_eq!(
+                user_jsfx_dir_from(Some(home.as_os_str()), Some(root.0.as_os_str())),
+                Some(root.0.join("powervoice").join("Effects"))
+            );
+        }
+        let mut blocklist = Blocklist::load(Some(root.0.join("blocklist.json")));
+
+        // A failed scan: nothing stays behind, not even the `lib` folder.
+        let err = install_file(&script, &dest, false, &mut blocklist, |_| Ok(Vec::new()));
+        assert_eq!(err, Err(InstallError::NoEffects));
+        assert!(
+            visible_files(&dest).is_empty(),
+            "{:?}",
+            visible_files(&dest)
+        );
+
+        let scanned = RefCell::new(Vec::new());
+        let ok = install_file(&script, &dest, false, &mut blocklist, |p| {
+            scanned.borrow_mut().push(p.to_path_buf());
+            assert!(
+                p.with_file_name("lib").join("deep.jsfx-inc").is_file(),
+                "imports first"
+            );
+            Ok(vec![effect("De-esser")])
+        })
+        .unwrap();
+        assert_eq!(ok.target, dest.join("deesser.jsfx"));
+        assert_eq!(*scanned.borrow(), vec![dest.join("deesser.jsfx")]);
+        assert_eq!(
+            visible_files(&dest.join("lib")),
+            ["deep.jsfx-inc", "util.jsfx-inc"]
+        );
+
+        // A different import already installed (another script's): a collision, unless
+        // replacing.
+        std::fs::write(dest.join("lib").join("util.jsfx-inc"), "changed\n").unwrap();
+        std::fs::remove_file(dest.join("deesser.jsfx")).unwrap();
+        assert!(matches!(
+            install_file(&script, &dest, false, &mut blocklist, |_| Ok(vec![effect("x")])),
+            Err(InstallError::Collision { target }) if target == dest.join("lib").join("util.jsfx-inc")
+        ));
+        install_file(&script, &dest, true, &mut blocklist, |_| {
+            Ok(vec![effect("x")])
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dest.join("lib").join("util.jsfx-inc")).unwrap(),
+            "import deep.jsfx-inc\n@init\n"
+        );
+        assert_eq!(
+            visible_files(&dest.join("lib")),
+            ["deep.jsfx-inc", "util.jsfx-inc"]
+        );
+        assert_eq!(
+            user_install_dir_for(&script).map(|d| d.ends_with("Effects")),
+            Some(true)
+        );
     }
 
     #[test]

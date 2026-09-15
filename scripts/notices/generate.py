@@ -10,8 +10,8 @@ Usage:
     python3 scripts/notices/generate.py --check     # fail if the committed file is stale
 
 Every run asserts full coverage first (every direct Cargo dependency of every workspace crate,
-in any dependency kind, and every `dependencies`/`devDependencies` key in `ui/package.json`, is
-named somewhere in the generated text) — that assertion *is* the ticket's "a script test that the
+in any dependency kind, every `dependencies`/`devDependencies` key in `ui/package.json`, and every
+vendored `third_party/<name>` folder (T-808) is named somewhere in the generated text) — that assertion *is* the ticket's "a script test that the
 notices file lists every direct dependency" test, run from `just check` via `--check`.
 """
 
@@ -74,6 +74,16 @@ Flagged components (ADR-007)
   is neither bundled nor linked: the separate `powervoice-sandbox` process loads the system's
   `liblilv-0` at runtime via `libloading` (ISC). Without it, LV2 plugins are unavailable and every
   other feature works. Third-party LV2 plugins are loaded at runtime, inside the sandbox only.
+- **ysfx, Apache-2.0** (Copyright 2021 Jean Pierre Cimalando; 2024 and later Joep Vanlier —
+  https://github.com/JoepVanlier/ysfx, the library only, never its GPL-3.0 plugin build), with
+  **WDL / EEL2, zlib** (Copyright (C) 2005 and later Cockos Incorporated; NS-EEL (C) 1999-2003
+  Nullsoft, Inc.; the EEL2 x86-64 GAS port (C) 2021 Jean Pierre Cimalando), **Base64.hpp, ISC**
+  (Filipe Coelho, Jean Pierre Cimalando), **dr_wav / dr_flac, public domain (Unlicense) or
+  MIT-0** (David Reid) and EEL2's Bison-generated parser (GPL-3.0 with the Bison exception, which
+  lets it be used under any terms). Vendored unmodified at a pinned commit in `third_party/ysfx/`
+  (license texts next to the sources, provenance in `third_party/ysfx/PROVENANCE.txt`), compiled
+  by `vox-ysfx-sys` into the separate `powervoice-sandbox` process only (ADR-007 §5 and its T-808
+  amendment); the editor never links it. JSFX scripts are user-supplied; PowerVoice ships none.
 - **System libraries** (dynamically linked, provided by the OS, never bundled except where noted):
   WebKitGTK / GTK3 (Linux), ALSA `libasound.so.2` (Linux, LGPL-2.1-or-later), PipeWire / JACK
   client libraries (Linux, MIT / LGPL respectively), WebView2 (Windows, Microsoft), CoreAudio /
@@ -218,9 +228,18 @@ def generate() -> str:
         + FOOTER
     )
 
+    # Vendored C/C++ sources (T-808): every `third_party/<name>` folder must be named in the text
+    # (the flagged section above), so a new vendored tree can't slip in without a notice.
+    third_party = REPO_ROOT / "third_party"
+    vendored = (
+        {f"third_party/{d.name}" for d in third_party.iterdir() if d.is_dir()}
+        if third_party.is_dir()
+        else set()
+    )
+
     missing = sorted(
         name
-        for name in {*direct_cargo_names, *runtime_deps, *dev_deps}
+        for name in {*direct_cargo_names, *runtime_deps, *dev_deps, *vendored}
         if name not in text
     )
     if missing:

@@ -1,0 +1,25 @@
+desc:PowerVoice Test Hang while processing
+// Passes audio through, then stops answering after 0.2 s at 48 kHz.
+in_pin:mono
+out_pin:mono
+
+@init
+n = 0;
+
+@sample
+n += 1;
+n > 9600 ? (
+  i = 0;
+  while (
+    j = 0;
+    while (
+      k = 0;
+      while ( k += 1; k < 1000000; );
+      j += 1;
+      j < 1000000;
+    );
+    i += 1;
+    i < 1000000;
+  );
+);
+spl0 = spl0;

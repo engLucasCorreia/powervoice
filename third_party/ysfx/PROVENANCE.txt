@@ -1,0 +1,28 @@
+ysfx — vendored for PowerVoice (T-808; ADR-007 §5 and its T-808 amendment)
+===========================================================================
+
+Upstream:   https://github.com/JoepVanlier/ysfx (the JoepVanlier fork of jpcima/ysfx)
+Commit:     5c3452fee62583aa3d1b7e877d0c758c4024af89 (2026-08-19)
+Submodule:  thirdparty/dr_libs = https://github.com/mackron/dr_libs
+            at f13cbcfd06afe7287f99b1bb5982cefdf3d6a974 (the commit ysfx pins)
+
+Everything here is an unmodified copy of upstream files. Only the host **library** is vendored —
+never the fork's JUCE/CLAP plugin (`plugin/`, `plugin_license/`: GPL-3.0), nor its GUI pieces
+(LICE, SWELL, stb, `sources/lice_stb`), nor `thirdparty/json`, `thirdparty/clap-juce-extensions`,
+tests or tools. It is compiled by `crates/ysfx-sys/build.rs` (the `cc` crate) with `YSFX_NO_GFX`
+into `powervoice-sandbox` only.
+
+What is here, and its license:
+- LICENSE, include/ysfx.h, sources/ — ysfx, Apache-2.0 (LICENSE). Exceptions inside sources/:
+  - sources/eel2-gas/ — EEL2's x86-64 JIT stubs in GAS syntax, zlib (sources/eel2-gas/LICENSE.txt);
+  - sources/base64/Base64.hpp — ISC (header of the file).
+- thirdparty/WDL/ — the subset of Cockos WDL that EEL2 and ysfx use (eel2/ compiler, parser and
+  aarch64 JIT stubs, fft.c, a few headers), zlib (thirdparty/WDL/LICENSE.txt). eel2/y.tab.c is
+  Bison 2.3 output: GPL-3.0 with the Bison special exception, which allows it in works under any
+  terms (see the file's header).
+- thirdparty/dr_libs/dr_wav.h, dr_flac.h — public domain (Unlicense) or MIT-0
+  (thirdparty/dr_libs/LICENSE).
+
+Updating: replace these files with the same set from a newer upstream commit (keep the list
+above), update the commit hashes here, rebuild (`cargo test -p vox-ysfx-sys -p powervoice-sandbox`)
+and run `just notices`.

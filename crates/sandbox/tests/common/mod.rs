@@ -377,3 +377,79 @@ pub fn lv2_gain_state(gain_db: f64) -> ModuleState {
         blob: None,
     }
 }
+
+// --- T-808: the JSFX test scripts ------------------------------------------------------------
+
+/// Whether this build hosts JSFX (the JSFX tests pass with a note where it doesn't).
+pub fn jsfx_available() -> bool {
+    match powervoice_sandbox::jsfx::available() {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("JSFX test skipped: {e}");
+            false
+        }
+    }
+}
+
+/// The in-repo test scripts (`tests/jsfx/`, with their `lib/` import).
+pub fn jsfx_scripts() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("jsfx")
+}
+
+/// The in-repo test script `name`.
+pub fn jsfx_script(name: &str) -> std::path::PathBuf {
+    jsfx_scripts().join(name)
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap().flatten() {
+        let (src, dst) = (e.path(), to.join(e.file_name()));
+        if src.is_dir() {
+            copy_tree(&src, &dst);
+        } else {
+            std::fs::copy(&src, &dst).unwrap();
+        }
+    }
+}
+
+/// Copies the test scripts into `<dir>/Effects/PowerVoice` (a REAPER-style effects root, so their
+/// ids are `PowerVoice/<file>`) and returns that folder.
+pub fn copy_jsfx_scripts(dir: &Path) -> std::path::PathBuf {
+    let dest = dir.join("Effects").join("PowerVoice");
+    copy_tree(&jsfx_scripts(), &dest);
+    dest
+}
+
+/// A scanned-plugin record for the script at `path`.
+pub fn test_jsfx_plugin(path: &Path) -> vox_plugin_host::scan::ScannedPlugin {
+    vox_plugin_host::scan::ScannedPlugin {
+        id: vox_sandbox_ipc::jsfx::plugin_id(path),
+        name: format!("Test {}", path.display()),
+        vendor: "PowerVoice".into(),
+        version: "1.2.3".into(),
+        description: String::new(),
+        url: None,
+        features: vec!["audio-effect".into(), "utility".into()],
+        ..vox_plugin_host::scan::ScannedPlugin::default()
+    }
+}
+
+/// A factory for the script at `path` (module id `jsfx:<id>`).
+pub fn jsfx_factory(path: &Path, options: SandboxOptions) -> Arc<SandboxFactory> {
+    Arc::new(SandboxFactory::new(
+        vox_plugin_host::jsfx_spec(path, &test_jsfx_plugin(path)),
+        options,
+    ))
+}
+
+/// A state setting slider 1 (key `slider1`: the test scripts' gain, dB).
+pub fn jsfx_gain_state(gain_db: f64) -> ModuleState {
+    ModuleState {
+        format_version: 1,
+        params: std::collections::BTreeMap::from([("slider1".to_owned(), gain_db)]),
+        blob: None,
+    }
+}

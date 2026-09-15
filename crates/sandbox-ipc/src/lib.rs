@@ -38,6 +38,7 @@
 mod channel;
 pub mod control;
 mod host;
+pub mod jsfx;
 pub mod layout;
 mod monitor;
 mod plugin;

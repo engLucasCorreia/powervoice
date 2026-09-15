@@ -7,7 +7,7 @@ publish.workspace = true
 
 # T-802 (ADR-008 + Amendment 2): the plugin sandbox process — one per plugin instance. Attaches
 # the T-801 segment, loads a plugin through a `PluginBackend` (the built-in test backend and,
-# T-803, CLAP; T-806, VST3; LV2/JSFX later — linked only into this binary, ADR-008 §8), runs the sandbox
+# T-803, CLAP; T-806, VST3; T-807, LV2; T-808, JSFX — linked only into this binary, ADR-008 §8), runs the sandbox
 # audio thread and answers the host's control requests on stdin/stdout. T-803: also
 # `--scan <file> --format clap` (enumeration in a disposable process, ADR-008 §6).
 
@@ -37,6 +37,12 @@ rtrb.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+# T-808 (ADR-007 amendment, ADR-008 Amendment 11): the JSFX backend — ysfx built from the vendored
+# sources (`third_party/ysfx`) by `vox-ysfx-sys`; linked into this binary only. Where the crate
+# doesn't build ysfx (not unix, or not x86-64/aarch64 — Windows included), JSFX is unsupported.
+[target.'cfg(all(unix, any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
+vox-ysfx-sys = { path = "../ysfx-sys" }
 
 [dev-dependencies]
 vox-module-api = { path = "../module-api", features = ["test-util"] }

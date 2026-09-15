@@ -3119,6 +3119,7 @@ dependencies = [
  "vox-test-lv2",
  "vox-test-vst3",
  "vox-testkit",
+ "vox-ysfx-sys",
  "vst3",
 ]
 
@@ -5243,6 +5244,13 @@ dependencies = [
  "ebur128",
  "hound",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "vox-ysfx-sys"
+version = "0.1.0"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

@@ -7,8 +7,9 @@
 
   /** The Add-module menu (SPEC-012 §2.1): the registry's modules grouped by feature (EQ,
    * dynamics, restoration, utility, …); installed CLAP effects (`clap:*`, T-803), VST3 effects
-   * (`vst3:*`, T-806) and LV2 effects (`lv2:*`, T-807) in their own "Plugins (CLAP)" /
-   * "Plugins (VST3)" / "Plugins (LV2)" groups after the built-in categories. H-26: on the shared menu (group
+   * (`vst3:*`, T-806), LV2 effects (`lv2:*`, T-807) and JSFX effects (`jsfx:*`, T-808) in their own
+   * "Plugins (CLAP)" / "Plugins (VST3)" / "Plugins (LV2)" / "Plugins (JSFX)" groups after the built-in
+   * categories. H-26: on the shared menu (group
    * headings, keyboard, typeahead, viewport clamping), as wide as its button. */
   let {
     modules,
@@ -31,7 +32,7 @@
     "utility",
     "analyzer",
   ] as const;
-  type Category = (typeof CATEGORY_ORDER)[number] | "other" | "plugins_clap" | "plugins_vst3" | "plugins_lv2";
+  type Category = (typeof CATEGORY_ORDER)[number] | "other" | "plugins_clap" | "plugins_vst3" | "plugins_lv2" | "plugins_jsfx";
   const CATEGORY_FEATURES: Record<(typeof CATEGORY_ORDER)[number], string[]> = {
     eq: ["equalizer", "filter"],
     restoration: ["restoration"],
@@ -51,6 +52,9 @@
     if (m.id.startsWith("lv2:")) {
       return "plugins_lv2";
     }
+    if (m.id.startsWith("jsfx:")) {
+      return "plugins_jsfx";
+    }
     for (const cat of CATEGORY_ORDER) {
       if (CATEGORY_FEATURES[cat].some((f) => m.features.includes(f))) {
         return cat;
@@ -67,6 +71,7 @@
     "plugins_clap",
     "plugins_vst3",
     "plugins_lv2",
+    "plugins_jsfx",
   ];
 
   const groups = $derived.by(() => {

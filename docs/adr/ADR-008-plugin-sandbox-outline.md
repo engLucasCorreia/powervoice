@@ -1319,3 +1319,166 @@ Covered by `crates/rack/tests/live_recovery.rs` (recovery to Active with the kep
 placeholder and its blob; every test runs under `no_alloc`) and
 `document::tests::a_live_plugin_recovery_does_not_mark_the_document_dirty`
 (`src-tauri/src/document.rs`).
+
+## Amendment 11 — T-808 JSFX backend, as implemented (2026-09-15)
+
+New crate `vox-ysfx-sys`: the vendored ysfx library, built by `cc` and bound by hand. It is linked
+into `powervoice-sandbox` only (ADR-007's T-808 amendment). JSFX are REAPER's text effects,
+JIT-compiled by EEL2 to native code, so the sandbox is where they belong.
+
+### 1. Library: ysfx compiled into the sandbox (refines §8)
+- ysfx was chosen over loading a system ysfx at run time: none is packaged anywhere.
+- It builds with `YSFX_NO_GFX` (no LICE/SWELL) and compiles scripts with `ysfx_compile_no_gfx`, so
+  `@gfx` is never compiled or run. Script GUIs are T-901.
+- **Unix only**, on x86-64 and aarch64. Elsewhere the backend answers `UNSUPPORTED`, and the
+  editor neither looks for JSFX nor installs them (`scan::JSFX_SUPPORTED`).
+
+### 2. The backend (`crates/sandbox/src/jsfx/`)
+**Identity.**
+- The plugin reference is `JsfxPluginRef`, the JSON `{path}` of the script.
+- The **effects root** is the script's nearest ancestor folder named `Effects` (REAPER's layout,
+  and PowerVoice's own JSFX folder), else the script's own folder (`vox_sandbox_ipc::jsfx`).
+- The module id is `jsfx:<path relative to the effects root>`, `/`-separated (ADR-005 §2), e.g.
+  `jsfx:utility/volume`.
+- The version is a ReaPack-style `// @version` header comment, when there is one: JSFX has no
+  version field.
+
+**Load** (main thread):
+1. Load the script with its imports. ysfx looks for an import in the importing file's folder
+   first, then anywhere under the effects root, which is passed as the import root; `<root>/../Data`
+   is the data root when it exists.
+2. Compile it.
+3. Run `@init` once at 48 kHz, as REAPER does, so values and `@serialize` state exist from the
+   start.
+
+Scripts without audio input or output pins aren't effects and are refused.
+
+**Activation.**
+1. Set the rate and the block size.
+2. Run `@init`.
+3. Run a zero-frame process, which executes `@slider` and a zero-length `@block`, as REAPER runs
+   `@slider` after `@init`.
+4. Read `pdc_delay` as the latency.
+
+A new rate is just another `@init`: there is no per-rate instance, unlike LV2.
+
+**Sample-accurate sliders.**
+- A chunk is processed in segments split at its `PARAM_VALUE` offsets. The values are set with
+  `ysfx_slider_set_value(…, notify)`, which is real-time safe, so `@slider` runs before the
+  segment's first frame.
+- `@block` therefore runs once per segment.
+- After a chunk, sliders the script moved itself (in any section) are reported as parameter
+  changes.
+
+**Pins and the mono shim.**
+- The mono input feeds the first two input pins, the main pair. JSFX convention makes the pins
+  beyond it side-chain or aux inputs, so they get silence.
+- The output is the mean of the first two output pins, as in CLAP's shim (Amendment 3 §2).
+- A script with no pin lines but an `@sample` is stereo (ysfx's default).
+
+**Latency and tail.**
+- A later `pdc_delay` change puts `RESTART_REQUEST` on the event ring once per activation, as for
+  CLAP, VST3 and LV2. It travels with its chunk (Amendment 9).
+- There is no tail report, so the tail is 0.
+- RESET events are ignored.
+
+**Threads.**
+- The ysfx effect sits behind one mutex. The audio thread holds it for a chunk; the main thread
+  holds it while inactive.
+- For a script **with `@serialize`**, the main thread also holds it while saving the state, and the
+  audio thread waits meanwhile: ysfx can't run `@serialize` alongside `@sample`. Scripts without
+  it are saved from an atomic mirror, with no lock.
+- EEL2 allocates script memory on first touch on the sandbox's audio thread, as in REAPER. This is
+  confined to the sandbox, like any plugin's own behaviour.
+- **EEL2 flushes zeros and denormals when it stores a variable**, so a script writes `−0.0` as
+  `+0.0`. This is the only way a faithful script differs from bit-exact output.
+
+### 3. Parameters (refines ADR-005 §14)
+- **Identity:** `ParamId` = the slider index (`slider1` → 0). `key` = `slider<N>`, JSFX's own
+  numbering, which REAPER and its presets use.
+- **Enums and file sliders:** enum labels; the values are indices.
+- **Integer sliders** (an integral increment ≥ 1 and integral bounds): stepped. `<0,1,1>` becomes
+  `BOOL`.
+- **Other increments** only set the shown decimals. The slider stays continuous, as REAPER
+  automates it.
+- **`:log` sliders** with a positive minimum: the `Log` taper.
+- **Hidden sliders** (`-` before the name): `HIDDEN`.
+- **Ranges:** reversed ranges are put in order; degenerate ones become hidden read-only 0..1
+  parameters, like CLAP's.
+- **Units:** none. JSFX puts them in the name ("Gain (dB)").
+- **Text:** the module API's rules; enum labels come from the schema.
+
+### 4. State
+The bytes are `PVJS`, `u32` version 1, then:
+- every slider as a `u32` index and an `f64` value;
+- the `u32`-length-prefixed `@serialize` bytes, as ysfx writes them (`file_var` → little-endian
+  `f32`).
+
+Loading uses `ysfx_load_state`: sliders missing from the state go back to their defaults, then
+`@serialize` reads. The proxy wraps the bytes with the identity (Amendment 2 §7), and the mirrored
+values win on load, as for every format.
+
+### 5. Enumeration and install (refines §6 and Amendments 4–8)
+**Which files are scripts** (`vox_sandbox_ipc::jsfx::is_script`):
+- `.jsfx` files;
+- extensionless files whose header — the text before the first `@section` — has a `desc:` line.
+  REAPER's own effects have no extension.
+
+`.jsfx-inc` imports, text and binary files are skipped. `PluginFormat::of_path` reads a file's
+beginning only for extensionless files, and only a JSFX walk calls it: other formats walk by
+extension (`of_extension`).
+
+**H-29 tiers:**
+1. PowerVoice's own JSFX folder (the install folder): `<data dir>/Effects`, i.e.
+   `~/.local/share/powervoice/Effects` or `~/Library/Application Support/app.powervoice.powervoice/Effects`;
+2. REAPER's effects folder when it exists: `$XDG_CONFIG_HOME/REAPER/Effects` (default
+   `~/.config/REAPER/Effects`), or `~/Library/Application Support/REAPER/Effects` on macOS;
+3. the custom folders.
+
+**Sandboxed scan**, one script per `powervoice-sandbox --scan <script> --format jsfx` process:
+- It reports the name, author, version, tag features, pins as channel counts and the parameter
+  count.
+- Features: `audio-effect` (pins both ways) or `instrument` (outputs only), then the tags (`eq`,
+  `dynamics`, `delay`, `utility`, …), then `mono`/`stereo`.
+- The script is also compiled and its `@init` run once. One that doesn't compile, or misses an
+  import, is listed **without** `audio-effect`, with the reason on stderr.
+- One whose `@init` hangs or crashes is caught here and blocklisted like any other plugin.
+
+**Install and Uninstall.**
+- "Install module…" takes a `.jsfx` file. The files it imports relatively — found under its own
+  folder, recursively through the imports' own imports — are copied next to it, keeping their
+  relative paths.
+- A different import already installed is a collision unless replacing.
+- A rolled-back install removes the copied imports and the folders they created.
+- "Uninstall…" removes the script only: an import may be shared by other scripts.
+- The picker's filter adds `jsfx`. Extensionless REAPER scripts are found by scanning their folder
+  instead.
+
+### 6. UI
+Add Module lists `jsfx:*` modules under "Plugins (JSFX)", after "Plugins (LV2)". The install strings
+name JSFX. `PluginFoldersDto.install_folders` gains the JSFX folder, and the standard folders gain
+REAPER's.
+
+### 7. Test scripts (`crates/sandbox/tests/jsfx/`)
+The scripts share `lib/gain_core.jsfx-inc`, which reproduces the built-in Gain bit for bit: the
+ramp, and each sample's gain rounded to `f32` in EEL2. EEL2's `^` is libm `pow`, as in Rust.
+- `gain.jsfx` (with enum, log and hidden sliders);
+- `stereo.jsfx` (stereo pins only);
+- `latency.jsfx` (`pdc_delay` from a slider, and a matching delay line);
+- `serialize.jsfx` (a marker and a restore counter);
+- `hang.jsfx` (`@init` never returns) and `hang_processing.jsfx` (`@sample` stops after 0.2 s);
+- `broken.jsfx` (doesn't compile).
+
+### 8. Known limits (for T-901 and later)
+- **No GUIs.** `@gfx` is T-901.
+- **No MIDI:** scripts get no MIDI in, and their MIDI out is dropped.
+- **No time info:** no tempo or transport (`ysfx_set_time_info` is unused).
+- **Sliders:** the value strings of `slider_show`, and `sliderchange`-driven visibility, aren't
+  followed.
+- **Imports** resolved elsewhere under an effects root aren't copied by the install; they're
+  expected to exist there.
+- **No REAPER preset banks** (`.rpl`) in the UI.
+- **Platforms:** Windows is unsupported. macOS compiles the same code but hasn't been run.
+- **Real scripts:** REAPER isn't installed on the development machine. The opt-in smoke test
+  `POWERVOICE_TEST_REAL_JSFX=<script or folder>` exists but hasn't run against REAPER's stock
+  effects.

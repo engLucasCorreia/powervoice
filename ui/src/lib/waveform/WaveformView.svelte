@@ -461,6 +461,7 @@
             centerY,
             fillColor,
             showsDots(samplesPerPixel),
+            themeColors().strokePx,
           );
           content = { mode: "raw", geometry };
         } else {

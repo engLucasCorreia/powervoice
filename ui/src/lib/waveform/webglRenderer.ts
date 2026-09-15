@@ -4,7 +4,8 @@
  * `../render/overlayGeometry.ts` (selection/markers/playhead), both pure and unit-tested; this
  * class only clears the canvas, uploads whichever geometry the caller built, and issues the draw
  * calls, batching the column fill and every overlay into as few calls as SPEC-006 §4.5 asks for
- * (one `TRIANGLES` call for fills, plus `LINE_STRIP`/`POINTS` only in raw-sample mode).
+ * (one `TRIANGLES` call for fills; raw-sample mode adds a `TRIANGLES` call for the polyline-as-
+ * quads (H-31) plus `POINTS` for its dots).
  *
  * Coordinate spaces: vertex positions from `webglGeometry.ts`/`overlayGeometry.ts` are in the same
  * **CSS-pixel** space the Canvas2D fallback draws in (`ctx.setTransform(dpr, ...)` there does the
@@ -63,7 +64,9 @@ export class WaveformGlRenderer {
     } else if (opts.content?.mode === "raw") {
       const { line, dots } = opts.content.geometry;
       if (line.length > 0) {
-        this.quads.draw(line, w, h, gl.LINE_STRIP);
+        // H-31: `line` is already a batch of `widthPx`-wide quads (2 triangles each), built by
+        // `buildRawPolyline` — not a `LINE_STRIP` (which WebGL can't reliably draw wider than 1px).
+        this.quads.draw(line, w, h, gl.TRIANGLES);
       }
       if (dots.length > 0) {
         this.quads.draw(dots, w, h, gl.POINTS, 3 * opts.devicePixelRatio);

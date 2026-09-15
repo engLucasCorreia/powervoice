@@ -68,7 +68,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-28 | Post-H-26/H-27 fixes: `?preview&scene=recording` `effect_update_depth_exceeded` in WaveformView follow effects, transport store null guard when telemetry precedes `transport_get`, View-menu toggle for `Settings.playhead_follow`, Normalize target fields in true minus | S | done |
 | H-29 | Plugin follow-ups (T-809): uninstall action (remove installed file + registry, confirm, documents keep a Missing slot), deterministic duplicate-id policy across install/rescan, move plugin fixtures into `ui/src/lib/test/fixtures.ts` | S | done |
 | H-30 | Job-service consistency (T-602): export and save hold `SpectroService::begin_background_job()` (SPEC-007 lists them), every job service emits its error notice before the terminal `Failed` event (audit export/loudness/normalize/nr_capture/calibration), a rack edit during a bake is refused instead of discarded at commit | S | done |
-| H-31 | Theme follow-ups (T-708): Match System also honours `prefers-contrast: more` → High Contrast (A-019), High Contrast column in the component gallery, WebGL thick sample lines in HC (quad-based), preview IPC transport command cases (H-32/T-709) | S | in progress |
+| H-31 | Theme follow-ups (T-708): Match System also honours `prefers-contrast: more` → High Contrast (A-019), High Contrast column in the component gallery, WebGL thick sample lines in HC (quad-based), preview IPC transport command cases (H-32/T-709) | S | done |
 | H-32 | EQ graph draws grid but no curve/labels at 2126×850 (all themes; first-layout measuring bug) — found in T-708 screenshots | S | done |
 | H-18 | Shared test factories for DTOs (`ui/src/lib/test/fixtures.ts` + Rust builders) so a new DTO field touches one helper, not 20 test literals (merge-friction fix) | H | done |
 | H-17 | Recovery follow-ups (T-301): dialog stays open for remaining sessions (A-015), AC-3/AC-11 timing on a real disk (test-big), compaction off the document lock, markers during an interrupted take, Memory-for-audio UI, `/tmp/vox-project-*` sweep | S | done |
@@ -113,7 +113,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-203 | Per-chunk peak pyramid + binary IPC | W1 | S+OR | M1 | → S1-02/S1-03 (subset), rest hardening |
 | T-204 | STFT spectrogram tile service | W1 | O | M1 | done |
 | T-205 | Waveform renderer: zoom/scroll, amplitude zoom, rulers, extrapolated playhead | W2 | S | T-203 | → S1-03 (Canvas2D subset), rest hardening |
-| T-206 | Selection model, time formats, zero-crossing snap | W3 | S | T-205 | todo |
+| T-206 | Selection model, time formats, zero-crossing snap | W3 | S | T-205 | in progress |
 | T-207 | Spectrogram renderer, log/linear, split view | W3 | S | T-204, T-205 | done |
 | T-208 | Live output analyzer: post-rack tap, FFT worker, 1/24-oct bands, VXSA, bottom-dock UI | W3 | S+OR | T-205 | done (follow-ups → H-16) |
 | T-209 | File menu & dialogs: Open, Save, Save As, downmix dialog, save format, clip prompt, unsaved-changes prompt, import progress | W3 | S | T-201, T-202, T-205 | done (gaps → H-20) |

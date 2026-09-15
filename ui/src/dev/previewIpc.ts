@@ -22,7 +22,13 @@
  *   &dialog=tour-offer   (T-709: the first-run Welcome tour offer)
  * The audio is synthetic (a narrator's phrases with breaths), generated here as the same binary
  * frames the backend sends (VXPK peaks, VXST spectrogram tiles, VXTM telemetry).
- * Commands it doesn't know return null, like the App shell tests.
+ *
+ * H-31: a command this file has no case for is a bug (H-32's EQ-graph-goes-blank root cause was
+ * exactly this — a silent `null` where a store expected a real DTO, corrupting its state). The
+ * default case now says so loudly: a `console.error` always, and — since a preview screenshot run
+ * must never depend on interactively noticing that error — a thrown `Error` under Vitest
+ * (`import.meta.env.MODE === "test"`) so a missing case fails the test that exercises it, not
+ * just this file's own dev console.
  */
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { docDto, rackSlotDto, rackStateDto, recordStateDto, settingsFixture, transportStateDto } from "../lib/test/fixtures";
@@ -48,6 +54,7 @@ import type {
   Settings,
   StorageInfoDto,
   ThemePref,
+  TransportStateDto,
   UnitDto,
 } from "../lib/ipc/bindings";
 import { formatWithUnit } from "../lib/ui/units";
@@ -649,6 +656,22 @@ export function installPreviewIpc(options: PreviewOptions): void {
   let documentOpens = 0;
   let seq = 0;
 
+  // H-31: `transport_get` and the six transport command cases below (`transport_play`,
+  // `transport_pause`, `transport_stop`, `transport_play_from_start`, `transport_return_to_start`,
+  // `transport_seek`) all answer with a `TransportStateDto` built from this one snapshot — none of
+  // them fell through to `default`'s `null` before, which is exactly the shape of bug H-32 found
+  // (a `null` transport reply corrupting `transport.svelte.ts`'s store).
+  const transportSnapshot = (overrides: Partial<TransportStateDto> = {}): TransportStateDto => {
+    const open = scenes.some((s) => s !== "rack") || dialog !== null;
+    return transportStateDto({
+      playhead_samples: open ? 23.4 * PREVIEW_RATE_HZ : 0,
+      doc_len_samples: open ? doc.len_samples : 0,
+      doc_rate_hz: open ? PREVIEW_RATE_HZ : 0,
+      can_play: true,
+      ...overrides,
+    });
+  };
+
   mockIPC(
     (cmd, args) => {
       const a = (args ?? {}) as Record<string, unknown>;
@@ -662,14 +685,21 @@ export function installPreviewIpc(options: PreviewOptions): void {
           return { job_id: 9 };
         case "settings_set":
           return (args as { settings: Settings }).settings;
-        case "transport_get": {
-          const open = scenes.some((s) => s !== "rack") || dialog !== null;
-          return transportStateDto({
-            playhead_samples: open ? 23.4 * PREVIEW_RATE_HZ : 0,
-            doc_len_samples: open ? doc.len_samples : 0,
-            doc_rate_hz: open ? PREVIEW_RATE_HZ : 0,
-            can_play: true,
-          });
+        case "transport_get":
+          return transportSnapshot();
+        case "transport_play":
+          return transportSnapshot({ playing: true });
+        case "transport_pause":
+          return transportSnapshot({ playing: false });
+        case "transport_stop":
+          return transportSnapshot({ playing: false, playhead_samples: 0, play_start_samples: 0 });
+        case "transport_play_from_start":
+          return transportSnapshot({ playing: true, playhead_samples: 0, play_start_samples: 0 });
+        case "transport_return_to_start":
+          return transportSnapshot({ playing: false, playhead_samples: 0, play_start_samples: 0 });
+        case "transport_seek": {
+          const at = a.positionSamples as number;
+          return transportSnapshot({ playhead_samples: at, play_start_samples: at });
         }
         case "clock_now_ns":
           return 0;
@@ -776,8 +806,15 @@ export function installPreviewIpc(options: PreviewOptions): void {
           return installResult(dialog, (a.replace as boolean) ?? false);
         case "plugins_rescan":
           return PLUGINS.length;
-        default:
+        default: {
+          // H-31: see the file doc comment — a missing case must never quietly answer `null`.
+          const message = `previewIpc: unhandled command "${cmd}"`;
+          console.error(`[previewIpc] ${message}`);
+          if (import.meta.env.MODE === "test") {
+            throw new Error(message);
+          }
           return null;
+        }
       }
     },
     { shouldMockEvents: true },

@@ -32,8 +32,11 @@ export function buildColumnQuads(
 }
 
 export interface RawPolylineGeometry {
-  /** `[x, y, r, g, b, a]` per vertex, for `gl.LINE_STRIP` (one point per raw sample). Empty when
-   * there are fewer than 2 samples (nothing to connect). */
+  /** `[x, y, r, g, b, a]` x6 per segment (2 triangles), for `gl.TRIANGLES` — one `widthPx`-wide
+   * quad per consecutive sample pair (H-31: WebGL can't widen a `LINE_STRIP` past 1px in most
+   * implementations, so the raw-sample line stayed hairline-thin even in High Contrast, unlike
+   * the Canvas2D fallback's `ctx.lineWidth`-stroked path). Empty when there are fewer than 2
+   * samples (nothing to connect). */
   line: Float32Array;
   /** `[x, y, r, g, b, a]` per vertex, for `gl.POINTS` (SPEC-006 §2.3's raw-sample dots) — empty
    * unless {@link showsDots} would return `true` at the caller's `samplesPerPixel`. */
@@ -41,7 +44,9 @@ export interface RawPolylineGeometry {
 }
 
 /** The raw polyline + dots (SPEC-006 §2.3, below `RAW_SPP`), built with the exact same
- * `pixelAtSample`/centerY math as the Canvas2D fallback's `drawRawPolyline`. */
+ * `pixelAtSample`/centerY math as the Canvas2D fallback's `drawRawPolyline`. `widthPx` matches the
+ * theme's stroke width (`themeColors().strokePx`) so the two renderers agree pixel-for-pixel,
+ * including in High Contrast's heavier stroke (H-31). */
 export function buildRawPolyline(
   samples: ReadonlyArray<readonly [number, number] | undefined>,
   fetchStartSample: number,
@@ -50,9 +55,14 @@ export function buildRawPolyline(
   centerY: number,
   color: Rgba,
   withDots: boolean,
+  widthPx = 1,
 ): RawPolylineGeometry {
   const [r, g, b, a] = color;
-  const linePts: number[] = [];
+  const batch = new QuadBatch();
+  const dotPts: number[] = [];
+  let prevPx: number | null = null;
+  let prevY: number | null = null;
+  let pointCount = 0;
   for (let i = 0; i < samples.length; i++) {
     const sample = samples[i];
     if (!sample) {
@@ -60,14 +70,18 @@ export function buildRawPolyline(
     }
     const px = pixelAtSample(fetchStartSample + i, startSample, samplesPerPixel);
     const y = centerY - sample[0] * centerY;
-    linePts.push(px, y, r, g, b, a);
-  }
-  const dotPts: number[] = [];
-  if (withDots) {
-    dotPts.push(...linePts);
+    if (withDots) {
+      dotPts.push(px, y, r, g, b, a);
+    }
+    if (prevPx !== null && prevY !== null) {
+      batch.line(prevPx, prevY, px, y, color, widthPx);
+    }
+    prevPx = px;
+    prevY = y;
+    pointCount++;
   }
   return {
-    line: linePts.length >= 12 ? new Float32Array(linePts) : new Float32Array(0),
+    line: pointCount >= 2 ? batch.toFloat32Array() : new Float32Array(0),
     dots: new Float32Array(dotPts),
   };
 }

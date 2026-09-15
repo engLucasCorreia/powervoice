@@ -13,6 +13,11 @@ import type { ThemePref } from "../ipc/bindings";
  * index.html's inline script stamps it before the stylesheet or the app loads; `Settings` stays
  * the source of truth and is re-applied once it loads.
  *
+ * A-019: "Match system" also follows `prefers-contrast: more` — when the OS asks for more
+ * contrast, Match System resolves to High Contrast instead of Dark/Light, live. Only `system`
+ * reads it; an explicit Dark/Light/High Contrast choice is never overridden by the OS contrast
+ * setting.
+ *
  * Canvas/WebGL renderers read colours through `themeColors()`, which is keyed on `revision`
  * (bumped whenever the resolved theme changes), so they repaint in the new theme on their next
  * frame without a reload.
@@ -67,13 +72,16 @@ export function isThemePref(value: unknown): value is ThemePref {
   return THEMES.some((choice) => choice.pref === value);
 }
 
-export function resolveTheme(pref: ThemePref, prefersLight: boolean): ResolvedTheme {
+export function resolveTheme(pref: ThemePref, prefersLight: boolean, prefersContrastMore = false): ResolvedTheme {
   switch (pref) {
     case "light":
       return "light";
     case "high_contrast":
       return "high-contrast";
     case "system":
+      if (prefersContrastMore) {
+        return "high-contrast";
+      }
       return prefersLight ? "light" : "dark";
     default:
       return "dark";
@@ -84,13 +92,18 @@ let current = $state<ThemePref>("dark");
 let resolved = $state<ResolvedTheme>("dark");
 let revision = $state(0);
 let media: MediaQueryList | null = null;
+let contrastMedia: MediaQueryList | null = null;
 
 function osPrefersLight(): boolean {
   return media?.matches ?? false;
 }
 
+function osPrefersContrastMore(): boolean {
+  return contrastMedia?.matches ?? false;
+}
+
 function stamp(): void {
-  const next = resolveTheme(current, osPrefersLight());
+  const next = resolveTheme(current, osPrefersLight(), osPrefersContrastMore());
   const root = document.documentElement;
   root.dataset.theme = next;
   // index.html sets an inline `color-scheme` for the unstyled first paint; from here on the
@@ -122,6 +135,15 @@ export function applyThemePref(pref: ThemePref): void {
   } else if (pref !== "system" && media !== null) {
     media.removeEventListener("change", onOsChange);
     media = null;
+  }
+  // A-019: only relevant while following the OS (an explicit choice is never overridden), so this
+  // listener is set up/torn down exactly like `media` above.
+  if (pref === "system" && contrastMedia === null && typeof window.matchMedia === "function") {
+    contrastMedia = window.matchMedia("(prefers-contrast: more)");
+    contrastMedia.addEventListener("change", onOsChange);
+  } else if (pref !== "system" && contrastMedia !== null) {
+    contrastMedia.removeEventListener("change", onOsChange);
+    contrastMedia = null;
   }
   remember(pref);
   stamp();

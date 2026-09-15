@@ -65,7 +65,9 @@ describe("theme parity (H-25, T-708)", () => {
     expect([...prefs].sort()).toEqual(Object.keys(all).sort());
     for (const pref of prefs) {
       for (const os of [false, true]) {
-        expect(RESOLVED_THEMES).toContain(resolveTheme(pref, os));
+        for (const contrastMore of [false, true]) {
+          expect(RESOLVED_THEMES).toContain(resolveTheme(pref, os, contrastMore));
+        }
       }
     }
   });

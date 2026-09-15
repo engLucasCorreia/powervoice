@@ -82,6 +82,45 @@ describe("QuadBatch (H-13, SPEC-006 §4.5)", () => {
     expect(batch.vertexCount).toBe(3);
   });
 
+  it("line() emits a widthPx-wide quad centred on a horizontal segment (H-31)", () => {
+    const batch = new QuadBatch();
+    batch.line(0, 10, 20, 10, [1, 1, 1, 1], 4);
+    expect(batch.vertexCount).toBe(VERTICES_PER_QUAD);
+    const v = batch.toFloat32Array();
+    const xs: number[] = [];
+    const ys: number[] = [];
+    for (let i = 0; i < v.length; i += FLOATS_PER_VERTEX) {
+      xs.push(v[i]!);
+      ys.push(v[i + 1]!);
+    }
+    expect(Math.min(...xs)).toBeCloseTo(0, 5);
+    expect(Math.max(...xs)).toBeCloseTo(20, 5);
+    expect(Math.min(...ys)).toBeCloseTo(8, 5); // 10 - widthPx/2
+    expect(Math.max(...ys)).toBeCloseTo(12, 5); // 10 + widthPx/2
+  });
+
+  it("line() offsets perpendicular to a diagonal segment by exactly widthPx/2", () => {
+    const batch = new QuadBatch();
+    // A 3-4-5 segment: perpendicular unit vector is (-4/5, 3/5).
+    batch.line(0, 0, 3, 4, [0, 0, 0, 1], 10);
+    const v = batch.toFloat32Array();
+    const corners = new Set<string>();
+    for (let i = 0; i < v.length; i += FLOATS_PER_VERTEX) {
+      corners.add(`${v[i]!.toFixed(3)},${v[i + 1]!.toFixed(3)}`);
+    }
+    // hw = 5, normal = (-4/5*5, 3/5*5) = (-4, 3).
+    expect(corners.has("-4.000,3.000")).toBe(true);
+    expect(corners.has("4.000,-3.000")).toBe(true);
+    expect(corners.has("-1.000,7.000")).toBe(true);
+    expect(corners.has("7.000,1.000")).toBe(true);
+  });
+
+  it("line() skips a zero-length segment", () => {
+    const batch = new QuadBatch();
+    batch.line(5, 5, 5, 5, [1, 1, 1, 1], 4);
+    expect(batch.vertexCount).toBe(0);
+  });
+
   it("append() concatenates another batch's vertices", () => {
     const a = new QuadBatch();
     a.rect(0, 0, 1, 1, [1, 0, 0, 1]);

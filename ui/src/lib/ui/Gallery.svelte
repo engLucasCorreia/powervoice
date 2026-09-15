@@ -27,16 +27,21 @@
   import { formatWithUnit } from "./units";
 
   /**
-   * Component gallery (H-25): every kit component in every state, dark and light side by side.
-   * Development builds only — `main.ts` mounts it for `?gallery` when `import.meta.env.DEV`
-   * (`npm --prefix ui run dev`, then open http://localhost:1420/?gallery). No IPC, no canvas.
-   * Both columns share the demo state, so a change in one shows in the other.
+   * Component gallery (H-25, H-31): every kit component in every state, Dark, Light and High
+   * Contrast side by side. Development builds only — `main.ts` mounts it for `?gallery` when
+   * `import.meta.env.DEV` (`npm --prefix ui run dev`, then open http://localhost:1420/?gallery).
+   * No IPC, no canvas. All columns share the demo state, so a change in one shows in the others.
    */
   type Response = "fast" | "medium" | "slow";
   type Dock = "meters" | "analyzer" | "loudness";
   type Source = "processed" | "source";
 
-  const THEMES = ["dark", "light"] as const;
+  const THEMES = ["dark", "light", "high-contrast"] as const;
+  const THEME_LABELS: Record<(typeof THEMES)[number], string> = {
+    dark: t("gallery.theme.dark"),
+    light: t("gallery.theme.light"),
+    "high-contrast": t("gallery.theme.high_contrast"),
+  };
 
   const responses: SegmentOption<Response>[] = [
     { value: "fast", label: t("analyzer.response.fast") },
@@ -153,7 +158,7 @@
   <div class="columns">
     {#each THEMES as theme (theme)}
       <div class="column" data-theme={theme} data-testid="gallery-{theme}">
-        <h2 class="column-title">{theme === "dark" ? t("gallery.theme.dark") : t("gallery.theme.light")}</h2>
+        <h2 class="column-title">{THEME_LABELS[theme]}</h2>
 
         <section class="card">
           <h3>{t("gallery.section.transport")}</h3>

@@ -67,6 +67,33 @@ export class QuadBatch {
     this.rect(x - widthPx / 2, y0, x + widthPx / 2, y1, color);
   }
 
+  /** A `widthPx`-wide segment from `(x0, y0)` to `(x1, y1)`, one solid colour — a rectangle
+   * centred on the segment and perpendicular to it (two triangles), used to stroke a polyline at
+   * an arbitrary width (H-31: WebGL's `LINE_STRIP` can't be widened past 1px in most
+   * implementations, so the raw-sample waveform stayed hairline-thin in High Contrast even though
+   * every other stroke there is heavier). No joins between segments — acceptable at the pixel
+   * spacing this draws at (SPEC-006 §2.3's raw-sample mode). Skips a zero-length segment. */
+  line(x0: number, y0: number, x1: number, y1: number, color: Rgba, widthPx = 1): void {
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const len = Math.hypot(dx, dy);
+    if (len === 0) {
+      return;
+    }
+    const hw = widthPx / 2;
+    const nx = (-dy / len) * hw;
+    const ny = (dx / len) * hw;
+    const [r, g, b, a] = color;
+    this.verts.push(
+      x0 + nx, y0 + ny, r, g, b, a,
+      x1 + nx, y1 + ny, r, g, b, a,
+      x0 - nx, y0 - ny, r, g, b, a,
+      x1 + nx, y1 + ny, r, g, b, a,
+      x1 - nx, y1 - ny, r, g, b, a,
+      x0 - nx, y0 - ny, r, g, b, a,
+    );
+  }
+
   /** A small filled triangle flag (SPEC-006 §2.11), apex down-right from `(x, 0)` — matches the
    * Canvas2D fallback's `drawFlag`. */
   flag(x: number, color: Rgba, width = 6, height = 8): void {

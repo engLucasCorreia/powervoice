@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FLOATS_PER_VERTEX } from "../render/quads";
+import { FLOATS_PER_VERTEX, VERTICES_PER_QUAD } from "../render/quads";
 import { columnYRange, pixelAtSample } from "./coords";
 import { buildColumnQuads, buildRawPolyline } from "./webglGeometry";
 
@@ -53,20 +53,41 @@ describe("buildRawPolyline (H-13, SPEC-006 §2.3)", () => {
   const centerY = 50;
   const fetchStartSample = 1000;
 
-  it("builds a LINE_STRIP vertex per sample at the exact pixelAtSample/centerY position", () => {
+  it("builds one widthPx-wide quad per consecutive sample pair, for gl.TRIANGLES (H-31)", () => {
     const samples: Array<[number, number]> = [
       [0.5, 0.5],
       [-0.25, -0.25],
       [0, 0],
     ];
-    const { line } = buildRawPolyline(samples, fetchStartSample, startSample, samplesPerPixel, centerY, COLOR, false);
-    expect(line.length).toBe(samples.length * FLOATS_PER_VERTEX);
-    for (let i = 0; i < samples.length; i++) {
-      const px = pixelAtSample(fetchStartSample + i, startSample, samplesPerPixel);
-      const y = centerY - samples[i]![0] * centerY;
-      expect(line[i * FLOATS_PER_VERTEX]).toBeCloseTo(px, 5);
-      expect(line[i * FLOATS_PER_VERTEX + 1]).toBeCloseTo(y, 5);
+    const widthPx = 1;
+    const { line } = buildRawPolyline(samples, fetchStartSample, startSample, samplesPerPixel, centerY, COLOR, false, widthPx);
+    // 2 segments (3 points), 1 quad (6 vertices) each.
+    expect(line.length).toBe(2 * VERTICES_PER_QUAD * FLOATS_PER_VERTEX);
+    // Every vertex's y sits within widthPx/2 of one of the two segment endpoints' y (a hairline
+    // quad hugs the polyline it replaces).
+    const ys = [0, 1, 2].map((i) => centerY - samples[i]![0] * centerY);
+    for (let i = 0; i < line.length; i += FLOATS_PER_VERTEX) {
+      const y = line[i + 1]!;
+      expect(Math.min(...ys.map((sy) => Math.abs(sy - y)))).toBeLessThanOrEqual(widthPx / 2 + 1e-6);
     }
+  });
+
+  it("draws a wider quad for a wider widthPx (High Contrast's heavier stroke, H-31)", () => {
+    const samples: Array<[number, number]> = [
+      [0, 0],
+      [0, 0],
+    ];
+    const thin = buildRawPolyline(samples, fetchStartSample, startSample, samplesPerPixel, centerY, COLOR, false, 1).line;
+    const thick = buildRawPolyline(samples, fetchStartSample, startSample, samplesPerPixel, centerY, COLOR, false, 3).line;
+    const spanY = (v: Float32Array) => {
+      const ys: number[] = [];
+      for (let i = 0; i < v.length; i += FLOATS_PER_VERTEX) {
+        ys.push(v[i + 1]!);
+      }
+      return Math.max(...ys) - Math.min(...ys);
+    };
+    expect(spanY(thin)).toBeCloseTo(1, 5);
+    expect(spanY(thick)).toBeCloseTo(3, 5);
   });
 
   it("omits dots unless withDots is true", () => {
@@ -85,9 +106,9 @@ describe("buildRawPolyline (H-13, SPEC-006 §2.3)", () => {
     expect(line.length).toBe(0);
   });
 
-  it("skips undefined gaps in the samples array", () => {
+  it("skips undefined gaps in the samples array (one segment, one quad)", () => {
     const samples: Array<[number, number] | undefined> = [[0, 0], undefined, [1, 1]];
     const { line } = buildRawPolyline(samples, fetchStartSample, startSample, samplesPerPixel, centerY, COLOR, false);
-    expect(line.length).toBe(2 * FLOATS_PER_VERTEX);
+    expect(line.length).toBe(VERTICES_PER_QUAD * FLOATS_PER_VERTEX);
   });
 });

@@ -21,7 +21,11 @@ function bootScript(): string {
 
 const originalMatchMedia = window.matchMedia;
 
-function runBoot(stored: string | null, osLight: boolean): { theme: string | null; scheme: string } {
+function runBoot(
+  stored: string | null,
+  osLight: boolean,
+  osContrastMore = false,
+): { theme: string | null; scheme: string } {
   const root = document.documentElement;
   root.removeAttribute("data-theme");
   root.style.removeProperty("color-scheme");
@@ -31,7 +35,9 @@ function runBoot(stored: string | null, osLight: boolean): { theme: string | nul
     localStorage.setItem(THEME_STORAGE_KEY, stored);
   }
   window.matchMedia = vi.fn().mockImplementation((query: string) => ({
-    matches: query === "(prefers-color-scheme: light)" && osLight,
+    matches:
+      (query === "(prefers-color-scheme: light)" && osLight) ||
+      (query === "(prefers-contrast: more)" && osContrastMore),
   }));
   new Function(bootScript())();
   return { theme: root.getAttribute("data-theme"), scheme: root.style.colorScheme };
@@ -54,10 +60,14 @@ describe("index.html pre-mount theme script (T-708)", () => {
   it("resolves every preference exactly like resolveTheme()", () => {
     for (const pref of THEMES.map((c) => c.pref) as ThemePref[]) {
       for (const osLight of [false, true]) {
-        const { theme, scheme } = runBoot(pref, osLight);
-        expect(theme, `${pref} / OS light=${osLight}`).toBe(resolveTheme(pref, osLight));
-        expect(scheme).toBe(theme === "light" ? "light" : "dark");
-        expect(RESOLVED_THEMES).toContain(theme);
+        for (const osContrastMore of [false, true]) {
+          const { theme, scheme } = runBoot(pref, osLight, osContrastMore);
+          expect(theme, `${pref} / OS light=${osLight} / contrast-more=${osContrastMore}`).toBe(
+            resolveTheme(pref, osLight, osContrastMore),
+          );
+          expect(scheme).toBe(theme === "light" ? "light" : "dark");
+          expect(RESOLVED_THEMES).toContain(theme);
+        }
       }
     }
   });
@@ -65,5 +75,17 @@ describe("index.html pre-mount theme script (T-708)", () => {
   it("falls back to Dark with nothing stored or an unknown value (A-018)", () => {
     expect(runBoot(null, true).theme).toBe("dark");
     expect(runBoot("sepia", true).theme).toBe("dark");
+  });
+
+  it("Match System resolves to High Contrast when the OS asks for more contrast (A-019)", () => {
+    expect(runBoot("system", false, true).theme).toBe("high-contrast");
+    expect(runBoot("system", true, true).theme).toBe("high-contrast");
+    expect(runBoot("system", true, false).theme).toBe("light");
+  });
+
+  it("an explicit choice is never overridden by prefers-contrast: more (A-019)", () => {
+    expect(runBoot("dark", true, true).theme).toBe("dark");
+    expect(runBoot("light", false, true).theme).toBe("light");
+    expect(runBoot("high_contrast", true, false).theme).toBe("high-contrast");
   });
 });

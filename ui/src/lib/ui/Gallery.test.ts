@@ -11,18 +11,22 @@ afterEach(() => {
 });
 
 describe("Gallery (dev page)", () => {
-  it("renders the same showcase in a dark and a light column", () => {
+  it("renders the same showcase in a Dark, Light and High Contrast column (H-31)", () => {
     r = render(Gallery, {});
     const dark = byTestId(r.target, "gallery-dark");
     const light = byTestId(r.target, "gallery-light");
+    const highContrast = byTestId(r.target, "gallery-high-contrast");
     expect(dark.dataset.theme).toBe("dark");
     expect(light.dataset.theme).toBe("light");
+    expect(highContrast.dataset.theme).toBe("high-contrast");
     expect(dark.querySelectorAll("section.card").length).toBe(light.querySelectorAll("section.card").length);
+    expect(dark.querySelectorAll("section.card").length).toBe(highContrast.querySelectorAll("section.card").length);
+    expect(highContrast.querySelector(".column-title")?.textContent).toBe("High Contrast");
   });
 
   it("shows every component family in each theme", () => {
     r = render(Gallery, {});
-    for (const theme of ["dark", "light"]) {
+    for (const theme of ["dark", "light", "high-contrast"]) {
       const col = byTestId(r.target, `gallery-${theme}`);
       expect(col.querySelectorAll(".pv-button").length, theme).toBeGreaterThanOrEqual(8);
       expect(col.querySelectorAll(".pv-icon-button").length).toBeGreaterThanOrEqual(8);

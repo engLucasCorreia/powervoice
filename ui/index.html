@@ -9,6 +9,8 @@
       // flashes the wrong one. The preference is mirrored from Settings by theme.svelte.ts (which
       // re-applies the authoritative value once settings load). Must match `resolveTheme()` —
       // theme/boot.test.ts runs this exact script against it.
+      // A-019: Match System also follows `prefers-contrast: more` (High Contrast), so the
+      // no-flash boot resolves it the same way `resolveTheme()` does.
       (function () {
         var root = document.documentElement;
         var pref = "dark";
@@ -18,8 +20,10 @@
         var theme = "dark";
         if (pref === "light") theme = "light";
         else if (pref === "high_contrast") theme = "high-contrast";
-        else if (pref === "system" && window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches)
-          theme = "light";
+        else if (pref === "system") {
+          if (window.matchMedia && window.matchMedia("(prefers-contrast: more)").matches) theme = "high-contrast";
+          else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) theme = "light";
+        }
         root.setAttribute("data-theme", theme);
         root.style.colorScheme = theme === "light" ? "light" : "dark";
       })();

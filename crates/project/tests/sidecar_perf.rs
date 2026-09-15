@@ -12,6 +12,7 @@ use std::time::Instant;
 
 use common::*;
 use vox_project::{DocumentIdentity, MarkerItemModel, SaveFormatModel, WriteInput};
+use vox_testkit::bench_report;
 
 const MARKER_COUNT: u64 = 10_000;
 const SLOT_COUNT: usize = 16;
@@ -110,6 +111,13 @@ fn ac18_sidecar_write_is_within_the_150ms_p95_budget() {
         "AC-18 write: {size} bytes, {RUNS} runs, p95 {p95_ms:.2} ms (budget {BUDGET_MS} ms), \
          all: {times_ms:?}"
     );
+    bench_report::result(
+        "vox-project",
+        "spec018_ac18_sidecar_write_p95_ms",
+        p95_ms,
+        "ms",
+        Some(bench_report::Target::le(BUDGET_MS)),
+    );
     assert!(
         size > 1024 * 1024,
         "payload should be a couple of MB, was {size}"
@@ -152,6 +160,13 @@ fn ac18_sidecar_read_and_validate_is_within_the_150ms_p95_budget() {
     let p95_ms = p95(times_ms.clone());
     println!(
         "AC-18 read: {RUNS} runs, p95 {p95_ms:.2} ms (budget {BUDGET_MS} ms), all: {times_ms:?}"
+    );
+    bench_report::result(
+        "vox-project",
+        "spec018_ac18_sidecar_read_p95_ms",
+        p95_ms,
+        "ms",
+        Some(bench_report::Target::le(BUDGET_MS)),
     );
     assert!(
         p95_ms <= BUDGET_MS,

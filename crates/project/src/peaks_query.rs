@@ -3,12 +3,18 @@
 //! pyramid level.
 
 use crate::snapshot::{DocSnapshot, Source};
-use crate::store::{ChunkId, ChunkStore, PEAK_LEVELS_SPP};
+use crate::store::{ChunkId, ChunkPeaks, ChunkStore, PEAK_LEVELS_SPP};
 use crate::{ProjectError, Result};
 
 /// `samples_per_bucket` below which the pyramid has no data: the caller reads raw samples
 /// instead (ADR-003 `VXPK` `RAW` flag). Each returned pair is then `(sample, sample)`.
 pub const PEAKS_RAW_SPP: u32 = 1;
+
+/// T-704: the pyramid of the chunk the previous output bucket read. Consecutive buckets overlap the
+/// same chunk (up to 1 024 of them at the finest level), so one query reads each chunk's ~11 KB
+/// pyramid record once instead of once per bucket (a 2126-px view at a fine level: ~9 ms → well
+/// under 1 ms per `peaks_get`).
+type LastPyramid = Option<(ChunkId, ChunkPeaks)>;
 
 /// `count` buckets of `(min, max)`, each covering `spp` document samples starting at `start`, as
 /// the conservative union of the pyramid buckets of every chunk each output bucket overlaps
@@ -36,6 +42,7 @@ pub fn peaks(
     }
     let spp64 = u64::from(spp);
     let mut out = Vec::with_capacity(count as usize);
+    let mut last: LastPyramid = None;
     for b in 0..u64::from(count) {
         let lo = start.saturating_add(b.saturating_mul(spp64));
         if lo >= snapshot.len_samples {
@@ -43,7 +50,7 @@ pub fn peaks(
             continue;
         }
         let hi = lo.saturating_add(spp64).min(snapshot.len_samples);
-        out.push(bucket_union(store, snapshot, spp, lo, hi)?);
+        out.push(bucket_union(store, snapshot, spp, lo, hi, &mut last)?);
     }
     Ok(out)
 }
@@ -68,6 +75,7 @@ fn bucket_union(
     spp: u32,
     lo: u64,
     hi: u64,
+    last: &mut LastPyramid,
 ) -> Result<(f32, f32)> {
     let Some((mut i, mut piece_off)) = snapshot.locate(lo) else {
         return Ok((0.0, 0.0));
@@ -86,9 +94,14 @@ fn bucket_union(
                 acc.1 = acc.1.max(0.0);
             }
             Source::Chunk(id) => {
-                if let Some((mn, mx)) =
-                    chunk_range_union(store, id, u64::from(piece.offset) + piece_off, take, spp)?
-                {
+                if let Some((mn, mx)) = chunk_range_union(
+                    store,
+                    id,
+                    u64::from(piece.offset) + piece_off,
+                    take,
+                    spp,
+                    last,
+                )? {
                     seen = true;
                     acc.0 = acc.0.min(mn);
                     acc.1 = acc.1.max(mx);
@@ -110,11 +123,17 @@ fn chunk_range_union(
     c_off: u64,
     len: u64,
     spp: u32,
+    last: &mut LastPyramid,
 ) -> Result<Option<(f32, f32)>> {
     if len == 0 {
         return Ok(None);
     }
-    let peaks = store.chunk_peaks(id)?;
+    if last.as_ref().is_none_or(|(cached, _)| *cached != id) {
+        *last = Some((id, store.chunk_peaks(id)?));
+    }
+    let Some((_, peaks)) = last.as_ref() else {
+        return Ok(None);
+    };
     let Some(level) = peaks.level(spp as usize) else {
         return Ok(None);
     };
@@ -162,6 +181,32 @@ mod tests {
         let audio = writer.finish().unwrap();
         let snapshot = Snap::new(48_000, audio.pieces, Vec::new());
         (store, snapshot)
+    }
+
+    /// T-704: one query reads each chunk's pyramid record at most once, however many output
+    /// buckets overlap that chunk. It used to re-read, CRC-check and decode the whole ~11 KB
+    /// record for every bucket (~1.1 ms per 1000 buckets at the fine levels, i.e. ~9 ms per
+    /// `peaks_get` for a 2126-px view — on every zoom/scroll frame).
+    #[test]
+    fn a_query_reads_each_chunk_pyramid_record_once() {
+        let dir = tmp_dir("reads-once");
+        let chunks = 10usize;
+        let samples: Vec<f32> = (0..chunks * crate::CHUNK_SAMPLES)
+            .map(|i| (i % 977) as f32 / 977.0 - 0.5)
+            .collect();
+        let (store, snapshot) = store_with(&dir, &samples);
+        for &spp in &PEAK_LEVELS_SPP {
+            let count = snapshot.len_samples.div_ceil(spp as u64) as u32;
+            let before = store.peak_record_reads();
+            let out = peaks(&store, &snapshot, spp as u32, 0, count).unwrap();
+            assert_eq!(out.len(), count as usize);
+            let reads = store.peak_record_reads() - before;
+            assert!(
+                reads <= chunks as u64,
+                "spp {spp}: {reads} pyramid record reads for {count} buckets over {chunks} chunks"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Brute-force min/max over `[start, start+spp*count)`, reading raw samples directly — the

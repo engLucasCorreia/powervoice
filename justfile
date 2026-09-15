@@ -22,17 +22,26 @@ test:
 # input gains × look-ahead/release, multi-threaded) and the 60 s AC-16 timing run.
 # H-17: SPEC-004 AC-3 (undo/redo on 20 000 pieces, ≤ 50 ms) and AC-11 (60-min/1000-record
 # recovery, < 5 s) on a real disk under target/big-tests.
+# T-704: + the 60-min import (cold/warm page cache), SPEC-007 AC-9 (spectrogram tile latency on a
+# 60-min document) and the real open path (`powervoice-app` `perf_big`: open → first overview,
+# memory with the document open). Everything is tee'd into target/bench/big.log, whose
+# BENCH_RESULT lines are merged into target/bench/summary.md (and docs/performance.md via
+# `just perf-matrix`).
 test-big:
-    cargo test --release -p vox-modules --test true_peak_limiter -- --ignored --nocapture --test-threads=1
-    mkdir -p target/big-tests
-    POWERVOICE_TEST_TMP="{{justfile_directory()}}/target/big-tests" \
-        cargo test --release -p vox-project --test big -- --ignored --nocapture --test-threads=1
-    POWERVOICE_TEST_TMP="{{justfile_directory()}}/target/big-tests" \
-        cargo test --release -p vox-project --test history_exact -- --ignored --nocapture --test-threads=1
-    POWERVOICE_TEST_TMP="{{justfile_directory()}}/target/big-tests" \
-        cargo test --release -p vox-project --test recovery -- --ignored --nocapture --test-threads=1
-    POWERVOICE_TEST_TMP="{{justfile_directory()}}/target/big-tests" \
-        cargo test --release -p vox-project --test sidecar_perf -- --ignored --nocapture --test-threads=1
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p target/big-tests target/bench
+    log=target/bench/big.log
+    : > "$log"
+    run() { "$@" 2>&1 | tee -a "$log"; }
+    run cargo test --release -p vox-modules --test true_peak_limiter -- --ignored --nocapture --test-threads=1
+    export POWERVOICE_TEST_TMP="{{justfile_directory()}}/target/big-tests"
+    for t in big history_exact recovery sidecar_perf; do
+        run cargo test --release -p vox-project --test "$t" -- --ignored --nocapture --test-threads=1
+    done
+    run cargo test --release -p vox-engine --test spectro ac9 -- --ignored --nocapture --test-threads=1
+    run cargo test --release -p powervoice-app --lib perf_big -- --ignored --nocapture --test-threads=1
+    python3 scripts/bench/summary.py --no-run
 
 # Regenerate Rust -> TS shared types (ADR-003) into ui/src/lib/ipc/bindings.ts
 gen-types:
@@ -90,6 +99,20 @@ bench:
 # VOX_ENGINE_BENCH_SECONDS overrides the per-row duration (default 3 s).
 bench-callback:
     cargo bench -p vox-engine --bench callback_histogram
+
+# T-704: the headless UI frame-time sweep (PROMPT §2 "60 fps scroll/zoom", SPEC-006 AC-18, SPEC-007
+# AC-10) — its own Vite server on port 5193 + headless Chromium over CDP, the preview App with a
+# 60-min document, zoom/scroll sweeps at 1280×720 and 2126×850. BENCH_RESULT lines go to
+# target/bench/ui.log and are merged into target/bench/summary.md. Needs `chromium` on PATH.
+bench-ui:
+    node scripts/bench/ui_frames.mjs
+    python3 scripts/bench/summary.py --no-run
+
+# T-704: rewrite the targets matrix in docs/performance.md from the BENCH_RESULT lines of the last
+# `just bench`, `just test-big` and `just bench-ui` runs (target/bench/{raw,big,ui}.log). Commit the
+# result when the numbers are worth recording.
+perf-matrix:
+    python3 scripts/bench/matrix.py
 
 # Generate test fixtures into fixtures/generated/ (gitignored)
 fixtures:

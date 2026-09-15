@@ -62,7 +62,8 @@
     visibleTileIndices,
   } from "./geometry";
   import { formatLevelDb } from "./hoverFormat";
-  import { nearestCode, pixelDb, type TileLookup } from "./sampler";
+  import { columnDb, createColumnScratch, nearestCode, type TileLookup } from "./sampler";
+  import type { SpectroTile } from "./spectroRequester";
   import { createSpectroRequester, type SpectroRequester } from "./spectroRequester";
   import { type SpectrogramTileEntry, SpectrogramGlRenderer } from "./webglRenderer";
 
@@ -357,7 +358,16 @@
     const sppDev = samplesPerPixel / dpr;
     const hop = hopForZoom(sppDev, fftSize);
     const total = totalFrames(lenSamples, hop);
-    const getTile: TileLookup = (i) => requester?.tile(fftSize, hop, i);
+    // T-704: one `requester.tile` (a string key + an LRU touch) per tile per draw, not per pixel.
+    const drawTiles = new Map<number, SpectroTile | undefined>();
+    const getTile: TileLookup = (i) => {
+      if (drawTiles.has(i)) {
+        return drawTiles.get(i);
+      }
+      const tile = requester?.tile(fftSize, hop, i);
+      drawTiles.set(i, tile);
+      return tile;
+    };
     const scale = spectral.freqScale;
     const colormap = spectral.colormap;
     const floorDb = spectral.floorDb;
@@ -382,13 +392,17 @@
       binHiArr[py] = (fHiPx * fftSize) / rateHz;
     }
 
+    // T-704: a column at a time — `columnDb` gives exactly `pixelDb` per row but evaluates each
+    // bin's time-axis value once per column instead of once per pixel (was ~0.5 s per frame on a
+    // 60-min document's split view).
+    const columnOut = new Float64Array(backingH);
+    const columnScratch = createColumnScratch(bins);
     for (let px = 0; px < backingW; px++) {
-      const frameLo = frameLoArr[px]!;
-      const frameHi = frameHiArr[px]!;
+      columnDb(getTile, total, bins, frameLoArr[px]!, frameHiArr[px]!, binLoArr, binHiArr, columnOut, columnScratch);
       for (let py = 0; py < backingH; py++) {
-        const db = pixelDb(getTile, total, bins, frameLo, frameHi, binLoArr[py]!, binHiArr[py]!);
+        const db = columnOut[py]!;
         const idx = (py * backingW + px) * 4;
-        if (db === null) {
+        if (Number.isNaN(db)) {
           data[idx] = pendingRgb[0];
           data[idx + 1] = pendingRgb[1];
           data[idx + 2] = pendingRgb[2];

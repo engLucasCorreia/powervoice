@@ -44,5 +44,10 @@ required-features = ["backend-cpal"]
 name = "callback_histogram"
 harness = false
 
+# T-704: SPEC-003 AC-1 playback start latency (Play → first non-silent frame written), `just bench`.
+[[bench]]
+name = "playback_start"
+harness = false
+
 [lints]
 workspace = true

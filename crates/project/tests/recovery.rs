@@ -13,6 +13,7 @@ use vox_project::{
     Edit, Marker, MarkerId, MarkerOp, NormalizeResult, ProjectError, Session, SessionConfig,
     SourceInfo, TAKE_LABEL_KEY, TakeMode, TakeWriterOptions, edit, normalize_peak, validate_range,
 };
+use vox_testkit::bench_report;
 
 // --- AC-9: journal fault injection --------------------------------------------------------------
 
@@ -492,6 +493,13 @@ fn ac11_recovering_a_60_min_session_with_1000_records_takes_under_5_s() {
     let (s, report) = Session::recover(&session_dir, options()).unwrap();
     let elapsed = started.elapsed();
     eprintln!("recovered {records} records over 60 min in {elapsed:?}");
+    bench_report::result(
+        "vox-project",
+        "spec004_ac11_recover_60min_1000_records_ms",
+        elapsed.as_secs_f64() * 1e3,
+        "ms",
+        Some(bench_report::Target::le(5_000.0)),
+    );
     assert_eq!(report.lost_changes, 0);
     assert!(s.history().undo_depth() > 0);
     assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");

@@ -14,6 +14,8 @@ pub mod logging;
 pub mod loudness;
 pub mod normalize;
 pub mod nr_capture;
+#[cfg(test)]
+mod perf_big;
 pub mod plugins;
 pub mod presets;
 pub mod recording;

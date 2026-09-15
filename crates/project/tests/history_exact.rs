@@ -7,9 +7,10 @@ use std::time::{Duration, Instant};
 
 use common::*;
 use vox_project::{
-    Edit, EditTarget, Marker, MarkerOp, NormalizeResult, Piece, Session, SessionConfig,
-    StoreOptions, WrittenAudio, edit, normalize_peak, validate_range,
+    Edit, EditTarget, History, Marker, MarkerId, MarkerOp, NormalizeResult, Piece, Session,
+    SessionConfig, StoreOptions, WrittenAudio, edit, normalize_peak, validate_range,
 };
+use vox_testkit::bench_report;
 
 fn new_session(dir: &Path) -> Session {
     Session::create(
@@ -202,5 +203,144 @@ fn ac3_undo_redo_on_20000_pieces_takes_at_most_50_ms() {
         worst = worst.max(t.elapsed());
     }
     eprintln!("worst undo/redo on 20 000 pieces: {worst:?}");
+    bench_report::result(
+        "vox-project",
+        "spec004_ac3_worst_undo_redo_20000_pieces_ms",
+        worst.as_secs_f64() * 1e3,
+        "ms",
+        Some(bench_report::Target::le(50.0)),
+    );
     assert!(worst <= Duration::from_millis(50), "{worst:?}");
+}
+
+fn p95_ms(mut times: Vec<f64>) -> f64 {
+    times.sort_by(f64::total_cmp);
+    times[(times.len() * 95 / 100).min(times.len() - 1)]
+}
+
+/// SPEC-008 AC-14 (T-704): on a 60-min document with 20 000 pieces and 1 000 markers, 100 seeded
+/// runs of each op: the pure splice + marker mapping (`History::apply` on the current snapshot, no
+/// journal) takes ≤ 5 ms p95, and the command (`Session::commit_edit`: splice + journal record +
+/// `fdatasync`) ≤ 50 ms p95; across all runs no chunk is committed and no peak pyramid is read or
+/// computed. Copy is not an edit (SPEC-008 §2.1): its row times `edit::copy`, the clipboard slice.
+/// The store keeps no sample-byte counters; the chunk count and pyramid reads stand in for "no
+/// sample I/O". SSD-dependent: `just test-big`.
+#[test]
+#[ignore = "bench: SSD timing"]
+fn ac14_edit_ops_on_20000_pieces_and_1000_markers() {
+    const RUNS: usize = 100;
+    let dir = TempDir::new("ac14-timing");
+    let mut s = new_session(dir.path());
+    let base = write_audio(s.store(), &noise(6, 64 * vox_project::CHUNK_SAMPLES));
+    let chunk_ids: Vec<u32> = base
+        .pieces
+        .iter()
+        .filter_map(|p| match p.source {
+            vox_project::Source::Chunk(id) => Some(id),
+            vox_project::Source::Silence => None,
+        })
+        .collect();
+    let piece_len = (60 * 60 * RATE_U64 / 20_000) as u32;
+    let pieces: Vec<Piece> = (0..20_000u32)
+        .map(|i| {
+            if i % 7 == 3 {
+                return Piece::silence(piece_len);
+            }
+            let id = chunk_ids[i as usize % chunk_ids.len()];
+            let offset = (i * 37) % (vox_project::CHUNK_SAMPLES as u32 - piece_len);
+            Piece::chunk(id, offset, piece_len)
+        })
+        .collect();
+    let len: u64 = pieces.iter().map(Piece::len_samples).sum();
+    let markers: Vec<Marker> = (0..1_000u64)
+        .map(|i| {
+            let range = if i % 5 == 0 { 24_000 } else { 0 };
+            Marker::new(MarkerId(i + 1), i * (len / 1_000), range, format!("m{i}"))
+        })
+        .collect();
+    let floor = WrittenAudio {
+        pieces,
+        chunks: Vec::new(),
+        len_samples: len,
+    };
+    s.set_floor(&floor, markers).unwrap();
+    assert!(s.current().pieces.len() >= 19_000);
+    assert_eq!(s.current().markers.len(), 1_000);
+
+    let chunks_before = s.store().chunk_count();
+    let pyramid_reads_before = s.store().peak_record_reads();
+    let mut rng = Rng(14);
+    for op in [
+        "copy",
+        "cut",
+        "paste",
+        "delete",
+        "trim",
+        "silence",
+        "insert_silence",
+    ] {
+        let mut splice = Vec::with_capacity(RUNS);
+        let mut command = Vec::with_capacity(RUNS);
+        for _ in 0..RUNS {
+            let snap = s.current();
+            let len = snap.len_samples;
+            let a = rng.below(len - 200_000);
+            let range = validate_range(a, a + 48_000, len).unwrap();
+            let e = match op {
+                "copy" => {
+                    let t = Instant::now();
+                    let clip = edit::copy(&snap, range).unwrap();
+                    splice.push(t.elapsed().as_secs_f64() * 1e3);
+                    std::hint::black_box(clip);
+                    continue;
+                }
+                "cut" => edit::cut(&snap, range).unwrap().0,
+                "paste" => {
+                    let clip = edit::copy(&snap, range).unwrap();
+                    edit::paste(&clip, EditTarget::Cursor(rng.below(len)))
+                }
+                "delete" => edit::delete(range),
+                "trim" => {
+                    edit::trim(validate_range(1_000, len - 1_000, len).unwrap(), len).unwrap()
+                }
+                "silence" => edit::silence(range),
+                _ => edit::paste(&[Piece::silence(48_000)], EditTarget::Cursor(a)),
+            };
+            let mut history = History::new((*snap).clone());
+            let t = Instant::now();
+            history.apply(&e).unwrap();
+            splice.push(t.elapsed().as_secs_f64() * 1e3);
+            let t = Instant::now();
+            s.commit_edit(e).unwrap();
+            command.push(t.elapsed().as_secs_f64() * 1e3);
+        }
+        let splice_p95 = p95_ms(splice);
+        eprintln!("AC-14 {op}: splice p95 {splice_p95:.3} ms");
+        bench_report::result(
+            "vox-project",
+            &format!("spec008_ac14_{op}_splice_p95_ms"),
+            splice_p95,
+            "ms",
+            Some(bench_report::Target::le(5.0)),
+        );
+        assert!(splice_p95 <= 5.0, "{op}: splice p95 {splice_p95} ms");
+        if !command.is_empty() {
+            let command_p95 = p95_ms(command);
+            eprintln!("AC-14 {op}: command p95 {command_p95:.3} ms");
+            bench_report::result(
+                "vox-project",
+                &format!("spec008_ac14_{op}_command_p95_ms"),
+                command_p95,
+                "ms",
+                Some(bench_report::Target::le(50.0)),
+            );
+            assert!(command_p95 <= 50.0, "{op}: command p95 {command_p95} ms");
+        }
+    }
+    assert_eq!(s.store().chunk_count(), chunks_before, "no chunk committed");
+    assert_eq!(
+        s.store().peak_record_reads(),
+        pyramid_reads_before,
+        "no pyramid read or computed"
+    );
 }

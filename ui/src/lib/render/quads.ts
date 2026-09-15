@@ -37,11 +37,46 @@ export function cssColorToRgba(css: string, fallbackAlpha = 1): Rgba {
   return hexToRgba(css, fallbackAlpha);
 }
 
+/** Initial vertex-buffer capacity in floats (64 quads); doubles as needed. */
+const INITIAL_FLOATS = 64 * VERTICES_PER_QUAD * FLOATS_PER_VERTEX;
+
 export class QuadBatch {
-  private verts: number[] = [];
+  // T-704: vertices are written straight into a growable `Float32Array`. The batch used to push
+  // 36 numbers per quad into a JS array and copy that into a new `Float32Array` on every frame —
+  // ~30 % of a WebGL2 waveform frame at 2126 px (a raw-zoom view is ~100 k segments), plus the GC
+  // pauses behind its > 50 ms frames. Same values: a float64 → float32 store rounds exactly like
+  // the old `new Float32Array(numbers)` did.
+  private buf = new Float32Array(INITIAL_FLOATS);
+  private len = 0;
 
   get vertexCount(): number {
-    return this.verts.length / FLOATS_PER_VERTEX;
+    return this.len / FLOATS_PER_VERTEX;
+  }
+
+  /** Room for `floats` more values; returns the (possibly new) buffer. */
+  private reserve(floats: number): Float32Array {
+    const need = this.len + floats;
+    if (need > this.buf.length) {
+      let capacity = this.buf.length * 2;
+      while (capacity < need) {
+        capacity *= 2;
+      }
+      const next = new Float32Array(capacity);
+      next.set(this.buf.subarray(0, this.len));
+      this.buf = next;
+    }
+    return this.buf;
+  }
+
+  /** Writes one `[x, y, r, g, b, a]` vertex at float index `i`; returns the next index. */
+  private static put(v: Float32Array, i: number, x: number, y: number, color: Rgba): number {
+    v[i] = x;
+    v[i + 1] = y;
+    v[i + 2] = color[0];
+    v[i + 3] = color[1];
+    v[i + 4] = color[2];
+    v[i + 5] = color[3];
+    return i + FLOATS_PER_VERTEX;
   }
 
   /** An axis-aligned rectangle `[x0, x1) x [y0, y1)` in device pixels, one solid color. Skips
@@ -50,16 +85,15 @@ export class QuadBatch {
     if (!(x1 > x0) || !(y1 > y0)) {
       return;
     }
-    const [r, g, b, a] = color;
+    const v = this.reserve(VERTICES_PER_QUAD * FLOATS_PER_VERTEX);
     // Two triangles: (x0,y0)-(x1,y0)-(x0,y1) and (x1,y0)-(x1,y1)-(x0,y1).
-    this.verts.push(
-      x0, y0, r, g, b, a,
-      x1, y0, r, g, b, a,
-      x0, y1, r, g, b, a,
-      x1, y0, r, g, b, a,
-      x1, y1, r, g, b, a,
-      x0, y1, r, g, b, a,
-    );
+    let i = this.len;
+    i = QuadBatch.put(v, i, x0, y0, color);
+    i = QuadBatch.put(v, i, x1, y0, color);
+    i = QuadBatch.put(v, i, x0, y1, color);
+    i = QuadBatch.put(v, i, x1, y0, color);
+    i = QuadBatch.put(v, i, x1, y1, color);
+    this.len = QuadBatch.put(v, i, x0, y1, color);
   }
 
   /** A `widthPx`-wide vertical line centred on `x`, spanning `[y0, y1)`. */
@@ -83,30 +117,38 @@ export class QuadBatch {
     const hw = widthPx / 2;
     const nx = (-dy / len) * hw;
     const ny = (dx / len) * hw;
-    const [r, g, b, a] = color;
-    this.verts.push(
-      x0 + nx, y0 + ny, r, g, b, a,
-      x1 + nx, y1 + ny, r, g, b, a,
-      x0 - nx, y0 - ny, r, g, b, a,
-      x1 + nx, y1 + ny, r, g, b, a,
-      x1 - nx, y1 - ny, r, g, b, a,
-      x0 - nx, y0 - ny, r, g, b, a,
-    );
+    const v = this.reserve(VERTICES_PER_QUAD * FLOATS_PER_VERTEX);
+    let i = this.len;
+    i = QuadBatch.put(v, i, x0 + nx, y0 + ny, color);
+    i = QuadBatch.put(v, i, x1 + nx, y1 + ny, color);
+    i = QuadBatch.put(v, i, x0 - nx, y0 - ny, color);
+    i = QuadBatch.put(v, i, x1 + nx, y1 + ny, color);
+    i = QuadBatch.put(v, i, x1 - nx, y1 - ny, color);
+    this.len = QuadBatch.put(v, i, x0 - nx, y0 - ny, color);
   }
 
   /** A small filled triangle flag (SPEC-006 §2.11), apex down-right from `(x, 0)` — matches the
    * Canvas2D fallback's `drawFlag`. */
   flag(x: number, color: Rgba, width = 6, height = 8): void {
-    const [r, g, b, a] = color;
-    this.verts.push(x, 0, r, g, b, a, x + width, 0, r, g, b, a, x, height, r, g, b, a);
+    const v = this.reserve(3 * FLOATS_PER_VERTEX);
+    let i = this.len;
+    i = QuadBatch.put(v, i, x, 0, color);
+    i = QuadBatch.put(v, i, x + width, 0, color);
+    this.len = QuadBatch.put(v, i, x, height, color);
   }
 
   /** Appends another batch's vertices in place (for composing sub-builders). */
   append(other: QuadBatch): void {
-    this.verts.push(...other.verts);
+    if (other.len === 0) {
+      return;
+    }
+    this.reserve(other.len).set(other.buf.subarray(0, other.len), this.len);
+    this.len += other.len;
   }
 
+  /** The vertices so far — a view into this batch's buffer (no copy), valid until the batch is
+   * changed again. Every caller uploads it to GL right away. */
   toFloat32Array(): Float32Array {
-    return new Float32Array(this.verts);
+    return this.buf.subarray(0, this.len);
   }
 }

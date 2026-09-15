@@ -1,6 +1,7 @@
 //! T-110: per-module `process()` CPU cost at 48 kHz for the realtime sub-block sizes (ADR-002
 //! §2, §4: `MAX_BLOCK = 1024`), for every built-in module (noise gate, noise reduction,
-//! parametric EQ, dynamics, true-peak limiter, gain). Run by `just bench`.
+//! parametric EQ, dynamics, true-peak limiter, gain). Run by `just bench`. T-704: Noise Reduction
+//! runs with a captured noise print (the STFT path, reduction on); without one it is a delay line.
 //!
 //! Two passes over the same corpus:
 //! - divan benches (`cargo bench`'s console table): detailed per-block-size distributions.
@@ -13,11 +14,13 @@
 //! (`target: None`).
 
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use divan::Bencher;
 use vox_module_api::{
     ActivateConfig, ChannelLayout, Module, OutputEvents, ProcessContext, ProcessMode, Transport,
+    noise_profile,
 };
 use vox_modules::{Dynamics, Gain, NoiseGate, NoiseReduction, ParametricEq, TruePeakLimiter};
 use vox_testkit::bench_report;
@@ -44,6 +47,41 @@ fn corpus() -> &'static [f32] {
                 .collect::<Vec<f32>>()
         })
         .as_slice()
+}
+
+/// T-704: a noise print of pink noise like the corpus's background. Without a print the Noise
+/// Reduction module is an exact N-sample delay line (SPEC-014 §2.5): T-110's first version of this
+/// bench built `NoiseReduction::new()` with no print and so measured that delay line (~300×
+/// cheaper), not the STFT path with reduction on.
+fn nr_print() -> &'static [u8] {
+    static PRINT: OnceLock<Vec<u8>> = OnceLock::new();
+    PRINT.get_or_init(|| {
+        let noise = signal::pink_noise(0x7053, -30.0, 3.0, RATE).expect("pink noise");
+        noise_profile(&NoiseReduction::new())
+            .expect("NoiseProfile extension")
+            .capture(&noise, f64::from(RATE), &[], &AtomicBool::new(false))
+            .expect("capture")
+    })
+}
+
+/// Noise Reduction at its defaults with [`nr_print`] loaded: the real STFT path.
+fn noise_reduction_with_print() -> Box<dyn Module> {
+    let mut m = NoiseReduction::new();
+    m.load_state(&NoiseReduction::state_with_blob(Some(nr_print().to_vec())))
+        .expect("load the NR state");
+    Box::new(m)
+}
+
+/// Fails the bench if the NR rows would measure the delay line again.
+fn assert_nr_measures_the_stft_path() {
+    let mut m = NoiseReduction::new();
+    m.load_state(&NoiseReduction::state_with_blob(Some(nr_print().to_vec())))
+        .expect("load the NR state");
+    m.activate(&activate_config(256)).expect("activate");
+    assert!(
+        m.has_active_print(),
+        "the NR bench must run the STFT path (print loaded), not the no-print delay line"
+    );
 }
 
 fn activate_config(block: usize) -> ActivateConfig {
@@ -104,7 +142,7 @@ fn noise_gate(bencher: Bencher, block: usize) {
 
 #[divan::bench(args = BLOCKS)]
 fn noise_reduction(bencher: Bencher, block: usize) {
-    bench_module(bencher, block, || Box::new(NoiseReduction::new()));
+    bench_module(bencher, block, noise_reduction_with_print);
 }
 
 #[divan::bench(args = BLOCKS)]
@@ -162,13 +200,14 @@ fn percent_of_core(block: usize, make: fn() -> Box<dyn Module>) -> f64 {
 type MakeModule = fn() -> Box<dyn Module>;
 
 fn report() {
+    assert_nr_measures_the_stft_path();
     println!(
         "per-module process() cost, {RATE} Hz, best of {PASSES} passes over {CORPUS_SECONDS} s \
          of voice-like + pink noise"
     );
     let modules: [(&str, MakeModule); 6] = [
         ("noise_gate", || Box::new(NoiseGate::new())),
-        ("noise_reduction", || Box::new(NoiseReduction::new())),
+        ("noise_reduction", noise_reduction_with_print),
         ("parametric_eq", || Box::new(ParametricEq::new())),
         ("dynamics", || Box::new(Dynamics::new())),
         ("true_peak_limiter", || Box::new(TruePeakLimiter::new())),

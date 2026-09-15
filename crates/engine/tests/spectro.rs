@@ -13,6 +13,7 @@ use vox_engine::spectro::{
     VxstHeader, decode_vxst, tile_count, vxst_flags,
 };
 use vox_project::{ChunkStore, DocSnapshot, Marker, MarkerId, Piece, StoreOptions};
+use vox_testkit::bench_report;
 
 const FS: u32 = 48_000;
 
@@ -661,6 +662,20 @@ fn ac9_latency_on_a_60_min_document() {
         println!(
             "view {view_s:>6} s  hop {hop:>6}  tiles {count:>2}  visible {visible_ms:7.1} ms  refined {refined_ms:7.1} ms  warm {warm_ms:6.1} ms"
         );
+        let view = view_s as u64;
+        for (metric, value, budget) in [
+            ("visible", visible_ms, 200.0),
+            ("refined", refined_ms, 2_000.0),
+            ("warm", warm_ms, 50.0),
+        ] {
+            bench_report::result(
+                "vox-engine",
+                &format!("spec007_ac9_{metric}_{view}s_view_ms"),
+                value,
+                "ms",
+                Some(bench_report::Target::le(budget)),
+            );
+        }
         assert!(visible_ms <= 200.0, "visible tiles took {visible_ms} ms");
         assert!(refined_ms <= 2000.0, "refined tiles took {refined_ms} ms");
         assert!(warm_ms <= 50.0, "warm re-request took {warm_ms} ms");

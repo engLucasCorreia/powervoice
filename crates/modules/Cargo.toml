@@ -26,5 +26,11 @@ harness = false
 name = "process_cost"
 harness = false
 
+# T-704: the per-module CPU budgets the specs name (SPEC-013 AC-17, SPEC-014 AC-18, SPEC-015 AC-22,
+# SPEC-016 AC-19) as BENCH_RESULT pass/fail lines.
+[[bench]]
+name = "spec_budgets"
+harness = false
+
 [lints]
 workspace = true

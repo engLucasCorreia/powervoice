@@ -31,6 +31,8 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(150);
 /// Frames decoded and downmixed per batch (SPEC-005 §2.3: "cancellation is checked at least every
 /// 50 ms" — small enough that even a slow decoder keeps this well under that bound).
 const BATCH_FRAMES: usize = 8192;
+/// T-704: decoded batches in flight between the import's decoder thread and the chunk writer.
+const PIPELINE_BATCHES: usize = 8;
 
 fn validate_rate_and_channels(rate: u32, channels: u16) -> Result<()> {
     if !(MIN_SAMPLE_RATE_HZ..=MAX_SAMPLE_RATE_HZ).contains(&rate) {
@@ -167,30 +169,69 @@ pub fn import_file(
     let len_hint = info.track.len_samples;
 
     let mut writer = ChunkWriter::with_cancel(Arc::clone(session.store()), cancel.clone());
-    let mut raw = vec![0f32; channels * BATCH_FRAMES];
-    let mut mono = vec![0f32; BATCH_FRAMES];
     let mut frames_done: u64 = 0;
     let mut last_progress = Instant::now();
-    loop {
-        if cancel.is_cancelled() {
-            return Err(ProjectError::Cancelled);
-        }
-        let n = source.read_frames(&mut raw)?;
-        if n == 0 {
-            break;
-        }
-        for (dst, frame) in mono[..n]
-            .iter_mut()
-            .zip(raw[..n * channels].chunks_exact(channels))
-        {
-            *dst = vox_io::downmix_frame(frame, &lfe, downmix);
-        }
-        writer.append(&mono[..n])?;
-        frames_done += n as u64;
-        if last_progress.elapsed() >= PROGRESS_INTERVAL {
-            progress(frames_done, len_hint);
-            last_progress = Instant::now();
-        }
+    // T-704: decoding + downmixing (a decoder thread) overlaps committing chunks (this thread:
+    // peaks, CRC, copy into the store) — they were ~0.45 s and ~0.5 s of a 60-min import, run one
+    // after the other per batch. Batches flow through a bounded channel and their buffers are
+    // recycled, so memory stays at `PIPELINE_BATCHES` batches. The decoder stops at the first
+    // error (sent through the channel), on cancel, or when this side hangs up (a write error).
+    let (source, pipeline) = std::thread::scope(|scope| {
+        let (batches_tx, batches_rx) =
+            std::sync::mpsc::sync_channel::<vox_io::Result<Vec<f32>>>(PIPELINE_BATCHES);
+        let (spare_tx, spare_rx) = std::sync::mpsc::channel::<Vec<f32>>();
+        let decoder_cancel = cancel.clone();
+        let lfe = &lfe;
+        let decoder = scope.spawn(move || {
+            let mut raw = vec![0f32; channels * BATCH_FRAMES];
+            while !decoder_cancel.is_cancelled() {
+                let n = match source.read_frames(&mut raw) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(e) => {
+                        let _ = batches_tx.send(Err(e));
+                        break;
+                    }
+                };
+                let mut mono = spare_rx
+                    .try_recv()
+                    .unwrap_or_else(|_| Vec::with_capacity(BATCH_FRAMES));
+                mono.clear();
+                mono.extend(
+                    raw[..n * channels]
+                        .chunks_exact(channels)
+                        .map(|frame| vox_io::downmix_frame(frame, lfe, downmix)),
+                );
+                if batches_tx.send(Ok(mono)).is_err() {
+                    break;
+                }
+            }
+            source
+        });
+        let written = (|| -> Result<()> {
+            for batch in batches_rx {
+                if cancel.is_cancelled() {
+                    return Err(ProjectError::Cancelled);
+                }
+                let mono = batch?;
+                writer.append(&mono)?;
+                frames_done += mono.len() as u64;
+                if last_progress.elapsed() >= PROGRESS_INTERVAL {
+                    progress(frames_done, len_hint);
+                    last_progress = Instant::now();
+                }
+                let _ = spare_tx.send(mono);
+            }
+            Ok(())
+        })();
+        // `batches_rx` is gone (consumed or dropped), so a decoder blocked on a full channel wakes
+        // with a send error and returns.
+        (decoder.join(), written)
+    });
+    let source = source.map_err(|_| ProjectError::InvalidArgument("import decoder panicked"))?;
+    pipeline?;
+    if cancel.is_cancelled() {
+        return Err(ProjectError::Cancelled);
     }
     progress(frames_done, len_hint);
 

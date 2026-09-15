@@ -259,6 +259,9 @@ pub struct ChunkStore {
     unreserved_segments: AtomicU32,
     /// Serializes `sync()` calls, so one call's flag clearing can't race another's flush.
     sync_lock: Mutex<()>,
+    /// T-704: pyramid records read back from `peaks.<gen>.bin` (diagnostic, see
+    /// [`Self::peak_record_reads`]).
+    peak_record_reads: AtomicU64,
     segment_hook: Option<SegmentHook>,
 }
 
@@ -311,6 +314,7 @@ impl ChunkStore {
             }),
             unreserved_segments: AtomicU32::new(0),
             sync_lock: Mutex::new(()),
+            peak_record_reads: AtomicU64::new(0),
             segment_hook: options.segment_hook,
         }))
     }
@@ -400,6 +404,7 @@ impl ChunkStore {
             }),
             unreserved_segments: AtomicU32::new(0),
             sync_lock: Mutex::new(()),
+            peak_record_reads: AtomicU64::new(0),
             segment_hook: options.segment_hook,
         }))
     }
@@ -812,6 +817,7 @@ impl ChunkStore {
     /// the record is missing or corrupt (ADR-004 §5).
     pub fn chunk_peaks(&self, id: ChunkId) -> Result<ChunkPeaks> {
         let loc = self.location(id).ok_or(ProjectError::UnknownChunk(id))?;
+        self.peak_record_reads.fetch_add(1, Ordering::Relaxed);
         if let Some(peaks) = ChunkPeaks::read_record(&self.peaks_file, id)
             && peaks.len_samples() == loc.len
         {
@@ -865,6 +871,13 @@ impl ChunkStore {
         self.memory
             .peak
             .store(self.memory.resident(), Ordering::Relaxed);
+    }
+
+    /// T-704: how many times [`Self::chunk_peaks`] has been called (each call reads, CRC-checks and
+    /// decodes one ~11 KB pyramid record, or recomputes it). A diagnostic for tests and benches:
+    /// one peaks query should read each chunk it touches once, not once per output bucket.
+    pub fn peak_record_reads(&self) -> u64 {
+        self.peak_record_reads.load(Ordering::Relaxed)
     }
 
     /// Number of currently mapped segments.

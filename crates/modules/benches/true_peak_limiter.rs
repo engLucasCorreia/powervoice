@@ -12,6 +12,7 @@ use vox_module_api::{
     prepare_state,
 };
 use vox_modules::TruePeakLimiter;
+use vox_testkit::bench_report;
 use vox_testkit::signal;
 
 const RATE: u32 = 48_000;
@@ -84,6 +85,14 @@ fn main() {
              core (budget {BUDGET_PERCENT} %)"
         );
     }
+    // T-704: also as a BENCH_RESULT line, so the summary and docs/performance.md show it.
+    bench_report::result(
+        "vox-modules",
+        "true_peak_limiter_256f_worst_pct_core",
+        worst,
+        "pct_core",
+        Some(bench_report::Target::le(BUDGET_PERCENT)),
+    );
     assert!(
         worst <= BUDGET_PERCENT,
         "SPEC-017 AC-17: {worst:.3} % of one core > {BUDGET_PERCENT} %"

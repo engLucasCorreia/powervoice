@@ -19,6 +19,10 @@
  *   &menu=file | edit | view | effects | help | normalize | add-module | rack-slot
  *        | theme   (T-708: View → Theme ▸ open)
  *   &scene=tour&step=n[&tour=welcome|rack|noise|loudness|punch|plugins]   (T-709)
+ *   &renderer=auto|webgl2|canvas2d   (T-704: the renderer Setting; default canvas2d, which keeps
+ *                 screenshots deterministic — the app's own default is auto, i.e. WebGL2 first)
+ *   &doc=60min   (T-704: a 60-minute document, zoomed to fit, whose peaks come from a full
+ *                 precomputed pyramid — the frame-time sweep `scripts/bench/ui_frames.mjs` uses it)
  *   &dialog=tour-offer   (T-709: the first-run Welcome tour offer)
  * The audio is synthetic (a narrator's phrases with breaths), generated here as the same binary
  * frames the backend sends (VXPK peaks, VXST spectrogram tiles, VXTM telemetry).
@@ -62,6 +66,10 @@ import { formatWithUnit } from "../lib/ui/units";
 export const PREVIEW_RATE_HZ = 48_000;
 export const PREVIEW_LEN_SAMPLES = 95 * PREVIEW_RATE_HZ;
 export const PREVIEW_PATH = "/home/narrator/audiobook/chapter-03.wav";
+/** T-704 (`&doc=60min`): the long preview document, PROMPT §2's 60-min 48 kHz performance case. */
+export const PREVIEW_LONG_LEN_SAMPLES = 3600 * PREVIEW_RATE_HZ;
+/** ADR-004 §5 pyramid levels (samples per bucket). */
+const PYRAMID_LEVELS_SPP = [64, 256, 1024, 4096, 16_384, 65_536] as const;
 /** Samples already recorded in the recording scene when the page opens. */
 const RECORDED_SAMPLES = 754_000;
 const LIVE_PEAKS_SPB = 256;
@@ -71,6 +79,10 @@ export interface PreviewOptions {
   theme: ThemePref;
   scenes: string[];
   dialog: string | null;
+  /** T-704 `&doc=60min`: open a 60-minute document instead of the 95 s chapter. */
+  longDocument?: boolean;
+  /** T-704 `&renderer=`: the waveform/spectral renderer Setting (default `canvas2d`). */
+  renderer?: Settings["renderer_preference"];
 }
 
 // --- Synthetic narration --------------------------------------------------------------------
@@ -100,6 +112,79 @@ function bucketPeaks(startSample: number, spp: number, count: number): Float32Ar
     }
     out[i * 2] = -amp * 0.93;
     out[i * 2 + 1] = amp;
+  }
+  return out;
+}
+
+/**
+ * T-704: the long preview document's whole min/max pyramid, built once per level on first use:
+ * level 64 from the narration envelope, each coarser level from its four children — the shape of
+ * ADR-004 §5's per-chunk pyramids. `peaks_get` is then a slice copy, like the backend's pyramid
+ * read, instead of a per-request synthesis on the UI thread (which the real app never pays, and
+ * which would otherwise dominate a frame-time sweep over a 60-min document).
+ */
+export class SyntheticPyramid {
+  private readonly levels = new Map<number, Float32Array>();
+
+  constructor(private readonly lenSamples: number) {}
+
+  private level(spp: number): Float32Array {
+    const cached = this.levels.get(spp);
+    if (cached) {
+      return cached;
+    }
+    const n = Math.ceil(this.lenSamples / spp);
+    const data = new Float32Array(n * 2);
+    if (spp === PYRAMID_LEVELS_SPP[0]) {
+      for (let i = 0; i < n; i++) {
+        const amp = narrationLevel((i * spp + spp / 2) / PREVIEW_RATE_HZ);
+        data[i * 2] = -amp * 0.93;
+        data[i * 2 + 1] = amp;
+      }
+    } else {
+      const child = this.level(spp / 4);
+      const childCount = child.length / 2;
+      for (let i = 0; i < n; i++) {
+        let min = Infinity;
+        let max = -Infinity;
+        for (let c = i * 4; c < Math.min(i * 4 + 4, childCount); c++) {
+          min = Math.min(min, child[c * 2] ?? 0);
+          max = Math.max(max, child[c * 2 + 1] ?? 0);
+        }
+        data[i * 2] = min;
+        data[i * 2 + 1] = max;
+      }
+    }
+    this.levels.set(spp, data);
+    return data;
+  }
+
+  /** `count` `(min, max)` buckets of level `spp` from bucket `floor(startSample / spp)`; buckets
+   * past the document end read `(0, 0)` (the backend's convention). */
+  peaks(spp: number, startSample: number, count: number): Float32Array {
+    const data = this.level(spp);
+    const out = new Float32Array(count * 2);
+    const first = Math.floor(startSample / spp);
+    const available = Math.max(0, Math.min(count, data.length / 2 - first));
+    if (available > 0) {
+      out.set(data.subarray(first * 2, (first + available) * 2));
+    }
+    return out;
+  }
+}
+
+/** T-704: the long document's raw samples repeat this many samples of the narration (a sweep over a
+ * 60-min document asks for up to ~100 k raw samples per frame at close zoom; synthesizing them with
+ * `Math.sin` on the UI thread is a preview-only cost the real backend never has). */
+const LONG_RAW_PERIOD = 1 << 16;
+let longRawBlock: Float32Array | null = null;
+
+/** Raw samples of the long document: `rawSamples` over one block, repeated. */
+function longRawSamples(startSample: number, count: number): Float32Array {
+  longRawBlock ??= rawSamples(10 * PREVIEW_RATE_HZ, LONG_RAW_PERIOD);
+  const out = new Float32Array(count);
+  for (let i = 0; i < count; i++) {
+    out[i] = longRawBlock[(startSample + i) % LONG_RAW_PERIOD]!;
   }
   return out;
 }
@@ -202,6 +287,49 @@ function vxst(requestId: number, audioRev: number, fft: number, hop: number, til
   return buf;
 }
 
+/** T-704: generated tiles, keyed by FFT size/hop/index (a tile's content depends on nothing else),
+ * so a re-request — e.g. the frame-time sweep's measured pass after its warm-up pass — costs a copy,
+ * not a ~10 ms synthesis on the UI thread that the real app (Rust tile workers) never pays. */
+const TILE_MEMO_CAP = 512;
+const tileMemo = new Map<string, ArrayBuffer>();
+/** T-704: the long document's tiles reuse the content of `tile % LONG_TILE_TEMPLATES` (headers are
+ * still the requested tile's), so the frame-time sweep measures the renderer — tile decode and
+ * upload — rather than ~10 ms of preview-only synthesis per new tile on the UI thread (the real
+ * app computes tiles on Rust workers). */
+const LONG_TILE_TEMPLATES = 16;
+
+function memoVxst(
+  requestId: number,
+  audioRev: number,
+  fft: number,
+  hop: number,
+  tile: number,
+  last: boolean,
+  templated = false,
+): ArrayBuffer {
+  const source = templated ? tile % LONG_TILE_TEMPLATES : tile;
+  const key = `${fft}:${hop}:${source}`;
+  let base = tileMemo.get(key);
+  if (!base) {
+    base = vxst(0, 0, fft, hop, source, false);
+    if (tileMemo.size >= TILE_MEMO_CAP) {
+      const oldest = tileMemo.keys().next().value;
+      if (oldest !== undefined) {
+        tileMemo.delete(oldest);
+      }
+    }
+    tileMemo.set(key, base);
+  }
+  const buf = base.slice(0);
+  const view = new DataView(buf);
+  view.setUint32(8, requestId, true);
+  view.setUint32(12, last ? 1 : 0, true);
+  view.setBigUint64(16, BigInt(audioRev), true);
+  view.setBigUint64(24, BigInt(tile * TILE_FRAMES * hop), true);
+  view.setUint32(56, tile, true);
+  return buf;
+}
+
 function vxtm(seq: number, flags: number, playhead: number, levels: [number, number, number, number]): ArrayBuffer {
   const buf = new ArrayBuffer(72);
   const view = new DataView(buf);
@@ -226,13 +354,15 @@ function vxtm(seq: number, flags: number, playhead: number, levels: [number, num
 
 function documentFixture(options: PreviewOptions): DocumentDto {
   const recording = options.scenes.includes("recording");
+  const long = options.longDocument === true && !recording;
   return docDto({
     name: recording ? null : "chapter-03.wav",
     path: recording ? null : PREVIEW_PATH,
     sample_rate_hz: PREVIEW_RATE_HZ,
-    len_samples: recording ? 0 : PREVIEW_LEN_SAMPLES,
+    len_samples: recording ? 0 : long ? PREVIEW_LONG_LEN_SAMPLES : PREVIEW_LEN_SAMPLES,
     dirty: options.dialog === "unsaved",
-    waveform_view: recording
+    // T-704: the long document opens zoomed to fit (no stored view), like a first open.
+    waveform_view: recording || long
       ? null
       : {
           start_sample: 0,
@@ -639,7 +769,7 @@ export function installPreviewIpc(options: PreviewOptions): void {
       buffer_size_frames: null,
     },
     monitor_hint_shown: true,
-    renderer_preference: "canvas2d",
+    renderer_preference: options.renderer ?? "canvas2d",
     layout: {
       markers_width_px: 240,
       rack_width_px: 300,
@@ -654,6 +784,7 @@ export function installPreviewIpc(options: PreviewOptions): void {
   });
 
   const doc = documentFixture(options);
+  const pyramid = options.longDocument === true ? new SyntheticPyramid(doc.len_samples) : null;
   const pluginsScene = ["plugins", "plugins-scanning", "plugins-folders", "plugin-flag"].some(hasScene);
   const rack = hasScene("rack") ? rackFixture(pluginsScene) : rackStateDto();
   const spectro = new Map<number, Sink>();
@@ -772,7 +903,13 @@ export function installPreviewIpc(options: PreviewOptions): void {
           const r = a.request as { request_id: number; audio_rev: number; spp: number; start_sample: number; count: number };
           const count = Math.max(0, Math.min(r.count, Math.ceil((doc.len_samples - r.start_sample) / r.spp)));
           const raw = r.spp === 1;
-          const values = raw ? rawSamples(r.start_sample, count) : bucketPeaks(r.start_sample, r.spp, count);
+          const values = raw
+            ? pyramid
+              ? longRawSamples(r.start_sample, count)
+              : rawSamples(r.start_sample, count)
+            : pyramid
+              ? pyramid.peaks(r.spp, r.start_sample, count)
+              : bucketPeaks(r.start_sample, r.spp, count);
           return vxpk(r.request_id, r.audio_rev, r.start_sample, r.spp, count, raw, values);
         }
         case "record_peaks_get": {
@@ -781,6 +918,14 @@ export function installPreviewIpc(options: PreviewOptions): void {
           const count = Math.max(0, Math.min(a.count as number, available - start));
           return vxpk(0, 0, start * LIVE_PEAKS_SPB, LIVE_PEAKS_SPB, count, false, bucketPeaks(start * LIVE_PEAKS_SPB, LIVE_PEAKS_SPB, count));
         }
+        // T-704: fire-and-forget subscriptions and view persistence the frame-time sweep hits
+        // (the default case would log an error for each).
+        case "analyzer_subscribe":
+          return 1;
+        case "module_telemetry_subscribe":
+        case "sidecar_view_set_waveform":
+        case "sidecar_view_set_spectral":
+          return null;
         case "spectro_attach":
           spectro.set(a.viewId as number, a.channel as Sink);
           return null;
@@ -789,7 +934,8 @@ export function installPreviewIpc(options: PreviewOptions): void {
           const r = a.request as { request_id: number; audio_rev: number; fft_size: number; hop: number; tiles: number[] };
           if (sink) {
             r.tiles.forEach((tile, i) => {
-              setTimeout(() => sink.onmessage(vxst(r.request_id, r.audio_rev, r.fft_size, r.hop, tile, i === r.tiles.length - 1)), 0);
+              const last = i === r.tiles.length - 1;
+              setTimeout(() => sink.onmessage(memoVxst(r.request_id, r.audio_rev, r.fft_size, r.hop, tile, last, pyramid !== null)), 0);
             });
           }
           return null;

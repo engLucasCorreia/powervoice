@@ -16,6 +16,13 @@ committed (`target/` is gitignored).
 Exits with `cargo bench`'s own exit code, so a budget assertion failing inside a bench (e.g.
 `crates/modules/benches/true_peak_limiter.rs`'s SPEC-017 §4.5 check) still fails `just bench`.
 
+T-704: the summary also merges the `BENCH_RESULT` lines of the other measurement runs, when their
+logs exist: `target/bench/big.log` (`just test-big`, the 60-min release checks) and
+`target/bench/ui.log` (`just bench-ui`, the headless frame-time sweep). `--no-run` skips
+`cargo bench` and rebuilds the summary from the logs already on disk (`raw.log` included);
+`just test-big` and `just bench-ui` call it that way. `scripts/bench/matrix.py` then turns the same
+logs into the committed targets matrix, `docs/performance.md`.
+
 Usage (same convention as `cargo bench` itself: args before `--` go to `cargo bench`, args
 after it go to the bench harness/binaries — divan, or a plain `main` that ignores argv).
 Defaults to `--workspace` (T-110: `just bench` is workspace-wide) unless a
@@ -27,6 +34,7 @@ also pinned to one bench binary with `--bench <name>` — `cargo bench` also run
 lib/integration tests as an (unrelated) "bench" target, whose default libtest harness doesn't
 understand divan's flags and errors on them:
     python3 scripts/bench/summary.py -p vox-dsp --bench loudness -- --max-time 0.2
+    python3 scripts/bench/summary.py --no-run                 # re-summarize the existing logs
 """
 
 from __future__ import annotations
@@ -41,6 +49,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = REPO_ROOT / "target" / "bench"
 RAW_LOG = OUT_DIR / "raw.log"
 SUMMARY = OUT_DIR / "summary.md"
+# T-704: other runs' logs merged into the summary (and into docs/performance.md by matrix.py).
+EXTRA_LOGS = (OUT_DIR / "big.log", OUT_DIR / "ui.log")
 
 RESULT_LINE = re.compile(r"^BENCH_RESULT (.+)$")
 REQUIRED_FIELDS = {"crate", "name", "value", "unit", "target", "op", "status"}
@@ -105,6 +115,23 @@ def fmt_value(raw: str) -> str:
         return raw
 
 
+def log_sources() -> list[Path]:
+    """The logs the summary reads: `raw.log` (`cargo bench`) plus whichever extra logs exist."""
+    return [p for p in (RAW_LOG, *EXTRA_LOGS) if p.exists()]
+
+
+def read_log_lines() -> list[str]:
+    lines: list[str] = []
+    for path in log_sources():
+        lines.extend(path.read_text(encoding="utf-8", errors="replace").splitlines())
+    return lines
+
+
+def fmt_mtime(path: Path) -> str:
+    stamp = datetime.datetime.fromtimestamp(path.stat().st_mtime, datetime.timezone.utc)
+    return stamp.strftime("%Y-%m-%d %H:%M UTC")
+
+
 def render_markdown(results: list[dict[str, str]], exit_code: int) -> str:
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     out: list[str] = []
@@ -114,6 +141,10 @@ def render_markdown(results: list[dict[str, str]], exit_code: int) -> str:
         "console output (divan's own statistical tables included): `target/bench/raw.log` "
         "(not committed). This is T-704's performance baseline (T-110).\n\n"
     )
+    sources = log_sources()
+    if sources:
+        out.append("Sources: " + ", ".join(
+            f"`{p.relative_to(REPO_ROOT)}` ({fmt_mtime(p)})" for p in sources) + ".\n\n")
     if exit_code != 0:
         out.append(f"**`cargo bench` exited with status {exit_code}.**\n\n")
     if not results:
@@ -159,13 +190,18 @@ def render_markdown(results: list[dict[str, str]], exit_code: int) -> str:
 
 def main() -> int:
     argv = sys.argv[1:]
+    no_run = "--no-run" in argv
+    argv = [a for a in argv if a != "--no-run"]
     if "--" in argv:
         idx = argv.index("--")
         cargo_args, harness_args = argv[:idx], argv[idx + 1 :]
     else:
         cargo_args, harness_args = argv, []
-    exit_code, lines = run_cargo_bench(cargo_args, harness_args)
-    results = collect_results(lines)
+    exit_code = 0
+    if not no_run:
+        exit_code, _ = run_cargo_bench(cargo_args, harness_args)
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    results = collect_results(read_log_lines())
     SUMMARY.write_text(render_markdown(results, exit_code), encoding="utf-8")
     print(f"\nWrote {SUMMARY.relative_to(REPO_ROOT)} ({len(results)} BENCH_RESULT lines).")
     return exit_code

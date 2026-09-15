@@ -42,14 +42,12 @@ impl ChunkPeaks {
     pub fn compute(samples: &[f32]) -> ChunkPeaks {
         let n = samples.len().min(CHUNK_SAMPLES);
         let samples = &samples[..n];
-        let has_non_finite = samples.iter().any(|s| !s.is_finite());
+        // T-704: branch-free (no early exit) so it vectorizes; the pyramid used to be ~40 % of a
+        // 60-min import.
+        let has_non_finite = samples.iter().fold(false, |acc, s| acc | !s.is_finite());
         let mut buckets = vec![[0.0f32; 2]; PEAK_BUCKETS_PER_CHUNK].into_boxed_slice();
         for (bucket, block) in buckets.iter_mut().zip(samples.chunks(PEAK_LEVELS_SPP[0])) {
-            *bucket = finish(
-                block
-                    .iter()
-                    .fold(EMPTY, |acc, &s| [acc[0].min(s), acc[1].max(s)]),
-            );
+            *bucket = finish(min_max(block));
         }
         for level in 1..PEAK_LEVELS_SPP.len() {
             let valid = n.div_ceil(PEAK_LEVELS_SPP[level]);
@@ -156,6 +154,32 @@ impl ChunkPeaks {
 
 const EMPTY: [f32; 2] = [f32::INFINITY, f32::NEG_INFINITY];
 
+/// Independent accumulators of [`min_max`] (T-704).
+const LANES: usize = 8;
+
+/// `[min, max]` of `block` ignoring NaN ([`EMPTY`] if every sample is NaN): the per-sample fold
+/// `[acc[0].min(s), acc[1].max(s)]` rewritten as [`LANES`] independent compare-and-select
+/// accumulators, which compile to packed min/max instead of one serial dependency chain (T-704:
+/// ~8× faster). A NaN sample never replaces an accumulator (`NaN < x` is false) and the
+/// accumulators start at ±inf, so the result equals the fold's (up to the sign of a zero).
+fn min_max(block: &[f32]) -> [f32; 2] {
+    let mut lo = [f32::INFINITY; LANES];
+    let mut hi = [f32::NEG_INFINITY; LANES];
+    let (lanes, rest) = block.as_chunks::<LANES>();
+    for chunk in lanes {
+        for ((l, h), &s) in lo.iter_mut().zip(hi.iter_mut()).zip(chunk) {
+            *l = if s < *l { s } else { *l };
+            *h = if s > *h { s } else { *h };
+        }
+    }
+    let mut acc = EMPTY;
+    for (&l, &h) in lo.iter().zip(&hi).chain(rest.iter().zip(rest)) {
+        acc[0] = if l < acc[0] { l } else { acc[0] };
+        acc[1] = if h > acc[1] { h } else { acc[1] };
+    }
+    acc
+}
+
 fn finish(acc: [f32; 2]) -> [f32; 2] {
     if acc[0] > acc[1] { [0.0, 0.0] } else { acc }
 }
@@ -170,6 +194,71 @@ fn record_crc(buf: &[u8]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The straightforward per-sample fold (the pre-T-704 `compute`): the reference the
+    /// vectorized version must equal bucket for bucket.
+    fn reference_compute(samples: &[f32]) -> (Vec<[f32; 2]>, bool) {
+        let n = samples.len().min(CHUNK_SAMPLES);
+        let samples = &samples[..n];
+        let has_non_finite = samples.iter().any(|s| !s.is_finite());
+        let mut buckets = vec![[0.0f32; 2]; PEAK_BUCKETS_PER_CHUNK];
+        for (bucket, block) in buckets.iter_mut().zip(samples.chunks(PEAK_LEVELS_SPP[0])) {
+            *bucket = finish(
+                block
+                    .iter()
+                    .fold(EMPTY, |acc, &s| [acc[0].min(s), acc[1].max(s)]),
+            );
+        }
+        for level in 1..PEAK_LEVELS_SPP.len() {
+            let valid = n.div_ceil(PEAK_LEVELS_SPP[level]);
+            let child_valid = n.div_ceil(PEAK_LEVELS_SPP[level - 1]);
+            let (lower, upper) = buckets.split_at_mut(LEVEL_OFFSETS[level]);
+            let children = &lower[LEVEL_OFFSETS[level - 1]..LEVEL_OFFSETS[level - 1] + child_valid];
+            for (parent, group) in upper[..valid].iter_mut().zip(children.chunks(4)) {
+                *parent = finish(
+                    group
+                        .iter()
+                        .fold(EMPTY, |acc, b| [acc[0].min(b[0]), acc[1].max(b[1])]),
+                );
+            }
+        }
+        (buckets, has_non_finite)
+    }
+
+    /// T-704: the vectorized `compute` equals the per-sample fold on random data with NaN, ±inf
+    /// and ±0 sprinkled in, an all-NaN bucket, and every chunk-length class.
+    #[test]
+    #[allow(clippy::float_cmp)] // exact equality is the point (±0 compare equal)
+    fn compute_matches_the_reference_fold() {
+        let mut rng = vox_testkit::prng::Pcg32::new(0x7704, 1);
+        let specials = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -0.0];
+        for len in [1usize, 7, 63, 64, 65, 1000, 4097, 65_535, CHUNK_SAMPLES] {
+            for with_specials in [false, true] {
+                let mut samples: Vec<f32> = (0..len)
+                    .map(|_| {
+                        if with_specials && rng.next_u32().is_multiple_of(97) {
+                            specials[(rng.next_u32() % 5) as usize]
+                        } else {
+                            rng.next_signed() as f32
+                        }
+                    })
+                    .collect();
+                if with_specials && len >= 128 {
+                    samples[64..128].fill(f32::NAN);
+                }
+                let got = ChunkPeaks::compute(&samples);
+                let (want, non_finite) = reference_compute(&samples);
+                assert_eq!(got.has_non_finite(), non_finite, "len {len}");
+                assert_eq!(got.buckets.len(), want.len());
+                for (i, (g, w)) in got.buckets.iter().zip(&want).enumerate() {
+                    assert!(
+                        g[0] == w[0] && g[1] == w[1],
+                        "len {len}, specials {with_specials}, bucket {i}: {g:?} vs {w:?}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     #[allow(clippy::float_cmp)] // exact min/max of known sample values

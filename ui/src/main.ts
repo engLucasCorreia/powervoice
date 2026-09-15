@@ -35,6 +35,9 @@ async function bootstrap(root: HTMLElement): Promise<void> {
       theme: isThemePref(wanted) ? wanted : ("dark" as const),
       scenes: (params.get("scene") ?? "").split(",").filter((s) => s !== ""),
       dialog: params.get("dialog"),
+      // T-704: `&doc=60min` opens the 60-minute performance document (`scripts/bench/ui_frames.mjs`).
+      longDocument: params.get("doc") === "60min",
+      renderer: (["auto", "webgl2", "canvas2d"] as const).find((r) => r === params.get("renderer")),
     };
     installPreviewIpc(options);
     mount(App, { target: root });

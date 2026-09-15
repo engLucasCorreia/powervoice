@@ -16,6 +16,7 @@ use vox_project::take::{
     recover_take_file,
 };
 use vox_project::{DocSnapshot, SEGMENT_BYTES, SnapshotReader};
+use vox_testkit::bench_report;
 use vox_testkit::prng::Pcg32;
 
 const SIXTY_MIN: u64 = 60 * 60 * RATE_U64;
@@ -172,6 +173,13 @@ fn ac5_sixty_minute_playback_with_seeks_stays_within_budget() {
         sampled_max / MIB,
         store.mapped_segments(),
     );
+    bench_report::result(
+        "vox-project",
+        "spec004_ac5_60min_playback_peak_resident_mib",
+        (store.peak_resident_bytes() / MIB) as f64,
+        "MiB",
+        Some(bench_report::Target::le((limit / MIB) as f64)),
+    );
     assert!(store.mapped_bytes() <= budget + 2 * SEGMENT_BYTES);
 }
 
@@ -225,4 +233,153 @@ fn take_rolls_over_at_the_real_4_gib_riff_limit() {
         rec0.samples,
         rec1.samples
     );
+}
+
+/// Drops `path`'s clean pages from the page cache, so the next read comes from the disk.
+fn drop_page_cache(path: &Path) {
+    use std::os::fd::AsRawFd;
+    let file = File::open(path).unwrap();
+    file.sync_all().unwrap();
+    // SAFETY: `file` stays open for the whole call, and POSIX_FADV_DONTNEED only drops clean
+    // cached pages of that one file (no memory is touched).
+    let rc = unsafe { libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
+    assert_eq!(rc, 0, "posix_fadvise");
+}
+
+fn ms_since(t: Instant) -> f64 {
+    t.elapsed().as_secs_f64() * 1e3
+}
+
+/// T-704 (PROMPT §2 "open a 60-min 48 kHz mono WAV in < 3 s"): the import step of the open path —
+/// `vox_project::import_file`, which `DocumentService::open` runs — from a cold page cache
+/// (`posix_fadvise(DONTNEED)` on the fixture) and warm, plus an informational breakdown of where
+/// the time goes (decoding alone; the peak pyramids alone). `powervoice-app`'s `perf_big.rs`
+/// times the whole `document_open` path.
+#[test]
+#[ignore = "60-min document (691 MB, ~1.4 GB scratch); run with `just test-big`"]
+fn import_a_60_min_wav_cold_and_warm() {
+    let tmp = TempDir::new("big-import");
+    let fixture = fixture_path(tmp.path());
+
+    let t = Instant::now();
+    let (_, mut source) = vox_io::DecodeSource::open(&fixture).unwrap();
+    let mut raw = vec![0f32; source.channels().max(1) * 16_384];
+    let mut frames = 0u64;
+    loop {
+        let n = source.read_frames(&mut raw).unwrap();
+        if n == 0 {
+            break;
+        }
+        frames += n as u64;
+    }
+    let decode_ms = ms_since(t);
+    assert_eq!(frames, SIXTY_MIN);
+
+    let chunk = noise(3, vox_project::CHUNK_SAMPLES);
+    let chunks = (SIXTY_MIN as usize).div_ceil(vox_project::CHUNK_SAMPLES);
+    let t = Instant::now();
+    for _ in 0..chunks {
+        std::hint::black_box(vox_project::store::ChunkPeaks::compute(
+            std::hint::black_box(&chunk),
+        ));
+    }
+    let pyramid_ms = ms_since(t);
+    // Writing alone (the samples already decoded): ChunkWriter append + finish into a fresh
+    // session's store, then the one sync that makes the chunks durable, then the floor record.
+    let decoded = {
+        let (_, mut source) = vox_io::DecodeSource::open(&fixture).unwrap();
+        let mut all = Vec::with_capacity(SIXTY_MIN as usize);
+        loop {
+            let n = source.read_frames(&mut raw).unwrap();
+            if n == 0 {
+                break;
+            }
+            all.extend_from_slice(&raw[..n]);
+        }
+        all
+    };
+    let sessions = tmp.path().join("sessions-breakdown");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let mut session =
+        vox_project::Session::create(&sessions, vox_project::SessionConfig::new(RATE)).unwrap();
+    let t = Instant::now();
+    let mut writer = session.chunk_writer();
+    for block in decoded.chunks(8192) {
+        writer.append(block).unwrap();
+    }
+    let audio = writer.finish().unwrap();
+    let write_ms = ms_since(t);
+    let t = Instant::now();
+    session.store().sync().unwrap();
+    let sync_ms = ms_since(t);
+    let t = Instant::now();
+    session.set_floor(&audio, Vec::new()).unwrap();
+    let floor_ms = ms_since(t);
+    drop(decoded);
+    drop(session);
+    let _ = std::fs::remove_dir_all(&sessions);
+    println!(
+        "breakdown: decode alone {decode_ms:.0} ms; {chunks} peak pyramids alone {pyramid_ms:.0} \
+         ms; ChunkWriter append+finish {write_ms:.0} ms (pyramids included); sync {sync_ms:.0} \
+         ms; set_floor {floor_ms:.0} ms"
+    );
+    for (name, value) in [
+        ("import_60min_chunk_writer_only_ms", write_ms),
+        ("import_60min_store_sync_ms", sync_ms),
+        ("import_60min_set_floor_ms", floor_ms),
+    ] {
+        bench_report::result("vox-project", name, value, "ms", None);
+    }
+    bench_report::result(
+        "vox-project",
+        "import_60min_decode_only_ms",
+        decode_ms,
+        "ms",
+        None,
+    );
+    bench_report::result(
+        "vox-project",
+        "import_60min_peak_pyramids_only_ms",
+        pyramid_ms,
+        "ms",
+        None,
+    );
+
+    // Best of two runs per cache state: background load (parallel builds) only ever adds time.
+    for (label, cold) in [("cold", true), ("warm", false)] {
+        let mut runs_ms = Vec::new();
+        for run in 0..2 {
+            if cold {
+                drop_page_cache(&fixture);
+            }
+            let sessions = tmp.path().join(format!("sessions-{label}-{run}"));
+            std::fs::create_dir_all(&sessions).unwrap();
+            let mut session =
+                vox_project::Session::create(&sessions, vox_project::SessionConfig::new(RATE))
+                    .unwrap();
+            let t = Instant::now();
+            let result = vox_project::import_file(
+                &mut session,
+                &fixture,
+                vox_io::DownmixChoice::Average,
+                &vox_project::CancelToken::new(),
+                |_, _| {},
+            )
+            .unwrap();
+            runs_ms.push(ms_since(t));
+            assert_eq!(result.snapshot.len_samples, SIXTY_MIN);
+            drop(result);
+            drop(session);
+            let _ = std::fs::remove_dir_all(&sessions);
+        }
+        let best = runs_ms.iter().copied().fold(f64::INFINITY, f64::min);
+        println!("import_file, 60 min, {label} page cache: {runs_ms:.0?} ms (best {best:.0})");
+        bench_report::result(
+            "vox-project",
+            &format!("import_60min_wav_{label}_cache_ms"),
+            best,
+            "ms",
+            Some(bench_report::Target::le(3_000.0)),
+        );
+    }
 }

@@ -466,15 +466,19 @@ fn a_latency_change_goes_through_the_worker_and_asks_for_a_restart() {
     assert!(!run_until_restart(&mut *next, Duration::from_millis(200)));
 
     // Offline, the worker runs synchronously (right after the `run` that scheduled it), so the
-    // plugin reports the new latency at its next `run` — the chunk after the event's — and the
-    // sandbox sends the restart request with that chunk. The proxy is pipelined one block deep:
-    // a request emitted by the chunk still in flight when `process` returns is only popped by a
-    // later `process` call, so the stream goes on for several blocks after the event (one
-    // continuous stream, as in a render).
+    // plugin reports the new latency at its next `run` — the stream's second chunk — and the
+    // restart request travels with that chunk (H-36: before its output is published, even when
+    // one sandbox `service` call processes the whole render). The host reads the second chunk's
+    // output in its third `process` call, so three blocks are enough, every time.
     let mut off = f.create().unwrap();
     off.activate(&config(ProcessMode::Offline, 4096)).unwrap();
-    let long = noise(4096 * 8, 13);
-    let r = run(&mut *off, &long, &[4096], &[(100, tl::PORT_LATENCY, 128.0)]);
+    let three = noise(4096 * 3, 13);
+    let r = run(
+        &mut *off,
+        &three,
+        &[4096],
+        &[(100, tl::PORT_LATENCY, 128.0)],
+    );
     assert!(r.restart, "offline worker round trip");
 }
 

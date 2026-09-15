@@ -432,10 +432,12 @@ fn audio_loop(mut end: PluginEnd, inst: Arc<dyn PluginInstance>, stop: Arc<Atomi
             end.stop();
             return;
         }
-        let served = end.service(IDLE_TIMEOUT, |chunk| inst.process(chunk, &mut out_events));
-        for e in out_events.drain(..) {
-            let _ = end.push_output_event(e);
-        }
+        // H-36: each chunk's plugin → host events (restart requests, parameter changes) reach
+        // the event ring before that chunk's output is published — not after the whole
+        // `service` call, which in an offline render can span the entire stream.
+        let served = end.service_with_events(IDLE_TIMEOUT, &mut out_events, |chunk, events| {
+            inst.process(chunk, events);
+        });
         match served {
             Serviced::Shutdown => {
                 inst.audio_thread_stopping();

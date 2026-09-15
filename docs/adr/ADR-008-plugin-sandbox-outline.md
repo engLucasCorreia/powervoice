@@ -1212,3 +1212,24 @@ A bundle whose path contains `crash-on-scan` aborts in `instantiate` (core dumps
 - **Runtime dependency.** lilv must be installed (see ADR-007's amendment for packaging).
 - **Real plugins.** No real LV2 plugin is installed on the development machine: the opt-in smoke
   test `POWERVOICE_TEST_REAL_LV2=<bundle or folder>` exists but hasn't run against one.
+
+## Amendment 9 — H-36 plugin → host events travel with their chunk (2026-09-15)
+
+**Bug.** The sandbox's audio loop collected a chunk's plugin → host events (restart requests,
+parameters the plugin changed itself) in a buffer and pushed them to the event ring only after
+`PluginEnd::service` returned. `service` keeps processing while input keeps arriving, up to
+`MAX_CHUNKS_PER_SERVICE` chunks (Amendment 1). In an offline render nothing paces the two
+sides: the host publishes the next block as soon as it reads the previous one's output, so one
+`service` call could cover the whole render. Every event raised during it then reached the host
+after its last block, and events beyond the buffer's 512 per call were dropped. It affected
+every format. The LV2 offline worker test (T-807) exposed it as an 8-in-10 failure.
+
+**Fix** (`vox-sandbox-ipc`):
+- `PluginEnd::service_with_events` gives each chunk a cleared event buffer.
+- It queues that chunk's events on the ring **before** publishing the chunk's output, so the host
+  sees a chunk's events no later than its audio, however many chunks one call processes.
+- `service` remains, as a wrapper, for plugins without output events.
+- `powervoice-sandbox`'s audio loop uses the new call, and the per-call buffer is now per chunk.
+
+Covered by `sandbox-ipc/tests/transport.rs::output_events_travel_with_their_chunk` and by the
+LV2 test, which now requires the request within three offline blocks.

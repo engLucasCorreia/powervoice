@@ -496,3 +496,51 @@ fn wakeup_waits_are_bounded() {
     wakeup_bounds::<PlatformWakeup>(true);
     wakeup_bounds::<SpinYieldWakeup>(false);
 }
+
+/// H-36: a chunk's plugin → host events are on the ring before the next chunk is processed (and
+/// before the chunk's output is published), even when one `service_with_events` call works
+/// through several chunks — as it does in an offline render, where the host keeps publishing.
+/// Before, the sandbox pushed them only after the whole call, so a restart request raised early
+/// in a render reached the host after its last block.
+#[test]
+fn output_events_travel_with_their_chunk() {
+    const B: usize = 64;
+    let (mut plugin, mut host, _monitor) = setup::<SpinYieldWakeup>(
+        ChannelConfig::pipelined(RATE, B as u32),
+        options(WaitBudget::FractionOfBlock(0.0), 16),
+    );
+    let mut y = vec![0.0f32; B];
+    // Three blocks published before the plugin runs at all (the host doesn't wait: budget 0).
+    for _ in 0..3 {
+        run(&mut host, &[0.1; B], &mut y);
+    }
+    let mut out_events = Vec::with_capacity(8);
+    let mut chunk = 0u32;
+    let mut seen_during: Vec<(u32, Vec<u32>)> = Vec::new();
+    let served = plugin.service_with_events(Duration::ZERO, &mut out_events, |c, events| {
+        apply_gain(c.input, c.output);
+        // What the host can already pop while this chunk is being processed.
+        let mut ids = Vec::new();
+        while let Some(e) = host.pop_output_event() {
+            ids.push(e.id);
+        }
+        seen_during.push((chunk, ids));
+        events.push(WireEvent::param(c.pos, 100 + chunk, f64::from(chunk)));
+        chunk += 1;
+    });
+    assert_eq!(
+        served,
+        Serviced::Processed {
+            chunks: 3,
+            frames: 3 * B as u64
+        }
+    );
+    assert_eq!(
+        seen_during,
+        vec![(0, vec![]), (1, vec![100]), (2, vec![101])],
+        "each chunk's event is out before the next chunk runs"
+    );
+    assert_eq!(host.pop_output_event().map(|e| e.id), Some(102));
+    assert_eq!(host.pop_output_event(), None);
+    assert!(out_events.is_empty(), "drained into the ring");
+}

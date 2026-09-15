@@ -14,6 +14,25 @@ use crate::wakeup::{Deadline, PlatformWakeup, Wakeup};
 /// input that arrives meanwhile, but never loops unboundedly).
 pub const MAX_CHUNKS_PER_SERVICE: u32 = 2 * RING_BLOCKS;
 
+/// Queues `event` on the plugin → host ring at `*write` (`false`, dropped, when full).
+fn push_out(
+    cb: &ControlBlock,
+    ring: &[crate::layout::EventSlot],
+    write: &mut u64,
+    mask: u64,
+    capacity: u64,
+    event: WireEvent,
+) -> bool {
+    let read = cb.ev_out_read.load(Ordering::Acquire);
+    if write.wrapping_sub(read) >= capacity {
+        return false;
+    }
+    event.store(&ring[(*write & mask) as usize]);
+    *write += 1;
+    cb.ev_out_write.store(*write, Ordering::Release);
+    true
+}
+
 /// One chunk to process: `input.len() == output.len() ≤ max_block` frames at stream position
 /// `pos`.
 pub struct Chunk<'a> {
@@ -136,8 +155,25 @@ impl<W: Wakeup> PluginEnd<W> {
     /// Waits up to `timeout` for input (if none is pending), then processes every published
     /// chunk (at most [`MAX_CHUNKS_PER_SERVICE`]) through `process`, publishing each chunk's
     /// output and ringing the host. Bumps the heartbeat on every call, wake-up and chunk.
-    /// Allocation-free.
+    /// Allocation-free. A plugin with output events uses [`Self::service_with_events`].
     pub fn service<F: FnMut(Chunk<'_>)>(&mut self, timeout: Duration, mut process: F) -> Serviced {
+        let mut none = Vec::new();
+        self.service_with_events(timeout, &mut none, |chunk, _| process(chunk))
+    }
+
+    /// [`Self::service`] for a plugin that reports events (H-36): `process` also gets
+    /// `out_events` (cleared before each chunk; never grown beyond its capacity — no
+    /// allocation), and each chunk's events are queued on the plugin → host event ring
+    /// **before** that chunk's output is published. So the host sees a chunk's events no later
+    /// than its audio, however many chunks one call processes — in an offline render the host
+    /// keeps publishing input, and one call can span the whole stream. Events that don't fit in
+    /// the ring are dropped (like [`Self::push_output_event`]'s `false`).
+    pub fn service_with_events<F: FnMut(Chunk<'_>, &mut Vec<WireEvent>)>(
+        &mut self,
+        timeout: Duration,
+        out_events: &mut Vec<WireEvent>,
+        mut process: F,
+    ) -> Serviced {
         let cb = self.map.control();
         cb.heartbeat.fetch_add(1, Ordering::Release);
         let shutdown = || cb.host_command.load(Ordering::Acquire) == CMD_SHUTDOWN;
@@ -209,13 +245,29 @@ impl<W: Wakeup> PluginEnd<W> {
             cb.ev_in_read.store(self.ev_in_read, Ordering::Release);
 
             cb.in_call.store(1, Ordering::Release);
-            process(Chunk {
-                pos: start,
-                input: &self.in_buf[..n],
-                output: &mut self.out_buf[..n],
-                events: &self.events,
-            });
+            out_events.clear();
+            process(
+                Chunk {
+                    pos: start,
+                    input: &self.in_buf[..n],
+                    output: &mut self.out_buf[..n],
+                    events: &self.events,
+                },
+                out_events,
+            );
             cb.in_call.store(0, Ordering::Release);
+            // The chunk's events first, then its output (the host pops events after it sees
+            // the output).
+            for e in out_events.drain(..) {
+                push_out(
+                    cb,
+                    self.map.events_out(),
+                    &mut self.ev_out_write,
+                    self.event_mask,
+                    self.event_capacity,
+                    e,
+                );
+            }
 
             for (i, &y) in self.out_buf[..n].iter().enumerate() {
                 let idx = ((start + i as u64) & self.mask) as usize;
@@ -237,15 +289,14 @@ impl<W: Wakeup> PluginEnd<W> {
     /// Queues a plugin → host event (e.g. a parameter the plugin's GUI changed). `false` if the
     /// ring is full.
     pub fn push_output_event(&mut self, event: WireEvent) -> bool {
-        let cb = self.map.control();
-        let read = cb.ev_out_read.load(Ordering::Acquire);
-        if self.ev_out_write.wrapping_sub(read) >= self.event_capacity {
-            return false;
-        }
-        event.store(&self.map.events_out()[(self.ev_out_write & self.event_mask) as usize]);
-        self.ev_out_write += 1;
-        cb.ev_out_write.store(self.ev_out_write, Ordering::Release);
-        true
+        push_out(
+            self.map.control(),
+            self.map.events_out(),
+            &mut self.ev_out_write,
+            self.event_mask,
+            self.event_capacity,
+            event,
+        )
     }
 
     /// Writes telemetry cell `index` (ignored if out of range).

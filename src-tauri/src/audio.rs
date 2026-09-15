@@ -10,8 +10,8 @@ use vox_engine::{Engine, EngineConfig, EngineEvent, EngineHandle};
 use vox_rack::RackNotice;
 
 use crate::ipc::{
-    DevicesDto, EventName, ParamChangedDto, RackLatencyDto, RackStateDto, RecordStateDto,
-    TransportStateDto, emit_notice, notice_from_device,
+    DevicesDto, EventName, Notice, NoticeLevel, ParamChangedDto, RackLatencyDto, RackStateDto,
+    RecordStateDto, TransportStateDto, emit_notice, notice_from_device,
 };
 use crate::settings::DevicePrefsDto;
 
@@ -105,7 +105,11 @@ fn forward<R: Runtime>(app: &AppHandle<R>, event: EngineEvent) {
 /// `ParamChanged` → `param_changed`, `LatencyChanged` → `rack_latency`. `SlotFailed` and
 /// `SlotRestarted` carry no schema of their own (see `EngineEvent::RackChanged`'s docs) — the
 /// `rack_changed` event `forward` also emits for those already covers the UI's refresh, so they
-/// are only logged here.
+/// are only logged here. `SlotRecovered` (H-40) additionally gets a toast and tells
+/// `DocumentService` to rebase its dirty-tracking baseline — done here, off the engine's control
+/// thread (MEMORY.md S1-01: never call `EngineHandle` back from an event sink), by just flagging
+/// it; `DocumentService` does the actual (engine-calling) rebase the next time it computes
+/// `DocumentInfo`.
 fn forward_rack_notice<R: Runtime>(app: &AppHandle<R>, notice: &RackNotice) -> tauri::Result<()> {
     match notice {
         RackNotice::ParamChanged {
@@ -142,6 +146,21 @@ fn forward_rack_notice<R: Runtime>(app: &AppHandle<R>, notice: &RackNotice) -> t
         RackNotice::SlotLoaded { index, .. } => {
             tracing::info!(slot = index, "rack slot loaded");
             Ok(())
+        }
+        RackNotice::SlotRecovered { index, name, .. } => {
+            tracing::info!(
+                slot = index,
+                name,
+                "rack slot recovered (plugin available again)"
+            );
+            if let Some(documents) = app.try_state::<crate::document::DocumentService>() {
+                documents.mark_rack_recovered();
+            }
+            emit_notice(
+                app,
+                Notice::toast(NoticeLevel::Info, "notice.plugins.restored")
+                    .with_param("plugin", name),
+            )
         }
     }
 }

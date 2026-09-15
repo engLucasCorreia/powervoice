@@ -1233,3 +1233,89 @@ every format. The LV2 offline worker test (T-807) exposed it as an 8-in-10 failu
 
 Covered by `sandbox-ipc/tests/transport.rs::output_events_travel_with_their_chunk` and by the
 LV2 test, which now requires the request within three offline blocks.
+
+## Amendment 10 — H-40 live recovery of Missing plugin slots, as implemented (2026-09-15)
+
+T-810 found the gap: `Registry::resolve`'s "Missing module" placeholder (ADR-005's mechanism,
+unchanged) keeps a slot's state and blob verbatim once its module id disappears from the
+registry (H-29 uninstall) or was never there (opened a document that names a plugin that isn't
+installed) — but nothing re-resolved it *live*. Installing the plugin, or rescanning and finding
+it, already hot-adds the id into every registry a live rack shares (T-804 item 1's
+`Registry::upsert`/`observe`); the rack just never looked again until the document was closed and
+reopened.
+
+### 1. A poll, not a push (`crates/rack`)
+
+`Registry` gets a `generation: AtomicU64`, bumped by every `register`/`upsert`/`remove` that
+actually changed the registered set. `RackHost::tick` (already the ADR-002 §1 control tick, ~16
+ms) compares it against the generation it last saw and, only when it moved, walks the slots for a
+`Kind::Placeholder { failed: false, .. }` (a Missing or too-new placeholder — never one that
+already failed to *start*, §3 below) whose module id now resolves, and re-resolves each one
+(`RackHost::recover_missing`/`begin_recovery`). This is deliberately not a callback or an
+observer list of its own: `PluginCatalog`'s `Weak<Registry>` observers (T-804 item 1) already hot-
+add into the registry from a scan/install thread with no knowledge of which racks exist or when
+they tick; a cheap once-per-tick integer compare is simpler than teaching the registry to fan out
+notifications to every rack that holds an `Arc` to it, and 16 ms is unnoticeable for something the
+owner triggers by hand (Install Module…/rescan/unblock/re-enable).
+
+### 2. The re-resolve is the existing machinery, not a new path
+
+A recovered slot goes through exactly the paths every other slot resolution already uses:
+- a module whose factory `loads_async` (T-803, every real out-of-process plugin) becomes
+  `Kind::Loading` and a background job, same as an initial open or a `Restart`, so a live recovery
+  never blocks the control thread;
+- the instance is built from the slot's kept `state` (parameters and blob) exactly as
+  `Registry::resolve` always reads it — nothing about "what state to load" is new;
+- it's swapped onto the audio thread via the ordinary `LayoutEntry::replace` flow, the same T-103
+  crossfade every restart/preset-load/replacement uses. `crates/rack/tests/live_recovery.rs`'s
+  tests run entirely through `Driver`, whose harness already wraps every `LiveRack::process` call
+  in `assert_no_alloc` (`crates/rack/tests/common/mod.rs`) — proving the swap itself doesn't
+  allocate on the audio thread is therefore incidental to using the existing path, not something
+  this amendment had to add separately.
+
+A re-resolve that still can't produce a module — still not installed (another id's rescan bumped
+the generation), still too new, or a genuine activate/create failure — leaves the placeholder (and
+its blob) exactly as it was; an activate/create failure additionally becomes a "Couldn't start"
+placeholder with the usual `RackNotice::SlotFailed`, indistinguishable from any other failed
+start. The slot's own stored state is never at risk either way — `begin_recovery` only ever reads
+it, the same guarantee `Registry::resolve`'s own tests already establish for uninstall/rescan.
+
+### 3. `SlotRecovered`, not `SlotRestarted` — and why that decides the dirty/undo question
+
+A successful live recovery reports a new `RackNotice::SlotRecovered { slot, index, name }`,
+deliberately not `RackNotice::SlotRestarted` (which stays reserved for a manual
+`RackHost::restart`, e.g. the "Restart" button on a slot that failed to *start*, §1's `failed:
+true` case). Two things depend on being able to tell the two apart at the `src-tauri` layer:
+
+- **Undo:** SPEC-004 OD-1 already decided rack edits are outside the document's undo history in
+  v1 — a live recovery, manual or automatic, was never going to create an undo entry, because
+  nothing in this codebase wires *any* rack change into `Session`'s history. There is nothing
+  further to do here; this amendment just records that the question was asked and the existing
+  architecture already answers it.
+- **`sidecar_dirty`:** SPEC-018 §4.3's dirty flag is a *derived* comparison — the current
+  persisted-content digest (save format + markers + the live rack, `RackModel` JSON) against a
+  baseline recorded at open or the last successful save (`document.rs`'s `SidecarState`;
+  `current_rack_value`/`sidecar_dirty_of`). A recovered slot's `RackModel` almost never
+  byte-matches the placeholder's kept JSON verbatim (a committed blob a module's own `save_state`
+  doesn't preserve is the common case — Gain's, used in the H-40 document-level test, is one
+  example), so leaving the baseline alone would flip `sidecar_dirty` on every recovery even though
+  the *saved file* is untouched: the rack only just caught up, live, to what the saved state
+  already named. `DocumentService::mark_rack_recovered`/`sync_pending_rack_recovery` rebase the
+  baseline to the rack's current digest the same way `open`/`save` already do ("whatever it
+  resolved to just now is the unmodified baseline") — deliberately *not* by calling
+  `EngineHandle` back from `audio::forward_rack_notice` itself, which runs on the engine's own
+  event-sink call stack (MEMORY.md S1-01: doing that deadlocks against the control thread that is
+  calling it); the notice only flips an `AtomicBool`, and the next `DocumentService::info()` call
+  — a normal command context — does the actual (engine-calling) rebase.
+
+  Known limit, accepted: rebasing the *whole* digest baseline on any `SlotRecovered` would also
+  silently swallow a genuine, unrelated rack edit made in the same narrow window (there is no way
+  to attribute a coarse single-hash digest to "just this slot"). SPEC-018 §4.3's digest is already
+  this coarse — one hash over save format, markers and the whole rack together — so this is not a
+  new class of imprecision, just the existing one extended to one more caller.
+
+Covered by `crates/rack/tests/live_recovery.rs` (recovery to Active with the kept state, a
+`SlotRecovered` notice, sync and `loads_async` factories; a failing re-resolve keeps the
+placeholder and its blob; every test runs under `no_alloc`) and
+`document::tests::a_live_plugin_recovery_does_not_mark_the_document_dirty`
+(`src-tauri/src/document.rs`).

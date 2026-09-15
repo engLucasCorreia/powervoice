@@ -1139,6 +1139,7 @@
   "error.plugins.uninstall.outside_install_folder": "This file isn't in your plugin folder, so it can't be uninstalled here.",
   "error.plugins.uninstall.no_install_dir": "There's no plugin folder for your user account.",
   "error.plugins.uninstall.io": "The file couldn't be removed.",
+  "notice.plugins.restored": "{plugin} is available again — restored in the rack.",
   "rack.slot.flagged_once": "This plugin has crashed — open the plugin manager",
   "rack.slot.flagged": "This plugin has crashed {count} times — open the plugin manager",
   "preferences.section.plugins": "Plugins",

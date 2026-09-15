@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -488,6 +488,11 @@ struct Inner {
     /// `document_open_cancel` names. Removed once the job finishes, whatever the outcome.
     import_jobs: Mutex<HashMap<u32, CancelToken>>,
     next_import_job: AtomicU32,
+    /// H-40: set by `audio::forward_rack_notice` (the engine's event sink, off-thread — it must
+    /// never call `EngineHandle` back, MEMORY.md S1-01) when a `RackNotice::SlotRecovered`
+    /// arrives; consumed by [`DocumentService::sync_pending_rack_recovery`], which does the
+    /// actual (engine-calling) sidecar-digest rebase from a normal command context.
+    pending_rack_recovery: AtomicBool,
 }
 
 /// A sidecar-related notice for the command handler to turn into a `notice` event (SPEC-018
@@ -1109,6 +1114,7 @@ impl DocumentService {
             session_dirs: Mutex::new(()),
             import_jobs: Mutex::new(HashMap::new()),
             next_import_job: AtomicU32::new(1),
+            pending_rack_recovery: AtomicBool::new(false),
         }))
     }
 
@@ -1438,7 +1444,42 @@ impl DocumentService {
 
     /// The currently open document (or [`DocumentInfo::default`] when none is open).
     pub fn info(&self) -> DocumentInfo {
+        self.sync_pending_rack_recovery();
         info_of(&self.0.engine, self.0.open.lock().unwrap().as_ref())
+    }
+
+    /// H-40: flags that a `RackNotice::SlotRecovered` arrived (a Missing/too-new placeholder
+    /// resolved live because its module was just registered or upgraded — install, rescan,
+    /// unblock, re-enable). Called from `audio::forward_rack_notice`, on the engine's own event
+    /// thread — it only stores a bool, never touches `self.0.engine` (MEMORY.md S1-01: an event
+    /// sink must never call `EngineHandle` back, or it deadlocks against the control thread that
+    /// is calling it). [`Self::sync_pending_rack_recovery`] does the actual work later, from a
+    /// normal command context.
+    pub fn mark_rack_recovered(&self) {
+        self.0.pending_rack_recovery.store(true, Ordering::Release);
+    }
+
+    /// Rebases the sidecar's `sidecar_dirty` baseline (SPEC-018 §4.3) to the rack's current state
+    /// if [`Self::mark_rack_recovered`] flagged a live recovery since the last check — the same
+    /// "whatever it resolved to just now is the unmodified baseline" trick `open`/`save` already
+    /// use (§4.3's persisted-content digest). A live recovery only catches the rack up to what
+    /// the *saved* state already named (its kept blob, re-resolved because the plugin is
+    /// installed again); nothing about the saved content changed, so it must not read as an
+    /// edit — and per SPEC-004 OD-1, rack changes are outside the undo history to begin with, so
+    /// there is no undo entry to avoid separately (see the ADR-008 amendment this ticket added).
+    /// A no-op with no document open (the flag stays set for the next document, harmlessly: any
+    /// document's baseline is always rebased from its own current rack, not the stale one).
+    fn sync_pending_rack_recovery(&self) {
+        if !self.0.pending_rack_recovery.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        let mut guard = self.0.open.lock().unwrap();
+        let Some(doc) = guard.as_mut() else { return };
+        let save_format = save_format_model(doc.save_container, doc.save_bits, doc.save_dither);
+        let markers = current_marker_items(doc);
+        let rack = current_rack_value(&self.0.engine);
+        doc.sidecar.persisted_digest =
+            vox_project::sidecar::persisted_digest(&save_format, &markers, &rack);
     }
 
     /// `document_probe`/`document_open`'s probe step (SPEC-005 §2.3 step 1, §2.4): container/
@@ -3123,6 +3164,43 @@ mod tests {
         let registry =
             Arc::new(Registry::with_factories(vox_modules::builtin_factories()).unwrap());
         Engine::start(EngineConfig::new(Arc::new(fake), registry)).unwrap()
+    }
+
+    /// Like [`service_with_output`] (a plugged, preferred fake output device, so a live
+    /// [`vox_rack::RackHost`] actually exists to recover a slot in), but with `factories` only
+    /// (not the full built-in set) and the `Registry` itself handed back — H-40 tests hot-add a
+    /// factory into it later (`register`, mirroring `Registry::upsert`/T-804's install/rescan
+    /// hot-add) to drive a live recovery of a Missing slot, the same way the real
+    /// `PluginCatalog` does into every registry it observes. Blocks (briefly) until the output
+    /// has opened.
+    fn test_engine_with_registry(
+        factories: Vec<Arc<dyn vox_rack::ModuleFactory>>,
+    ) -> (Engine, Arc<Registry>) {
+        let fake = FakeBackend::new(7);
+        fake.plug(vox_engine::HostId::Alsa, dac());
+        let registry = Arc::new(Registry::with_factories(factories).unwrap());
+        let mut cfg = EngineConfig::new(Arc::new(fake), registry.clone());
+        cfg.prefs = vox_engine::DevicePrefs {
+            output_device: Some("DAC".into()),
+            ..vox_engine::DevicePrefs::default()
+        };
+        let engine = Engine::start(cfg).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if engine
+                .handle()
+                .devices()
+                .is_some_and(|d| d.output_status == vox_engine::device_state::DeviceStatus::Healthy)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the fake output device never opened"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        (engine, registry)
     }
 
     /// A fresh per-test directory under this test run's `powervoice-app-doc-<pid>` parent. Each
@@ -5914,6 +5992,86 @@ mod tests {
         assert!(
             !service.info().sidecar_dirty,
             "reverting to the saved rack clears sidecar_dirty without a save (AC-11)"
+        );
+    }
+
+    /// H-40: a document is opened (and saved) with its rack naming a plugin that isn't
+    /// registered — a Missing placeholder, kept verbatim. Installing/rescanning later hot-adds
+    /// the module into the same live registry (T-804/H-29's `Registry::upsert`); the rack
+    /// recovers the slot on its own (no reopen — `crates/rack/tests/live_recovery.rs` covers that
+    /// mechanism itself), and the recovery notice (simulated here: no Tauri app in this test, so
+    /// `DocumentService::mark_rack_recovered` stands in for `audio::forward_rack_notice`) must
+    /// not flip `sidecar_dirty` — the saved file didn't change, only the live rack caught up to
+    /// what it already named.
+    #[test]
+    fn a_live_plugin_recovery_does_not_mark_the_document_dirty() {
+        let dir = tmp_dir("live-recovery-dirty");
+        let (engine, registry) = test_engine_with_registry(Vec::new());
+        let service = DocumentService::new(dir.join("sessions"), engine.handle());
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.2, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let save_path = dir.join("a.wav");
+        service
+            .save_as(
+                &save_path,
+                SaveContainer::Wav,
+                BitDepth::Bit24,
+                SaveDitherPref::Tpdf,
+                false,
+                false,
+            )
+            .unwrap();
+        assert!(!service.info().sidecar_dirty);
+
+        // The rack names Gain, which isn't registered on this engine — a Missing placeholder —
+        // and that's what gets saved. A `blob` Gain itself never round-trips (its own
+        // `save_state` never sets one) makes sure the resolved slot's JSON genuinely differs from
+        // the kept placeholder's, below.
+        let mut missing = gain_rack_model(-4.0);
+        missing.slots[0].state["blob"] = serde_json::json!("AAEC");
+        service.0.engine.rack_load_model(missing).unwrap().unwrap();
+        assert!(matches!(
+            service.0.engine.rack_snapshot().slots[0].info.status,
+            vox_rack::SlotStatus::Missing { .. }
+        ));
+        service.save(false, false, false).unwrap();
+        assert!(!service.info().sidecar_dirty);
+
+        // "Install"/"rescan" hot-adds the module into the same registry the live rack already
+        // shares — the rack notices on its own and recovers the slot, no reopen.
+        registry
+            .register(Arc::new(vox_modules::GainFactory::new()))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if matches!(
+                service
+                    .0
+                    .engine
+                    .rack_snapshot()
+                    .slots
+                    .first()
+                    .map(|s| &s.info.status),
+                Some(vox_rack::SlotStatus::Active)
+            ) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the slot never recovered");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        // Sanity: without `DocumentService` learning about the recovery, the digest really does
+        // differ (the resolved slot's JSON isn't byte-for-byte the kept placeholder's) — proving
+        // the rebase below does real work, not that this was a no-op all along.
+        assert!(
+            service.info().sidecar_dirty,
+            "sanity: the recovered rack's JSON really does differ from the placeholder's"
+        );
+
+        service.mark_rack_recovered();
+        assert!(
+            !service.info().sidecar_dirty,
+            "a live recovery must not mark the document dirty (H-40)"
         );
     }
 

@@ -935,12 +935,13 @@ impl Control {
         self.output.as_ref()?.rack.slot_module_id(index)
     }
 
-    /// Forwards rack notices (ADR-005 §7 mirror echoes, latency changes, failures, restarts),
-    /// marks the monitoring latency readout for a recompute on a latency change (T-401),
-    /// keeps `rack_model` (the source of truth across output open/close) in sync, and — for a
-    /// failure or a restart, which can bring a new schema the per-parameter notices don't cover
-    /// (H-01 handoff) — emits a full [`EngineEvent::RackChanged`] snapshot built right here, on
-    /// the control thread (an [`EventSink`] must never call back into the engine).
+    /// Forwards rack notices (ADR-005 §7 mirror echoes, latency changes, failures, restarts, H-40
+    /// live recoveries), marks the monitoring latency readout for a recompute on a latency change
+    /// (T-401), keeps `rack_model` (the source of truth across output open/close) in sync, and —
+    /// for a failure, a restart or a recovery, any of which can bring a new schema the
+    /// per-parameter notices don't cover (H-01 handoff) — emits a full [`EngineEvent::RackChanged`]
+    /// snapshot built right here, on the control thread (an [`EventSink`] must never call back
+    /// into the engine).
     fn handle_rack_notices(&mut self, notices: Vec<RackNotice>) {
         if notices.is_empty() {
             return;
@@ -954,6 +955,7 @@ impl Control {
                 RackNotice::SlotFailed { .. }
                     | RackNotice::SlotRestarted { .. }
                     | RackNotice::SlotLoaded { .. }
+                    | RackNotice::SlotRecovered { .. }
             )
         });
         // T-401 (SPEC-012 §2.5, AC-8): a rack latency change reaches the monitoring readout within

@@ -5,6 +5,7 @@
 //! Add-module list picks them up without a restart.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use vox_module_api::{
@@ -54,6 +55,12 @@ impl std::fmt::Debug for Resolved {
 #[derive(Default)]
 pub struct Registry {
     factories: Mutex<BTreeMap<String, Arc<dyn ModuleFactory>>>,
+    /// Bumped by every [`Self::register`]/[`Self::upsert`]/[`Self::remove`] that actually changed
+    /// something (H-40, ADR-008 §6 Amendment: live recovery of Missing slots): a live
+    /// [`crate::RackHost`] polls this once a control tick to know cheaply whether it's worth
+    /// rechecking its placeholder slots against the registry again, without a channel or an
+    /// observer list of its own.
+    generation: AtomicU64,
 }
 
 fn lock(
@@ -88,6 +95,8 @@ impl Registry {
             return Err(RegistryError::Duplicate(id));
         }
         g.insert(id, factory);
+        drop(g);
+        self.generation.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -97,7 +106,9 @@ impl Registry {
     /// replaced an existing one.
     pub fn upsert(&self, factory: Arc<dyn ModuleFactory>) -> bool {
         let id = factory.descriptor().id.clone();
-        lock(&self.factories).insert(id, factory).is_none()
+        let added = lock(&self.factories).insert(id, factory).is_none();
+        self.generation.fetch_add(1, Ordering::Relaxed);
+        added
     }
 
     /// The factory for `id`.
@@ -110,7 +121,20 @@ impl Registry {
     /// to [`Self::resolve`] for that slot simply falls back to the "Missing module" placeholder,
     /// preserving the slot's own stored state untouched.
     pub fn remove(&self, id: &str) -> bool {
-        lock(&self.factories).remove(id).is_some()
+        let removed = lock(&self.factories).remove(id).is_some();
+        if removed {
+            self.generation.fetch_add(1, Ordering::Relaxed);
+        }
+        removed
+    }
+
+    /// Bumped by every [`Self::register`]/[`Self::upsert`]/[`Self::remove`] that actually changed
+    /// the registered set (H-40): lets a live [`crate::RackHost`] poll, once a control tick,
+    /// whether it's worth rechecking its Missing/too-new placeholder slots — no observer list or
+    /// channel needed for that side of it (the catalog's own hot-add to observed registries,
+    /// T-804, is separate and still `Weak<Registry>`-based).
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Relaxed)
     }
 
     /// Registered ids, sorted.

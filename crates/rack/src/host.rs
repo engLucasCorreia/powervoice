@@ -85,6 +85,21 @@ pub enum RackNotice {
         /// Slot index.
         index: usize,
     },
+    /// A Missing/too-new placeholder slot came back to life on its own (H-40): the catalog just
+    /// registered or upgraded its module (install, a quick/full rescan, unblock, re-enable), so
+    /// the rack re-resolved the slot from its kept state and blob, through the same async-load or
+    /// instant-swap path and T-103 crossfade as any other replacement. The UI shows a toast
+    /// ("‹Plugin› is available again — restored in the rack"); unlike [`Self::SlotRestarted`],
+    /// this is never a manual [`RackHost::restart`] — see the ADR-008 amendment log (the design
+    /// note this ticket added) for why it doesn't touch undo/dirty state.
+    SlotRecovered {
+        /// Slot.
+        slot: SlotUid,
+        /// Slot index.
+        index: usize,
+        /// Display name, for the toast.
+        name: String,
+    },
 }
 
 /// State of a slot as the UI shows it.
@@ -284,6 +299,10 @@ struct PendingJob {
     values: Vec<f64>,
     /// Replacements: the requested state's blob (the committed blob if the instance has none).
     blob: Option<Vec<u8>>,
+    /// H-40: this job is a live recovery of a Missing/too-new placeholder (registry generation
+    /// bump), not an initial load or a restart/preset replacement — its success is
+    /// [`RackNotice::SlotRecovered`], not [`RackNotice::SlotLoaded`].
+    recovering: bool,
 }
 
 /// A finished background instantiation (T-803), sent by the loader thread.
@@ -596,6 +615,9 @@ pub struct RackHost {
     loads_tx: Sender<LoadDone>,
     loads_rx: Receiver<LoadDone>,
     next_job: u64,
+    /// [`Registry::generation`] as of the last check (H-40): [`tick`](Self::tick) rechecks
+    /// placeholders only when this is stale, instead of walking every slot every 16 ms.
+    registry_generation: u64,
 }
 
 impl RackHost {
@@ -638,6 +660,7 @@ impl RackHost {
         let ab_capacity = (total as usize).max((config.sample_rate * 0.1).round() as usize);
         let (live, link) = LiveRack::new(Box::new(chain), ab_capacity);
         let (loads_tx, loads_rx) = mpsc::channel();
+        let registry_generation = registry.generation();
         let mut host = Self {
             registry,
             config,
@@ -657,6 +680,7 @@ impl RackHost {
             loads_tx,
             loads_rx,
             next_job: 1,
+            registry_generation,
         };
         host.start_pending_loads();
         Ok((host, live))
@@ -710,6 +734,7 @@ impl RackHost {
                 id,
                 values: Vec::new(),
                 blob: None,
+                recovering: false,
             });
         }
     }
@@ -743,8 +768,9 @@ impl RackHost {
         };
         let uid = done.uid;
         match &self.slots[k].kind {
-            Kind::Loading { model, .. } => {
+            Kind::Loading { model, name } => {
                 let model = model.clone();
+                let name = name.clone();
                 match done.result {
                     Ok(Resolved::Module(m)) => {
                         self.slots[k].kind = Kind::Loaded(loaded_from(m));
@@ -756,9 +782,20 @@ impl RackHost {
                             self.layout[li].replace = true;
                         }
                         self.dirty = true;
-                        self.notices.push(RackNotice::SlotLoaded {
-                            slot: uid,
-                            index: k,
+                        // H-40: a live recovery gets its own notice (a toast, and the document
+                        // layer rebases its dirty baseline) instead of the silent `SlotLoaded`
+                        // every other async load reports.
+                        self.notices.push(if job.recovering {
+                            RackNotice::SlotRecovered {
+                                slot: uid,
+                                index: k,
+                                name,
+                            }
+                        } else {
+                            RackNotice::SlotLoaded {
+                                slot: uid,
+                                index: k,
+                            }
                         });
                     }
                     Ok(Resolved::Placeholder { message, too_new }) => {
@@ -1459,6 +1496,111 @@ impl RackHost {
         Ok(())
     }
 
+    /// H-40: rechecks every Missing/too-new placeholder (`failed: false` — a slot that couldn't
+    /// *start* is a separate, manual [`Self::restart`] story) against the registry, which just
+    /// registered or upgraded some module ids (install, rescan, unblock, re-enable). Called from
+    /// [`tick`](Self::tick) only when [`Registry::generation`] moved since the last check.
+    fn recover_missing(&mut self) {
+        for k in 0..self.slots.len() {
+            let hs = &self.slots[k];
+            if hs.job.is_some() {
+                continue;
+            }
+            let Kind::Placeholder {
+                model,
+                failed: false,
+                ..
+            } = &hs.kind
+            else {
+                continue;
+            };
+            if !model
+                .module_ref()
+                .is_ok_and(|r| self.registry.get(&r.id).is_some())
+            {
+                continue;
+            }
+            self.begin_recovery(k);
+        }
+    }
+
+    /// Re-resolves placeholder slot `index` from its kept state and blob (the caller has already
+    /// checked its module id now resolves): off the audio thread, through the normal async-load
+    /// or instant-swap path and the usual T-103 crossfade. Success is
+    /// [`RackNotice::SlotRecovered`] — never [`RackNotice::SlotRestarted`], which is reserved for
+    /// a manual [`Self::restart`] (SPEC-004 OD-1 / the ADR-008 amendment: this is not an undoable
+    /// edit, and the caller — `src-tauri`'s `DocumentService` — must not mark the document dirty
+    /// for it either). A re-resolve that still can't produce a module (still not installed, still
+    /// too new, or fails to start) leaves the slot a placeholder with its blob untouched; a start
+    /// failure is shown as [`RackNotice::SlotFailed`], same as any other failed start.
+    fn begin_recovery(&mut self, index: usize) {
+        let hs = &self.slots[index];
+        let uid = hs.uid;
+        let Kind::Placeholder { model, .. } = &hs.kind else {
+            return;
+        };
+        let mut model = model.clone();
+        model.bypass = hs.bypass;
+        if let Some(name) = async_name(&self.registry, &model) {
+            self.slots[index].kind = Kind::Loading {
+                model: model.clone(),
+                name,
+            };
+            let id = self.spawn_load(uid, model, index);
+            self.slots[index].job = Some(PendingJob {
+                id,
+                values: Vec::new(),
+                blob: None,
+                recovering: true,
+            });
+            return;
+        }
+        match self.registry.instantiate(&model, &self.config, index) {
+            Ok(Resolved::Module(m)) => {
+                let name = m.descriptor().name.text.clone();
+                self.slots[index].kind = Kind::Loaded(loaded_from(m));
+                // The audio thread runs the placeholder: replace it (no instance to crossfade
+                // from, so the new one fades in from the undelayed input after its latency).
+                if let Some(li) = self.layout_pos(uid)
+                    && self.layout[li].sent
+                {
+                    self.layout[li].replace = true;
+                }
+                self.dirty = true;
+                self.notices.push(RackNotice::SlotRecovered {
+                    slot: uid,
+                    index,
+                    name,
+                });
+                self.flush();
+                self.check_latency();
+            }
+            Ok(Resolved::Placeholder { message, too_new }) => {
+                // Still not resolvable (e.g. still too new) — refresh the message, no notice.
+                self.slots[index].kind = Kind::Placeholder {
+                    model,
+                    message,
+                    too_new,
+                    failed: false,
+                };
+            }
+            Err(e) => {
+                let message = start_failure(&model, e);
+                self.slots[index].kind = Kind::Placeholder {
+                    model,
+                    message: message.clone(),
+                    too_new: false,
+                    failed: true,
+                };
+                self.notices.push(RackNotice::SlotFailed {
+                    slot: uid,
+                    index,
+                    message,
+                });
+            }
+        }
+    }
+
     /// Replaces slot `index`'s instance with one loaded from `state` (a preset with a blob, a
     /// captured noise print, ADR-005 §12), through the same replacement crossfade as
     /// [`restart`](Self::restart). The mirror and the committed blob take the new state's values.
@@ -1486,6 +1628,7 @@ impl RackHost {
                 id,
                 values,
                 blob: state.blob,
+                recovering: false,
             });
             return Ok(());
         }
@@ -1780,6 +1923,9 @@ impl RackHost {
         self.start_pending_loads();
         self.set_ab(false);
         self.dirty = true;
+        // H-40: every slot was just resolved fresh against the current registry — nothing to
+        // recover until it changes again.
+        self.registry_generation = self.registry.generation();
         self.flush();
         self.check_latency();
         Ok(())
@@ -1888,6 +2034,13 @@ impl RackHost {
         }
         self.drain_loads();
         self.run_due_restarts(Instant::now());
+        // H-40: cheap poll — only worth walking the slots when the registry actually changed
+        // since the last tick (install, rescan, unblock, re-enable all bump its generation).
+        let generation = self.registry.generation();
+        if generation != self.registry_generation {
+            self.registry_generation = generation;
+            self.recover_missing();
+        }
         self.flush();
         self.pump_backlog();
         self.check_latency();

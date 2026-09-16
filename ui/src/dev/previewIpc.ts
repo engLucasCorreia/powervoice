@@ -69,6 +69,7 @@ import type {
   Settings,
   StorageInfoDto,
   ThemePref,
+  TransferCurveDto,
   TransportStateDto,
   UnitDto,
 } from "../lib/ipc/bindings";
@@ -559,7 +560,11 @@ function rackFixture(withPlugin: boolean): RackStateDto {
     param(2, "attack_ms", "Attack", ms, 0.1, 100, 8, 1, true),
     param(3, "release_ms", "Release", ms, 10, 1000, 140, 0, true),
     param(4, "makeup_db", "Make-up gain", db, 0, 24, 4, 1),
-  ], { telemetry: [GR()] });
+  ], {
+    telemetry: [GR()],
+    // H-63: the Dynamics slot shows the transfer graph (SPEC-016 §2.6).
+    transfer_handles: [{ component: 0, threshold: 0, enable: null }],
+  });
   const limiter = slot(4, "org.powervoice.true-peak-limiter", "True-peak limiter", [
     param(0, "ceiling_dbtp", "Ceiling", { kind: "dbtp" }, -12, 0, -3, 1),
     param(1, "release_ms", "Release", ms, 1, 500, 50, 0, true),
@@ -678,6 +683,35 @@ function responseCurve(points: number[]): ResponseCurveDto {
     sample_rate_hz: PREVIEW_RATE_HZ,
     total_db: points.map((_, i) => components.reduce((sum, c) => sum + c[i]!, 0)),
     components_db: components,
+  };
+}
+
+/** H-63: the preview Dynamics compressor, mirroring its slot's parameter values. */
+const PREVIEW_COMPRESSOR = { thresholdDb: -22, ratio: 3, makeupDb: 4 };
+
+function transferCurve(xMinDb: number, xMaxDb: number, points: number): TransferCurveDto {
+  const n = Math.max(2, Math.round(points));
+  const inDbfs = Array.from({ length: n }, (_, i) => xMinDb + ((xMaxDb - xMinDb) * i) / (n - 1));
+  const gainDb = (x: number): number => {
+    const over = x - PREVIEW_COMPRESSOR.thresholdDb;
+    const reduction = over > 0 ? -(1 - 1 / PREVIEW_COMPRESSOR.ratio) * over : 0;
+    return reduction + PREVIEW_COMPRESSOR.makeupDb;
+  };
+  return {
+    in_dbfs: inDbfs,
+    rising_db: inDbfs.map((x) => x + gainDb(x)),
+    falling_db: null,
+    components_db: [inDbfs.map(gainDb)],
+    handles: [
+      {
+        component: 0,
+        param: 0,
+        x_dbfs: PREVIEW_COMPRESSOR.thresholdDb,
+        offset_db: 0,
+        enabled: true,
+      },
+    ],
+    min_dbfs: -200,
   };
 }
 
@@ -1034,6 +1068,8 @@ export function installPreviewIpc(options: PreviewOptions): void {
         }
         case "rack_response_curve":
           return responseCurve(a.points as number[]);
+        case "rack_transfer_curve":
+          return transferCurve(a.xMinDb as number, a.xMaxDb as number, a.points as number);
         case "module_presets_list":
         case "rack_presets_list":
           return [{ key: "voice_warmth", name: text("Voice warmth"), is_factory: true }, { key: "My booth", name: text("My booth"), is_factory: false }];

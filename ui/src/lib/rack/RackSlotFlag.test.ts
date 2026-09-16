@@ -24,6 +24,7 @@ function slot(moduleId: string): RackSlotDto {
     values: [],
     noise_profile: null,
     curve_handles: null,
+    transfer_handles: null,
     telemetry: [],
     sandboxed: true,
     has_editor: false,

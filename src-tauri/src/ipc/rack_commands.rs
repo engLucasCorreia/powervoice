@@ -10,7 +10,9 @@ use vox_rack::{EditorRequest, ModuleDescriptor, ParamId};
 use crate::audio::AudioEngine;
 use crate::document::DocumentService;
 use crate::ipc::error::{IpcError, IpcErrorCode};
-use crate::ipc::rack_dto::{ModuleDescriptorDto, RackStateDto, ResponseCurveDto, rack_ipc_error};
+use crate::ipc::rack_dto::{
+    ModuleDescriptorDto, RackStateDto, ResponseCurveDto, TransferCurveDto, rack_ipc_error,
+};
 use crate::settings::SettingsStore;
 
 /// H-30: a bake reloads the live rack when it commits (`DocumentService::finish_bake`'s post-job
@@ -312,6 +314,28 @@ pub async fn rack_response_curve(
     let result = tauri::async_runtime::spawn_blocking(move || handle.response_curve(slot, points))
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
+    Ok(result.map_err(rack_ipc_error)?.into())
+}
+
+/// The transfer graph's curve (H-63, SPEC-016 §4.11, lean slice: JSON of `points`
+/// (≤ `vox_engine::MAX_TRANSFER_CURVE_POINTS`) levels evenly spaced over `x_min_db … x_max_db` —
+/// the binary `VXTC` frame of §4.12 is T-410). Rust evaluates the target slot's `TransferCurve`
+/// extension on the control thread, from the parameter mirror's target values. An oversized
+/// `points` is clamped; a non-increasing or non-finite range is rejected.
+#[tauri::command]
+pub async fn rack_transfer_curve(
+    engine: State<'_, AudioEngine>,
+    slot: usize,
+    x_min_db: f64,
+    x_max_db: f64,
+    points: usize,
+) -> Result<TransferCurveDto, IpcError> {
+    let handle = engine.handle().clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        handle.transfer_curve(slot, x_min_db, x_max_db, points)
+    })
+    .await
+    .map_err(|e| IpcError::internal(e.to_string()))?;
     Ok(result.map_err(rack_ipc_error)?.into())
 }
 

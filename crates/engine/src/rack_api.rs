@@ -17,6 +17,15 @@ use vox_rack::{ModuleState, NoiseProfile, ParamId, RackHost, RackModel, SlotInfo
 /// graph never legitimately needs more than one point per device-pixel column.
 pub const MAX_RESPONSE_CURVE_POINTS: usize = 512;
 
+/// Cap on [`EngineHandle::transfer_curve`](crate::EngineHandle::transfer_curve)'s point count
+/// (H-63, SPEC-016 §4.12 "points ≤ 1024"). An oversized request is clamped, not rejected.
+pub const MAX_TRANSFER_CURVE_POINTS: usize = 1024;
+
+/// What a [`TransferCurvePoints`] level reads when the module outputs digital silence. The
+/// extension answers −∞ there; JSON has no −∞, so the lean slice reports this instead — far below
+/// any graph range, so it draws the same.
+pub const TRANSFER_CURVE_MIN_DBFS: f64 = -200.0;
+
 /// The built-in Noise Reduction module's id (SPEC-014 §2.1, ADR-005 §2). Mirrors
 /// `vox_modules::NoiseReduction::ID`; `vox-engine` doesn't otherwise depend on `vox-modules`
 /// (composition roots register modules, not the engine crate), so it is repeated here rather than
@@ -210,6 +219,41 @@ pub struct ResponseCurvePoints {
     /// One row per component (band), in the module's `handles()` order; empty when the module
     /// reports zero components.
     pub components_db: Vec<Vec<f64>>,
+}
+
+/// One draggable threshold handle of a [`TransferCurvePoints`] (SPEC-016 §4.11/§4.12), already
+/// placed on the graph's x axis.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TransferCurveHandle {
+    /// The component (section) the handle belongs to.
+    pub component: usize,
+    /// The threshold parameter a drag writes (plain dB).
+    pub param: ParamId,
+    /// Graph x position (dBFS) = the parameter's target value + `offset_db`.
+    pub x_dbfs: f64,
+    /// The detector offset applied (+3.0103 dB for an RMS-detected section, else 0).
+    pub offset_db: f64,
+    /// The section is enabled (handles of disabled sections are not drawn, SPEC-016 §2.6).
+    pub enabled: bool,
+}
+
+/// What [`crate::EngineHandle::transfer_curve`] returns (H-63, SPEC-016 §4.11; lean slice: a
+/// plain in-memory answer, not yet the binary `VXTC` frame of §4.12 — T-410). Evaluated on the
+/// control thread from the target slot's `TransferCurve` extension at the **target** values of
+/// the parameter mirror, so it reflects a `SetParamPlain` echo immediately.
+#[derive(Clone, Debug)]
+pub struct TransferCurvePoints {
+    /// Input peak levels (dBFS), `points` values evenly spaced over the requested range.
+    pub in_dbfs: Vec<f64>,
+    /// Output peak level (dBFS) on the Rising branch, floored at [`TRANSFER_CURVE_MIN_DBFS`].
+    pub rising_db: Vec<f64>,
+    /// The Falling branch, only when the module reports hysteresis for these values.
+    pub falling_db: Option<Vec<f64>>,
+    /// One row per component (section), in the module's order; empty when it reports none.
+    /// Gains in dB, Rising branch, floored at [`TRANSFER_CURVE_MIN_DBFS`].
+    pub components_db: Vec<Vec<f64>>,
+    /// The draggable threshold handles, in the module's `handles()` order.
+    pub handles: Vec<TransferCurveHandle>,
 }
 
 /// Error from a rack command.

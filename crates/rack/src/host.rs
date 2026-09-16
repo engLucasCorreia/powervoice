@@ -13,8 +13,9 @@ use serde_json::Map;
 use vox_module_api::{
     ActivateConfig, AdapterHealth, CurveHandle, EditorRequest, Module, ModuleDescriptor,
     ModuleError, ModuleRef, ModuleState, NoiseProfile, ParamEvent, ParamFlags, ParamGroup, ParamId,
-    ParamInfo, ParamText, PluginEditor, ResponseCurve, Telemetry, TelemetryInfo, adapter_health,
-    noise_profile, param_text, plugin_editor, response_curve, telemetry,
+    ParamInfo, ParamText, PluginEditor, ResponseCurve, Telemetry, TelemetryInfo, TransferCurve,
+    TransferHandle, adapter_health, noise_profile, param_text, plugin_editor, response_curve,
+    telemetry, transfer_curve,
 };
 
 use crate::chain::PlanEntry;
@@ -196,6 +197,11 @@ pub struct SlotInfo {
     /// panel only renders when this is `Some`. `Some(handles)` even when `handles` is empty (a
     /// `ResponseCurve` with no draggable nodes is still drawable).
     pub curve_handles: Option<Vec<CurveHandle>>,
+    /// The module's [`TransferCurve`] handles (H-63, SPEC-016 §4.11): `None` when the module has
+    /// no `TransferCurve` extension (every module but Dynamics and the Noise Gate, and
+    /// placeholders) — the transfer graph only renders when this is `Some`. `Some(handles)` even
+    /// when `handles` is empty.
+    pub transfer_handles: Option<Vec<TransferHandle>>,
     /// The module's [`Telemetry`] channel descriptions (H-03; SPEC-016 §4.12: descriptions
     /// travel once, with the rack state): empty when the module has none, and for placeholders.
     /// The values come from [`RackHost::read_telemetry`], in this order.
@@ -241,6 +247,10 @@ struct Loaded {
     /// (module docs), safe to call from the control thread regardless of which instance is
     /// currently live.
     response_curve: Option<Arc<dyn ResponseCurve>>,
+    /// The module's [`TransferCurve`] handle (H-63), captured the same way and for the same
+    /// reason: every call is a pure function of its arguments (module docs), safe from the
+    /// control thread whichever instance is currently live.
+    transfer_curve: Option<Arc<dyn TransferCurve>>,
     /// The [`Telemetry`] handle of the newest instance (H-03). Unlike the pure-function
     /// extensions above, telemetry values belong to one instance, so this is refreshed on every
     /// replacement ([`RackHost::replace_state`]/restart). The host is its single reader
@@ -459,6 +469,7 @@ fn loaded_from(module: Box<dyn Module>) -> Box<Loaded> {
     let blob = module.save_state().ok().and_then(|s| s.blob);
     let profile = noise_profile(module.as_ref());
     let curve = response_curve(module.as_ref());
+    let transfer = transfer_curve(module.as_ref());
     let (telemetry, telemetry_channels) = telemetry_of(module.as_ref());
     let health = adapter_health(module.as_ref());
     let text = param_text(module.as_ref());
@@ -474,6 +485,7 @@ fn loaded_from(module: Box<dyn Module>) -> Box<Loaded> {
         fresh: Some(module),
         noise_profile: profile,
         response_curve: curve,
+        transfer_curve: transfer,
         telemetry,
         telemetry_channels,
         health,
@@ -985,6 +997,7 @@ impl RackHost {
                 groups: l.groups.clone(),
                 noise_profile: noise_profile_status(l.noise_profile.as_deref(), l.blob.as_deref()),
                 curve_handles: l.response_curve.as_deref().map(|c| c.handles().to_vec()),
+                transfer_handles: l.transfer_curve.as_deref().map(|c| c.handles().to_vec()),
                 telemetry: l.telemetry_channels.clone(),
                 sandboxed: l.health.is_some(),
                 has_editor: l.editor.is_some(),
@@ -1016,6 +1029,7 @@ impl RackHost {
                 groups: Arc::from(Vec::new()),
                 noise_profile: None,
                 curve_handles: None,
+                transfer_handles: None,
                 telemetry: Arc::from(Vec::new()),
                 sandboxed: false,
                 has_editor: false,
@@ -1033,6 +1047,7 @@ impl RackHost {
                 groups: Arc::from(Vec::new()),
                 noise_profile: None,
                 curve_handles: None,
+                transfer_handles: None,
                 telemetry: Arc::from(Vec::new()),
                 sandboxed: false,
                 has_editor: false,
@@ -2063,6 +2078,18 @@ impl RackHost {
     pub fn response_curve_extension(&self, index: usize) -> Option<Arc<dyn ResponseCurve>> {
         match &self.slots.get(index)?.kind {
             Kind::Loaded(l) => l.response_curve.clone(),
+            Kind::Placeholder { .. } | Kind::Loading { .. } => None,
+        }
+    }
+
+    // --- Transfer curve (H-63, SPEC-016 §4.11) ------------------------------------------------
+
+    /// The module's [`TransferCurve`] handle, if any (`None` for a placeholder or a module
+    /// without the extension). Like [`Self::response_curve_extension`], every call on it is a
+    /// pure function of its arguments, not of which instance is currently live.
+    pub fn transfer_curve_extension(&self, index: usize) -> Option<Arc<dyn TransferCurve>> {
+        match &self.slots.get(index)?.kind {
+            Kind::Loaded(l) => l.transfer_curve.clone(),
             Kind::Placeholder { .. } | Kind::Loading { .. } => None,
         }
     }

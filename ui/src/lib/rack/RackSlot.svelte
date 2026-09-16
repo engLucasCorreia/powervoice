@@ -2,6 +2,7 @@
   import { Button, Icon, IconButton, Menu } from "../ui";
   import type { MenuEntry } from "../ui/menuModel";
   import EqGraph from "../eq/EqGraph.svelte";
+  import TransferGraph from "../transfer/TransferGraph.svelte";
   import { t } from "../i18n";
   import type { ParamInfoDto, PresetEntryDto, RackSlotDto } from "../ipc/bindings";
   import GainReductionMeter from "./GainReductionMeter.svelte";
@@ -504,6 +505,9 @@
     <div class="body">
       {#if slot.curve_handles !== null}
         <EqGraph slotIndex={index} rackSlot={slot} {rateHz} />
+      {/if}
+      {#if slot.transfer_handles !== null}
+        <TransferGraph slotIndex={index} rackSlot={slot} />
       {/if}
       {#if slot.noise_profile !== null}
         <NoiseReductionSection slotIndex={index} status={slot.noise_profile} />

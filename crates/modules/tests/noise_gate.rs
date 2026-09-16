@@ -12,10 +12,11 @@ use std::sync::Arc;
 
 use common::*;
 use vox_dsp::dynamics::sidechain::ButterworthHighpass4;
+use vox_module_api::test_util::no_alloc;
 use vox_module_api::test_util::{ModuleTestHost, TestRng, ZIPPER_LEN};
 use vox_module_api::{
-    Module, ModuleFactory, ParamFlags, ParamId, ProcessMode, Taper, TelemetryKind, features,
-    telemetry,
+    CurveBranch, Module, ModuleFactory, ParamFlags, ParamId, ProcessMode, Taper, TelemetryKind,
+    features, telemetry,
 };
 use vox_modules::{NoiseGate, NoiseGateFactory, builtin_factories};
 
@@ -784,5 +785,193 @@ fn zipper_sidechain_frequency_keeps_audio_bit_identical() {
         bit_equal(&y[W_PK..], &x[W_PK..]),
         None,
         "gate must stay open"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// AC-14: `TransferCurve` (SPEC-013 §4.3, SPEC-016 §4.11)
+// ---------------------------------------------------------------------------------------------
+
+const AC14_MIN_DBFS: f64 = -80.0;
+const AC14_MAX_DBFS: f64 = 6.0;
+const AC14_TOLERANCE_DB: f64 = 0.1;
+/// Settling per level, then the window the output peak is read over.
+const AC14_SETTLE_MS: f64 = 150.0;
+const AC14_WINDOW_MS: f64 = 40.0;
+/// Seeded random parameter sets.
+const AC14_SETS: usize = 20;
+/// The curve describes a 997 Hz tone, so only corners the tone passes are drawn (§4.3).
+const AC14_MAX_HPF_HZ: f64 = 460.0;
+
+fn ac14_levels() -> Vec<f64> {
+    let n = (AC14_MAX_DBFS - AC14_MIN_DBFS) as usize;
+    (0..=n).map(|i| AC14_MIN_DBFS + i as f64).collect()
+}
+
+/// Plain target values in `params()` order, as the rack mirror would hold them.
+fn values_of(m: &dyn Module) -> Vec<f64> {
+    m.params()
+        .iter()
+        .map(|p| m.param_value(p.id).unwrap_or(p.default))
+        .collect()
+}
+
+/// One seeded parameter set. Threshold, hysteresis and range span their full schema range
+/// (range hits −∞ about a fifth of the time); the timing values are drawn short, because §4.3 is
+/// a settled curve that no timing value can change and 87 levels have to settle per set.
+fn ac14_settings(rng: &mut TestRng) -> Vec<(&'static str, f64)> {
+    fn r(rng: &mut TestRng, lo: f64, hi: f64) -> f64 {
+        lo + (hi - lo) * rng.unit_f64()
+    }
+    macro_rules! r {
+        ($lo:expr, $hi:expr) => {
+            r(rng, $lo, $hi)
+        };
+    }
+    let hpf_on = rng.chance(0.5);
+    vec![
+        ("threshold_db", r!(-80.0, 0.0)),
+        ("hysteresis_db", r!(0.0, 20.0)),
+        ("attack_ms", r!(0.5, 5.0)),
+        ("hold_ms", r!(1.0, 10.0)),
+        ("release_ms", r!(2.0, 6.0)),
+        (
+            "range_db",
+            if rng.chance(0.2) {
+                NoiseGate::RANGE_MIN_DB
+            } else {
+                r!(-60.0, 0.0)
+            },
+        ),
+        ("sc_hpf_enabled", f64::from(u8::from(hpf_on))),
+        ("sc_hpf_hz", r!(20.0, AC14_MAX_HPF_HZ)),
+        ("lookahead_ms", 0.0),
+    ]
+}
+
+/// The settled output peak (dBFS, `-inf` for digital silence) at each level, approached in the
+/// order given.
+fn ac14_measure(settings: &[(&str, f64)], levels: &[f64]) -> Vec<f64> {
+    let settle = (AC14_SETTLE_MS * SR / 1000.0) as usize;
+    let window = (AC14_WINDOW_MS * SR / 1000.0) as usize;
+    let step = settle + window;
+    let segs: Vec<(f64, usize)> = levels.iter().map(|&l| (l, step)).collect();
+    let x = sine_segments(997.0, &segs, SR);
+    let mut m = activated(make, settings, SR);
+    let y = render(&mut *m, &x, &[], Blocks::Fixed(4096));
+    (0..levels.len())
+        .map(|i| {
+            let end = (i + 1) * step;
+            let p = peak(&y[end - window..end]);
+            if p > 0.0 { to_db(p) } else { f64::NEG_INFINITY }
+        })
+        .collect()
+}
+
+#[test]
+fn ac14_transfer_curve_equals_the_measured_output() {
+    let rising = ac14_levels();
+    let falling: Vec<f64> = rising.iter().rev().copied().collect();
+    let probe = make();
+    let curve = vox_module_api::transfer_curve(&*probe).expect("Noise Gate answers TransferCurve");
+    let mut rng = TestRng::new(0x_AC14_0001);
+
+    for set in 0..AC14_SETS {
+        let settings = ac14_settings(&mut rng);
+        let m = new_with(make, &settings);
+        let values = values_of(&*m);
+        let value = |key: &str| {
+            settings
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| *v)
+                .expect("key")
+        };
+        assert_eq!(
+            no_alloc(|| curve.has_hysteresis(&values)).expect("has_hysteresis allocated"),
+            value("hysteresis_db") > 0.0,
+            "set {set}: has_hysteresis follows hysteresis_db"
+        );
+
+        let mut branches = Vec::new();
+        for (branch, levels) in [
+            (CurveBranch::Rising, &rising),
+            (CurveBranch::Falling, &falling),
+        ] {
+            let mut want = vec![0.0f64; levels.len()];
+            no_alloc(|| curve.output_dbfs(&values, branch, levels, &mut want))
+                .expect("output_dbfs allocated");
+            let got = ac14_measure(&settings, levels);
+            for (i, (&w, &g)) in want.iter().zip(&got).enumerate() {
+                assert!(!w.is_nan(), "set {set} {branch:?} {i}: curve is NaN");
+                if g == f64::NEG_INFINITY || w == f64::NEG_INFINITY {
+                    assert_eq!(
+                        w, g,
+                        "set {set} {branch:?} at {} dBFS: −inf must line up with digital silence \
+                         ({settings:?})",
+                        levels[i]
+                    );
+                    continue;
+                }
+                assert!(
+                    (w - g).abs() <= AC14_TOLERANCE_DB,
+                    "set {set} {branch:?} at {} dBFS: curve {w:.4} vs measured {g:.4} dBFS \
+                     ({settings:?})",
+                    levels[i]
+                );
+            }
+            branches.push(want);
+        }
+
+        // The branches differ only in [T − hysteresis, T).
+        let (open_at, close_at) = (
+            value("threshold_db"),
+            value("threshold_db") - value("hysteresis_db"),
+        );
+        let mut falling_rising_order = branches[1].clone();
+        falling_rising_order.reverse();
+        for (i, (&r, &f)) in branches[0].iter().zip(&falling_rising_order).enumerate() {
+            let x = rising[i];
+            let inside = (close_at..open_at).contains(&x);
+            let same = r == f;
+            assert!(
+                same != (inside && value("range_db") < 0.0),
+                "set {set} at {x} dBFS (open {open_at}, close {close_at}): rising {r}, falling {f}"
+            );
+        }
+
+        // One component, and it carries the whole gain.
+        assert_eq!(curve.component_count(), NoiseGate::CURVE_COMPONENTS);
+        let mut gains = vec![0.0f64; rising.len()];
+        no_alloc(|| {
+            curve.component_gain_db(NoiseGate::COMPONENT_GATE, &values, &rising, &mut gains)
+        })
+        .expect("component_gain_db allocated");
+        for (i, (&t, &g)) in branches[0].iter().zip(&gains).enumerate() {
+            let want = t - rising[i];
+            if want == f64::NEG_INFINITY {
+                assert_eq!(g, want, "set {set} {i}: the component must mute too");
+            } else {
+                assert!((g - want).abs() < 1e-9, "set {set} {i}: {g} vs {want}");
+            }
+        }
+        assert_eq!(curve.component_group(NoiseGate::COMPONENT_GATE), None);
+    }
+}
+
+#[test]
+fn ac14_handle_matches_the_spec() {
+    let probe = make();
+    let curve = vox_module_api::transfer_curve(&*probe).expect("Noise Gate answers TransferCurve");
+    let handles = no_alloc(|| curve.handles()).expect("handles allocated");
+    assert_eq!(handles.len(), 1);
+    assert_eq!(handles[0].component, NoiseGate::COMPONENT_GATE);
+    assert_eq!(handles[0].threshold, NoiseGate::THRESHOLD_DB);
+    assert_eq!(handles[0].enable, None, "the gate is always on");
+    let values = values_of(&*make());
+    assert_eq!(
+        no_alloc(|| curve.handle_offset_db(0, &values)).expect("offset allocated"),
+        0.0,
+        "the gate detector is peak, so the handle sits on the threshold"
     );
 }

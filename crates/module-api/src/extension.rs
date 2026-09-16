@@ -18,6 +18,8 @@ pub enum ExtensionId {
     Telemetry,
     /// [`ResponseCurve`].
     ResponseCurve,
+    /// [`TransferCurve`] (SPEC-016 §4.11, ADR-005 Amendment: level in → level out).
+    TransferCurve,
     /// [`NoiseProfile`].
     NoiseProfile,
     /// [`AdapterHealth`] (T-802, ADR-005 Amendment 3): host-internal, answered only by
@@ -34,9 +36,10 @@ pub enum ExtensionId {
 
 impl ExtensionId {
     /// Every known id, in declaration order (what the host queries after `activate`).
-    pub const ALL: [ExtensionId; 6] = [
+    pub const ALL: [ExtensionId; 7] = [
         ExtensionId::Telemetry,
         ExtensionId::ResponseCurve,
+        ExtensionId::TransferCurve,
         ExtensionId::NoiseProfile,
         ExtensionId::AdapterHealth,
         ExtensionId::ParamText,
@@ -49,6 +52,7 @@ impl ExtensionId {
         match self {
             Self::Telemetry => "org.powervoice.telemetry/1",
             Self::ResponseCurve => "org.powervoice.response-curve/1",
+            Self::TransferCurve => "org.powervoice.transfer-curve/1",
             Self::NoiseProfile => "org.powervoice.noise-profile/1",
             Self::AdapterHealth => "org.powervoice.adapter-health/1",
             Self::ParamText => "org.powervoice.param-text/1",
@@ -66,6 +70,8 @@ pub enum Extension {
     Telemetry(Arc<dyn Telemetry>),
     /// Frequency-response graph.
     ResponseCurve(Arc<dyn ResponseCurve>),
+    /// Level transfer graph.
+    TransferCurve(Arc<dyn TransferCurve>),
     /// Noise-print capture.
     NoiseProfile(Arc<dyn NoiseProfile>),
     /// Out-of-process adapter health.
@@ -82,6 +88,7 @@ impl Extension {
         match self {
             Extension::Telemetry(_) => ExtensionId::Telemetry,
             Extension::ResponseCurve(_) => ExtensionId::ResponseCurve,
+            Extension::TransferCurve(_) => ExtensionId::TransferCurve,
             Extension::NoiseProfile(_) => ExtensionId::NoiseProfile,
             Extension::AdapterHealth(_) => ExtensionId::AdapterHealth,
             Extension::ParamText(_) => ExtensionId::ParamText,
@@ -108,6 +115,14 @@ pub fn telemetry(m: &dyn Module) -> Option<Arc<dyn Telemetry>> {
 pub fn response_curve(m: &dyn Module) -> Option<Arc<dyn ResponseCurve>> {
     match m.extension(ExtensionId::ResponseCurve) {
         Some(Extension::ResponseCurve(r)) => Some(r),
+        _ => None,
+    }
+}
+
+/// The module's [`TransferCurve`] handle; `None` if absent or answered with the wrong variant.
+pub fn transfer_curve(m: &dyn Module) -> Option<Arc<dyn TransferCurve>> {
+    match m.extension(ExtensionId::TransferCurve) {
+        Some(Extension::TransferCurve(c)) => Some(c),
         _ => None,
     }
 }
@@ -449,6 +464,87 @@ pub struct CurveHandle {
     pub enable: Option<ParamId>,
 }
 
+/// Which state a hysteretic [`TransferCurve`] is evaluated in.
+///
+/// A gate reads a different threshold depending on where it comes from, so the static curve has
+/// two branches. Without hysteresis both branches are equal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CurveBranch {
+    /// The state reached from below: a gate that was closed, an expander coming up.
+    Rising,
+    /// The state reached from above: a gate that was open (the hysteresis loop).
+    Falling,
+}
+
+/// A draggable threshold handle on a transfer graph, bound to parameters.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TransferHandle {
+    /// Component (section) the handle belongs to.
+    pub component: usize,
+    /// Threshold parameter (plain dB; the x axis).
+    pub threshold: ParamId,
+    /// Enable parameter of the section, if any.
+    pub enable: Option<ParamId>,
+}
+
+/// Static **level in → level out** graph of a dynamics-style module (SPEC-016 §4.11), from the
+/// same `dsp` gain computers as `process()`, for the *target* parameter values, so the graph is
+/// exact (SPEC-016 AC-17: within ±0.1 dB of the measured steady-state output).
+///
+/// Callable from any non-audio thread, concurrently with `process()`. Pure, deterministic and
+/// allocation-free beyond the caller's output slices.
+pub trait TransferCurve: Send + Sync {
+    /// Settled output peak level (dBFS) of a steady 997 Hz sine whose input peak level is
+    /// `in_dbfs[i]`, for plain `values` in `params()` order. `-inf` means digital silence (a
+    /// fully closed gate); never `NaN`. Writes `in_dbfs.len().min(out_dbfs.len())` entries.
+    fn output_dbfs(
+        &self,
+        values: &[f64],
+        branch: CurveBranch,
+        in_dbfs: &[f64],
+        out_dbfs: &mut [f64],
+    );
+
+    /// True when the [`Falling`](CurveBranch::Falling) branch differs from
+    /// [`Rising`](CurveBranch::Rising) for these values.
+    fn has_hysteresis(&self, _values: &[f64]) -> bool {
+        false
+    }
+
+    /// Constant per module: individually drawable components (sections), in processing order.
+    /// 0 = total only.
+    fn component_count(&self) -> usize {
+        0
+    }
+
+    /// Group a component belongs to (for its name and colour).
+    fn component_group(&self, _component: usize) -> Option<GroupId> {
+        None
+    }
+
+    /// Effective gain in dB contributed by one component (0 when the section is disabled),
+    /// [`Rising`](CurveBranch::Rising) branch. The components sum to `output − input`.
+    fn component_gain_db(
+        &self,
+        _component: usize,
+        _values: &[f64],
+        _in_dbfs: &[f64],
+        _out_db: &mut [f64],
+    ) {
+    }
+
+    /// Draggable threshold handles.
+    fn handles(&self) -> &[TransferHandle] {
+        &[]
+    }
+
+    /// Graph x position of a handle = `threshold + offset`; the offset is `+3.0103` dB for
+    /// sections read by an RMS detector (a sine's peak is that far above its RMS), else 0.
+    fn handle_offset_db(&self, _handle: usize, _values: &[f64]) -> f64 {
+        0.0
+    }
+}
+
 /// Capture and store a noise profile (NR module).
 pub trait NoiseProfile: Send + Sync {
     /// Analyses a noise-only excerpt (mono, as seen at the slot's input) with the given plain
@@ -498,6 +594,16 @@ mod tests {
             ExtensionId::NoiseProfile.as_str(),
             "org.powervoice.noise-profile/1"
         );
+        assert_eq!(
+            ExtensionId::TransferCurve.as_str(),
+            "org.powervoice.transfer-curve/1"
+        );
+        // Every id is distinct and every variant is in ALL.
+        let mut ids: Vec<&str> = ExtensionId::ALL.iter().map(|i| i.as_str()).collect();
+        ids.sort_unstable();
+        let len = ids.len();
+        ids.dedup();
+        assert_eq!(ids.len(), len, "extension ids must be unique");
     }
 
     #[test]

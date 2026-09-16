@@ -11,7 +11,7 @@ use vox_engine::{
     EngineConfig, EngineEvent, HostId, ManualEngine, ModuleTelemetryFrame, RackApiError,
     RackCommand,
 };
-use vox_modules::{Gain, NoiseGate, ParametricEq, TruePeakLimiter};
+use vox_modules::{Dynamics, Gain, NoiseGate, ParametricEq, TruePeakLimiter};
 use vox_rack::{RackNotice, Registry, SlotStatus};
 
 fn dev() -> FakeDirection {
@@ -355,6 +355,94 @@ fn response_curve_reflects_the_mirror_and_reports_no_support_for_other_modules()
     let many: Vec<f64> = (0..600).map(|i| 20.0 + f64::from(i)).collect();
     let curve = eng.response_curve(1, many).unwrap();
     assert_eq!(curve.freqs_hz.len(), vox_engine::MAX_RESPONSE_CURVE_POINTS);
+}
+
+/// H-63 (SPEC-016 §4.11): `transfer_curve` evaluates the slot's `TransferCurve` extension over
+/// the requested level range from the mirror's target values, reports `no support` for a module
+/// without it, rejects a bad range and clamps an oversized point count.
+#[test]
+fn transfer_curve_reflects_the_mirror_and_reports_no_support_for_other_modules() {
+    let (mut eng, _events) = rig();
+
+    eng.rack_command(RackCommand::Add {
+        module_id: Gain::ID.into(),
+        index: 0,
+    })
+    .unwrap();
+    assert!(
+        matches!(
+            eng.transfer_curve(0, -80.0, 6.0, 8),
+            Err(RackApiError::Rack(_))
+        ),
+        "Gain has no TransferCurve"
+    );
+
+    eng.rack_command(RackCommand::Add {
+        module_id: Dynamics::ID.into(),
+        index: 1,
+    })
+    .unwrap();
+    let curve = eng.transfer_curve(1, -80.0, 6.0, 5).unwrap();
+    assert_eq!(curve.in_dbfs, vec![-80.0, -58.5, -37.0, -15.5, 6.0]);
+    assert_eq!(curve.rising_db.len(), 5);
+    assert_eq!(curve.components_db.len(), 4, "one row per section");
+    assert!(
+        curve.falling_db.is_none(),
+        "the AutoGate is off by default, so there is no hysteresis loop"
+    );
+    // The default rack slot: only the compressor is on, at −20 dBFS, so the low levels pass.
+    assert!((curve.rising_db[0] - (-80.0)).abs() < 1e-9);
+    assert!(curve.rising_db[4] < 6.0 - 3.0, "+6 dBFS is compressed");
+
+    // Handles: one per section, with the enable state and the detector offset already applied.
+    assert_eq!(curve.handles.len(), 4);
+    let compressor = curve.handles[2];
+    assert_eq!(compressor.param, Dynamics::COMPRESSOR_THRESHOLD_DB);
+    assert!(compressor.enabled, "the compressor is on by default");
+    assert!(!curve.handles[0].enabled, "the AutoGate is off by default");
+    // Detection defaults to RMS, so the compressor handle sits 3.0103 dB above its threshold.
+    assert!((compressor.offset_db - 3.010_299_956_639_812).abs() < 1e-9);
+    assert!((compressor.x_dbfs - (-20.0 + compressor.offset_db)).abs() < 1e-9);
+
+    // A `SetParamPlain` echo is visible with no audio processed in between.
+    eng.rack_command(RackCommand::SetParamPlain {
+        index: 1,
+        id: Dynamics::COMPRESSOR_THRESHOLD_DB,
+        value: -30.0,
+    })
+    .unwrap();
+    let moved = eng.transfer_curve(1, -80.0, 6.0, 5).unwrap();
+    assert!((moved.handles[2].x_dbfs - (-30.0 + compressor.offset_db)).abs() < 1e-9);
+    assert!(
+        moved.rising_db[4] < curve.rising_db[4],
+        "a lower threshold compresses +6 dBFS harder"
+    );
+
+    // Enabling the AutoGate adds the Falling branch and mutes below the threshold.
+    eng.rack_command(RackCommand::SetParamPlain {
+        index: 1,
+        id: Dynamics::AUTOGATE_ENABLED,
+        value: 1.0,
+    })
+    .unwrap();
+    let gated = eng.transfer_curve(1, -80.0, 6.0, 5).unwrap();
+    assert!(gated.falling_db.is_some());
+    assert!(
+        (gated.rising_db[0] - vox_engine::TRANSFER_CURVE_MIN_DBFS).abs() < 1e-9,
+        "JSON has no −inf: digital silence reads the floor, got {}",
+        gated.rising_db[0]
+    );
+    assert!(gated.handles[0].enabled);
+
+    // A non-increasing or non-finite range is rejected; an oversized point count is clamped.
+    for (lo, hi) in [(6.0, -80.0), (0.0, 0.0), (f64::NAN, 6.0)] {
+        assert!(matches!(
+            eng.transfer_curve(1, lo, hi, 8),
+            Err(RackApiError::Rack(_))
+        ));
+    }
+    let many = eng.transfer_curve(1, -80.0, 6.0, 4_000).unwrap();
+    assert_eq!(many.in_dbfs.len(), vox_engine::MAX_TRANSFER_CURVE_POINTS);
 }
 
 /// `rack_model` (H-08 handoff: export builds its offline chain from this instead of

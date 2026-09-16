@@ -47,10 +47,10 @@ pub use event::{
     DEFAULT_EVENT_CAPACITY, EventList, EventListError, OutputEvents, ParamEvent, Segment, segments,
 };
 pub use extension::{
-    AdapterHealth, AtomicF32, CurveHandle, EditorRequest, EditorUpdate, Extension, ExtensionId,
-    Hold, NoiseProfile, ParamText, PluginEditor, ResponseCurve, Telemetry, TelemetryCells,
-    TelemetryInfo, TelemetryKind, adapter_health, noise_profile, param_text, plugin_editor,
-    response_curve, telemetry,
+    AdapterHealth, AtomicF32, CurveBranch, CurveHandle, EditorRequest, EditorUpdate, Extension,
+    ExtensionId, Hold, NoiseProfile, ParamText, PluginEditor, ResponseCurve, Telemetry,
+    TelemetryCells, TelemetryInfo, TelemetryKind, TransferCurve, TransferHandle, adapter_health,
+    noise_profile, param_text, plugin_editor, response_curve, telemetry, transfer_curve,
 };
 pub use info::{MODULE_INFO_EXTENSION_ID, ModuleInfo, ModuleInfoError};
 pub use module::{Module, ModuleError};

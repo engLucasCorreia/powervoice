@@ -102,7 +102,7 @@ peak_dbfs: number | null, clipped: boolean, weak: boolean, accepted: boolean, re
  */
 export type ClipboardChangedDto = { len_samples: number | null, sample_rate_hz: number | null, };
 
-export type CommandName = "app_info" | "settings_get" | "settings_set" | "settings_startup_notice_take" | "settings_defaults" | "devices_list" | "devices_select" | "devices_rescan" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "transport_set_loop" | "transport_set_selection" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "rack_editor_open" | "rack_editor_close" | "rack_editor_close_all" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "module_telemetry_subscribe" | "module_presets_list" | "module_preset_save" | "module_preset_load" | "module_preset_rename" | "module_preset_delete" | "module_preset_export" | "module_preset_import" | "module_reset_default" | "rack_presets_list" | "rack_preset_save" | "rack_preset_load" | "rack_preset_rename" | "rack_preset_delete" | "rack_preset_export" | "rack_preset_import" | "analyzer_subscribe" | "analyzer_set_response" | "analyzer_unsubscribe" | "analyzer_voice_subscribe" | "analyzer_inspector_subscribe" | "analyzer_inspector_configure" | "spectrum_analyze_start" | "spectrum_analyze_cancel" | "spectrum_analyze_curve" | "spectrum_export_csv" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_open_cancel" | "import_peaks_get" | "document_probe" | "document_save" | "document_save_as" | "document_save_cancel" | "document_close" | "sidecar_view_set_spectral" | "sidecar_view_set_waveform" | "recent_files_get" | "recent_files_remove" | "recent_files_clear" | "recovery_list" | "recovery_recover" | "recovery_discard" | "storage_info" | "peaks_get" | "spectro_attach" | "spectro_detach" | "spectro_request" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_insert_silence" | "edit_paste_cancel" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "edit_bake_start" | "edit_bake_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check" | "record_start_at" | "record_offset_get" | "record_offset_set" | "calibration_run" | "calibration_cancel" | "plugins_list" | "plugins_rescan" | "plugins_set_enabled" | "plugins_block" | "plugins_unblock" | "plugins_add_folder" | "plugins_remove_folder" | "plugins_clear_flag" | "plugins_folders" | "plugins_install" | "plugins_reveal" | "plugins_uninstall" | "plugins_module_locales";
+export type CommandName = "app_info" | "settings_get" | "settings_set" | "settings_startup_notice_take" | "settings_defaults" | "devices_list" | "devices_select" | "devices_rescan" | "transport_get" | "transport_play" | "transport_pause" | "transport_stop" | "transport_play_from_start" | "transport_return_to_start" | "transport_seek" | "transport_set_loop" | "transport_set_selection" | "telemetry_subscribe" | "clock_now_ns" | "rack_list_modules" | "rack_get" | "rack_add" | "rack_remove" | "rack_move" | "rack_bypass" | "rack_ab" | "rack_restart" | "rack_editor_open" | "rack_editor_close" | "rack_editor_close_all" | "param_set_normalized" | "param_set_text" | "param_set_plain" | "rack_response_curve" | "rack_transfer_curve" | "module_telemetry_subscribe" | "module_presets_list" | "module_preset_save" | "module_preset_load" | "module_preset_rename" | "module_preset_delete" | "module_preset_export" | "module_preset_import" | "module_reset_default" | "rack_presets_list" | "rack_preset_save" | "rack_preset_load" | "rack_preset_rename" | "rack_preset_delete" | "rack_preset_export" | "rack_preset_import" | "analyzer_subscribe" | "analyzer_set_response" | "analyzer_unsubscribe" | "analyzer_voice_subscribe" | "analyzer_inspector_subscribe" | "analyzer_inspector_configure" | "spectrum_analyze_start" | "spectrum_analyze_cancel" | "spectrum_analyze_curve" | "spectrum_export_csv" | "record_get" | "record_arm" | "record_start" | "record_stop" | "record_set_monitor" | "record_peaks_get" | "document_open" | "document_open_cancel" | "import_peaks_get" | "document_probe" | "document_save" | "document_save_as" | "document_save_cancel" | "document_close" | "sidecar_view_set_spectral" | "sidecar_view_set_waveform" | "recent_files_get" | "recent_files_remove" | "recent_files_clear" | "recovery_list" | "recovery_recover" | "recovery_discard" | "storage_info" | "peaks_get" | "spectro_attach" | "spectro_detach" | "spectro_request" | "edit_cut" | "edit_copy" | "edit_paste" | "edit_delete" | "edit_trim" | "edit_silence" | "edit_insert_silence" | "edit_paste_cancel" | "edit_normalize_peak_start" | "edit_normalize_peak_cancel" | "edit_normalize_lufs_start" | "edit_normalize_lufs_cancel" | "edit_bake_start" | "edit_bake_cancel" | "history_undo" | "history_redo" | "markers_get" | "marker_add" | "marker_rename" | "marker_set_range" | "marker_delete" | "export_formats" | "export_start" | "export_cancel" | "nr_capture_start" | "nr_capture_cancel" | "loudness_analyze_start" | "loudness_analyze_cancel" | "acx_check" | "record_start_at" | "record_offset_get" | "record_offset_set" | "calibration_run" | "calibration_cancel" | "plugins_list" | "plugins_rescan" | "plugins_set_enabled" | "plugins_block" | "plugins_unblock" | "plugins_add_folder" | "plugins_remove_folder" | "plugins_clear_flag" | "plugins_folders" | "plugins_install" | "plugins_reveal" | "plugins_uninstall" | "plugins_module_locales";
 
 /**
  * One draggable EQ-graph node (S3-07, SPEC-015 §3 "ResponseCurve components"): the band's
@@ -817,6 +817,11 @@ noise_profile: NoiseProfileStatusDto | null,
  */
 curve_handles: Array<CurveHandleDto> | null, 
 /**
+ * `Some` only for a module with the `TransferCurve` extension (H-63, SPEC-016 §4.11): the
+ * transfer graph only renders when this is present, generic to any module that exposes one.
+ */
+transfer_handles: Array<TransferHandleDto> | null, 
+/**
  * The module's telemetry channels (H-03): empty without the `Telemetry` extension (and for
  * placeholders). The slot header shows the `gain_reduction` channels whose `group` is `null`
  * as meters, fed by `VXMT` frames.
@@ -1417,6 +1422,45 @@ id: string, version: number, outcome: TourOutcome, };
  * them. At most one entry per id (the UI replaces it).
  */
 export type ToursSettingsDto = { progress: Array<TourProgressDto>, };
+
+/**
+ * `rack_transfer_curve`'s response (H-63, SPEC-016 §4.11; lean slice: JSON — the binary `VXTC`
+ * frame of §4.12 is T-410). `components_db` is one row per section, in `transfer_handles` order.
+ * `falling_db` is present only where the module reports hysteresis. JSON has no −∞, so digital
+ * silence reads [`TRANSFER_CURVE_MIN_DBFS`] (far below any graph range).
+ */
+export type TransferCurveDto = { in_dbfs: Array<number>, rising_db: Array<number>, falling_db: Array<number> | null, components_db: Array<Array<number>>, handles: Array<TransferCurveHandleDto>, 
+/**
+ * The floor `rising_db` / `falling_db` / `components_db` report for −∞.
+ */
+min_dbfs: number, };
+
+/**
+ * One handle of `rack_transfer_curve`'s response, already placed on the graph's x axis.
+ */
+export type TransferCurveHandleDto = { component: number, 
+/**
+ * The threshold parameter a drag writes (through `param_set_plain`).
+ */
+param: number, 
+/**
+ * Graph x position (dBFS) = the parameter's target value + `offset_db`.
+ */
+x_dbfs: number, 
+/**
+ * The detector offset applied (+3.0103 dB for an RMS-detected section, else 0).
+ */
+offset_db: number, 
+/**
+ * The section is enabled (SPEC-016 §2.6 draws handles of enabled sections only).
+ */
+enabled: boolean, };
+
+/**
+ * One draggable transfer-graph threshold handle (H-63, SPEC-016 §4.11): the section's threshold
+ * parameter, its enable, and which row of `rack_transfer_curve`'s `components_db` it belongs to.
+ */
+export type TransferHandleDto = { component: number, threshold: number, enable: number | null, };
 
 /**
  * Transport state (`transport_state` event, transport command results). While playing, the

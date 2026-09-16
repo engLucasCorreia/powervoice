@@ -885,3 +885,40 @@ For any `Module`:
   `capture_state()` (the state right now, for saves).
 - Like the other handles it is `Send + Sync`, outlives its instance, and is captured by the rack
   at `Loaded` construction and refreshed on replacement.
+
+## Amendment 6 — `TransferCurve` extension (H-63, 2026-09-16)
+Adopts the addition SPEC-016 §4.11 proposed (and SPEC-013 §4.3 depends on). §11's "Reserved"
+list stays as it was; this is a new, additive `ExtensionId`/`Extension` variant.
+- `ExtensionId::TransferCurve` → `Extension::TransferCurve(Arc<dyn TransferCurve>)`, wire (and
+  CLAP custom-extension) id `org.powervoice.transfer-curve/1`, accessor
+  `transfer_curve(m: &dyn Module) -> Option<Arc<dyn TransferCurve>>`. `ExtensionId::ALL` gains it,
+  so `ModuleTestHost::check_extensions` covers it.
+- `ResponseCurve` is a *frequency* response; a dynamics module needs **level in → level out**, so
+  this is its own trait rather than a bent `ResponseCurve`:
+  ```rust
+  pub enum CurveBranch { Rising, Falling }
+  pub struct TransferHandle { pub component: usize, pub threshold: ParamId, pub enable: Option<ParamId> }
+  pub trait TransferCurve: Send + Sync {
+      fn output_dbfs(&self, values: &[f64], branch: CurveBranch, in_dbfs: &[f64], out_dbfs: &mut [f64]);
+      fn has_hysteresis(&self, values: &[f64]) -> bool { false }
+      fn component_count(&self) -> usize { 0 }
+      fn component_group(&self, component: usize) -> Option<GroupId> { None }
+      fn component_gain_db(&self, component: usize, values: &[f64], in_dbfs: &[f64], out_db: &mut [f64]) {}
+      fn handles(&self) -> &[TransferHandle] { &[] }
+      fn handle_offset_db(&self, handle: usize, values: &[f64]) -> f64 { 0.0 }
+  }
+  ```
+  `output_dbfs` is the settled output peak level of a steady 997 Hz sine at each input peak level,
+  for the module's **target** values, `-inf` for digital silence and never `NaN`. Like
+  `ResponseCurve` it is pure, deterministic, allocation-free beyond the caller's slices, and
+  callable from any non-audio thread while `process()` runs — the two branches exist because a
+  gate reads a different threshold depending on where the level comes from.
+- **Rack additions:** `RackHost::transfer_curve_extension(index)` (captured at `Loaded`
+  construction like the other pure-function handles) and `SlotInfo::transfer_handles`
+  (`Some` exactly when the module answers the extension; the UI's transfer graph renders on it).
+- **Engine / IPC:** `EngineHandle::transfer_curve(index, x_min_db, x_max_db, points)` →
+  `TransferCurvePoints`, exposed as `rack_transfer_curve` → `TransferCurveDto` (JSON, like
+  `rack_response_curve`; ADR-003's interim-JSON note). Points are clamped to 1024; a non-finite or
+  non-increasing range is rejected. SPEC-016 §4.12's binary `VXTC` frame remains T-410's.
+- **Implemented by** Dynamics (4 components + 4 handles, SPEC-016 §4.11) and the Noise Gate
+  (1 component + 1 handle, SPEC-013 §4.3). A module without the extension simply answers `None`.

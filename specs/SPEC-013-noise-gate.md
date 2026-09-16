@@ -16,11 +16,11 @@
   **Live:** identity, range, hysteresis, hold, the sidechain high-pass, the gate core (§4.7 below,
   shared with SPEC-016). **Deferred, not T-408:** **look-ahead** — `lookahead_ms` exists in the
   permanent parameter schema but is flagged `HIDDEN` and has no effect; `latency_samples()` always
-  returns 0 (module doc comment: "Not yet available in this slice"). **Deferred, blocked on
-  SPEC-016's own T-403:** the `TransferCurve` extension referenced throughout this spec (§2.7 UI,
-  §4.3, §4.11) **does not exist** in `module-api` (`ExtensionId`/`Extension` have no such variant) —
-  see SPEC-016's own status note. Every acceptance criterion, UI section and wire format below that
-  depends on look-ahead or `TransferCurve` describes the T-408/T-410 target, not current behaviour.
+  returns 0 (module doc comment: "Not yet available in this slice"). **H-63** made the
+  `TransferCurve` extension referenced throughout this spec (§2.7 UI, §4.3, §4.11) live: the Noise
+  Gate answers it with one component and one handle, **AC-14** passes, and the generic transfer
+  graph renders above its parameter panel. Every acceptance criterion, UI section and wire format
+  below that depends on **look-ahead** still describes the T-408 target, not current behaviour.
   (H-58 made SPEC-016's own look-ahead live — `vox_dsp::dynamics::detector::DelayLine` and the
   `W_pk + la` peak window are ready for T-408 to reuse here.)
 

@@ -77,8 +77,9 @@ pub use engine::{
 };
 pub use prefs::DevicePrefs;
 pub use rack_api::{
-    MAX_RESPONSE_CURVE_POINTS, NOISE_REDUCTION_MODULE_ID, NrCapturePrep, RackApiError, RackCommand,
-    RackSlot, RackSnapshot, ResponseCurvePoints,
+    MAX_RESPONSE_CURVE_POINTS, MAX_TRANSFER_CURVE_POINTS, NOISE_REDUCTION_MODULE_ID, NrCapturePrep,
+    RackApiError, RackCommand, RackSlot, RackSnapshot, ResponseCurvePoints,
+    TRANSFER_CURVE_MIN_DBFS, TransferCurveHandle, TransferCurvePoints,
 };
 pub use record::{
     DropoutMark, LIVE_PEAKS_SPB, LiveTakePeaks, MonitorMode, RecordDone, RecordError, RecordState,

@@ -293,8 +293,11 @@ Records what the vertical slices built, as implemented.
 
   Golden fixture: `ui/src/lib/ipc/vxmt_fixture.ts` (Rust-generated).
 - **Interim JSON:** `rack_response_curve(slot, freqs ≤ 512)` returns `{ freqs_hz, total_db,
-  components_db }` as JSON (S3-07). The binary `VXRC` frame stays the hardening target; this is the
-  one sanctioned exception to "bulk data is binary" until then (≤ 512 × (C + 1) floats).
+  components_db }` as JSON (S3-07), and `rack_transfer_curve(slot, x_min_db, x_max_db, points ≤
+  1024)` returns `{ in_dbfs, rising_db, falling_db, components_db, handles, min_dbfs }` the same way
+  (H-63; SPEC-016 §4.12's binary `VXTC` frame is T-410's). The binary frames stay the hardening
+  target; these two are the sanctioned exceptions to "bulk data is binary" until then (a curve is
+  ≤ 1024 × (C + 2) floats). JSON has no −∞, so a muted level reads `min_dbfs` (−200 dBFS).
 - **Jobs:** `job_progress { job_id, kind, state, fraction }` is the single progress channel. Kinds so
   far: `Export`, `NrCapture`, `LoudnessAnalyze`, `NormalizePeak`, `NormalizeLufs`. A job whose result
   is more than a fraction carries it in its own event, tagged with `job_id`: `loudness_report`

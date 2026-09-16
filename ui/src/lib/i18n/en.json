@@ -998,6 +998,11 @@
   "eq.band.hs": "H",
   "eq.band.lp": "LP",
 
+  "transfer.graph.label": "Input to output transfer",
+  "transfer.graph.in_unit": "in dBFS",
+  "transfer.graph.out_unit": "out dBFS",
+  "transfer.graph.hysteresis": "Dashed: level falling",
+
   "markers.panel.count": "{count} markers",
   "markers.panel.empty": "No markers yet — press M to add one",
   "markers.panel.add": "+",

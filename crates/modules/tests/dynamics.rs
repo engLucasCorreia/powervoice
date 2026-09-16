@@ -18,9 +18,9 @@ use common::*;
 use vox_module_api::test_util::no_alloc;
 use vox_module_api::test_util::{ModuleTestHost, TestRng, ZIPPER_LEN, zipper_signal};
 use vox_module_api::{
-    DEFAULT_EVENT_CAPACITY, HostRequest, Module, ModuleFactory, OutputEvents, ParamEvent,
-    ParamFlags, ParamId, ProcessContext, ProcessMode, Tail, Taper, TelemetryKind, Transport,
-    features, telemetry,
+    CurveBranch, DEFAULT_EVENT_CAPACITY, HostRequest, Module, ModuleFactory, OutputEvents,
+    ParamEvent, ParamFlags, ParamId, ProcessContext, ProcessMode, Tail, Taper, TelemetryKind,
+    Transport, features, telemetry,
 };
 use vox_modules::{Dynamics, DynamicsFactory, builtin_factories};
 
@@ -1637,4 +1637,239 @@ fn silence_after_a_loud_passage_is_exactly_zero() {
         Blocks::Fixed(512),
     );
     assert!(peak(&after) > 0.0 && after.iter().all(|v| v.is_finite()));
+}
+
+// ---------------------------------------------------------------------------------------------
+// AC-17: `TransferCurve` equals what you hear (SPEC-016 §4.11)
+// ---------------------------------------------------------------------------------------------
+
+/// Graph range: input peak levels −80 … +6 dBFS in 1 dB steps.
+const AC17_MIN_DBFS: f64 = -80.0;
+const AC17_MAX_DBFS: f64 = 6.0;
+/// "Equals the measured settled output peak … within ±0.1 dB".
+const AC17_TOLERANCE_DB: f64 = 0.1;
+/// Compared only where both the curve and the measurement are at or above this.
+const AC17_FLOOR_DBFS: f64 = -100.0;
+/// Settling time per level, then the window the output peak is read over.
+const AC17_SETTLE_MS: f64 = 150.0;
+const AC17_WINDOW_MS: f64 = 40.0;
+/// Seeded random parameter sets (half Peak detection, half RMS).
+const AC17_SETS: usize = 30;
+
+fn ac17_levels() -> Vec<f64> {
+    let n = (AC17_MAX_DBFS - AC17_MIN_DBFS) as usize;
+    (0..=n).map(|i| AC17_MIN_DBFS + i as f64).collect()
+}
+
+/// Plain target values in `params()` order, as the rack mirror would hold them.
+fn values_of(m: &dyn Module) -> Vec<f64> {
+    m.params()
+        .iter()
+        .map(|p| m.param_value(p.id).unwrap_or(p.default))
+        .collect()
+}
+
+/// One seeded parameter set. Every value the static curve depends on (enables, detection,
+/// thresholds, ratios, knee, makeup) is drawn over its full schema range. The **time constants**
+/// are drawn short on purpose (a few ms): §4.11 is a settled curve, so no timing value can change
+/// it, and 87 levels × 30 sets have to settle in finite time. Look-ahead is 0 (it only delays).
+fn ac17_settings(rng: &mut TestRng, rms: bool) -> Vec<(&'static str, f64)> {
+    fn r(rng: &mut TestRng, lo: f64, hi: f64) -> f64 {
+        lo + (hi - lo) * rng.unit_f64()
+    }
+    macro_rules! r {
+        ($lo:expr, $hi:expr) => {
+            r(rng, $lo, $hi)
+        };
+    }
+    macro_rules! on {
+        () => {
+            f64::from(u8::from(rng.chance(0.5)))
+        };
+    }
+    vec![
+        ("detection", f64::from(u8::from(rms))),
+        ("knee_db", r!(0.0, 20.0)),
+        ("lookahead_ms", 0.0),
+        ("autogate_enabled", on!()),
+        ("autogate_threshold_db", r!(-80.0, 0.0)),
+        ("autogate_attack_ms", r!(0.5, 5.0)),
+        ("autogate_hold_ms", r!(1.0, 10.0)),
+        ("autogate_release_ms", r!(2.0, 6.0)),
+        ("expander_enabled", on!()),
+        ("expander_threshold_db", r!(-80.0, 0.0)),
+        ("expander_ratio", r!(1.0, 30.0)),
+        ("expander_attack_ms", r!(3.0, 8.0)),
+        ("expander_release_ms", r!(3.0, 8.0)),
+        ("compressor_enabled", on!()),
+        ("compressor_threshold_db", r!(-60.0, 0.0)),
+        ("compressor_ratio", r!(1.0, 30.0)),
+        ("compressor_attack_ms", r!(3.0, 8.0)),
+        ("compressor_release_ms", r!(3.0, 8.0)),
+        ("compressor_makeup_db", r!(0.0, 12.0)),
+        ("limiter_enabled", on!()),
+        ("limiter_threshold_db", r!(-30.0, 0.0)),
+        ("limiter_attack_ms", r!(0.5, 3.0)),
+        ("limiter_release_ms", r!(3.0, 8.0)),
+    ]
+}
+
+/// The settled output peak (dBFS, `-inf` for digital silence) at each level of `levels`,
+/// approached in the order given: one continuous 997 Hz sine that steps level every
+/// `AC17_SETTLE_MS + AC17_WINDOW_MS`. Rising comes up from −80, Falling down from +6, so each
+/// run reaches the branch's gate state.
+fn ac17_measure(settings: &[(&str, f64)], levels: &[f64]) -> Vec<f64> {
+    let settle = samples_of(AC17_SETTLE_MS, SR);
+    let window = samples_of(AC17_WINDOW_MS, SR);
+    let step = settle + window;
+    let segs: Vec<(f64, usize)> = levels.iter().map(|&l| (l, step)).collect();
+    let x = sine_segments(997.0, &segs, SR);
+    let y = render(&mut *dynamics(settings), &x, &[], Blocks::Fixed(4096));
+    (0..levels.len())
+        .map(|i| {
+            let end = (i + 1) * step;
+            let p = peak(&y[end - window..end]);
+            if p > 0.0 { to_db(p) } else { f64::NEG_INFINITY }
+        })
+        .collect()
+}
+
+#[test]
+fn ac17_transfer_curve_equals_the_measured_output() {
+    let rising = ac17_levels();
+    let falling: Vec<f64> = rising.iter().rev().copied().collect();
+    let probe = make();
+    let curve = vox_module_api::transfer_curve(&*probe).expect("Dynamics answers TransferCurve");
+    let mut rng = TestRng::new(0x_AC17_0001);
+
+    for set in 0..AC17_SETS {
+        let rms = set % 2 == 1;
+        let settings = ac17_settings(&mut rng, rms);
+        let values = values_of(&*new_with(make, &settings));
+        let gate_on = settings
+            .iter()
+            .find(|(k, _)| *k == "autogate_enabled")
+            .map(|(_, v)| *v >= 0.5)
+            .unwrap_or(false);
+        assert_eq!(
+            no_alloc(|| curve.has_hysteresis(&values)).expect("has_hysteresis allocated"),
+            gate_on,
+            "set {set}: the AutoGate is the only hysteretic section"
+        );
+
+        for (branch, levels) in [
+            (CurveBranch::Rising, &rising),
+            (CurveBranch::Falling, &falling),
+        ] {
+            let mut want = vec![0.0f64; levels.len()];
+            no_alloc(|| curve.output_dbfs(&values, branch, levels, &mut want))
+                .expect("output_dbfs allocated");
+            let got = ac17_measure(&settings, levels);
+            for (i, (&w, &g)) in want.iter().zip(&got).enumerate() {
+                assert!(!w.is_nan(), "set {set} {branch:?} {i}: curve is NaN");
+                if g == f64::NEG_INFINITY || w == f64::NEG_INFINITY {
+                    assert_eq!(
+                        w, g,
+                        "set {set} {branch:?} at {} dBFS: −inf must line up with digital silence \
+                         ({settings:?})",
+                        levels[i]
+                    );
+                    continue;
+                }
+                if w < AC17_FLOOR_DBFS && g < AC17_FLOOR_DBFS {
+                    continue;
+                }
+                assert!(
+                    (w - g).abs() <= AC17_TOLERANCE_DB,
+                    "set {set} {branch:?} at {} dBFS: curve {w:.4} vs measured {g:.4} dBFS \
+                     ({settings:?})",
+                    levels[i]
+                );
+            }
+        }
+
+        // The component gains sum to output − input (Rising).
+        let mut total = vec![0.0f64; rising.len()];
+        curve.output_dbfs(&values, CurveBranch::Rising, &rising, &mut total);
+        let mut sum = vec![0.0f64; rising.len()];
+        let mut one = vec![0.0f64; rising.len()];
+        assert_eq!(curve.component_count(), Dynamics::CURVE_COMPONENTS);
+        for c in 0..curve.component_count() {
+            no_alloc(|| curve.component_gain_db(c, &values, &rising, &mut one))
+                .expect("component_gain_db allocated");
+            for (s, &o) in sum.iter_mut().zip(&one) {
+                *s += o;
+            }
+        }
+        for (i, (&t, &s)) in total.iter().zip(&sum).enumerate() {
+            let want = t - rising[i];
+            if want == f64::NEG_INFINITY {
+                assert_eq!(s, want, "set {set} {i}: components must mute too");
+            } else {
+                assert!(
+                    (s - want).abs() < 1e-9,
+                    "set {set} at {} dBFS: components sum to {s}, total − input is {want}",
+                    rising[i]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn ac17_handles_and_offsets_match_the_spec() {
+    let probe = make();
+    let curve = vox_module_api::transfer_curve(&*probe).expect("Dynamics answers TransferCurve");
+    let handles = no_alloc(|| curve.handles()).expect("handles allocated");
+    let expected = [
+        (
+            Dynamics::COMPONENT_AUTOGATE,
+            Dynamics::AUTOGATE_THRESHOLD_DB,
+            Dynamics::AUTOGATE_ENABLED,
+            Dynamics::GROUP_AUTOGATE,
+        ),
+        (
+            Dynamics::COMPONENT_EXPANDER,
+            Dynamics::EXPANDER_THRESHOLD_DB,
+            Dynamics::EXPANDER_ENABLED,
+            Dynamics::GROUP_EXPANDER,
+        ),
+        (
+            Dynamics::COMPONENT_COMPRESSOR,
+            Dynamics::COMPRESSOR_THRESHOLD_DB,
+            Dynamics::COMPRESSOR_ENABLED,
+            Dynamics::GROUP_COMPRESSOR,
+        ),
+        (
+            Dynamics::COMPONENT_LIMITER,
+            Dynamics::LIMITER_THRESHOLD_DB,
+            Dynamics::LIMITER_ENABLED,
+            Dynamics::GROUP_LIMITER,
+        ),
+    ];
+    assert_eq!(handles.len(), expected.len(), "one handle per section");
+    for (h, (component, threshold, enable, group)) in handles.iter().zip(expected) {
+        assert_eq!(h.component, component);
+        assert_eq!(h.threshold, threshold);
+        assert_eq!(h.enable, Some(enable));
+        assert_eq!(curve.component_group(component), Some(group));
+    }
+    assert_eq!(curve.component_group(99), None);
+
+    // The offset is the sine peak-to-RMS distance for the RMS-detected sections only (§4.11).
+    for (rms, offsets) in [
+        (false, [0.0, 0.0, 0.0, 0.0]),
+        (true, [0.0, SINE_PEAK_TO_RMS_DB, SINE_PEAK_TO_RMS_DB, 0.0]),
+    ] {
+        let m = new_with(make, &[("detection", f64::from(u8::from(rms)))]);
+        let values = values_of(&*m);
+        for (i, want) in offsets.iter().enumerate() {
+            let got = no_alloc(|| curve.handle_offset_db(i, &values)).expect("offset allocated");
+            assert!(
+                (got - want).abs() < 1e-12,
+                "rms {rms} handle {i}: {got} vs {want}"
+            );
+        }
+        assert_eq!(curve.handle_offset_db(99, &values), 0.0);
+    }
 }

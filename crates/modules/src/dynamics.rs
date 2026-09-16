@@ -28,15 +28,16 @@ use vox_dsp::dynamics::detector::{DelayLine, SlidingPeak, SlidingRms, mean_squar
 use vox_dsp::dynamics::gate::GateCore;
 use vox_dsp::dynamics::ramp::LinearRamp;
 use vox_dsp::dynamics::{
-    AUTOGATE_HYSTERESIS_DB, LEVEL_FLOOR_DBFS, PEAK_WINDOW_MS, RAMP_MS, RMS_WINDOW_MS, db_to_lin,
-    lin_to_dbfs, ms_to_samples, ms_to_samples_or_zero, time_constant_alpha,
+    AUTOGATE_HYSTERESIS_DB, LEVEL_FLOOR_DBFS, PEAK_WINDOW_MS, RAMP_MS, RMS_WINDOW_MS,
+    SINE_PEAK_TO_RMS_DB, db_to_lin, lin_to_dbfs, ms_to_samples, ms_to_samples_or_zero,
+    time_constant_alpha,
 };
 use vox_module_api::{
-    ActivateConfig, ChannelLayout, Extension, ExtensionId, GroupId, Hold, HostRequest,
+    ActivateConfig, ChannelLayout, CurveBranch, Extension, ExtensionId, GroupId, Hold, HostRequest,
     LocalizedText, MODULE_API_VERSION, Module, ModuleDescriptor, ModuleError, ModuleFactory,
     ModulePreset, ModuleState, ParamGroup, ParamId, ParamInfo, ProcessContext, ProcessStatus,
-    StateError, Tail, Telemetry, TelemetryCells, TelemetryInfo, TelemetryKind, Unit, Version,
-    features, segments,
+    StateError, Tail, Telemetry, TelemetryCells, TelemetryInfo, TelemetryKind, TransferCurve,
+    TransferHandle, Unit, Version, features, segments,
 };
 
 use crate::schema::{self, ParamBuild, param, switch};
@@ -112,6 +113,8 @@ pub struct Dynamics {
     /// Plain target values in `params()` order.
     values: Vec<f64>,
     telemetry: Arc<TelemetryCells>,
+    /// The static transfer graph (SPEC-016 §4.11); stateless, shared with the UI thread.
+    curve: Arc<DynamicsCurve>,
     sample_rate: f64,
     /// Look-ahead of the running instance, in samples (= the reported latency).
     lookahead: u32,
@@ -218,10 +221,22 @@ impl Dynamics {
     /// Telemetry: AutoGate open lamp.
     pub const TELEMETRY_AUTOGATE_OPEN: usize = 6;
 
+    /// [`TransferCurve`] component: the AutoGate (SPEC-016 §4.11).
+    pub const COMPONENT_AUTOGATE: usize = 0;
+    /// [`TransferCurve`] component: the Expander.
+    pub const COMPONENT_EXPANDER: usize = 1;
+    /// [`TransferCurve`] component: the Compressor, makeup included.
+    pub const COMPONENT_COMPRESSOR: usize = 2;
+    /// [`TransferCurve`] component: the Limiter.
+    pub const COMPONENT_LIMITER: usize = 3;
+    /// Number of [`TransferCurve`] components (one per section).
+    pub const CURVE_COMPONENTS: usize = 4;
+
     /// A new, inactive instance with default values.
     pub fn new() -> Self {
         let params = Self::schema();
         let values = params.iter().map(|p| p.default).collect();
+        let curve = Arc::new(DynamicsCurve::new(params.clone()));
         let mut m = Self {
             descriptor: Self::descriptor_value(),
             params,
@@ -239,6 +254,7 @@ impl Dynamics {
                     Hold::Max,
                 ],
             ),
+            curve,
             sample_rate: 48_000.0,
             lookahead: 0,
             lookahead_target_ms: 0.0,
@@ -728,7 +744,207 @@ impl Module for Dynamics {
                 let t: Arc<dyn Telemetry> = self.telemetry.clone();
                 Some(Extension::Telemetry(t))
             }
+            ExtensionId::TransferCurve => {
+                let c: Arc<dyn TransferCurve> = self.curve.clone();
+                Some(Extension::TransferCurve(c))
+            }
             _ => None,
+        }
+    }
+}
+
+/// The target values the static curve needs, read (and clamp-quantized) once per call.
+struct CurveValues {
+    /// `detection` = RMS: the Expander and Compressor read `in − 3.0103 dB` (§4.11).
+    rms: bool,
+    knee: f64,
+    w_ag: f64,
+    t_ag: f64,
+    w_ex: f64,
+    t_ex: f64,
+    ratio_minus_one: f64,
+    w_co: f64,
+    t_co: f64,
+    slope: f64,
+    makeup: f64,
+    w_li: f64,
+    t_li: f64,
+}
+
+/// The Dynamics [`TransferCurve`] (SPEC-016 §4.11): stateless, so it is callable from any
+/// non-audio thread while `process()` runs. It is the §4.5 composition of [`Dynamics::tick`] with
+/// every ramp at its target and every ballistic settled, through the same
+/// `vox_dsp::dynamics::curves` gain computers, so the graph is what the module does (AC-17).
+struct DynamicsCurve {
+    params: Vec<ParamInfo>,
+    handles: Vec<TransferHandle>,
+}
+
+impl DynamicsCurve {
+    fn new(params: Vec<ParamInfo>) -> Self {
+        let handle = |component, threshold, enable| TransferHandle {
+            component,
+            threshold,
+            enable: Some(enable),
+        };
+        Self {
+            params,
+            handles: vec![
+                handle(
+                    Dynamics::COMPONENT_AUTOGATE,
+                    Dynamics::AUTOGATE_THRESHOLD_DB,
+                    Dynamics::AUTOGATE_ENABLED,
+                ),
+                handle(
+                    Dynamics::COMPONENT_EXPANDER,
+                    Dynamics::EXPANDER_THRESHOLD_DB,
+                    Dynamics::EXPANDER_ENABLED,
+                ),
+                handle(
+                    Dynamics::COMPONENT_COMPRESSOR,
+                    Dynamics::COMPRESSOR_THRESHOLD_DB,
+                    Dynamics::COMPRESSOR_ENABLED,
+                ),
+                handle(
+                    Dynamics::COMPONENT_LIMITER,
+                    Dynamics::LIMITER_THRESHOLD_DB,
+                    Dynamics::LIMITER_ENABLED,
+                ),
+            ],
+        }
+    }
+
+    /// Clamp-quantized value of `id` (missing → its default), as the host would set it.
+    fn value(&self, values: &[f64], id: ParamId) -> f64 {
+        schema::index_of(&self.params, id).map_or(0.0, |i| {
+            let p = &self.params[i];
+            p.clamp_quantize(values.get(i).copied().unwrap_or(p.default))
+        })
+    }
+
+    fn read(&self, values: &[f64]) -> CurveValues {
+        let v = |id| self.value(values, id);
+        CurveValues {
+            rms: switch(v(Dynamics::DETECTION)) >= 0.5,
+            knee: v(Dynamics::KNEE_DB),
+            w_ag: switch(v(Dynamics::AUTOGATE_ENABLED)),
+            t_ag: v(Dynamics::AUTOGATE_THRESHOLD_DB),
+            w_ex: switch(v(Dynamics::EXPANDER_ENABLED)),
+            t_ex: v(Dynamics::EXPANDER_THRESHOLD_DB),
+            ratio_minus_one: v(Dynamics::EXPANDER_RATIO) - 1.0,
+            w_co: switch(v(Dynamics::COMPRESSOR_ENABLED)),
+            t_co: v(Dynamics::COMPRESSOR_THRESHOLD_DB),
+            slope: compressor_slope(v(Dynamics::COMPRESSOR_RATIO)),
+            makeup: v(Dynamics::COMPRESSOR_MAKEUP_DB),
+            w_li: switch(v(Dynamics::LIMITER_ENABLED)),
+            t_li: v(Dynamics::LIMITER_THRESHOLD_DB),
+        }
+    }
+
+    /// The four component gains in dB for one input peak level, in processing order. The AutoGate
+    /// entry is `-inf` when the gate mutes (`tick` multiplies by exactly 0.0 there), so the
+    /// components always sum to `output − input`.
+    fn gains(&self, v: &CurveValues, branch: CurveBranch, in_dbfs: f64) -> [f64; 4] {
+        let level_pk = in_dbfs;
+        let level_mode = if v.rms {
+            in_dbfs - SINE_PEAK_TO_RMS_DB
+        } else {
+            in_dbfs
+        };
+
+        // AutoGate: peak detection, fixed 3 dB hysteresis, closed = −∞ (§2.3, §4.7).
+        let open_at = match branch {
+            CurveBranch::Rising => v.t_ag,
+            CurveBranch::Falling => v.t_ag - AUTOGATE_HYSTERESIS_DB,
+        };
+        let g_ag = f64::from(u8::from(level_pk >= open_at));
+        let g_ag_eff = 1.0 + v.w_ag * (g_ag - 1.0);
+        // The floor `tick` feeds the sections below when the gate is shut.
+        let gain_ag_db = lin_to_dbfs(g_ag_eff);
+
+        let level_ex = (level_mode + gain_ag_db).max(LEVEL_FLOOR_DBFS);
+        let g_ex_eff = v.w_ex * expander_gain_db(level_ex, v.t_ex, v.ratio_minus_one, v.knee);
+
+        let level_co = (level_mode + gain_ag_db + g_ex_eff).max(LEVEL_FLOOR_DBFS);
+        let g_co_eff = v.w_co * compressor_gain_db(level_co, v.t_co, v.slope, v.knee);
+        let makeup_eff = v.w_co * v.makeup;
+
+        let level_li =
+            (level_pk + gain_ag_db + g_ex_eff + g_co_eff + makeup_eff).max(LEVEL_FLOOR_DBFS);
+        let g_li_eff = v.w_li * limiter_gain_db(level_li, v.t_li);
+
+        let autogate = if g_ag_eff > 0.0 {
+            gain_ag_db
+        } else {
+            f64::NEG_INFINITY
+        };
+        [autogate, g_ex_eff, g_co_eff + makeup_eff, g_li_eff]
+    }
+}
+
+impl TransferCurve for DynamicsCurve {
+    fn output_dbfs(
+        &self,
+        values: &[f64],
+        branch: CurveBranch,
+        in_dbfs: &[f64],
+        out_dbfs: &mut [f64],
+    ) {
+        let v = self.read(values);
+        for (o, &x) in out_dbfs.iter_mut().zip(in_dbfs) {
+            let g = self.gains(&v, branch, x);
+            *o = x + g[0] + g[1] + g[2] + g[3];
+        }
+    }
+
+    fn has_hysteresis(&self, values: &[f64]) -> bool {
+        switch(self.value(values, Dynamics::AUTOGATE_ENABLED)) >= 0.5
+    }
+
+    fn component_count(&self) -> usize {
+        Dynamics::CURVE_COMPONENTS
+    }
+
+    fn component_group(&self, component: usize) -> Option<GroupId> {
+        match component {
+            Dynamics::COMPONENT_AUTOGATE => Some(Dynamics::GROUP_AUTOGATE),
+            Dynamics::COMPONENT_EXPANDER => Some(Dynamics::GROUP_EXPANDER),
+            Dynamics::COMPONENT_COMPRESSOR => Some(Dynamics::GROUP_COMPRESSOR),
+            Dynamics::COMPONENT_LIMITER => Some(Dynamics::GROUP_LIMITER),
+            _ => None,
+        }
+    }
+
+    fn component_gain_db(
+        &self,
+        component: usize,
+        values: &[f64],
+        in_dbfs: &[f64],
+        out_db: &mut [f64],
+    ) {
+        if component >= Dynamics::CURVE_COMPONENTS {
+            out_db.fill(0.0);
+            return;
+        }
+        let v = self.read(values);
+        for (o, &x) in out_db.iter_mut().zip(in_dbfs) {
+            *o = self.gains(&v, CurveBranch::Rising, x)[component];
+        }
+    }
+
+    fn handles(&self) -> &[TransferHandle] {
+        &self.handles
+    }
+
+    /// The Expander and Compressor are the only RMS-detected sections (§2.4), so only their
+    /// handles move by a sine's peak-to-RMS distance when `detection` is RMS.
+    fn handle_offset_db(&self, handle: usize, values: &[f64]) -> f64 {
+        let rms = switch(self.value(values, Dynamics::DETECTION)) >= 0.5;
+        match self.handles.get(handle).map(|h| h.component) {
+            Some(Dynamics::COMPONENT_EXPANDER | Dynamics::COMPONENT_COMPRESSOR) if rms => {
+                SINE_PEAK_TO_RMS_DB
+            }
+            _ => 0.0,
         }
     }
 }

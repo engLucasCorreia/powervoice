@@ -5,7 +5,9 @@
  * testable without a real animation-frame clock.
  */
 
-export type CurveSender<T> = (points: number[]) => Promise<T>;
+/** What one request carries: the EQ graph sends a frequency list, the transfer graph a level
+ * range and a point count. */
+export type CurveSender<T, A = number[]> = (args: A) => Promise<T>;
 
 function defaultSchedule(cb: () => void): number {
   return typeof requestAnimationFrame === "function"
@@ -21,17 +23,17 @@ function defaultCancel(id: number): void {
   }
 }
 
-export class CoalescedCurveRequest<T> {
-  readonly #send: CurveSender<T>;
+export class CoalescedCurveRequest<T, A = number[]> {
+  readonly #send: CurveSender<T, A>;
   readonly #onResult: (result: T) => void;
   readonly #scheduleFrame: (cb: () => void) => number;
   readonly #cancelFrame: (id: number) => void;
   #frame: number | null = null;
-  #pending: number[] | null = null;
+  #pending: { args: A } | null = null;
   #seq = 0;
 
   constructor(
-    send: CurveSender<T>,
+    send: CurveSender<T, A>,
     onResult: (result: T) => void,
     scheduleFrame: (cb: () => void) => number = defaultSchedule,
     cancelFrame: (id: number) => void = defaultCancel,
@@ -42,10 +44,10 @@ export class CoalescedCurveRequest<T> {
     this.#cancelFrame = cancelFrame;
   }
 
-  /** Queues `points` for the next animation frame; a call before that frame replaces the queued
-   * points (latest wins) rather than issuing a second request. */
-  request(points: number[]): void {
-    this.#pending = points;
+  /** Queues `args` for the next animation frame; a call before that frame replaces the queued
+   * request (latest wins) rather than issuing a second one. */
+  request(args: A): void {
+    this.#pending = { args };
     if (this.#frame === null) {
       this.#frame = this.#scheduleFrame(() => this.#flush());
     }
@@ -72,21 +74,21 @@ export class CoalescedCurveRequest<T> {
 
   #flush(): void {
     this.#frame = null;
-    const points = this.#pending;
+    const pending = this.#pending;
     this.#pending = null;
-    if (!points) {
+    if (!pending) {
       return;
     }
     const seq = ++this.#seq;
-    this.#send(points).then(
+    this.#send(pending.args).then(
       (result) => {
         if (seq === this.#seq) {
           this.#onResult(result);
         }
       },
       () => {
-        // A failed request (no ResponseCurve support, rack unavailable) leaves the last result
-        // on screen rather than clearing the graph.
+        // A failed request (no curve extension, rack unavailable) leaves the last result on
+        // screen rather than clearing the graph.
       },
     );
   }

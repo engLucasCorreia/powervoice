@@ -28,6 +28,7 @@ use crate::devices::DeviceNotice;
 use crate::prefs::DevicePrefs;
 use crate::rack_api::{
     NrCapturePrep, RackApiError, RackCommand, RackSnapshot, ResponseCurvePoints,
+    TransferCurvePoints,
 };
 use crate::record::{
     CalibrationError, CalibrationStatus, LiveTakePeaks, MonitorMode, RecordDone, RecordError,
@@ -523,6 +524,21 @@ impl EngineHandle {
             .unwrap_or(Err(RackApiError::Unavailable))
     }
 
+    /// The transfer graph (H-63, SPEC-016 §4.11): evaluates slot `index`'s `TransferCurve`
+    /// extension over `points` levels spanning `x_min_db … x_max_db` from the parameter mirror's
+    /// current values. `points` is clamped to `MAX_TRANSFER_CURVE_POINTS`. Read-only; call from
+    /// any thread.
+    pub fn transfer_curve(
+        &self,
+        index: usize,
+        x_min_db: f64,
+        x_max_db: f64,
+        points: usize,
+    ) -> Result<TransferCurvePoints, RackApiError> {
+        self.call(move |c| c.transfer_curve(index, x_min_db, x_max_db, points))
+            .unwrap_or(Err(RackApiError::Unavailable))
+    }
+
     /// The committed state of slot `index` (T-406: what "Save as preset" reads). Read-only.
     pub fn rack_slot_state(&self, index: usize) -> Result<ModuleState, RackApiError> {
         self.call(move |c| c.rack_slot_state(index))
@@ -777,6 +793,18 @@ impl ManualEngine {
         freqs_hz: Vec<f64>,
     ) -> Result<ResponseCurvePoints, RackApiError> {
         self.control.response_curve(index, freqs_hz)
+    }
+
+    /// See [`EngineHandle::transfer_curve`].
+    pub fn transfer_curve(
+        &self,
+        index: usize,
+        x_min_db: f64,
+        x_max_db: f64,
+        points: usize,
+    ) -> Result<TransferCurvePoints, RackApiError> {
+        self.control
+            .transfer_curve(index, x_min_db, x_max_db, points)
     }
 
     /// See [`EngineHandle::rack_slot_state`].

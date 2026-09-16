@@ -14,11 +14,11 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use vox_engine::{
     RackApiError, RackSlot as EngineRackSlot, RackSnapshot as EngineRackSnapshot,
-    ResponseCurvePoints,
+    ResponseCurvePoints, TRANSFER_CURVE_MIN_DBFS, TransferCurveHandle, TransferCurvePoints,
 };
 use vox_rack::{
     CurveHandle, LocalizedText, ModuleDescriptor, NoiseProfileStatus, ParamFlags, ParamGroup,
-    ParamInfo, SlotInfo, SlotStatus, Taper, TelemetryInfo, TelemetryKind, Unit,
+    ParamInfo, SlotInfo, SlotStatus, Taper, TelemetryInfo, TelemetryKind, TransferHandle, Unit,
 };
 
 use crate::ipc::error::{IpcError, IpcErrorCode};
@@ -336,6 +336,26 @@ impl From<&CurveHandle> for CurveHandleDto {
     }
 }
 
+/// One draggable transfer-graph threshold handle (H-63, SPEC-016 §4.11): the section's threshold
+/// parameter, its enable, and which row of `rack_transfer_curve`'s `components_db` it belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct TransferHandleDto {
+    pub component: usize,
+    pub threshold: u32,
+    pub enable: Option<u32>,
+}
+
+impl From<&TransferHandle> for TransferHandleDto {
+    fn from(h: &TransferHandle) -> Self {
+        Self {
+            component: h.component,
+            threshold: h.threshold.0,
+            enable: h.enable.map(|p| p.0),
+        }
+    }
+}
+
 /// What a module telemetry channel's value means ([`TelemetryKind`], ADR-005 §11).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -415,6 +435,62 @@ impl From<ResponseCurvePoints> for ResponseCurveDto {
     }
 }
 
+/// One handle of `rack_transfer_curve`'s response, already placed on the graph's x axis.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct TransferCurveHandleDto {
+    pub component: usize,
+    /// The threshold parameter a drag writes (through `param_set_plain`).
+    pub param: u32,
+    /// Graph x position (dBFS) = the parameter's target value + `offset_db`.
+    pub x_dbfs: f64,
+    /// The detector offset applied (+3.0103 dB for an RMS-detected section, else 0).
+    pub offset_db: f64,
+    /// The section is enabled (SPEC-016 §2.6 draws handles of enabled sections only).
+    pub enabled: bool,
+}
+
+impl From<&TransferCurveHandle> for TransferCurveHandleDto {
+    fn from(h: &TransferCurveHandle) -> Self {
+        Self {
+            component: h.component,
+            param: h.param.0,
+            x_dbfs: h.x_dbfs,
+            offset_db: h.offset_db,
+            enabled: h.enabled,
+        }
+    }
+}
+
+/// `rack_transfer_curve`'s response (H-63, SPEC-016 §4.11; lean slice: JSON — the binary `VXTC`
+/// frame of §4.12 is T-410). `components_db` is one row per section, in `transfer_handles` order.
+/// `falling_db` is present only where the module reports hysteresis. JSON has no −∞, so digital
+/// silence reads [`TRANSFER_CURVE_MIN_DBFS`] (far below any graph range).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct TransferCurveDto {
+    pub in_dbfs: Vec<f64>,
+    pub rising_db: Vec<f64>,
+    pub falling_db: Option<Vec<f64>>,
+    pub components_db: Vec<Vec<f64>>,
+    pub handles: Vec<TransferCurveHandleDto>,
+    /// The floor `rising_db` / `falling_db` / `components_db` report for −∞.
+    pub min_dbfs: f64,
+}
+
+impl From<TransferCurvePoints> for TransferCurveDto {
+    fn from(p: TransferCurvePoints) -> Self {
+        Self {
+            in_dbfs: p.in_dbfs,
+            rising_db: p.rising_db,
+            falling_db: p.falling_db,
+            components_db: p.components_db,
+            handles: p.handles.iter().map(Into::into).collect(),
+            min_dbfs: TRANSFER_CURVE_MIN_DBFS,
+        }
+    }
+}
+
 impl From<&SlotStatus> for SlotStatusDto {
     fn from(s: &SlotStatus) -> Self {
         match s {
@@ -460,6 +536,9 @@ pub struct RackSlotDto {
     /// `Some` only for a module with the `ResponseCurve` extension (S3-07): the EQ graph panel
     /// only renders when this is present, generic to any future module that exposes a curve.
     pub curve_handles: Option<Vec<CurveHandleDto>>,
+    /// `Some` only for a module with the `TransferCurve` extension (H-63, SPEC-016 §4.11): the
+    /// transfer graph only renders when this is present, generic to any module that exposes one.
+    pub transfer_handles: Option<Vec<TransferHandleDto>>,
     /// The module's telemetry channels (H-03): empty without the `Telemetry` extension (and for
     /// placeholders). The slot header shows the `gain_reduction` channels whose `group` is `null`
     /// as meters, fed by `VXMT` frames.
@@ -497,6 +576,10 @@ impl From<&EngineRackSlot> for RackSlotDto {
             noise_profile: info.noise_profile.as_ref().map(Into::into),
             curve_handles: info
                 .curve_handles
+                .as_ref()
+                .map(|hs| hs.iter().map(Into::into).collect()),
+            transfer_handles: info
+                .transfer_handles
                 .as_ref()
                 .map(|hs| hs.iter().map(Into::into).collect()),
             telemetry: info.telemetry.iter().map(Into::into).collect(),

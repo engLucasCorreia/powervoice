@@ -274,6 +274,32 @@ describe("EQ graph section (S3-07)", () => {
   });
 });
 
+// H-63, SPEC-016 §2.6 / SPEC-013 §2.7: the transfer graph renders above the generic parameter
+// body for any module exposing `TransferCurve` (`transfer_handles !== null`).
+describe("transfer graph section (H-63)", () => {
+  it("is absent for a slot with no transfer_handles", () => {
+    const { target, teardown } = render(slotFixture());
+    expect(target.querySelector('[data-testid="transfer-graph"]')).toBeNull();
+    teardown();
+  });
+
+  it("renders above the generic parameter body for a slot that has transfer_handles", () => {
+    const slot: RackSlotDto = {
+      ...slotFixture(),
+      transfer_handles: [{ component: 0, threshold: 0, enable: null }],
+    };
+    const { target, teardown } = render(slot);
+    const body = target.querySelector(".body")!;
+    const graph = body.querySelector('[data-testid="transfer-graph"]');
+    expect(graph).not.toBeNull();
+    const firstParamNode = body.querySelector('[data-testid="param-row"], [data-testid="param-group"]');
+    expect(
+      graph!.compareDocumentPosition(firstParamNode!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    teardown();
+  });
+});
+
 // H-03 (SPEC-017 §2.3 "Meter"): a module telemetry channel of kind `gain_reduction` placed in the
 // header (`group` null) renders as a gain-reduction meter, fed by `VXMT` frames through the store.
 describe("gain-reduction meter (H-03)", () => {

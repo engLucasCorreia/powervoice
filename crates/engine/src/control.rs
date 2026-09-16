@@ -18,9 +18,9 @@ use vox_dsp::async_resample::MonitorResampler;
 use vox_dsp::capture_resample::CaptureResampler;
 use vox_project::{FreeSpaceProvider, TakeCapture};
 use vox_rack::{
-    ActivateConfig, ChannelLayout, EditorRequest, MAX_BLOCK, ModuleDescriptor, ModulePreset,
-    ModuleState, PluginEditor, ProcessMode, RackHost, RackModel, RackNotice, RackOptions, Registry,
-    SlotUid,
+    ActivateConfig, ChannelLayout, CurveBranch, EditorRequest, MAX_BLOCK, ModuleDescriptor,
+    ModulePreset, ModuleState, PluginEditor, ProcessMode, RackHost, RackModel, RackNotice,
+    RackOptions, Registry, SlotUid,
 };
 
 use crate::analyzer::{
@@ -51,8 +51,9 @@ use crate::monitor::{
 use crate::output::{OutputCb, OutputParts, PartsSlot, take_parts};
 use crate::prefs::DevicePrefs;
 use crate::rack_api::{
-    MAX_RESPONSE_CURVE_POINTS, NOISE_REDUCTION_MODULE_ID, NrCapturePrep, RackApiError, RackCommand,
-    RackSnapshot, ResponseCurvePoints,
+    MAX_RESPONSE_CURVE_POINTS, MAX_TRANSFER_CURVE_POINTS, NOISE_REDUCTION_MODULE_ID, NrCapturePrep,
+    RackApiError, RackCommand, RackSnapshot, ResponseCurvePoints, TRANSFER_CURVE_MIN_DBFS,
+    TransferCurveHandle, TransferCurvePoints,
 };
 use crate::reader::{self, Reader, ReaderCmd};
 use crate::record::{
@@ -1164,6 +1165,93 @@ impl Control {
             sample_rate_hz,
             total_db,
             components_db,
+        })
+    }
+
+    /// The transfer graph (H-63, SPEC-016 §4.11): evaluates slot `index`'s `TransferCurve`
+    /// extension over `points` levels evenly spaced across `x_min_db … x_max_db` (clamped to
+    /// [`MAX_TRANSFER_CURVE_POINTS`](crate::rack_api::MAX_TRANSFER_CURVE_POINTS)), from the
+    /// parameter mirror's current (target) values. Read-only: never touches the audio thread,
+    /// so it's safe to call every animation frame.
+    pub(crate) fn transfer_curve(
+        &self,
+        index: usize,
+        x_min_db: f64,
+        x_max_db: f64,
+        points: usize,
+    ) -> Result<TransferCurvePoints, RackApiError> {
+        if !x_min_db.is_finite() || !x_max_db.is_finite() || x_min_db >= x_max_db {
+            return Err(RackApiError::Rack(format!(
+                "transfer-curve range {x_min_db} … {x_max_db} dBFS must be finite and increasing"
+            )));
+        }
+        let points = points.clamp(2, MAX_TRANSFER_CURVE_POINTS);
+        let Some(out) = self.output.as_ref() else {
+            return Err(RackApiError::Unavailable);
+        };
+        let host = &out.rack;
+        let ext = host.transfer_curve_extension(index).ok_or_else(|| {
+            RackApiError::Rack("the target slot has no transfer-curve support".into())
+        })?;
+        let info = host.slot_info(index).ok_or(RackApiError::Rack(format!(
+            "slot index {index} out of range"
+        )))?;
+        let values: Vec<f64> = info
+            .params
+            .iter()
+            .map(|p| host.param_value(index, p.id).unwrap_or(p.default))
+            .collect();
+
+        let step = (x_max_db - x_min_db) / (points - 1) as f64;
+        let in_dbfs: Vec<f64> = (0..points).map(|i| x_min_db + step * i as f64).collect();
+        let floor = |v: &mut Vec<f64>| {
+            for x in v.iter_mut() {
+                if !x.is_finite() {
+                    *x = TRANSFER_CURVE_MIN_DBFS;
+                }
+                *x = x.max(TRANSFER_CURVE_MIN_DBFS);
+            }
+        };
+        let mut rising_db = vec![0.0; points];
+        ext.output_dbfs(&values, CurveBranch::Rising, &in_dbfs, &mut rising_db);
+        floor(&mut rising_db);
+        let falling_db = ext.has_hysteresis(&values).then(|| {
+            let mut v = vec![0.0; points];
+            ext.output_dbfs(&values, CurveBranch::Falling, &in_dbfs, &mut v);
+            floor(&mut v);
+            v
+        });
+        let mut components_db = Vec::with_capacity(ext.component_count());
+        for c in 0..ext.component_count() {
+            let mut v = vec![0.0; points];
+            ext.component_gain_db(c, &values, &in_dbfs, &mut v);
+            floor(&mut v);
+            components_db.push(v);
+        }
+        let handles = ext
+            .handles()
+            .iter()
+            .enumerate()
+            .map(|(i, h)| {
+                let offset_db = ext.handle_offset_db(i, &values);
+                let threshold = host.param_value(index, h.threshold).unwrap_or(0.0);
+                TransferCurveHandle {
+                    component: h.component,
+                    param: h.threshold,
+                    x_dbfs: threshold + offset_db,
+                    offset_db,
+                    enabled: h
+                        .enable
+                        .is_none_or(|e| host.param_value(index, e).unwrap_or(1.0) >= 0.5),
+                }
+            })
+            .collect();
+        Ok(TransferCurvePoints {
+            in_dbfs,
+            rising_db,
+            falling_db,
+            components_db,
+            handles,
         })
     }
 

@@ -54,14 +54,17 @@ pub use shim::DualMonoShim;
 /// direct `module-api` edge, ADR-001 §2). `NoiseProfile` (S3-06): the noise-print capture
 /// extension a target slot's [`RackHost::noise_profile_extension`] returns. `ResponseCurve` /
 /// `CurveHandle` (S3-07): the EQ-graph extension a target slot's
-/// [`RackHost::response_curve_extension`] returns. `Telemetry` / `TelemetryInfo` /
+/// [`RackHost::response_curve_extension`] returns. `TransferCurve` / `TransferHandle` /
+/// `CurveBranch` (H-63): the level-transfer extension a target slot's
+/// [`RackHost::transfer_curve_extension`] returns. `Telemetry` / `TelemetryInfo` /
 /// `TelemetryKind` (H-03): the per-slot meter channels ([`SlotInfo::telemetry`],
 /// [`RackHost::read_telemetry`]).
 pub use vox_module_api::{
-    ActivateConfig, ChannelLayout, CurveHandle, EditorRequest, EditorUpdate, GroupId,
+    ActivateConfig, ChannelLayout, CurveBranch, CurveHandle, EditorRequest, EditorUpdate, GroupId,
     LocalizedText, ModuleDescriptor, ModuleError, ModuleFactory, ModulePreset, ModuleState,
     NoiseProfile, ParamFlags, ParamGroup, ParamId, ParamInfo, PluginEditor, ProcessMode,
-    ResponseCurve, Taper, Telemetry, TelemetryInfo, TelemetryKind, Transport, Unit,
+    ResponseCurve, Taper, Telemetry, TelemetryInfo, TelemetryKind, TransferCurve, TransferHandle,
+    Transport, Unit,
 };
 
 use vox_module_api::{DEFAULT_EVENT_CAPACITY, EventListError, SchemaError, StateError};

@@ -21,10 +21,11 @@ use vox_dsp::dynamics::{
     ms_to_samples_or_zero, time_constant_alpha,
 };
 use vox_module_api::{
-    ActivateConfig, ChannelLayout, Extension, ExtensionId, GroupId, Hold, LocalizedText,
-    MODULE_API_VERSION, Module, ModuleDescriptor, ModuleError, ModuleFactory, ModulePreset,
-    ModuleState, ParamGroup, ParamId, ParamInfo, ProcessContext, ProcessStatus, StateError, Tail,
-    Telemetry, TelemetryCells, TelemetryInfo, TelemetryKind, Unit, Version, features, segments,
+    ActivateConfig, ChannelLayout, CurveBranch, Extension, ExtensionId, GroupId, Hold,
+    LocalizedText, MODULE_API_VERSION, Module, ModuleDescriptor, ModuleError, ModuleFactory,
+    ModulePreset, ModuleState, ParamGroup, ParamId, ParamInfo, ProcessContext, ProcessStatus,
+    StateError, Tail, Telemetry, TelemetryCells, TelemetryInfo, TelemetryKind, TransferCurve,
+    TransferHandle, Unit, Version, features, segments,
 };
 
 use crate::schema::{self, ParamBuild, param};
@@ -46,6 +47,8 @@ pub struct NoiseGate {
     /// Plain target values in `params()` order.
     values: Vec<f64>,
     telemetry: Arc<TelemetryCells>,
+    /// The static transfer graph (SPEC-013 §4.3); stateless, shared with the UI thread.
+    curve: Arc<NoiseGateCurve>,
     sample_rate: f64,
     threshold_db: f64,
     hysteresis_db: f64,
@@ -99,10 +102,16 @@ impl NoiseGate {
     /// `range_db` at or below this is −∞ (linear 0).
     pub const RANGE_MIN_DB: f64 = -100.0;
 
+    /// [`TransferCurve`] component: the gate gain (SPEC-013 §4.3). It is the only one.
+    pub const COMPONENT_GATE: usize = 0;
+    /// Number of [`TransferCurve`] components.
+    pub const CURVE_COMPONENTS: usize = 1;
+
     /// A new, inactive instance with default values.
     pub fn new() -> Self {
         let params = Self::schema();
         let values = params.iter().map(|p| p.default).collect();
+        let curve = Arc::new(NoiseGateCurve::new(params.clone()));
         let mut m = Self {
             descriptor: Self::descriptor_value(),
             params,
@@ -119,6 +128,7 @@ impl NoiseGate {
                 Self::telemetry_channels(),
                 vec![Hold::Max, Hold::Min, Hold::Max],
             ),
+            curve,
             sample_rate: 48_000.0,
             threshold_db: -40.0,
             hysteresis_db: 6.0,
@@ -417,8 +427,105 @@ impl Module for NoiseGate {
                 let t: Arc<dyn Telemetry> = self.telemetry.clone();
                 Some(Extension::Telemetry(t))
             }
+            ExtensionId::TransferCurve => {
+                let c: Arc<dyn TransferCurve> = self.curve.clone();
+                Some(Extension::TransferCurve(c))
+            }
             _ => None,
         }
+    }
+}
+
+/// The Noise Gate's [`TransferCurve`] (SPEC-013 §4.3): stateless, so it is callable from any
+/// non-audio thread while `process()` runs.
+///
+/// A steady 997 Hz sine either holds the gate open (output = input, bit-identically) or leaves it
+/// at the range floor. The sidechain high-pass is deliberately **not** modelled: the curve
+/// describes a 997 Hz tone, which the default 100 Hz corner passes within 0.01 dB (§4.3). Hold
+/// and the time constants are not modelled either — this is the settled curve.
+struct NoiseGateCurve {
+    params: Vec<ParamInfo>,
+    handles: Vec<TransferHandle>,
+}
+
+impl NoiseGateCurve {
+    fn new(params: Vec<ParamInfo>) -> Self {
+        Self {
+            params,
+            handles: vec![TransferHandle {
+                component: NoiseGate::COMPONENT_GATE,
+                threshold: NoiseGate::THRESHOLD_DB,
+                enable: None,
+            }],
+        }
+    }
+
+    /// Clamp-quantized value of `id` (missing → its default), as the host would set it.
+    fn value(&self, values: &[f64], id: ParamId) -> f64 {
+        schema::index_of(&self.params, id).map_or(0.0, |i| {
+            let p = &self.params[i];
+            p.clamp_quantize(values.get(i).copied().unwrap_or(p.default))
+        })
+    }
+
+    /// The branch's opening threshold and the closed gain in dB (`-inf` for a −∞ range).
+    fn branch(&self, values: &[f64], branch: CurveBranch) -> (f64, f64) {
+        let threshold = self.value(values, NoiseGate::THRESHOLD_DB);
+        let open_at = match branch {
+            CurveBranch::Rising => threshold,
+            CurveBranch::Falling => threshold - self.value(values, NoiseGate::HYSTERESIS_DB),
+        };
+        let range = self.value(values, NoiseGate::RANGE_DB);
+        let closed_db = if range <= NoiseGate::RANGE_MIN_DB {
+            f64::NEG_INFINITY
+        } else {
+            range
+        };
+        (open_at, closed_db)
+    }
+}
+
+impl TransferCurve for NoiseGateCurve {
+    fn output_dbfs(
+        &self,
+        values: &[f64],
+        branch: CurveBranch,
+        in_dbfs: &[f64],
+        out_dbfs: &mut [f64],
+    ) {
+        let (open_at, closed_db) = self.branch(values, branch);
+        for (o, &x) in out_dbfs.iter_mut().zip(in_dbfs) {
+            *o = if x >= open_at { x } else { x + closed_db };
+        }
+    }
+
+    fn has_hysteresis(&self, values: &[f64]) -> bool {
+        self.value(values, NoiseGate::HYSTERESIS_DB) > 0.0
+    }
+
+    fn component_count(&self) -> usize {
+        NoiseGate::CURVE_COMPONENTS
+    }
+
+    fn component_gain_db(
+        &self,
+        component: usize,
+        values: &[f64],
+        in_dbfs: &[f64],
+        out_db: &mut [f64],
+    ) {
+        if component != NoiseGate::COMPONENT_GATE {
+            out_db.fill(0.0);
+            return;
+        }
+        let (open_at, closed_db) = self.branch(values, CurveBranch::Rising);
+        for (o, &x) in out_db.iter_mut().zip(in_dbfs) {
+            *o = if x >= open_at { 0.0 } else { closed_db };
+        }
+    }
+
+    fn handles(&self) -> &[TransferHandle] {
+        &self.handles
     }
 }
 

@@ -71,6 +71,18 @@ export interface ThemeColors {
     /** Node colour by band key (`hp`, `ls`, `1`…`5`, `hs`, `lp`); other keys get the curve colour. */
     readonly bands: Readonly<Record<string, ThemeColor>>;
   };
+  /** H-63: the dynamics transfer graph. It shares the EQ graph's curve/grid tokens so the two
+   * module graphs read as one family; only the 1:1 diagonal and the threshold handles are its
+   * own roles. */
+  readonly transfer: {
+    readonly grid: ThemeColor;
+    readonly unity: ThemeColor;
+    readonly curve: ThemeColor;
+    readonly fill: ThemeColor;
+    readonly handle: ThemeColor;
+    readonly labelPatch: ThemeColor;
+    readonly labelText: ThemeColor;
+  };
 }
 
 const EQ_BANDS = ["hp", "ls", "1", "2", "3", "4", "5", "hs", "lp"] as const;
@@ -153,6 +165,15 @@ export function readThemeColors(theme: ResolvedTheme): ThemeColors {
       labelText: color("--pv-text-tertiary"),
       selectedRing: color("--pv-focus-ring"),
       bands,
+    },
+    transfer: {
+      grid: color("--eq-grid"),
+      unity: color("--eq-grid"),
+      curve,
+      fill: color("--eq-fill"),
+      handle: color("--pv-accent"),
+      labelPatch: color("--pv-bg-inset"),
+      labelText: color("--pv-text-tertiary"),
     },
   };
 }

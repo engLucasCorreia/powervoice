@@ -8,6 +8,7 @@ check:
     cargo test --workspace
     just check-types
     python3 scripts/packaging/test_check_bundle.py
+    python3 scripts/packaging/test_check_bundle_windows.py
     python3 scripts/notices/generate.py --check
     python3 scripts/docs/test_check.py
     python3 scripts/docs/check.py

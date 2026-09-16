@@ -71,7 +71,12 @@ Optional extras, installed automatically by `apt` as recommendations:
 
 On Arch: `sudo pacman -S lame lilv`. Everything else works without them.
 
-**Windows and macOS:** no installers yet. You can [build from source](docs/building.md).
+**Windows and macOS:** CI now builds an installer for each (`.msi`/`.exe` on Windows, `.dmg` on
+macOS) and attaches it to the release above, when the build succeeds — but treat it as
+**unverified — never run by the maintainer.** Nobody has installed or launched either one; they may
+simply not work. Unsigned/unnotarized too (Windows SmartScreen and macOS Gatekeeper will both
+warn), and the macOS build is Apple Silicon only. If you'd rather not risk it, or the CI build
+failed for this release, [build from source](docs/building.md) instead.
 
 ## Build from source
 

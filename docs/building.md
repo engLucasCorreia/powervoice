@@ -76,6 +76,13 @@ with `usr/bin/powervoice-sandbox` next to `usr/bin/powervoice-app`; `just build`
 host's own triple. The GitHub release workflow (`.github/workflows/release.yml`) uses the same two
 scripts, so there's one source of truth for how the sandbox gets staged and bundled.
 
+H-61 extended the check to the Windows and macOS bundles the release workflow now builds too:
+`scripts/packaging/check_bundle.py` also verifies a macOS `.app`/`.dmg` (`Contents/MacOS/` instead
+of `usr/bin/`); a sibling script, `scripts/packaging/check_bundle_windows.py`, does the same for
+the Windows `.msi`/NSIS `.exe` (opening those needs `msiexec`/`7z`, tools that only exist on
+Windows, which is why it isn't just another branch in `check_bundle.py`). See "CI-built Windows
+and macOS installers (unverified)" below.
+
 ### If a bundler tool is missing or fails
 
 CLAUDE.md forbids this project's agents from installing system packages, so a ticket run that hits
@@ -127,6 +134,13 @@ locally, you're free to install what's missing yourself:
 
 ## Windows
 
+> **H-61: CI now builds a Windows installer on every tagged release, but it is unverified — never
+> run by the maintainer.** `.github/workflows/release.yml`'s `windows` job builds it on GitHub's
+> `windows-latest` runner and, if it succeeds, attaches it to the release clearly labelled
+> unverified (see the README's Download section); nobody has installed or launched the result. If
+> that job fails, it's `continue-on-error: true` so it never blocks the Linux release — check that
+> workflow run's `windows` job log for what went wrong.
+
 1. Install the [Rust MSVC toolchain](https://rustup.rs/) (`stable-x86_64-pc-windows-msvc`).
 2. Install the [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
    with the "Desktop development with C++" workload (provides the MSVC linker `link.exe` and the
@@ -153,6 +167,14 @@ runtime (`libmp3lame.dll` — ADR-007 §4) and disables MP3 export with an expla
 absent; nothing else is affected.
 
 ## macOS
+
+> **H-61: CI now builds a macOS `.app`/`.dmg` on every tagged release, but it is unverified — never
+> run by the maintainer.** `.github/workflows/release.yml`'s `macos` job builds it on GitHub's
+> `macos-latest` runner (Apple Silicon; a single-architecture build, not a universal binary — no
+> Intel Mac build is produced) and, if it succeeds, attaches the `.dmg` to the release clearly
+> labelled unverified (see the README's Download section); nobody has installed or launched the
+> result. If that job fails, it's `continue-on-error: true` so it never blocks the Linux release —
+> check that workflow run's `macos` job log for what went wrong.
 
 1. Install [Xcode Command Line Tools](https://developer.apple.com/xcode/resources/): `xcode-select --install`.
 2. Install Rust via [rustup](https://rustup.rs/) (`stable-x86_64-apple-darwin` and/or

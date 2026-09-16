@@ -1,35 +1,34 @@
-# H-80 — Loop Playback doesn't loop (owner-reported)
+# H-80 — Loop the whole document when nothing is selected (owner-requested feature)
 
 - **Tier:** Sonnet
-- **Reported by the owner while using the app:** "When I select the loop playback function, it does not loop — when the audio finishes it stops, even though loop playback is active."
+- **Requested by the owner while using the app:** loop playback *works* when part of the waveform is
+  selected. With no selection, playback runs to the end and stops. The owner wants it to loop the
+  whole waveform, start to end, instead.
 
-## Likely cause, to confirm first
-SPEC-003 §2.2 says loop is **inert with no time selection**, and `Transport::loop_region()`
-(`crates/engine/src/transport.rs`) returns `None` both when there is no selection and when the
-selection is shorter than `min_len`. So enabling Loop with nothing selected silently does nothing —
-playback runs to the end of the document and stops, which is exactly what the owner saw. That
-behaviour is wrong for a voice-over editor and wrong next to Audition, where Loop Playback loops the
-**whole file** when there is no selection.
-
-**Confirm the diagnosis before changing anything** (reproduce with a test through the fake backend,
-both with and without a selection). If looping is *also* broken with a selection, that is a second
-bug — fix it and say so.
+**This is a feature, not a bug.** The current behaviour is exactly what SPEC-003 §2.2 specifies
+("inert with no time selection"), and `Transport::loop_region()`
+(`crates/engine/src/transport.rs`) returns `None` in that case by design. Nothing is broken — the
+spec's decision is being revised. Do not go looking for a defect in the selection loop path; it
+works, and it must keep working unchanged.
 
 - **Read first:** CLAUDE.md, MEMORY.md (H-37's loop implementation and A-023's seamless seam; the transport/reader packet path), specs/SPEC-003 (§2.2, §3 parameter table, §4's loop-wrap packet rules, AC-4, Amendment 1), `crates/engine/src/transport.rs`, `crates/engine/src/reader.rs`, the transport UI and `ui/src/lib/transport/`.
 
 ## Scope (in)
-1. **Loop with no selection loops the whole document** (0..len). Write it up as a new SPEC-003
-   amendment — §2.2, the §3 table's "inert with no time selection" note, and AC-4's wording — the way
-   earlier tickets amended specs, and add the acceptance test.
-2. Make a selection shorter than the minimum loop length **visible** rather than silently inert:
-   either fall back to the whole document or show the standard notice. Choose, and say why.
-3. Keep Amendment 1's guarantees: the seam stays sample-exact and seamless, the playhead wraps, and
-   turning Loop off mid-pass still finishes the pass.
-4. The transport button's on-state must mean "this is actually looping".
+1. **Loop with no selection loops the whole document** (0..len), with the same seamless, sample-exact
+   seam Amendment 1 guarantees for a selection loop.
+2. Write it up as a new SPEC-003 amendment — §2.2, the §3 table's "inert with no time selection"
+   note, and AC-4's wording — the way earlier tickets amended specs.
+3. Making a selection while looping the whole document switches the loop to that selection;
+   clearing the selection goes back to the whole document. No stop, no glitch at the switch.
+4. A selection shorter than the minimum loop length currently falls back to nothing at all. Decide
+   between falling back to the whole document and showing the standard notice, and say why.
+5. The transport button's on-state must always mean "this is actually looping".
 
 ## Tests
 - Loop on, no selection: ≥ 3 passes over the whole document, sample-exact, no stop at the end.
-- Loop on, with a selection: still AC-4 exact (regression).
+- Loop on, with a selection: still AC-4 exact — this is the regression test that protects the
+  behaviour the owner confirmed works.
+- Selecting and deselecting while looping.
 - Loop toggled on during the final second of playback: it wraps rather than stopping.
 - Selection under the minimum length: the chosen behaviour.
 

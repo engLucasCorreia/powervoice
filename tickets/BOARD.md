@@ -103,7 +103,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-77 | Dynamics panel remainder (H-63 hand-off, T-410): binary `VXTC` frame + golden fixture and the AC-23 timing test, the custom Dynamics panel (global latency readout, section panels, gain-reduction meters, AutoGate lamp — AC-20/AC-22), the operating-point dot (needs gr_total + effective makeup, so panel-local), always-on handle labels and per-component curve overlays | O | in progress |
 | H-78 | Refresh the docs for everything since T-706/T-707 (meters, analyzer, editing, markers, effects, saving, import, platforms, architecture) | S | in progress |
 | H-79 | Owner-reported: the selection wash is the same blue as the waveform and is painted over it — give the selection its own colour and keep the waveform readable inside it, in all four themes | S | in progress |
-| H-80 | Owner-reported: Loop Playback does nothing with no selection (playback just stops at the end) — loop the whole document, and never leave the toggle silently inert | S | in progress |
+| H-80 | Owner-requested: loop the whole document when nothing is selected (selection looping already works; SPEC-003 §2.2's "inert with no selection" rule is revised) | S | in progress |
 | H-62 | Sandbox event-ring overflow is silent (H-55 open question): `HostEnd::push_event` / the proxy drop events when the ring is full (counted in `events_dropped`, never surfaced) — another timing-dependent divergence under heavy automation; surface it as a notice/slot status and test it | S | todo |
 | H-56 | Insert silence + cross-document clipboard (T-302 remainder, SPEC-008) | S | done |
 | H-57 | Markers: kinds in the core model, drag, region→selection (T-303 remainder, SPEC-009) | S | done |

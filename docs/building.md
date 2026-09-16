@@ -10,7 +10,7 @@ real bugs to report, not confirmed-working paths.
 ## Common prerequisites (every OS)
 
 - **Rust** (stable, edition 2024) via [rustup](https://rustup.rs/).
-- **Node.js** 20+ and npm, for the `ui/` frontend.
+- **Node.js** 22+ (`scripts/docs/generate_shortcuts.mjs` imports `registry.ts` directly, which relies on Node 22 type stripping) and npm, for the `ui/` frontend.
 - Run `npm ci --prefix ui` once after cloning (and again whenever `ui/package-lock.json` changes).
 
 Then, from the repo root:

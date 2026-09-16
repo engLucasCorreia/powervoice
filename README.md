@@ -75,7 +75,7 @@ On Arch: `sudo pacman -S lame lilv`. Everything else works without them.
 
 ## Build from source
 
-You need Rust (stable), Node.js 20+, [`just`](https://github.com/casey/just), and on Linux the
+You need Rust (stable), Node.js 22+ (the docs check imports TypeScript directly, which needs Node 22), [`just`](https://github.com/casey/just), and on Linux the
 WebKitGTK, GTK3 and ALSA development packages (see [docs/building.md](docs/building.md)).
 
 ```sh

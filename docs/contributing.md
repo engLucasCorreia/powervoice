@@ -6,7 +6,7 @@ often. Read [CLAUDE.md](../CLAUDE.md) first if you're an agent working a ticket.
 
 ## Set up
 
-Prerequisites per OS are in [building.md](building.md) (Rust stable, Node 20+, `just`, and on
+Prerequisites per OS are in [building.md](building.md) (Rust stable, Node 22+, `just`, and on
 Linux the WebKitGTK, GTK3, ALSA/PipeWire and clang development packages).
 
 ```sh

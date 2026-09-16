@@ -22,7 +22,7 @@ mod prealloc;
 mod writer;
 
 pub use peaks::{ChunkPeaks, PEAK_BUCKETS_PER_CHUNK, PEAK_LEVELS_SPP};
-pub use writer::{CancelToken, ChunkWriter, WriterProgress, WrittenAudio};
+pub use writer::{CancelToken, ChunkWriter, LiveWrittenAudio, WriterProgress, WrittenAudio};
 
 use std::borrow::Cow;
 use std::fmt;

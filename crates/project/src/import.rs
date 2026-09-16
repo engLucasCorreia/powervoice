@@ -14,7 +14,7 @@ use vox_io::{ChannelPeak, DecodeSource, DownmixChoice};
 
 use crate::session::Session;
 use crate::snapshot::{DocSnapshot, Marker, MarkerId};
-use crate::store::{CancelToken, ChunkWriter};
+use crate::store::{CancelToken, ChunkWriter, LiveWrittenAudio};
 use crate::{CHUNK_SAMPLES, ProjectError, Result};
 
 /// SPEC-005 §3 `doc_rate_range_hz`.
@@ -154,7 +154,36 @@ pub fn import_file(
     path: &Path,
     downmix: DownmixChoice,
     cancel: &CancelToken,
+    progress: impl FnMut(u64, Option<u64>),
+) -> Result<ImportResult> {
+    import_file_impl(session, path, downmix, cancel, progress, |_| {})
+}
+
+/// H-71 (SPEC-005 §2.3, ADR-003 Amendment 6): like [`import_file`], but also calls `on_live`
+/// exactly once — synchronously, right after the [`ChunkWriter`] is created and before the
+/// (potentially slow) decode loop starts — with a [`LiveWrittenAudio`] handle tracking every
+/// chunk this import commits from then on. The caller (`document_open`'s job) reads it from
+/// another thread to answer `import_peaks_get` while this call is still running: the growing
+/// session's own per-chunk pyramid is exact for whatever has committed, and `import_peaks_get`
+/// pads the rest with `PARTIAL`/`NaN` (ADR-003 §2) until this returns.
+pub fn import_file_with_live(
+    session: &mut Session,
+    path: &Path,
+    downmix: DownmixChoice,
+    cancel: &CancelToken,
+    progress: impl FnMut(u64, Option<u64>),
+    on_live: impl FnOnce(LiveWrittenAudio),
+) -> Result<ImportResult> {
+    import_file_impl(session, path, downmix, cancel, progress, on_live)
+}
+
+fn import_file_impl(
+    session: &mut Session,
+    path: &Path,
+    downmix: DownmixChoice,
+    cancel: &CancelToken,
     mut progress: impl FnMut(u64, Option<u64>),
+    on_live: impl FnOnce(LiveWrittenAudio),
 ) -> Result<ImportResult> {
     let (info, mut source) = DecodeSource::open(path)?;
     let channel_count = u16::try_from(info.track.channels.len()).unwrap_or(u16::MAX);
@@ -169,6 +198,7 @@ pub fn import_file(
     let len_hint = info.track.len_samples;
 
     let mut writer = ChunkWriter::with_cancel(Arc::clone(session.store()), cancel.clone());
+    on_live(writer.track_live());
     let mut frames_done: u64 = 0;
     let mut last_progress = Instant::now();
     // T-704: decoding + downmixing (a decoder thread) overlaps committing chunks (this thread:
@@ -730,5 +760,99 @@ mod tests {
         assert_eq!(result.snapshot.markers.len(), 0);
         assert_eq!(result.snapshot.len_samples, samples.len() as u64);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- H-71: progressive peaks during import (SPEC-005 §2.3, ADR-003 Amendment 6) -----------
+
+    /// `on_live` fires exactly once, synchronously, before `import_file_with_live` returns, and
+    /// its handle's final state (once the whole call has returned) is bit-exact to the finished
+    /// import's own snapshot — "the final state equals a non-progressive import" (ticket).
+    #[test]
+    fn import_file_with_live_reports_a_handle_matching_the_finished_import() {
+        let dir = test_dir("live");
+        let samples = vox_testkit::signal::sine(220.0, -6.0, 0.5, 48_000).unwrap();
+        let path = dir.join("in.wav");
+        write_interleaved_wav(&path, &samples, 1, 48_000);
+
+        let mut session = new_session(&dir, 48_000);
+        let cancel = CancelToken::new();
+        let mut live_handle: Option<LiveWrittenAudio> = None;
+        let mut on_live_calls = 0u32;
+        let result = import_file_with_live(
+            &mut session,
+            &path,
+            DownmixChoice::Average,
+            &cancel,
+            |_, _| {},
+            |live| {
+                on_live_calls += 1;
+                live_handle = Some(live);
+            },
+        )
+        .unwrap();
+
+        assert_eq!(on_live_calls, 1, "on_live must fire exactly once");
+        let live = live_handle.expect("on_live must have fired");
+        assert_eq!(
+            live.len_samples(),
+            result.snapshot.len_samples,
+            "by the time import_file_with_live returns, the writer (and so the live handle) has \
+             committed everything"
+        );
+
+        let live_snapshot = live.snapshot(48_000);
+        let from_live =
+            crate::peaks_query::peaks(session.store(), &live_snapshot, 64, 0, 10).unwrap();
+        let from_document =
+            crate::peaks_query::peaks(session.store(), &result.snapshot, 64, 0, 10).unwrap();
+        assert_eq!(
+            from_live, from_document,
+            "bit-exact to the finished document"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `import_file`'s own decoded audio is unaffected by `on_live` existing at all (same impl,
+    /// an extra callback that never touches the samples) — a smoke check that the two entry
+    /// points stay behaviourally identical.
+    #[test]
+    fn import_file_and_import_file_with_live_decode_identically() {
+        let dir = test_dir("live-parity");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.1, 48_000).unwrap();
+        let path = dir.join("in.wav");
+        write_interleaved_wav(&path, &samples, 1, 48_000);
+
+        let mut session_a = new_session(&dir, 48_000);
+        let a = import_file(
+            &mut session_a,
+            &path,
+            DownmixChoice::Average,
+            &CancelToken::new(),
+            |_, _| {},
+        )
+        .unwrap();
+        let mut out_a = vec![0.0f32; samples.len()];
+        session_a.store().read(&a.snapshot, 0, &mut out_a).unwrap();
+
+        let dir_b = test_dir("live-parity-b");
+        let mut session_b = new_session(&dir_b, 48_000);
+        let b = import_file_with_live(
+            &mut session_b,
+            &path,
+            DownmixChoice::Average,
+            &CancelToken::new(),
+            |_, _| {},
+            |_| {},
+        )
+        .unwrap();
+        let mut out_b = vec![0.0f32; samples.len()];
+        session_b.store().read(&b.snapshot, 0, &mut out_b).unwrap();
+
+        assert_eq!(
+            out_a, out_b,
+            "bit-exact regardless of which entry point is used"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir_b);
     }
 }

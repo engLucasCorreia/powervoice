@@ -259,6 +259,71 @@ fn eviction_keeps_resident_memory_within_budget() {
     assert_eq!(store.resident_bytes(), SEGMENT_BYTES);
 }
 
+/// H-71 (SPEC-005 §2.3, ADR-003 Amendment 6): [`vox_project::LiveWrittenAudio`] (`ChunkWriter::
+/// track_live`) mirrors every commit as it happens — a read taken mid-stream is a strict,
+/// bit-exact prefix of what the same range reads once the writer finishes (SPEC-006 AC-13:
+/// buckets fill in with real `(min, max)` values, never a different one than the final read
+/// gives), and the reported length never shrinks or races ahead of what was actually appended.
+#[test]
+#[allow(clippy::float_cmp)] // deliberate bit-exact checks
+fn live_written_audio_tracks_commits_in_order_and_matches_the_finished_document() {
+    let tmp = TempDir::new("store-live-peaks");
+    let store = store_in(tmp.path(), 512 * MIB);
+    let mut writer = store.writer();
+    let live = writer.track_live();
+    assert_eq!(live.len_samples(), 0, "nothing committed yet");
+
+    let samples = noise(9, 3 * CHUNK_SAMPLES + 12_345);
+    let mut committed_so_far = 0usize;
+    let mut last_len = 0u64;
+    let mut last_snapshot: Option<DocSnapshot> = None;
+    for block in samples.chunks(CHUNK_SAMPLES / 4) {
+        writer.append(block).unwrap();
+        committed_so_far += block.len();
+        let len = live.len_samples();
+        assert!(len >= last_len, "live length must never shrink");
+        assert!(
+            len <= committed_so_far as u64,
+            "live length must never race ahead of what was actually appended"
+        );
+        last_len = len;
+        if len > 0 {
+            let snapshot = live.snapshot(48_000);
+            // Raw bit-exact check: every sample the live handle claims is committed must equal
+            // the source, exactly — not just "close" (SPEC-006 AC-13's progressive fill must
+            // never show a value the final read later contradicts).
+            let got = vox_project::peaks(&store, &snapshot, 1, 0, len as u32).unwrap();
+            for (i, &(mn, mx)) in got.iter().enumerate() {
+                assert_eq!(mn, mx, "raw pair must be degenerate");
+                assert_eq!(mn, samples[i], "sample {i} mismatches the live read");
+            }
+            last_snapshot = Some(snapshot);
+        }
+    }
+    let final_len = last_len;
+    let last_snapshot = last_snapshot.expect("at least one full chunk committed by now");
+
+    let written = writer.finish().unwrap();
+    assert_eq!(written.len_samples, samples.len() as u64);
+    let final_snapshot = DocSnapshot::new(48_000, written.pieces, Vec::new());
+
+    // Every pyramid level the finished document serves for the prefix the live handle already
+    // reported must be bit-exact to what the live handle itself would have answered at that
+    // instant — "the final state equals a non-progressive import" (H-71 ticket).
+    for &spp in &[64u32, 256, 1024, 4096, 16_384, 65_536] {
+        let count = (final_len / u64::from(spp)) as u32;
+        if count == 0 {
+            continue;
+        }
+        let from_live = vox_project::peaks(&store, &last_snapshot, spp, 0, count).unwrap();
+        let from_final = vox_project::peaks(&store, &final_snapshot, spp, 0, count).unwrap();
+        assert_eq!(
+            from_live, from_final,
+            "spp {spp}: live prefix must match the finished document"
+        );
+    }
+}
+
 #[test]
 fn writer_progress_and_cancel() {
     let tmp = TempDir::new("store-cancel");

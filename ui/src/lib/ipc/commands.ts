@@ -567,6 +567,15 @@ export async function peaksGet(request: PeaksRequestDto): Promise<ArrayBuffer> {
 }
 
 /**
+ * H-71 (SPEC-005 §2.3, ADR-003 Amendment 7): `peaksGet`'s counterpart for an import job that's
+ * still running — the growing session's own peaks for whatever has committed so far, as the same
+ * binary `VXPK` frame, `PARTIAL`-flagged (bit1) with `(NaN, NaN)` buckets past what's committed.
+ */
+export async function importPeaksGet(jobId: number, request: PeaksRequestDto): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>("import_peaks_get" satisfies CommandName, { jobId, request });
+}
+
+/**
  * T-204: binds spectral view `viewId` to `channel`; its tiles stream back as binary `VXST`
  * frames (ADR-003 §2), one message per tile.
  */

@@ -181,13 +181,31 @@ export function niceTickStepSeconds(minGapSeconds: number): number {
   return niceStep(minGapSeconds);
 }
 
+/** {@link reduceColumns}'s sentinel for "this column overlaps only `PARTIAL`/`NaN` buckets"
+ * (ADR-003 §2, SPEC-006 §2.3/AC-13) — a pixel column to draw as `--wave-pending`, as opposed to
+ * `null` ("no covering bucket was fetched at all", drawn as nothing). Both fields are `NaN`, so a
+ * careless caller that forgets to check still fails loudly (`columnYRange` would draw garbage)
+ * rather than silently reading a fake amplitude. */
+export const PENDING_COLUMN: [number, number] = [Number.NaN, Number.NaN];
+
+/** `true` for {@link PENDING_COLUMN} (H-71: import/live-take progress, SPEC-006 AC-13) — never
+ * true for a real `(min, max)` pair, since neither bound of a fetched, non-`PARTIAL` bucket is
+ * ever `NaN` (ADR-004 §5: pyramids are computed from real samples, sanitized at commit, H-60). */
+export function isPendingColumn(column: readonly [number, number] | null): boolean {
+  return column !== null && Number.isNaN(column[0]);
+}
+
 /**
  * Reduces pyramid buckets (already fetched, contiguous, aligned to `level` starting at
  * `bucketsStartSample`) into one `(min, max)` per pixel column covering
  * `[startSample, startSample + viewportPx * samplesPerPixel)` (SPEC-006 §4.3, AC-1/AC-2: never
  * more than 4 buckets combined per column, since levels step ×4; the union never under-reports
- * amplitude). A column with no covering (fetched) bucket is `null` (SPEC-006 §2.3: `NaN` buckets
- * — not produced by this ticket's server, ADR-004 §5 — are skipped the same way).
+ * amplitude). A column with no covering (fetched) bucket at all is `null`. A column that overlaps
+ * only `PARTIAL`/`NaN` buckets (H-71, ADR-003 §2: not yet computed — a live import or take) is
+ * {@link PENDING_COLUMN} rather than being skipped like `null`, so the renderer can still mark it
+ * "still filling in" (SPEC-006 §2.3's `--wave-pending`) instead of drawing nothing. A column that
+ * overlaps both real and `PARTIAL` buckets favors the real data (a conservative union is still
+ * useful information, ADR-004 §5) — only a column with *no* real bucket at all reads as pending.
  */
 export function reduceColumns(
   buckets: ReadonlyArray<readonly [number, number]>,
@@ -206,6 +224,7 @@ export function reduceColumns(
     let mn = Number.POSITIVE_INFINITY;
     let mx = Number.NEGATIVE_INFINITY;
     let any = false;
+    let sawPending = false;
     for (let i = i0; i <= i1 && i < buckets.length; i++) {
       const bucket = buckets[i];
       if (!bucket) {
@@ -213,13 +232,14 @@ export function reduceColumns(
       }
       const [bmn, bmx] = bucket;
       if (Number.isNaN(bmn) || Number.isNaN(bmx)) {
+        sawPending = true;
         continue;
       }
       mn = Math.min(mn, bmn);
       mx = Math.max(mx, bmx);
       any = true;
     }
-    out[px] = any ? [mn, mx] : null;
+    out[px] = any ? [mn, mx] : sawPending ? PENDING_COLUMN : null;
   }
   return out;
 }

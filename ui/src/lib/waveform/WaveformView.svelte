@@ -2,7 +2,7 @@
   import { onMount, untrack } from "svelte";
   import { documentState, hasDocument } from "../document/document.svelte";
   import { t } from "../i18n";
-  import { peaksGet } from "../ipc/commands";
+  import { importPeaksGet, peaksGet } from "../ipc/commands";
   import { recordPeaksGet } from "../ipc/record_commands";
   import { registerAction } from "../shortcuts";
   import type { MarkerDto, MarkerRangeKindDto } from "../ipc/bindings";
@@ -57,6 +57,7 @@
     clampSamplesPerPixel,
     clampStartSample,
     columnYRange,
+    isPendingColumn,
     MIN_SAMPLES_PER_PIXEL,
     pickLevel,
     pixelAtSample,
@@ -88,6 +89,7 @@
     opMarkers,
     opPeaksRequestStart,
   } from "./opLayout";
+  import { ImportPeaksRequester } from "./importPeaksRequester";
   import { PeaksRequester } from "./peaksRequester";
   import {
     followPlayhead,
@@ -218,6 +220,9 @@
   const selection = selectionState();
   const markers = markersState();
   const requester = new PeaksRequester(peaksGet);
+  /** H-71 (SPEC-005 §2.3, ADR-003 Amendment 7): the running import job's own growing peaks —
+   * never the normal `peaks_get` state, which has nothing to show until the import commits. */
+  const importRequester = new ImportPeaksRequester(importPeaksGet);
   /** H-35 (SPEC-006 §2.4): the amplitude ruler/waveform vertical scale, per-document sidecar
    * state (`state/waveformView.svelte.ts`) — no viewport width to wait on (unlike
    * `startSample`/`samplesPerPixel`), so it's read directly here instead of through a bindable
@@ -239,7 +244,12 @@
 
   const lenSamples = $derived(doc.current.len_samples);
   const rateHz = $derived(doc.current.sample_rate_hz);
-  const isOpen = $derived(hasDocument(doc.current));
+  /** H-71 (SPEC-005 §2.3): the running import job, if any — `null` once it's done/cancelled/
+   * failed (H-20's `applyImportJobProgress` clears it back to a terminal state only briefly; the
+   * `ImportProgressBar` then dismisses it, but this view only cares about "running"). */
+  const importJob = $derived(doc.importJob);
+  const isImporting = $derived(importJob !== null && importJob.state === "running");
+  const isOpen = $derived(hasDocument(doc.current) || isImporting);
   const isRecording = $derived(rec.state.recording);
   /** H-07: a new recording into an empty document (its take isn't committed until Stop). */
   const liveNewTake = $derived(isRecording && lenSamples === 0);
@@ -429,6 +439,32 @@
     };
   });
 
+  // H-71 (SPEC-005 §2.3, SPEC-006 AC-13, ADR-003 Amendment 7): while an import job is running,
+  // the document has no committed audio of its own to show yet either (the real document is only
+  // swapped in on success, unchanged by this ticket) — this re-requests `import_peaks_get` for
+  // the visible range on every zoom/scroll *and* every `job_progress` tick (read here, so this
+  // effect re-runs on each one — no polling loop of its own, unlike H-07's live-take path, since
+  // `job_progress` already ticks at SPEC-005 §2.3's 4-10 Hz). A response landing calls
+  // `frames.invalidate()` directly (H-43: "invalidate() where non-reactive data lands").
+  $effect(() => {
+    const job = importJob;
+    importRequester.setJobId(job && job.state === "running" ? job.jobId : null);
+    if (!job || job.state !== "running" || viewportPx <= 0) {
+      return;
+    }
+    void job.fraction; // re-run (and re-fetch) on every job_progress tick
+    const spp = samplesPerPixel;
+    const viewStart = Math.max(0, Math.floor(startSample));
+    const level = pickLevel(spp);
+    if (level === RAW_SPP) {
+      const count = Math.min(Math.ceil(viewportPx * spp) + 2, 1 << 20);
+      void importRequester.request(viewStart, count, spp).then(frames.invalidate);
+    } else {
+      const fetchStart = Math.floor(viewStart / level) * level;
+      const count = Math.min(Math.ceil((viewportPx * spp) / level) + 1, 65_536);
+      void importRequester.request(fetchStart, count, spp).then(frames.invalidate);
+    }
+  });
 
   // H-13 (ADR-009 §2/§4): WebGL2 primary renderer, Canvas2D automatic fallback (context creation
   // failure, `webglcontextlost`, or the `rendererPref` setting). Owns the canvas's context choice
@@ -480,6 +516,7 @@
   $effect(() => {
     void [canvasEl, viewportPx, heightPx, isOpen, lenSamples, rateHz, startSample, samplesPerPixel];
     void [vzoom.current, liveNewTake, liveBuckets, liveStartSample, liveSpb, rec.elapsedSamples, layout];
+    void [isImporting, importJob?.jobId, importJob?.state];
     void [markers.list, selection.current, transport.state.loop_range, transport.playheadSamples];
     void [markerDrag];
     void [doc.current.audio_rev, themeState().revision];
@@ -515,7 +552,41 @@
     let content: WaveformGlContent | null = null;
 
     const vz = vzoom.current;
-    if (liveNewTake) {
+    if (isImporting) {
+      // H-71 (SPEC-005 §2.3, SPEC-006 AC-13): the growing import's own peaks — never the normal
+      // `peaks_get` state, which has nothing to show until the import commits (mirrors H-07's
+      // `liveNewTake` below). `PARTIAL`/`NaN` buckets render as `--wave-pending` per column.
+      const state = importRequester.state;
+      const level = pickLevel(samplesPerPixel);
+      if (state && state.level === level && state.buckets.length > 0) {
+        if (level === RAW_SPP) {
+          if (state.partial) {
+            overlay.rect(0, 0, viewportPx, heightPx, themeColors().wave.pending.rgba);
+          } else {
+            const geometry = buildRawPolyline(
+              state.buckets,
+              state.startSample,
+              startSample,
+              samplesPerPixel,
+              centerY,
+              fillColor,
+              showsDots(samplesPerPixel),
+              themeColors().strokePx,
+              vz,
+            );
+            content = { mode: "raw", geometry };
+          }
+        } else {
+          const columns = reduceColumns(state.buckets, state.startSample, level, startSample, samplesPerPixel, Math.ceil(viewportPx));
+          content = {
+            mode: "columns",
+            vertices: buildColumnQuads(columns, centerY, fillColor, vz, themeColors().wave.pending.rgba).toFloat32Array(),
+          };
+        }
+      } else if (state?.partial) {
+        overlay.rect(0, 0, viewportPx, heightPx, themeColors().wave.pending.rgba);
+      }
+    } else if (liveNewTake) {
       if (liveBuckets.length > 0) {
         const columns = reduceColumns(liveBuckets, liveStartSample, liveSpb, startSample, samplesPerPixel, Math.ceil(viewportPx));
         content = { mode: "columns", vertices: buildColumnQuads(columns, centerY, fillColor, vz).toFloat32Array() };
@@ -629,6 +700,30 @@
 
     const centerY = heightPx / 2;
     const vz = vzoom.current;
+    if (isImporting) {
+      // H-71 (SPEC-005 §2.3, SPEC-006 AC-13): the growing import's own peaks (see `drawWebgl2`'s
+      // matching branch for the full rationale) — `PARTIAL`/`NaN` buckets render as
+      // `--wave-pending` per column via `drawColumns`'s `pendingColor`.
+      const state = importRequester.state;
+      const level = pickLevel(samplesPerPixel);
+      if (state && state.level === level && state.buckets.length > 0) {
+        if (level === RAW_SPP) {
+          if (state.partial) {
+            ctx.fillStyle = themeColors().wave.pending.css;
+            ctx.fillRect(0, 0, viewportPx, heightPx);
+          } else {
+            drawRawPolyline(ctx, state.buckets, state.startSample, centerY, vz);
+          }
+        } else {
+          drawColumns(ctx, state.buckets, state.startSample, level, centerY, vz, themeColors().wave.pending.css);
+        }
+      } else if (state?.partial) {
+        ctx.fillStyle = themeColors().wave.pending.css;
+        ctx.fillRect(0, 0, viewportPx, heightPx);
+      }
+      ctx.restore();
+      return;
+    }
     if (liveNewTake) {
       // H-07: the growing take (from record_peaks_get), plus a record-head line — never the
       // normal peaks_get state, which has nothing to show until the take is committed at Stop.
@@ -776,6 +871,7 @@
     level: number,
     centerY: number,
     verticalZoom = 1,
+    pendingColor?: string,
   ): void {
     const columns = reduceColumns(
       buckets,
@@ -785,26 +881,36 @@
       samplesPerPixel,
       Math.ceil(viewportPx),
     );
-    fillColumns(ctx, columns, themeColors().wave.fill.css, centerY, verticalZoom);
+    fillColumns(ctx, columns, themeColors().wave.fill.css, centerY, verticalZoom, pendingColor);
   }
 
   /** One `color` min/max column per pixel (`null`: nothing drawn there). `verticalZoom` (H-35,
-   * SPEC-006 §2.4) defaults to `1` (unscaled). */
+   * SPEC-006 §2.4) defaults to `1` (unscaled). H-71 (SPEC-006 AC-13): a `PENDING_COLUMN` (see
+   * `coords.ts::isPendingColumn`) draws full-height in `pendingColor` instead — omit it and such
+   * a column is skipped like `null`, unchanged from before H-71. */
   function fillColumns(
     ctx: CanvasRenderingContext2D,
     columns: ReadonlyArray<Column>,
     color: string,
     centerY: number,
     verticalZoom = 1,
+    pendingColor?: string,
   ): void {
-    ctx.fillStyle = color;
     for (let px = 0; px < columns.length; px++) {
       const column = columns[px];
       if (!column) {
         continue;
       }
+      if (isPendingColumn(column)) {
+        if (pendingColor) {
+          ctx.fillStyle = pendingColor;
+          ctx.fillRect(px, 0, 1, centerY * 2);
+        }
+        continue;
+      }
       const [mn, mx] = column;
       const [yTop, yBot] = columnYRange(mn, mx, centerY, verticalZoom);
+      ctx.fillStyle = color;
       ctx.fillRect(px, yTop, 1, yBot - yTop);
     }
   }

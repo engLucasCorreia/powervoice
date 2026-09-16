@@ -424,3 +424,36 @@ worse than no ADR. The three *behaviour* changes H-59 made are marked **new**.
   document, not before. The action carries no marker id — the frontend resolves "first" against
   its own marker list (`goToFirstDropout`, same navigation semantics as `jumpToMarker`: moves the
   cursor, never touches the time selection).
+## Amendment 8 — H-71 progressive waveform during import (2026-09-16)
+SPEC-005 §2.3 wants the waveform to fill in progressively while a long import runs; H-59's
+Amendment 6 withdrew the never-built `peaks_progress` event and said the right route is
+`job_progress { kind: Import }` plus `VXPK`'s already-defined `PARTIAL` bit, not a new channel.
+H-71 implements exactly that — no new channel, no new event.
+
+- **New command `import_peaks_get(job_id, request: PeaksRequestDto) -> VXPK`.** `peaks_get`'s
+  counterpart for a session that isn't the open document yet: the import job's own growing chunk
+  store, queried while `document_open`'s job is still running. Shaped like `record_peaks_get`
+  (Amendment 6: a live, not-yet-committed take is a polling command answering with plain `VXPK`
+  framing, not a second streamed frame) rather than like `peaks_get` (which only ever reads a
+  finished document's `audio_rev`) — `import_peaks_get` sends `audio_rev: 0` for the same reason
+  `record_peaks_get` does: the frame isn't a document revision, so there is nothing to compare it
+  against on the client.
+- **Why not extend `job_progress` to carry the peaks payload itself.** `job_progress` is a JSON
+  event capped at ≤ 10 Hz (§1's table); the peaks payload is bulk binary data that belongs on the
+  `ipc::Response`/`VXPK` path per CLAUDE.md, and reusing the existing decoder
+  (`ui/src/lib/waveform/vxpk.ts`) needed no new wire format at all. `job_progress`'s only new job
+  here is what it already did before this ticket: tell the UI *when* to poll again.
+- **`PARTIAL` semantics for `import_peaks_get`.** A requested bucket counts as ready only once its
+  *entire* sample span has committed to the store (ADR-004 §5: a chunk's pyramid is exact the
+  instant the chunk commits) — a still-filling bucket reads as `(NaN, NaN)` with the response's
+  `PARTIAL` bit set, rather than a truncated min/max union that would silently change on the next
+  poll. This is the same "never a value the final read later contradicts" property `VXPK`'s
+  `PARTIAL` bit already implied for a finished document (buckets never computed, never wrong).
+- **No document-open change.** The document is still swapped in only on a successful
+  `document_open` (SPEC-005 §2.3 step 5, unchanged) — `import_peaks_get` reads the *importing*
+  session's store directly (`vox_project::LiveWrittenAudio`, `ChunkWriter::track_live`), keyed by
+  `job_id`, never through `DocumentService`'s single `open` document slot. An unknown or
+  already-finished `job_id` answers with an empty, `partial` response instead of an error — the
+  same harmless fallback `record_peaks_get` uses for "no active take" — since a request racing the
+  job's own completion (the UI switches to plain `peaks_get` once `document_changed` lands) is
+  expected, not a bug.

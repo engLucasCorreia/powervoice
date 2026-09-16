@@ -1,9 +1,9 @@
 //! [`ChunkWriter`]: streams new audio into the store as immutable chunks (ADR-004 §3).
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
-use crate::snapshot::{Piece, push_piece};
+use crate::snapshot::{DocSnapshot, Piece, push_piece};
 use crate::store::{ChunkId, ChunkStore};
 use crate::{CHUNK_SAMPLES, ProjectError, Result};
 
@@ -47,6 +47,38 @@ pub struct WrittenAudio {
     pub len_samples: u64,
 }
 
+/// Records one commit into `audio` (a chunk's peaks/CRC are already durable by the time this
+/// runs, ADR-004 §5 — only the piece-table/length bookkeeping happens here).
+fn record_commit(audio: &mut WrittenAudio, id: ChunkId, len: u32) {
+    push_piece(&mut audio.pieces, Piece::chunk(id, 0, len));
+    audio.chunks.push(id);
+    audio.len_samples += u64::from(len);
+}
+
+/// H-71 (SPEC-005 §2.3, ADR-003 Amendment 6): a read-only, thread-safe view of a [`ChunkWriter`]'s
+/// [`WrittenAudio`] so far, updated on every chunk commit — [`ChunkWriter::track_live`]'s handle.
+/// Lets another thread (the IPC command layer) query the growing session's already-committed
+/// peaks while `import_file` is still decoding on its own thread, without touching `ChunkWriter`
+/// itself (which stays `&mut`-owned by the importing thread throughout).
+#[derive(Clone)]
+pub struct LiveWrittenAudio(Arc<Mutex<WrittenAudio>>);
+
+impl LiveWrittenAudio {
+    /// Samples committed so far (a lower bound: more may land between this call and the next).
+    pub fn len_samples(&self) -> u64 {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).len_samples
+    }
+
+    /// A snapshot over exactly what's committed so far, at `sample_rate_hz` and with no markers
+    /// — enough for [`crate::peaks_query::peaks`] to read the pieces committed up to this instant
+    /// (a plain clone of the current piece list: cheap next to a chunk commit, and this is called
+    /// at most once per `import_peaks_get`, not per bucket).
+    pub fn snapshot(&self, sample_rate_hz: u32) -> DocSnapshot {
+        let audio = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        DocSnapshot::new(sample_rate_hz, audio.pieces.clone(), Vec::new())
+    }
+}
+
 /// Appends samples to the store, committing a chunk every 65 536 samples and the remainder on
 /// [`ChunkWriter::finish`]. Owned by one worker or capture-writer thread.
 ///
@@ -59,6 +91,10 @@ pub struct ChunkWriter {
     audio: WrittenAudio,
     progress: WriterProgress,
     cancel: CancelToken,
+    /// H-71: set by [`Self::track_live`] — mirrors every commit so another thread can read the
+    /// growing piece table (`None` costs nothing beyond the check on every commit for every other
+    /// writer, e.g. recording/edit write-backs, that never calls `track_live`).
+    live: Option<Arc<Mutex<WrittenAudio>>>,
 }
 
 impl ChunkWriter {
@@ -75,6 +111,7 @@ impl ChunkWriter {
             audio: WrittenAudio::default(),
             progress: WriterProgress::default(),
             cancel,
+            live: None,
         }
     }
 
@@ -101,9 +138,11 @@ impl ChunkWriter {
             return Ok(());
         }
         let loc = self.store.commit_chunk(&self.buf)?;
-        push_piece(&mut self.audio.pieces, Piece::chunk(loc.id, 0, loc.len));
-        self.audio.chunks.push(loc.id);
-        self.audio.len_samples += u64::from(loc.len);
+        record_commit(&mut self.audio, loc.id, loc.len);
+        if let Some(live) = &self.live {
+            let mut guard = live.lock().unwrap_or_else(|e| e.into_inner());
+            record_commit(&mut guard, loc.id, loc.len);
+        }
         self.buf.clear();
         Ok(())
     }
@@ -121,6 +160,17 @@ impl ChunkWriter {
     /// A handle to observe progress from another thread.
     pub fn progress(&self) -> WriterProgress {
         self.progress.clone()
+    }
+
+    /// H-71 (SPEC-005 §2.3, ADR-003 Amendment 6): starts (or returns the existing) live handle —
+    /// a clone tracking every chunk this writer commits from here on, readable from another
+    /// thread via [`LiveWrittenAudio`]. Call once, right after construction and before the first
+    /// `append`, so the handle never misses a commit.
+    pub fn track_live(&mut self) -> LiveWrittenAudio {
+        let live = self
+            .live
+            .get_or_insert_with(|| Arc::new(Mutex::new(self.audio.clone())));
+        LiveWrittenAudio(Arc::clone(live))
     }
 
     /// The token that cancels this writer.

@@ -43,8 +43,25 @@ function headerOnlyVxpk(): ArrayBuffer {
   return buf;
 }
 
-/** A `VXPK` frame carrying `buckets` (min, max) at `samplesPerBucket` (H-10 item 6). */
+/** A `VXPK` frame carrying `buckets` (min, max) at `samplesPerBucket` (H-10 item 6), `PARTIAL`. */
 function vxpkWithBuckets(samplesPerBucket: number, buckets: Array<[number, number]>): ArrayBuffer {
+  return vxpkFrame(samplesPerBucket, buckets, true);
+}
+
+/** H-71: like {@link vxpkWithBuckets}, but without the `PARTIAL` flag — a response the import
+ * job's own peaks give once the covering range has fully committed (SPEC-006 AC-13). */
+function vxpkWithBucketsNotPartial(
+  samplesPerBucket: number,
+  buckets: Array<[number, number]>,
+): ArrayBuffer {
+  return vxpkFrame(samplesPerBucket, buckets, false);
+}
+
+function vxpkFrame(
+  samplesPerBucket: number,
+  buckets: Array<[number, number]>,
+  partial: boolean,
+): ArrayBuffer {
   const headerLen = 48;
   const buf = new ArrayBuffer(headerLen + buckets.length * 8);
   const dv = new DataView(buf);
@@ -54,7 +71,7 @@ function vxpkWithBuckets(samplesPerBucket: number, buckets: Array<[number, numbe
   dv.setUint8(3, 0x4b);
   dv.setUint16(4, 1, true);
   dv.setUint16(6, headerLen, true);
-  dv.setUint32(12, 1 << 1, true); // PARTIAL
+  dv.setUint32(12, partial ? 1 << 1 : 0, true); // PARTIAL
   dv.setUint32(32, samplesPerBucket, true);
   dv.setUint32(36, buckets.length, true);
   dv.setUint32(40, 48_000, true);
@@ -241,6 +258,176 @@ describe("WaveformView (S1-03)", () => {
       unmount(app);
       target.remove();
       stopRecord();
+      stopDocument();
+      if (widthDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, "clientWidth", widthDescriptor);
+      }
+      if (heightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, "clientHeight", heightDescriptor);
+      }
+    }
+  });
+
+  // H-71 (SPEC-005 §2.3, SPEC-006 AC-13, ADR-003 Amendment 7): while `document_open`'s import job
+  // runs, the document has no committed audio of its own yet either (mirrors H-07's live-take
+  // test above) — the view must show the canvas (not the empty state) and poll
+  // `import_peaks_get`, never the normal `peaks_get`.
+  it("polls import_peaks_get and renders the canvas while an import job is running", async () => {
+    const widthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get: () => 800,
+    });
+    const heightDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "clientHeight",
+    );
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get: () => 200,
+    });
+
+    const importPeaksRequests: unknown[] = [];
+    mockIPC(
+      (cmd, args) => {
+        if (cmd === "import_peaks_get") {
+          importPeaksRequests.push(args);
+          return headerOnlyVxpk();
+        }
+        if (cmd === "peaks_get") {
+          throw new Error("peaks_get must not be called while an import job is running");
+        }
+        return null;
+      },
+      { shouldMockEvents: true },
+    );
+
+    const stopDocument = await initDocument();
+    await emit("import_started", {
+      job_id: 1,
+      name: "big.wav",
+      sample_rate_hz: 48_000,
+      len_samples: 48_000 * 3_600,
+    });
+    flushSync();
+    await Promise.resolve();
+
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(WaveformView, { target });
+    flushSync();
+    await Promise.resolve();
+
+    try {
+      expect(target.querySelector('[data-testid="waveform-canvas"]')).not.toBeNull();
+      expect(target.querySelector('[data-testid="waveform-empty"]')).toBeNull();
+      expect(importPeaksRequests.length).toBeGreaterThan(0);
+    } finally {
+      unmount(app);
+      target.remove();
+      stopDocument();
+      if (widthDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, "clientWidth", widthDescriptor);
+      }
+      if (heightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, "clientHeight", heightDescriptor);
+      }
+    }
+  });
+
+  // SPEC-006 AC-13: partial (`NaN`) buckets render as pending immediately, and a `job_progress`
+  // tick re-requests and redraws the same range with real values, without a manual scroll/zoom —
+  // and once the job is no longer running, the view stops polling `import_peaks_get` at all.
+  it("AC-13: re-requests real peaks on job_progress and stops polling once the import ends", async () => {
+    const widthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get: () => 800,
+    });
+    const heightDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "clientHeight",
+    );
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get: () => 200,
+    });
+
+    let respondPartial = true;
+    let importPeaksCalls = 0;
+    let peaksGetCalls = 0;
+    mockIPC(
+      (cmd) => {
+        if (cmd === "import_peaks_get") {
+          importPeaksCalls++;
+          return respondPartial
+            ? vxpkWithBuckets(64, [
+                [-0.5, 0.5],
+                [Number.NaN, Number.NaN],
+              ])
+            : vxpkWithBucketsNotPartial(64, [
+                [-0.5, 0.5],
+                [-0.25, 0.25],
+              ]);
+        }
+        if (cmd === "peaks_get") {
+          peaksGetCalls++;
+          return headerOnlyVxpk();
+        }
+        return null;
+      },
+      { shouldMockEvents: true },
+    );
+
+    const stopDocument = await initDocument();
+    await emit("import_started", {
+      job_id: 1,
+      name: "big.wav",
+      sample_rate_hz: 48_000,
+      len_samples: 48_000 * 60,
+    });
+    flushSync();
+    await Promise.resolve();
+
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(WaveformView, { target });
+    flushSync();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    try {
+      const afterStart = importPeaksCalls;
+      expect(afterStart).toBeGreaterThan(0);
+      expect(peaksGetCalls).toBe(0);
+
+      // The import has committed more: the same range now reads real, non-PARTIAL values.
+      respondPartial = false;
+      await emit("job_progress", { job_id: 1, kind: "import", state: "running", fraction: 0.5 });
+      flushSync();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(importPeaksCalls).toBeGreaterThan(afterStart);
+
+      // The import finished (document_changed swaps in the real document): the view stops
+      // polling import_peaks_get and resumes the normal peaks_get path for the now-open document.
+      const finishedDoc = docDto({ name: "big.wav", len_samples: 48_000 * 60, audio_rev: 1 });
+      await emit("job_progress", { job_id: 1, kind: "import", state: "done", fraction: 1 });
+      await emit("document_changed", finishedDoc);
+      flushSync();
+      await Promise.resolve();
+      await Promise.resolve();
+      const afterDone = importPeaksCalls;
+      expect(peaksGetCalls).toBeGreaterThan(0);
+
+      // No further import_peaks_get polling once the job is no longer running, even though the
+      // view keeps redrawing (the document is open and its own peaks are cached already).
+      flushSync();
+      await Promise.resolve();
+      expect(importPeaksCalls).toBe(afterDone);
+    } finally {
+      unmount(app);
+      target.remove();
       stopDocument();
       if (widthDescriptor) {
         Object.defineProperty(HTMLElement.prototype, "clientWidth", widthDescriptor);

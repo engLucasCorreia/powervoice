@@ -175,8 +175,11 @@ pub async fn document_open<R: Runtime>(
         tracing::warn!(%error, "emitting the import job's first job_progress failed");
     }
     let doc_for_job = doc.clone();
+    let doc_for_live = doc.clone();
     let app_for_job = app.clone();
     let path_for_job = path_buf.clone();
+    let len_hint = probe.len_samples;
+    let sample_rate_hz = probe.sample_rate_hz;
     let result = run_blocking(move || {
         let mut last_fraction = 0.0f32;
         doc_for_job.open_with_downmix(
@@ -203,6 +206,13 @@ pub async fn document_open<R: Runtime>(
                         tracing::warn!(%error, "emitting import job_progress failed");
                     }
                 }
+            },
+            // H-71 (SPEC-005 §2.3, ADR-003 Amendment 6): fires once, before the decode loop
+            // starts — registers the growing session so `import_peaks_get` can already answer
+            // (all `PARTIAL`) for this `job_id` from the very first poll, well before the first
+            // `job_progress` tick.
+            &mut |live, store| {
+                doc_for_live.set_import_live(job_id, store, live, sample_rate_hz, len_hint);
             },
         )
     })
@@ -611,6 +621,41 @@ pub async fn peaks_get(
         samples_per_bucket: request.spp,
         sample_rate_hz: result.sample_rate_hz,
         partial: false,
+    };
+    Ok(Response::new(encode_vxpk(&header, &result.buckets)))
+}
+
+/// H-71 (SPEC-005 §2.3, SPEC-006 AC-13, ADR-003 Amendment 6): `peaks_get`'s counterpart for
+/// import job `job_id` while it's still running — the growing session's own per-chunk pyramid for
+/// whatever has committed so far, framed as `VXPK` exactly like `peaks_get`/`record_peaks_get`,
+/// `PARTIAL`-flagged (bit1) with `(NaN, NaN)` buckets past what's committed. Amendment 6 withdrew
+/// a second streamed frame (`VXRP`) in favour of a plain polling command for a still-growing,
+/// not-yet-a-document store — this is the same shape for import. An unknown or already-finished
+/// `job_id` (the poll raced the job's own completion) answers with an empty response rather than
+/// an error, like `record_peaks_get`'s "no active take" fallback.
+#[tauri::command]
+pub async fn import_peaks_get(
+    doc: State<'_, DocumentService>,
+    job_id: u32,
+    request: PeaksRequestDto,
+) -> Result<Response, IpcError> {
+    let doc = (*doc).clone();
+    let cap = if request.spp <= PEAKS_RAW_SPP {
+        MAX_RAW_SAMPLES
+    } else {
+        MAX_BUCKETS
+    };
+    let count = request.count.min(cap);
+    let spp = request.spp;
+    let start = request.start_sample;
+    let result = run_blocking(move || doc.import_peaks(job_id, spp, start, count)).await?;
+    let header = VxpkHeader {
+        request_id: request.request_id,
+        audio_rev: 0,
+        start_sample: request.start_sample,
+        samples_per_bucket: request.spp,
+        sample_rate_hz: result.sample_rate_hz,
+        partial: result.partial,
     };
     Ok(Response::new(encode_vxpk(&header, &result.buckets)))
 }

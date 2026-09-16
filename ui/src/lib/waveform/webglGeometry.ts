@@ -8,22 +8,34 @@
  * `webglRenderer.ts`.
  */
 
-import { columnYRange, pixelAtSample } from "./coords";
+import { columnYRange, isPendingColumn, pixelAtSample } from "./coords";
 import { QuadBatch, type Rgba } from "../render/quads";
 
 /** One quad per non-`null` column (SPEC-006 §2.3 min/max fill), in the same left-to-right order
  * as {@link reduceColumns}'s output. `verticalZoom` (H-35, SPEC-006 §2.4) defaults to `1`
- * (unscaled). */
+ * (unscaled).
+ *
+ * H-71 (SPEC-006 AC-13): a {@link PENDING_COLUMN} draws as a full-height `pendingColor` rect
+ * (`--wave-pending`, "still filling in") instead of a min/max shape — there's no amplitude to
+ * shape it from yet. Callers that never pass `PENDING_COLUMN`-carrying columns (every one before
+ * H-71) can omit `pendingColor`; such a column is then skipped like `null` always was. */
 export function buildColumnQuads(
   columns: ReadonlyArray<[number, number] | null>,
   centerY: number,
   color: Rgba,
   verticalZoom = 1,
+  pendingColor?: Rgba,
 ): QuadBatch {
   const batch = new QuadBatch();
   for (let px = 0; px < columns.length; px++) {
     const column = columns[px];
     if (!column) {
+      continue;
+    }
+    if (isPendingColumn(column)) {
+      if (pendingColor) {
+        batch.rect(px, 0, px + 1, centerY * 2, pendingColor);
+      }
       continue;
     }
     const [mn, mx] = column;

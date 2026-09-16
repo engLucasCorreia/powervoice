@@ -36,8 +36,11 @@ pub struct VxpkHeader {
     /// Samples per bucket; `1` means the payload is `RAW` samples (see [`encode_vxpk`]).
     pub samples_per_bucket: u32,
     pub sample_rate_hz: u32,
-    /// Some buckets are not yet computed (`(NaN, NaN)`, ADR-003). Always `false` in S1-02: peaks
-    /// PARTIAL during import is deferred (ticket scope).
+    /// Some buckets are not yet computed (`(NaN, NaN)`, ADR-003). Set by `peaks_get`'s live
+    /// counterparts — `record_peaks_get` (H-07, always `true`: a take is always still growing)
+    /// and `import_peaks_get` (H-71: `true` whenever the requested range reaches past what the
+    /// import has committed so far) — never by `peaks_get` itself, which only ever reads a
+    /// finished document.
     pub partial: bool,
 }
 

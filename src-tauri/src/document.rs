@@ -623,6 +623,11 @@ struct Inner {
     /// `document_open_cancel` names. Removed once the job finishes, whatever the outcome.
     import_jobs: Mutex<HashMap<u32, CancelToken>>,
     next_import_job: AtomicU32,
+    /// H-71 (SPEC-005 §2.3, ADR-003 Amendment 6): the growing session's peaks handle for each
+    /// import job currently running, keyed the same way as `import_jobs`. Set once
+    /// `open_with_downmix`'s `on_live` hook fires (before the decode loop starts), read by
+    /// `import_peaks` (`import_peaks_get`'s business logic), removed by `finish_import_job`.
+    import_live: Mutex<HashMap<u32, ImportLiveInfo>>,
     /// H-56 (SPEC-008 §2.6.1): cancel tokens of running cross-document paste jobs, keyed by the
     /// id `edit_paste_cancel` names (mirrors `import_jobs`).
     paste_jobs: Mutex<HashMap<u32, CancelToken>>,
@@ -640,6 +645,31 @@ struct Inner {
 pub struct SidecarNoticeInfo {
     pub key: &'static str,
     pub params: Vec<(&'static str, String)>,
+}
+
+/// H-71: everything [`DocumentService::import_peaks`] needs for one running import job — the
+/// store its `ChunkWriter` commits into (still owned by `open_impl`'s `Session`, but chunks are
+/// readable through the store as soon as they commit, ADR-004 §2/§5) and the live handle onto its
+/// growing piece table. `len_hint` isn't used yet (every bucket beyond what's committed reads
+/// `PARTIAL`/`NaN` regardless of whether the total length is known) but is kept for a future
+/// ticket that wants to distinguish "still importing" from "known to be past the end".
+#[derive(Clone)]
+struct ImportLiveInfo {
+    store: Arc<vox_project::ChunkStore>,
+    live: vox_project::LiveWrittenAudio,
+    sample_rate_hz: u32,
+    #[allow(dead_code)]
+    len_hint: Option<u64>,
+}
+
+/// [`DocumentService::import_peaks`]'s result — [`PeaksResult`] minus `audio_rev` (an in-progress
+/// import isn't a document revision) plus `partial` (ADR-003 §2's `VXPK` `PARTIAL` bit: some of
+/// the requested buckets are past what's committed so far).
+#[derive(Debug)]
+pub struct ImportPeaksResult {
+    pub sample_rate_hz: u32,
+    pub buckets: Vec<(f32, f32)>,
+    pub partial: bool,
 }
 
 /// S4-04: the read-only facts and handles an export job needs. Exports never touch the document
@@ -1384,6 +1414,7 @@ impl DocumentService {
             memory_budget_bytes: AtomicU64::new(StoreOptions::default().memory_budget_bytes),
             session_dirs: Mutex::new(()),
             import_jobs: Mutex::new(HashMap::new()),
+            import_live: Mutex::new(HashMap::new()),
             next_import_job: AtomicU32::new(1),
             paste_jobs: Mutex::new(HashMap::new()),
             next_paste_job: AtomicU32::new(1),
@@ -1807,9 +1838,83 @@ impl DocumentService {
         }
     }
 
-    /// Unregisters a finished (done/cancelled/failed) import job's cancel token.
+    /// Unregisters a finished (done/cancelled/failed) import job's cancel token and live-peaks
+    /// handle (H-71), if any.
     pub fn finish_import_job(&self, job_id: u32) {
         self.0.import_jobs.lock().unwrap().remove(&job_id);
+        self.0.import_live.lock().unwrap().remove(&job_id);
+    }
+
+    /// H-71 (SPEC-005 §2.3): the `document_open` command's `on_live` closure calls this once,
+    /// synchronously, right after `open_with_downmix`'s import creates its `ChunkWriter` — before
+    /// the (potentially slow) decode loop starts — so `import_peaks_get` can answer for `job_id`
+    /// from the very first poll.
+    pub fn set_import_live(
+        &self,
+        job_id: u32,
+        store: Arc<vox_project::ChunkStore>,
+        live: vox_project::LiveWrittenAudio,
+        sample_rate_hz: u32,
+        len_hint: Option<u64>,
+    ) {
+        self.0.import_live.lock().unwrap().insert(
+            job_id,
+            ImportLiveInfo {
+                store,
+                live,
+                sample_rate_hz,
+                len_hint,
+            },
+        );
+    }
+
+    /// H-71 (SPEC-005 §2.3, SPEC-006 AC-13, ADR-003 Amendment 6): peaks for import job `job_id`
+    /// while it's still running — `import_peaks_get`'s business logic, the live counterpart of
+    /// [`Self::peaks`]. Reads the growing session's own per-chunk pyramid (ADR-004 §5: a chunk's
+    /// peaks are ready the instant it commits, exactly like a finished document's) for whatever
+    /// has committed so far, and pads the rest of `[start, start + count)` with `PARTIAL`/`NaN`
+    /// buckets (ADR-003 §2) — a bucket only counts as "ready" once its *entire* span has
+    /// committed, so a still-filling bucket reads as pending rather than a truncated union that
+    /// would need to change again next poll. An unknown or already-finished `job_id` (a request
+    /// that raced the job's own completion) answers with an empty, `partial` response, the same
+    /// harmless fallback `record_peaks_get` uses for "no active take".
+    pub fn import_peaks(
+        &self,
+        job_id: u32,
+        spp: u32,
+        start: u64,
+        count: u32,
+    ) -> Result<ImportPeaksResult, IpcError> {
+        let Some(info) = self.0.import_live.lock().unwrap().get(&job_id).cloned() else {
+            return Ok(ImportPeaksResult {
+                sample_rate_hz: 0,
+                buckets: Vec::new(),
+                partial: true,
+            });
+        };
+        let committed_len = info.live.len_samples();
+        let spp64 = u64::from(spp.max(1));
+        let ready_count = if start >= committed_len {
+            0
+        } else {
+            (((committed_len - start) / spp64).min(u64::from(count))) as u32
+        };
+        let mut buckets = Vec::with_capacity(count as usize);
+        if ready_count > 0 {
+            let snapshot = info.live.snapshot(info.sample_rate_hz);
+            let ready = vox_project::peaks(&info.store, &snapshot, spp, start, ready_count)
+                .map_err(document_error)?;
+            buckets.extend(ready);
+        }
+        let partial = ready_count < count;
+        if partial {
+            buckets.resize(count as usize, (f32::NAN, f32::NAN));
+        }
+        Ok(ImportPeaksResult {
+            sample_rate_hz: info.sample_rate_hz,
+            buckets,
+            partial,
+        })
     }
 
     /// H-70 (SPEC-005 §4.10): registers a new Save/Save As job's cancel token before the write
@@ -1863,6 +1968,7 @@ impl DocumentService {
             vox_io::DownmixChoice::Average,
             &CancelToken::new(),
             &mut |_fraction| {},
+            &mut |_live, _store| {},
         )
     }
 
@@ -1873,6 +1979,12 @@ impl DocumentService {
     /// the caller's progress bar stays indeterminate). Cancelling leaves whatever was open
     /// untouched: the new session is only swapped in on success, exactly like [`Self::open`] — see
     /// this function's body, shared via [`Self::open_impl`].
+    ///
+    /// H-71 (SPEC-005 §2.3): `on_live` is called once, synchronously, right after the import's
+    /// `ChunkWriter` is created and before the (potentially slow) decode loop starts, with a live
+    /// peaks handle and the store it reads through — the `document_open` command wires it into
+    /// [`Self::set_import_live`] so `import_peaks_get` can serve progressive peaks for this job.
+    #[allow(clippy::too_many_arguments)]
     pub fn open_with_downmix(
         &self,
         path: &Path,
@@ -1880,8 +1992,16 @@ impl DocumentService {
         downmix: vox_io::DownmixChoice,
         cancel: &CancelToken,
         on_progress: &mut dyn FnMut(f32),
+        on_live: &mut dyn FnMut(vox_project::LiveWrittenAudio, Arc<vox_project::ChunkStore>),
     ) -> Result<DocumentInfo, IpcError> {
-        self.open_impl(path, confirm_already_open, downmix, cancel, on_progress)
+        self.open_impl(
+            path,
+            confirm_already_open,
+            downmix,
+            cancel,
+            on_progress,
+            on_live,
+        )
     }
 
     fn open_impl(
@@ -1891,6 +2011,7 @@ impl DocumentService {
         downmix: vox_io::DownmixChoice,
         cancel: &CancelToken,
         on_progress: &mut dyn FnMut(f32),
+        on_live: &mut dyn FnMut(vox_project::LiveWrittenAudio, Arc<vox_project::ChunkStore>),
     ) -> Result<DocumentInfo, IpcError> {
         if self.is_recording() {
             return Err(IpcError::not_while_recording());
@@ -1917,7 +2038,8 @@ impl DocumentService {
             });
         }
         let mut session = self.create_session(config).map_err(document_error)?;
-        let import = vox_project::import_file(
+        let store_for_live = Arc::clone(session.store());
+        let import = vox_project::import_file_with_live(
             &mut session,
             path,
             downmix,
@@ -1927,6 +2049,7 @@ impl DocumentService {
                     on_progress((frames_done as f64 / len as f64).min(1.0) as f32);
                 }
             },
+            |live| on_live(live, store_for_live),
         );
         let import = match import {
             Ok(result) => result,
@@ -4924,6 +5047,7 @@ mod tests {
                 vox_io::DownmixChoice::Channel(1),
                 &cancel,
                 &mut |_| {},
+                &mut |_, _| {},
             )
             .unwrap();
         assert_eq!(info.len_samples, right.len() as u64);
@@ -4984,6 +5108,7 @@ mod tests {
                 vox_io::DownmixChoice::Average,
                 &cancel,
                 &mut |_fraction| cancel_for_progress.cancel(),
+                &mut |_, _| {},
             )
             .unwrap_err();
         assert_eq!(err.code, IpcErrorCode::Cancelled);
@@ -5020,6 +5145,7 @@ mod tests {
                 &mut |f| {
                     fractions.lock().unwrap().push(f);
                 },
+                &mut |_, _| {},
             )
             .unwrap();
 
@@ -5030,6 +5156,73 @@ mod tests {
         );
         assert!(fractions.iter().all(|&f| (0.0..=1.0).contains(&f)));
         assert!((fractions.last().copied().unwrap_or(0.0) - 1.0).abs() < 1e-6);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// H-71 (SPEC-005 §2.3, SPEC-006 AC-13, ADR-003 Amendment 6): `import_peaks` reads
+    /// `PARTIAL`/`NaN` the instant `on_live` registers the job (nothing committed yet), and —
+    /// once the import has finished but before `finish_import_job` unregisters it — the same
+    /// range reads real, non-`PARTIAL` values that are bit-exact to `peaks()`'s own read of the
+    /// now-open document ("the final state equals a non-progressive import"). An unknown job id
+    /// answers with the same harmless empty/`partial` fallback `record_peaks_get` uses.
+    #[test]
+    fn import_peaks_is_partial_at_start_and_bit_exact_at_the_end() {
+        let (service, _engine, dir) = service("import-peaks");
+        let path = dir.join("in.wav");
+        let samples = vox_testkit::signal::sine(220.0, -6.0, 0.2, 48_000).unwrap();
+        write_fixture_wav(&path, &samples, vox_testkit::wav::BitDepth::Int24, 48_000);
+
+        // No job registered at all: the harmless fallback, not an error.
+        let unknown = service.import_peaks(999, 64, 0, 8).unwrap();
+        assert_eq!(unknown.buckets.len(), 0);
+        assert!(unknown.partial);
+
+        let (job_id, cancel) = service.start_import_job();
+        let mut saw_partial_at_registration = false;
+        let info = service
+            .open_with_downmix(
+                &path,
+                false,
+                vox_io::DownmixChoice::Average,
+                &cancel,
+                &mut |_fraction| {},
+                &mut |live, store| {
+                    service.set_import_live(
+                        job_id,
+                        store,
+                        live,
+                        48_000,
+                        Some(samples.len() as u64),
+                    );
+                    // `on_live` fires before any sample is decoded (H-71's contract) — nothing
+                    // can be ready yet.
+                    let r = service.import_peaks(job_id, 64, 0, 8).unwrap();
+                    saw_partial_at_registration =
+                        r.partial && r.buckets.iter().all(|(mn, _)| mn.is_nan());
+                },
+            )
+            .unwrap();
+        assert!(
+            saw_partial_at_registration,
+            "the very first poll, right when the job registers, must be all PARTIAL/NaN"
+        );
+
+        // The import has returned successfully (document swapped in), but the job is still
+        // registered — `import_peaks` must now be fully ready and bit-exact to `peaks()`.
+        let count = (info.len_samples / 64) as u32;
+        let from_import = service.import_peaks(job_id, 64, 0, count).unwrap();
+        assert!(!from_import.partial, "everything has committed by now");
+        let from_document = service.peaks(64, 0, count).unwrap();
+        assert_eq!(from_import.buckets, from_document.buckets);
+        assert_eq!(from_import.sample_rate_hz, from_document.sample_rate_hz);
+
+        service.finish_import_job(job_id);
+        let after_finish = service.import_peaks(job_id, 64, 0, count).unwrap();
+        assert_eq!(
+            after_finish.buckets.len(),
+            0,
+            "unregistered: back to the harmless fallback"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5181,6 +5374,67 @@ mod tests {
             peaks_elapsed.as_secs_f64() * 1000.0,
             peaks.buckets.len(),
         );
+        assert!(info.len_samples > 0);
+    }
+
+    /// H-71: how much of a 60-min import's waveform is visible progressively, not just at the
+    /// end — `cargo test -p powervoice-app --release -- --ignored
+    /// import_peaks_of_the_60_min_fixture_fill_in_progressively --nocapture`.
+    #[test]
+    #[ignore]
+    fn import_peaks_of_the_60_min_fixture_fill_in_progressively() {
+        let dir = tmp_dir("sixty-min-progressive");
+        let generated = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../fixtures/generated/long-60min-48k-mono.wav");
+        let wav_path = if generated.exists() {
+            generated
+        } else {
+            let path = dir.join("long-60min-48k-mono.wav");
+            vox_testkit::signal::write_long_fixture(&path, 3600.0, 48_000, 42).unwrap();
+            path
+        };
+
+        let (service, _engine, _dir2) = service("sixty-min-progressive");
+        let (job_id, cancel) = service.start_import_job();
+        let start = std::time::Instant::now();
+        let mut ticks: Vec<(std::time::Duration, u64, bool)> = Vec::new();
+        let info = service
+            .open_with_downmix(
+                &wav_path,
+                false,
+                vox_io::DownmixChoice::Average,
+                &cancel,
+                &mut |_fraction| {
+                    // The whole 60-min file at the coarsest level (172_800_000 / 65_536 ≈ 2637
+                    // buckets) — the same request `peaks_get` would eventually serve, read
+                    // through `import_peaks` while the job is still running.
+                    let r = service.import_peaks(job_id, 65_536, 0, 2637).unwrap();
+                    let ready = r.buckets.iter().take_while(|(mn, _)| !mn.is_nan()).count();
+                    ticks.push((start.elapsed(), ready as u64, r.partial));
+                },
+                &mut |live, store| {
+                    service.set_import_live(job_id, store, live, 48_000, None);
+                },
+            )
+            .unwrap();
+        let open_elapsed = start.elapsed();
+        service.finish_import_job(job_id);
+
+        println!(
+            "document_open of the 60-min fixture: {:.3} s ({} samples), {} progress ticks",
+            open_elapsed.as_secs_f64(),
+            info.len_samples,
+            ticks.len(),
+        );
+        for (t, ready, partial) in &ticks {
+            println!(
+                "  t={:>6.1} ms: {:>4}/2637 coarse buckets ready ({:>5.1}%, partial={})",
+                t.as_secs_f64() * 1000.0,
+                ready,
+                100.0 * *ready as f64 / 2637.0,
+                partial,
+            );
+        }
         assert!(info.len_samples > 0);
     }
 

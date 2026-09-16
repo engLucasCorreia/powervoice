@@ -68,7 +68,8 @@ pub use fs_util::canonical_path_for_compare;
 pub use history::{Edit, EditOp, History, HistoryStep, LabelParams, MarkerMapping, MarkerOp};
 pub use import::{
     CHANNEL_PROBE_WINDOW_S, ImportChannel, ImportProbe, ImportResult, MAX_CHANNELS,
-    MAX_SAMPLE_RATE_HZ, MIN_SAMPLE_RATE_HZ, import_file, import_wav, probe_for_import,
+    MAX_SAMPLE_RATE_HZ, MIN_SAMPLE_RATE_HZ, import_file, import_file_with_live, import_wav,
+    probe_for_import,
 };
 pub use normalize::{
     ALREADY_TOL_DB, LABEL_NORMALIZE, LABEL_NORMALIZE_LUFS, LufsNormalizeOutcome,
@@ -95,8 +96,8 @@ pub use sidecar::{
 };
 pub use snapshot::{DocSnapshot, Marker, MarkerId, MarkerKind, Piece, Source};
 pub use store::{
-    CancelToken, ChunkId, ChunkLocation, ChunkPeaks, ChunkStore, ChunkWriter, MemoryReservation,
-    StoreOptions, WriterProgress, WrittenAudio,
+    CancelToken, ChunkId, ChunkLocation, ChunkPeaks, ChunkStore, ChunkWriter, LiveWrittenAudio,
+    MemoryReservation, StoreOptions, WriterProgress, WrittenAudio,
 };
 pub use take::{TakeWriter, TakeWriterOptions};
 pub use vxpk::{VXPK_HEADER_LEN, VXPK_MAGIC, VXPK_VERSION, VxpkHeader, encode_vxpk};

@@ -191,7 +191,7 @@ fn gain_round_trip_threaded_is_bit_exact() {
 #[test]
 fn events_reach_the_plugin_at_their_positions() {
     const B: usize = 64;
-    let (mut plugin, mut host, _monitor) = setup::<SpinYieldWakeup>(
+    let (mut plugin, mut host, mut monitor) = setup::<SpinYieldWakeup>(
         ChannelConfig {
             event_capacity: 4,
             ..ChannelConfig::pipelined(RATE, B as u32)
@@ -225,6 +225,10 @@ fn events_reach_the_plugin_at_their_positions() {
         .collect();
     assert_eq!(pushed, [true, true, true, true, false]);
     assert_eq!(host.counters().events_dropped, 1);
+    // H-62: the count reaches the control thread's `Monitor` too (the host's own counters are on
+    // the audio thread; nothing outside it may read `HostEnd` — `Monitor` shares the same
+    // `Arc<HostStats>` instead, which is what `AdapterHealth::events_dropped` is built on).
+    assert_eq!(monitor.poll(PeerStatus::Alive).counters.events_dropped, 1);
 
     // Plugin → host.
     assert!(plugin.push_output_event(WireEvent::param(5, 42, 0.25)));

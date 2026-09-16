@@ -36,6 +36,15 @@ pub const AUTO_RESTARTS: u32 = 1;
 /// respawn in a tight loop).
 pub const AUTO_RESTART_DELAY: Duration = Duration::from_millis(200);
 
+/// How long a sandboxed slot's "some parameter changes were dropped" flag ([`SlotInfo`],
+/// [`RackNotice::AutomationDropped`]) stays up after the last observed increase in
+/// [`AdapterHealth::events_dropped`] before it clears itself (H-62). Long enough to ride out a
+/// burst of drops as one episode — e.g. a fast fader sweep during a run of misses keeps dropping
+/// events tick after tick — without the flag flickering off between them; short enough that once
+/// it clears, "some parameter changes were dropped" is still trustworthy (recent, not a stale
+/// leftover from minutes ago).
+pub const AUTOMATION_DROPPED_CLEAR: Duration = Duration::from_millis(1000);
+
 /// What the host tells the UI (T-108 maps these to IPC events).
 #[derive(Clone, Debug, PartialEq)]
 pub enum RackNotice {
@@ -118,6 +127,24 @@ pub enum RackNotice {
         slot: SlotUid,
         /// Slot index.
         index: usize,
+    },
+    /// A sandboxed slot's host → plugin event ring started or stopped dropping automation
+    /// (H-55's open question, ADR-008 §1 "Event rings"; [`RackHost::poll_events_dropped`]).
+    /// `active` is the edge this notice reports (`true`: just started; `false`: cleared after
+    /// [`AUTOMATION_DROPPED_CLEAR`] with no further drop) — one notice per edge, never one per
+    /// tick while it continues. `notify` is `true` only for the very first time this slot ever
+    /// raises it this session: worth telling the user about once, not on every later episode.
+    AutomationDropped {
+        /// Slot.
+        slot: SlotUid,
+        /// Slot index.
+        index: usize,
+        /// Display name, for the notice.
+        name: String,
+        /// Just started (`true`) or just cleared (`false`).
+        active: bool,
+        /// The first time ever for this slot this session.
+        notify: bool,
     },
 }
 
@@ -209,6 +236,10 @@ pub struct SlotInfo {
     /// The module runs out of process (it answers the `AdapterHealth` extension: a sandboxed
     /// plugin, T-802). `false` for placeholders.
     pub sandboxed: bool,
+    /// Some of this slot's host → plugin automation was dropped recently (H-62,
+    /// [`AUTOMATION_DROPPED_CLEAR`]): its event ring filled up and at least one parameter change
+    /// didn't reach the plugin. Always `false` for an in-process module or a placeholder.
+    pub automation_dropped: bool,
     /// The module has an editor window of its own (T-901: a sandboxed plugin with a GUI).
     pub has_editor: bool,
     /// That window is open.
@@ -274,6 +305,10 @@ struct Loaded {
     /// The window was opened at least once: the plugin may hold GUI-only state, so a save
     /// captures its state first ([`RackHost::editors_to_capture`]).
     editor_used: bool,
+    /// H-62: `health.events_dropped()` as last observed by [`RackHost::poll_events_dropped`].
+    /// A *decrease* (a fresh `Channel` after a reactivation or restart resets the adapter's own
+    /// counter to 0) is never read as new drops — only an increase over this is.
+    events_dropped_seen: u64,
 }
 
 /// A module's [`Telemetry`] handle and its channel descriptions.
@@ -320,6 +355,16 @@ struct HostSlot {
     /// T-901: the slot's editor window was open when the slot was moved; reopen it once the new
     /// instance is loaded.
     reopen_editor: Option<EditorRequest>,
+    /// H-62: an `AutomationDropped` notice was already shown for this slot this session — the
+    /// first occurrence is worth telling the user about, a later one (even a new episode, even
+    /// after a restart) is not (never reset for the slot's lifetime, unlike `auto_restarts`).
+    automation_dropped_notified: bool,
+    /// H-62: currently flagged "some parameter changes were dropped" (an increase was observed
+    /// within the last [`AUTOMATION_DROPPED_CLEAR`]).
+    automation_dropped_active: bool,
+    /// H-62: when the flag was last raised (`None` once cleared); the flag clears itself
+    /// [`AUTOMATION_DROPPED_CLEAR`] after this.
+    automation_dropped_last: Option<Instant>,
 }
 
 impl HostSlot {
@@ -333,6 +378,9 @@ impl HostSlot {
             restart_due: None,
             job: None,
             reopen_editor: None,
+            automation_dropped_notified: false,
+            automation_dropped_active: false,
+            automation_dropped_last: None,
         }
     }
 }
@@ -494,6 +542,7 @@ fn loaded_from(module: Box<dyn Module>) -> Box<Loaded> {
         editor_reported_open: false,
         editor_request: None,
         editor_used: false,
+        events_dropped_seen: 0,
     })
 }
 
@@ -1000,6 +1049,7 @@ impl RackHost {
                 transfer_handles: l.transfer_curve.as_deref().map(|c| c.handles().to_vec()),
                 telemetry: l.telemetry_channels.clone(),
                 sandboxed: l.health.is_some(),
+                automation_dropped: hs.automation_dropped_active,
                 has_editor: l.editor.is_some(),
                 editor_open: l.editor.as_ref().is_some_and(|e| e.is_open()),
             },
@@ -1032,6 +1082,7 @@ impl RackHost {
                 transfer_handles: None,
                 telemetry: Arc::from(Vec::new()),
                 sandboxed: false,
+                automation_dropped: false,
                 has_editor: false,
                 editor_open: false,
             },
@@ -1050,6 +1101,7 @@ impl RackHost {
                 transfer_handles: None,
                 telemetry: Arc::from(Vec::new()),
                 sandboxed: false,
+                automation_dropped: false,
                 has_editor: false,
                 editor_open: false,
             },
@@ -1774,6 +1826,10 @@ impl RackHost {
         l.blob = m.save_state().ok().and_then(|s| s.blob).or(blob);
         (l.telemetry, l.telemetry_channels) = telemetry_of(m.as_ref());
         l.health = adapter_health(m.as_ref());
+        // H-62: a genuinely new instance starts its own channel at 0 — `poll_events_dropped`
+        // would reach the same conclusion on the next tick anyway (a decrease resets the
+        // baseline), but resetting it here avoids reading one stale tick off the old instance.
+        l.events_dropped_seen = 0;
         l.text = param_text(m.as_ref());
         // T-901: a window still open on the outgoing instance (a plugin-requested restart, a
         // preset or state load — not a crash, whose window died with its process) closes and
@@ -2318,6 +2374,7 @@ impl RackHost {
         self.drain_loads();
         self.poll_editors();
         self.run_due_restarts(Instant::now());
+        self.poll_events_dropped(Instant::now());
         // H-40: cheap poll — only worth walking the slots when the registry actually changed
         // since the last tick (install, rescan, unblock, re-enable all bump its generation).
         let generation = self.registry.generation();
@@ -2351,6 +2408,60 @@ impl RackHost {
                     slot: uid,
                     index: k,
                     message,
+                });
+            }
+        }
+    }
+
+    /// Polls every sandboxed slot's [`AdapterHealth::events_dropped`] (H-62, ADR-008 §1): a
+    /// plain relaxed atomic load through the extension, no lock, no allocation. An increase since
+    /// the last poll raises the slot's flag (a notice only on the rising edge, and only the
+    /// user-facing one the first time this slot ever raises it this session); no further increase
+    /// for [`AUTOMATION_DROPPED_CLEAR`] clears it (a notice on that falling edge too, silent).
+    fn poll_events_dropped(&mut self, now: Instant) {
+        for k in 0..self.slots.len() {
+            let HostSlot {
+                uid,
+                kind,
+                automation_dropped_notified,
+                automation_dropped_active,
+                automation_dropped_last,
+                ..
+            } = &mut self.slots[k];
+            let Kind::Loaded(l) = kind else { continue };
+            let Some(health) = l.health.as_ref() else {
+                continue;
+            };
+            let current = health.events_dropped();
+            let increased = current > l.events_dropped_seen;
+            l.events_dropped_seen = current;
+            let uid = *uid;
+            if increased {
+                let was_active = *automation_dropped_active;
+                *automation_dropped_last = Some(now);
+                *automation_dropped_active = true;
+                if !was_active {
+                    let notify = !*automation_dropped_notified;
+                    *automation_dropped_notified = true;
+                    self.notices.push(RackNotice::AutomationDropped {
+                        slot: uid,
+                        index: k,
+                        name: l.descriptor.name.text.clone(),
+                        active: true,
+                        notify,
+                    });
+                }
+            } else if *automation_dropped_active
+                && automation_dropped_last
+                    .is_some_and(|t| now.saturating_duration_since(t) >= AUTOMATION_DROPPED_CLEAR)
+            {
+                *automation_dropped_active = false;
+                self.notices.push(RackNotice::AutomationDropped {
+                    slot: uid,
+                    index: k,
+                    name: l.descriptor.name.text.clone(),
+                    active: false,
+                    notify: false,
                 });
             }
         }

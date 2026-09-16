@@ -39,6 +39,10 @@ impl AdapterHealth for Health {
     fn fault(&self) -> Option<String> {
         self.0.get().map(|f| f.reason().to_owned())
     }
+
+    fn events_dropped(&self) -> u64 {
+        self.0.events_dropped()
+    }
 }
 
 /// Parameter text requests answer within this, or the host falls back to its own formatting.

@@ -238,6 +238,17 @@ pub trait AdapterHealth: Send + Sync {
     /// verb phrase that completes "‹module› … and was bypassed", e.g. `"crashed"` or
     /// `"stopped responding"`. Set before `process` returns `ProcessStatus::Error` for it.
     fn fault(&self) -> Option<String>;
+
+    /// Host → plugin automation events dropped so far because the event ring was full (ADR-008
+    /// §1 "Event rings"), cumulative since the current instance/activation started. `0` for an
+    /// adapter that never drops (the default, and every adapter without an event ring at all).
+    /// Read by the host's control thread (never `process`), typically every few milliseconds —
+    /// implementations must be lock-free or briefly-locked, never touched by the audio thread's
+    /// `push_event`. The rack polls this every tick and surfaces a run of drops as a slot flag
+    /// and, the first time it happens for a slot this session, a notice (H-62).
+    fn events_dropped(&self) -> u64 {
+        0
+    }
 }
 
 /// Description of one telemetry channel.

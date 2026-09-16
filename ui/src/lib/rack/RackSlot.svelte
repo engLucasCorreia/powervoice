@@ -81,6 +81,10 @@
   const flagLabel = $derived(
     crashCount === 1 ? t("rack.slot.flagged_once") : t("rack.slot.flagged", { count: crashCount }),
   );
+  // H-62: a sandboxed plugin whose event ring dropped some automation gets a small warning
+  // icon next to its name — informational only (unlike the crash flag, there's nothing to open),
+  // so it's a plain icon with a native tooltip (`title`), like the latency label below.
+  const automationDroppedLabel = $derived(t("rack.slot.automation_dropped"));
 
   /** Retry = the rack's Restart of a failed slot (a sandboxed plugin is respawned with its
    * last committed state). A missing module can't be restarted (SPEC-012 §2.9). */
@@ -438,6 +442,11 @@
           testid="rack-slot-flagged"
           onclick={() => openPluginManager({ focus: slot.module_id })}
         />
+      </span>
+    {/if}
+    {#if slot.automation_dropped}
+      <span class="flag" title={automationDroppedLabel}>
+        <Icon name="warning" size="sm" label={automationDroppedLabel} testid="rack-slot-automation-dropped" />
       </span>
     {/if}
     {#if statusBadge}

@@ -42,8 +42,8 @@ mod slot;
 
 pub use chain::Chain;
 pub use host::{
-    AUTO_RESTART_DELAY, AUTO_RESTARTS, NoiseProfileStatus, RackHost, RackNotice, SlotInfo,
-    SlotStatus, SlotTelemetry,
+    AUTO_RESTART_DELAY, AUTO_RESTARTS, AUTOMATION_DROPPED_CLEAR, NoiseProfileStatus, RackHost,
+    RackNotice, SlotInfo, SlotStatus, SlotTelemetry,
 };
 pub use live::{LiveRack, RackCommand};
 pub use mix::xfade_gain;

@@ -1032,6 +1032,9 @@ impl Control {
                     | RackNotice::SlotLoaded { .. }
                     | RackNotice::SlotRecovered { .. }
                     | RackNotice::EditorChanged { .. }
+                    // H-62: flips `SlotInfo::automation_dropped`, which per-field events don't
+                    // carry — same reasoning as the others above.
+                    | RackNotice::AutomationDropped { .. }
             )
         });
         // T-401 (SPEC-012 §2.5, AC-8): a rack latency change reaches the monitoring readout within

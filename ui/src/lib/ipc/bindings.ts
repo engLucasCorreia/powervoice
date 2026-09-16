@@ -833,6 +833,12 @@ telemetry: Array<TelemetryChannelDto>,
  */
 sandboxed: boolean, 
 /**
+ * Some of this slot's automation was dropped recently because its event ring filled up
+ * (H-62) — the slot header shows a warning key naming it, distinct from `status` (the slot
+ * keeps processing normally; only some parameter changes may have been delayed or missed).
+ */
+automation_dropped: boolean, 
+/**
  * The plugin has a window of its own (T-901): the slot offers "Open plugin window".
  */
 has_editor: boolean, 

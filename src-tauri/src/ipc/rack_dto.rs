@@ -546,6 +546,10 @@ pub struct RackSlotDto {
     /// The module runs out of process (a sandboxed plugin, T-802): the slot header shows its
     /// status (Running / Restarting / Failed).
     pub sandboxed: bool,
+    /// Some of this slot's automation was dropped recently because its event ring filled up
+    /// (H-62) — the slot header shows a warning key naming it, distinct from `status` (the slot
+    /// keeps processing normally; only some parameter changes may have been delayed or missed).
+    pub automation_dropped: bool,
     /// The plugin has a window of its own (T-901): the slot offers "Open plugin window".
     pub has_editor: bool,
     /// That window is open.
@@ -584,6 +588,7 @@ impl From<&EngineRackSlot> for RackSlotDto {
                 .map(|hs| hs.iter().map(Into::into).collect()),
             telemetry: info.telemetry.iter().map(Into::into).collect(),
             sandboxed: info.sandboxed,
+            automation_dropped: info.automation_dropped,
             has_editor: info.has_editor,
             editor_open: info.editor_open,
         }

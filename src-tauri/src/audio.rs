@@ -171,5 +171,26 @@ fn forward_rack_notice<R: Runtime>(app: &AppHandle<R>, notice: &RackNotice) -> t
             tracing::debug!(slot = index, "plugin state changed outside its parameters");
             Ok(())
         }
+        // H-62: the `rack_changed` snapshot the `forward` also emits for this notice already
+        // updates the slot's flag; a toast is only for `notify` (the first time ever this
+        // session for this slot).
+        RackNotice::AutomationDropped {
+            index,
+            name,
+            active,
+            notify,
+            ..
+        } => {
+            tracing::warn!(slot = index, name, active, "rack slot automation dropped");
+            if *notify {
+                emit_notice(
+                    app,
+                    Notice::toast(NoticeLevel::Warning, "notice.plugins.automation_dropped")
+                        .with_param("plugin", name),
+                )
+            } else {
+                Ok(())
+            }
+        }
     }
 }

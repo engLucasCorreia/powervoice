@@ -2,7 +2,7 @@
 //! and the sticky fault. Shared between the proxy (control-thread calls) and the watchdog.
 
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -63,6 +63,12 @@ pub(crate) struct FaultCell {
     fault: Mutex<Option<SandboxFault>>,
     /// Set from `process` (no lock there) when an offline block missed its deadline.
     pub(crate) offline_miss: AtomicBool,
+    /// H-62: the current activation's `HostCounters::events_dropped`, refreshed at every
+    /// watchdog poll ([`POLL_INTERVAL`](crate::watchdog::POLL_INTERVAL), off the audio thread) —
+    /// a plain relaxed load/store, no lock. Reset to 0 whenever a fresh `Channel` (and its own
+    /// `HostStats`) is installed by `activate` (the count is cumulative *within one channel*,
+    /// never carried across a reactivation or restart).
+    events_dropped: AtomicU64,
 }
 
 impl FaultCell {
@@ -73,6 +79,11 @@ impl FaultCell {
                 .load(Ordering::Acquire)
                 .then_some(SandboxFault::OfflineDeadline)
         })
+    }
+
+    /// The current channel's dropped-event count (H-62), as of the last watchdog poll.
+    pub(crate) fn events_dropped(&self) -> u64 {
+        self.events_dropped.load(Ordering::Relaxed)
     }
 
     /// Records `f` unless a fault is already recorded; `true` if it was the first.
@@ -254,9 +265,15 @@ impl Sandbox {
     /// \[watchdog\] One supervision round.
     pub(crate) fn poll(&self) {
         let status = self.peer_status();
-        let new_fault = lock(&self.monitor)
-            .as_mut()
-            .and_then(|m| m.poll(status).new_fault);
+        let health = lock(&self.monitor).as_mut().map(|m| m.poll(status));
+        // H-62: cache the channel's dropped-event count for `AdapterHealth::events_dropped`
+        // (the proxy's control-thread callers never lock the monitor themselves).
+        if let Some(h) = &health {
+            self.fault
+                .events_dropped
+                .store(h.counters.events_dropped, Ordering::Relaxed);
+        }
+        let new_fault = health.and_then(|h| h.new_fault);
         if let Some(f) = new_fault {
             self.record(f.into());
         } else if status == PeerStatus::Exited {

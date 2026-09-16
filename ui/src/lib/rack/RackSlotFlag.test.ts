@@ -27,6 +27,7 @@ function slot(moduleId: string): RackSlotDto {
     transfer_handles: null,
     telemetry: [],
     sandboxed: true,
+    automation_dropped: false,
     has_editor: false,
     editor_open: false,
   };
@@ -84,6 +85,23 @@ describe("flagged plugin in the rack (T-809)", () => {
     await refreshPlugins();
     const { target, teardown } = render(slot("clap:com.acme.deesser"));
     expect(target.querySelector('[data-testid="rack-slot-flagged"]')).toBeNull();
+    teardown();
+  });
+});
+
+/** H-62: a sandboxed slot whose event ring dropped automation shows a small warning icon. */
+describe("automation-dropped flag in the rack (H-62)", () => {
+  it("shows a warning icon naming what happened when the slot is flagged", () => {
+    const { target, teardown } = render({ ...slot("clap:com.acme.deesser"), automation_dropped: true });
+    const flag = target.querySelector('[data-testid="rack-slot-automation-dropped"]')!;
+    expect(flag).not.toBeNull();
+    expect(flag.getAttribute("aria-label")).toBe("This plugin fell behind and missed some parameter changes");
+    teardown();
+  });
+
+  it("shows nothing while the slot hasn't dropped any automation", () => {
+    const { target, teardown } = render(slot("clap:com.acme.deesser"));
+    expect(target.querySelector('[data-testid="rack-slot-automation-dropped"]')).toBeNull();
     teardown();
   });
 });

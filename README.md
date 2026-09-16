@@ -6,7 +6,7 @@ want the essentials of Adobe Audition's Waveform Editor without a full multitrac
 
 ![PowerVoice with an effects rack and the loudness / ACX check](docs/images/powervoice-dark.png)
 
-> **Status: early preview (v0.1.0).** PowerVoice is developed and tested on **Linux**. Windows and
+> **Status: early preview (v0.2.0).** PowerVoice is developed and tested on **Linux**. Windows and
 > macOS builds compile from source but haven't been verified yet. Expect rough edges, and please
 > report what you find.
 

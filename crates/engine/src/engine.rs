@@ -791,7 +791,6 @@ impl Drop for ManualEngine {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -807,11 +806,6 @@ mod tests {
         let registry = Arc::new(Registry::with_factories(Vec::new()).unwrap());
         let config = EngineConfig::new(Arc::new(FakeBackend::new(1)), registry);
         let mut control = Control::new(config, None);
-        let ticks = Arc::new(AtomicU64::new(0));
-        let t = ticks.clone();
-        control.set_telemetry_sink(Some(Box::new(move |_| {
-            t.fetch_add(1, Ordering::Relaxed);
-        })));
         let (tx, rx) = mpsc::channel();
         // ≥ 200 ms of queued work: 12 ticks due.
         for _ in 0..200 {
@@ -821,7 +815,7 @@ mod tests {
         tx.send(ControlMsg::Quit).unwrap();
         control::run(&mut control, &rx);
         control.shutdown();
-        let n = ticks.load(Ordering::Relaxed);
+        let n = control.tick_count();
         assert!(n >= 6, "{n} ticks during ≥ 200 ms of queued messages");
     }
 }

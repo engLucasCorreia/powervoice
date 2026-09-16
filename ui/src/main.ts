@@ -25,7 +25,10 @@ async function bootstrap(root: HTMLElement): Promise<void> {
   const params = new URLSearchParams(window.location.search);
   // H-25: the real App against mocked IPC, development builds only (`?preview`, `&theme=light`).
   // H-26: `&scene=`, `&dialog=` and `&menu=` open fixture content (see `dev/previewIpc.ts`).
-  if (import.meta.env.DEV && params.has("preview")) {
+  // H-43: `VITE_PV_BENCH_PREVIEW=1 vite build` (`just bench-ui`'s release pass) keeps the preview
+  // in a production bundle so the idle-CPU bench can measure release JS; an ordinary build leaves
+  // the variable unset and drops it like the gallery.
+  if ((import.meta.env.DEV || import.meta.env.VITE_PV_BENCH_PREVIEW === "1") && params.has("preview")) {
     const { installPreviewIpc } = await import("./dev/previewIpc");
     const { runPreviewScene } = await import("./dev/previewScenes");
     const { isThemePref } = await import("./lib/theme/theme.svelte");

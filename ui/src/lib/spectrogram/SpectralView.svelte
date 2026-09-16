@@ -20,7 +20,9 @@
   } from "../state/selection.svelte";
   import { settingsState } from "../state/settings.svelte";
   import { CEIL_RANGE_DB, FLOOR_RANGE_DB, spectralState } from "../state/spectral.svelte";
-  import { seek, transportState } from "../state/transport.svelte";
+  import { isPlayheadMoving, seek, transportState } from "../state/transport.svelte";
+  import { createFrameClient } from "../render/frameScheduler";
+  import { themeState } from "../theme/theme.svelte";
   import { LOOP_STRIP_PX, loopFromRange, loopGeometry } from "../render/loopOverlay";
   import { formatTime } from "../transport/playhead";
   import { normalizeSelection } from "../waveform/selection";
@@ -125,6 +127,18 @@
   const selection = selectionState();
   const markers = markersState();
   const spectral = spectralState();
+
+  // H-43: the canvas draws on demand from the shared frame scheduler (`render/frameScheduler.ts`,
+  // replacing H-32's perpetual rAF loop): one frame whenever an input of `draw()` changes (the
+  // dependency effect below, a tile arriving, the GL context), and every frame while the playhead
+  // moves. A draw that throws is retried by the scheduler, and any later change draws again.
+  const frames = createFrameClient(
+    () => {
+      draw();
+      return isPlayheadMoving();
+    },
+    { name: "spectral" },
+  );
 
   const lenSamples = $derived(doc.current.len_samples);
   const rateHz = $derived(doc.current.sample_rate_hz);
@@ -266,6 +280,7 @@
       onContextLost: () => {
         glRenderer?.dispose();
         glRenderer = null;
+        frames.invalidate(); // redraw with the Canvas2D fallback
         queueMicrotask(() =>
           pushNotice({ level: "warning", key: "notice.renderer.context_lost_spectral", params: {}, persistent: false, id: null, cleared: false }),
         );
@@ -273,6 +288,7 @@
     });
     glHost = host;
     glRenderer = host.gl ? new SpectrogramGlRenderer(host.gl) : null;
+    frames.invalidate();
     return () => {
       glRenderer?.dispose();
       glRenderer = null;
@@ -469,6 +485,18 @@
       ctx.stroke();
     }
   }
+
+  // H-43: every input of `draw()` that can change, read in full on every run (no early return, so
+  // no dependency is ever dropped); a change requests one frame. Tiles and the GL context
+  // invalidate where they land.
+  $effect(() => {
+    void [canvasEl, viewportPx, heightPx, isOpen, lenSamples, rateHz, startSample, samplesPerPixel];
+    void [requester, freqLo, freqHi, maxTextureSize, isRecording, doc.current.audio_rev];
+    void [spectral.colormap, spectral.floorDb, spectral.ceilDb, spectral.freqScale, spectral.fftSize];
+    void [selection.current, markers.list, transport.state.loop_range, transport.playheadSamples];
+    void themeState().revision;
+    frames.invalidate();
+  });
 
   function draw(): void {
     if (!canvasEl || viewportPx <= 0 || heightPx <= 0) {
@@ -777,7 +805,7 @@
 
     let disposed = false;
     let attached = false;
-    createSpectroRequester(SPECTRAL_VIEW_ID, {})
+    createSpectroRequester(SPECTRAL_VIEW_ID, { onTile: () => frames.invalidate() })
       .then((r) => {
         attached = true;
         if (disposed) {
@@ -790,33 +818,9 @@
         // No spectral view without a working IPC channel — the pane just stays "pending".
       });
 
-    const requestFrame: (cb: () => void) => number =
-      typeof requestAnimationFrame === "function"
-        ? (cb) => requestAnimationFrame(cb)
-        : (cb) => setTimeout(cb, 16) as unknown as number;
-    const cancelFrame: (id: number) => void =
-      typeof cancelAnimationFrame === "function"
-        ? (id) => cancelAnimationFrame(id)
-        : (id) => clearTimeout(id);
-    let frameId = 0;
-    const loop = () => {
-      if (disposed) {
-        return;
-      }
-      try {
-        draw();
-      } finally {
-        // H-32: reschedule unconditionally — a transient bad read (e.g. the shared `transport`
-        // store, guarded at the source in `transport.svelte.ts`) must never stop this loop from
-        // trying again next frame.
-        frameId = requestFrame(loop);
-      }
-    };
-    frameId = requestFrame(loop);
-
     return () => {
       disposed = true;
-      cancelFrame(frameId);
+      frames.dispose();
       if (attached) {
         void spectroDetach(SPECTRAL_VIEW_ID).catch(() => {});
       }

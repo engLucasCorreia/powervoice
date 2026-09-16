@@ -411,6 +411,10 @@ fn ac19_contract_fields_and_cadence() {
     r.subscribe(AnalyzerResponse::Medium);
     r.run_ms(20);
     r.eng.transport(TransportCommand::Play);
+    // H-43: a silent, at-rest curve isn't repeated every tick (while stopped, and for the few
+    // ticks before the first played block reaches the tap) — count once the signal flows.
+    r.run_ms(20);
+    let before_play = r.frame_count() as u64;
     let ticks = 2_000u64;
     r.run_ms(ticks);
 
@@ -424,7 +428,11 @@ fn ac19_contract_fields_and_cadence() {
     // drives ticks directly rather than on a wall clock, so the 60 Hz figure itself is a
     // property of the real engine's tick loop, not reproducible here; what this checks is the
     // 1:1 tick -> frame invariant that gives it that cadence.
-    assert_eq!(r.frame_count() as u64, ticks + 20, "one frame per tick");
+    assert_eq!(
+        r.frame_count() as u64 - before_play,
+        ticks,
+        "one frame per tick while playing"
+    );
 }
 
 /// AC-19 (silence): with nothing playing, the tap sees digital silence and the analyzer reports

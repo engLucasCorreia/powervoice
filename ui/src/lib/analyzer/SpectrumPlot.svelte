@@ -30,6 +30,7 @@
   } from "./plotGeometry";
   import { themeColors, type ThemeColors } from "../theme/themeColors";
   import { themeState } from "../theme/theme.svelte";
+  import { createFrameClient } from "../render/frameScheduler";
 
   /**
    * The spectrum plot shared by the dock analyzer and the Spectrum Inspector (H-42, SPEC-007
@@ -113,7 +114,6 @@
   let lastFrameAt = 0;
   let lastPickAt = -Infinity;
   let quietDrawn = false;
-  let raf = 0;
 
   let dragStartX: number | null = null;
   let dragStartRange: [number, number] | null = null;
@@ -159,26 +159,21 @@
 
   // --- Drawing on demand ------------------------------------------------------------------------
 
+  // H-43: frames come from the shared scheduler (`render/frameScheduler.ts`), like every other
+  // canvas renderer's.
+  const frames = createFrameClient(onFrame, { name: "spectrum-plot" });
+
   export function requestDraw(): void {
-    if (raf !== 0 || typeof requestAnimationFrame !== "function") {
-      return;
-    }
-    raf = requestAnimationFrame(onFrame);
+    frames.invalidate();
   }
 
-  function onFrame(now: number): void {
-    raf = 0;
-    let again = false;
-    try {
-      again = step(now);
-      draw();
-    } finally {
-      // H-32: a throw in one frame must not stop the next change from drawing — `raf` is
-      // already clear, and an animation still in progress asks for its next frame.
-      if (again) {
-        requestDraw();
-      }
-    }
+  /** One frame: advances the ballistics and draws; `true` while something is still moving. A
+   * throw is retried by the scheduler on the next frames, and any later change draws again
+   * (H-32). */
+  function onFrame(now: number): boolean {
+    const again = step(now);
+    draw();
+    return again;
   }
 
   /** Advances the ballistics; true while something is still moving. */
@@ -471,12 +466,7 @@
     }
   });
 
-  $effect(() => () => {
-    if (raf !== 0 && typeof cancelAnimationFrame === "function") {
-      cancelAnimationFrame(raf);
-    }
-    raf = 0;
-  });
+  $effect(() => () => frames.dispose());
 
   $effect(() => {
     const el = canvasEl;

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { installInputInvalidation } from "./lib/render/frameScheduler";
   import AnalyzerPanel from "./lib/analyzer/AnalyzerPanel.svelte";
   import { analyzerState, applyAnalyzerPrefs } from "./lib/analyzer/analyzer.svelte";
   import { applyDiagnosticsPrefs } from "./lib/analyzer/diagnostics.svelte";
@@ -190,6 +191,10 @@
   // H-19: Alt+letter mnemonics for the menu bar (File/Edit/View/Effects/Help), independent of the
   // per-action keymap above.
   onMount(() => attachMenuBarMnemonics());
+
+  // H-43: canvases draw on demand; any discrete user input (pointer down/up, key, resize, focus)
+  // also redraws them once — a renderer that missed an input heals at the next gesture.
+  onMount(() => installInputInvalidation());
 
   // T-809: the plugin manager's scan progress (the start-up scan too) and the crash flags the
   // rack's flagged-slot affordance reads.

@@ -64,8 +64,8 @@ use crate::rt::{
     RtCounters, RtEvent,
 };
 use crate::telemetry::{
-    InputMeter, Meter, ModuleTelemetryPublisher, ModuleTelemetrySink, TelemetryFrame,
-    TelemetryRateGate, TelemetrySink, effective_telemetry_rate_hz, vxtm_flags,
+    IdleTelemetryGate, InputMeter, Meter, ModuleTelemetryPublisher, ModuleTelemetrySink,
+    TelemetryFrame, TelemetryRateGate, TelemetrySink, effective_telemetry_rate_hz, vxtm_flags,
 };
 use crate::transport::{Action, Transport, TransportCommand, TransportState};
 
@@ -401,6 +401,10 @@ pub(crate) struct Control {
     /// H-16 (SPEC-003 §3, ADR-009): gates how often `emit_telemetry`/`module_telemetry`/
     /// `analyzer` actually publish, independent of the fixed 60 Hz control tick.
     rate_gate: TelemetryRateGate,
+    /// H-43: which due `VXTM` frames go out while the engine is idle.
+    idle_gate: IdleTelemetryGate,
+    /// Control ticks run so far (diagnostics; telemetry frames no longer count them 1:1).
+    tick_count: u64,
     last_state: Option<TransportState>,
     /// H-37: the loop region last sent to the reader and the output callback.
     loop_sent: Option<(u64, u64)>,
@@ -529,6 +533,8 @@ impl Control {
             analyzer: AnalyzerPublisher::default(),
             // SPEC-003 §3 factory default: 60 Hz (matches `AnalyzerPublisher::default`'s rate).
             rate_gate: TelemetryRateGate::new(60),
+            idle_gate: IdleTelemetryGate::default(),
+            tick_count: 0,
             last_state: None,
             loop_sent: None,
             threaded,
@@ -3010,7 +3016,14 @@ impl Control {
 
     // --- Tick ------------------------------------------------------------------------------
 
+    /// Control ticks run so far.
+    #[cfg(test)]
+    pub(crate) fn tick_count(&self) -> u64 {
+        self.tick_count
+    }
+
     pub(crate) fn tick(&mut self) {
+        self.tick_count = self.tick_count.wrapping_add(1);
         let now = self.now();
         if let ReaderLink::Inline(r) = &mut self.reader {
             r.fill();
@@ -3031,10 +3044,12 @@ impl Control {
         self.update_latency_readout(now);
         // H-16: VXTM/VXMT/VXSA all honour `Settings.telemetry_rate_hz` through one shared gate,
         // decoupled from the fixed 60 Hz control tick above.
+        // H-43: while idle, each publisher only sends what changed (and falls silent at rest).
         if self.rate_gate.due() {
-            self.emit_telemetry(now);
+            let active = self.telemetry_active();
+            self.emit_telemetry(now, active);
             self.module_telemetry
-                .publish(self.output.as_ref().map(|out| &out.rack), now);
+                .publish(self.output.as_ref().map(|out| &out.rack), now, active);
             self.analyzer.publish(now);
         }
         self.emit_state_if_changed();
@@ -3208,7 +3223,17 @@ impl Control {
         }
     }
 
-    fn emit_telemetry(&mut self, now: u64) {
+    /// H-43: the engine is "active" for telemetry while playing, recording (or finishing a
+    /// take), monitoring, or with an input open (its meter is live); otherwise it's idle and the
+    /// publishers only send what changed.
+    fn telemetry_active(&self) -> bool {
+        self.transport.playing()
+            || self.recording.is_some()
+            || self.monitor_active
+            || self.input.is_some()
+    }
+
+    fn emit_telemetry(&mut self, now: u64, active: bool) {
         let (peak, peak_db, rms_db) = self.meter.take();
         let (in_peak_db, in_rms_db, in_clip) = if self.input.is_some() {
             self.in_meter.take()
@@ -3267,8 +3292,15 @@ impl Control {
             audio_rev: self.doc.as_ref().map_or(0, |d| d.snapshot.audio_rev),
             dropped_rt_events: dropped,
         };
-        self.seq = self.seq.wrapping_add(1);
         self.xrun = false;
+        // H-43: idle frames only go out when something changed (see `IdleTelemetryGate`).
+        if !self
+            .idle_gate
+            .admit(&frame, active, self.rate_gate.rate_hz())
+        {
+            return;
+        }
+        self.seq = self.seq.wrapping_add(1);
         if let Some(sink) = self.telemetry.as_mut() {
             sink(&frame);
         }
@@ -3277,6 +3309,7 @@ impl Control {
     pub(crate) fn set_telemetry_sink(&mut self, sink: Option<TelemetrySink>) {
         self.telemetry = sink;
         self.seq = 0;
+        self.idle_gate.reset();
     }
 
     pub(crate) fn set_module_telemetry_sink(&mut self, sink: Option<ModuleTelemetrySink>) {

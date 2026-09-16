@@ -54,9 +54,23 @@ export function analyzerState(): {
 function onMessage(message: unknown): void {
   const buf = toArrayBuffer(message);
   const decoded = buf ? decodeVxsa(buf) : null;
-  if (decoded) {
+  // H-43: a frame showing exactly the same curve as the current one (e.g. silence at rest) isn't
+  // written, so nothing downstream re-renders or redraws.
+  if (decoded && !sameCurve(frame, decoded)) {
     frame = decoded;
   }
+}
+
+function sameCurve(a: AnalyzerFrame | undefined, b: AnalyzerFrame): boolean {
+  if (!a || a.reset || b.reset || a.silent !== b.silent || a.levelsDb.length !== b.levelsDb.length) {
+    return false;
+  }
+  for (let i = 0; i < b.levelsDb.length; i++) {
+    if (a.levelsDb[i] !== b.levelsDb[i]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**

@@ -23,17 +23,24 @@
  * most 1 frame over 50 ms (SPEC-006 AC-18 / SPEC-007 AC-10); p95 ≤ 16.7 ms (T-704's reading of
  * "60 fps").
  *
- * Idle baseline (H-43): before the sweeps, each case also sits idle for 4 s while the page's
- * main-thread task time (CDP `Performance.getMetrics` `TaskDuration`) and its rAF frames are
- * counted. With uncapped rAF the perpetual draw loops run as fast as they can, so the reported
- * `idle_*_main_thread_ms_per_frame` × 60 is the main-thread share of one core those loops cost at
- * a 60 Hz display (`idle_*_pct_core_at_60hz`); an app that drew only on demand would show ~0.
+ * Idle pass (H-43): a second, *vsync-paced* (60 Hz, like a real display) headless Chromium —
+ * never the uncapped one, where any perpetual loop turns into a busy loop — opens the preview App
+ * (renderer `auto`) in four scenes (`empty`, `document`, `document_rack`, `spectral`), lets each
+ * settle 4 s, then measures `--idle-seconds` (10) s of doing nothing: the main thread's busy share
+ * of one core (CDP `Performance.getMetrics` `TaskDuration` / wall time) and the animation frames
+ * the page ran per second (a `requestAnimationFrame` counter installed before the app loads). The
+ * scenes with a document then press Play for 3 s: frames per second while playing (the display
+ * rate, 60 fps). Targets: idle ≤ 10 % of a core in the dev build (Vite, debug JS) and ≤ 2 % in the
+ * release build (`vite build` with `VITE_PV_BENCH_PREVIEW=1`, which keeps the mocked-IPC preview
+ * in a production bundle; served by `vite preview` on port+1); playback ≥ 55 fps.
  *
  * Caveat: the owner's reference renderer is WebKitGTK (ADR-009); Chromium stands in for it
  * headlessly. The preview's Settings pick the Canvas2D waveform renderer.
  *
  * Usage (`just bench-ui`): node scripts/bench/ui_frames.mjs [--port 5193] [--seconds 10]
- *   [--out target/bench/ui.log] [--case document:2126x850]... [--profile] [--renderer canvas2d].
+ *   [--out target/bench/ui.log] [--case document:2126x850]... [--profile] [--renderer canvas2d]
+ *   [--idle-only] [--no-release] [--idle-seconds 10]. `--idle-only` skips the frame-time sweep,
+ *   `--no-release` the release build's idle pass.
  *   `--renderer auto|webgl2|canvas2d` picks the renderer Setting (default: both canvas2d — the
  *   fallback, which does its per-pixel work in JS — and auto, the app default: WebGL2 first). `--case` limits the run
  *   to the given cases; `--profile` also samples the page's CPU profile during each measured sweep
@@ -70,6 +77,25 @@ const GPU_FLAGS = args.includes("--no-gpu") ? [] : ["--enable-gpu", "--ignore-gp
 const RENDERERS = args.includes("--renderer") ? [opt("renderer", "canvas2d")] : ["canvas2d", "auto"];
 const FRAME_BUDGET_MS = 16.7;
 const LONG_FRAME_MS = 50;
+const IDLE_ONLY = args.includes("--idle-only");
+const NO_RELEASE = args.includes("--no-release");
+const IDLE_SECONDS = Number(opt("idle-seconds", "10"));
+const IDLE_SCENES = [
+  { name: "empty", query: "" },
+  { name: "document", query: "scene=document" },
+  { name: "document_rack", query: "scene=document,rack" },
+  { name: "spectral", query: "scene=spectral" },
+];
+/** H-43 targets: % of one core while idle (debug / release JS), frames per second while playing. */
+const IDLE_TARGET_PCT = { dev: 10, release: 2 };
+const PLAYBACK_MIN_FPS = 55;
+const PLAYBACK_SECONDS = 3;
+/** Counts the page's animation frames from before the app loads (H-43 idle pass). */
+const RAF_COUNTER = `(() => {
+  window.__pvRafCount = 0;
+  const raf = window.requestAnimationFrame.bind(window);
+  window.requestAnimationFrame = (cb) => raf((t) => { window.__pvRafCount += 1; cb(t); });
+})()`;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const lines = [];
@@ -168,16 +194,17 @@ const SWEEP = `(async (seconds) => {
   });
 })`;
 
-async function main() {
-  mkdirSync(dirname(OUT), { recursive: true });
-  const vite = spawn("npm", ["--prefix", join(ROOT, "ui"), "run", "dev", "--", "--port", String(PORT), "--strictPort"], {
-    detached: true,
-    stdio: "ignore",
+/** Runs `cmd` to completion (inheriting stdio), rejecting on a non-zero exit. */
+function run(cmd, cmdArgs, options) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, cmdArgs, { stdio: "inherit", ...options });
+    child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} ${cmdArgs.join(" ")} exited ${code}`))));
+    child.on("error", reject);
   });
-  children.push(vite);
-  const base = `http://localhost:${PORT}/`;
-  await waitFor(async () => (await fetch(base)).ok, 60_000, `Vite on ${base}`);
+}
 
+/** A headless Chromium with `flags`, driven over CDP. */
+async function openBrowser(flags) {
   const profile = mkdtempSync(join(tmpdir(), "pv-ui-frames-"));
   const chrome = spawn(
     "chromium",
@@ -187,60 +214,77 @@ async function main() {
       "--no-first-run",
       "--no-default-browser-check",
       "--hide-scrollbars",
-      "--disable-frame-rate-limit",
-      "--disable-gpu-vsync",
       "--disable-background-timer-throttling",
       "--disable-renderer-backgrounding",
       ...GPU_FLAGS,
+      ...flags,
       `--user-data-dir=${profile}`,
       "about:blank",
     ],
     { detached: true, stdio: "ignore" },
   );
   children.push(chrome);
-  try {
-    const portFile = join(profile, "DevToolsActivePort");
-    const debugPort = await waitFor(
-      () => existsSync(portFile) && readFileSync(portFile, "utf8").split("\n")[0],
-      20_000,
-      "Chromium DevTools port",
-    );
-    const version = await waitFor(
-      async () => (await fetch(`http://127.0.0.1:${debugPort}/json/version`)).json(),
-      20_000,
-      "DevTools endpoint",
-    );
-    const ws = new WebSocket(version.webSocketDebuggerUrl);
-    await new Promise((r) => ws.addEventListener("open", r, { once: true }));
-    let id = 0;
-    const pending = new Map();
-    const consoleErrors = new Map();
-    const consoleTexts = new Map();
-    ws.addEventListener("message", (ev) => {
-      const msg = JSON.parse(ev.data);
-      if (msg.id && pending.has(msg.id)) {
-        pending.get(msg.id)(msg);
-        pending.delete(msg.id);
-      } else if (msg.method === "Runtime.consoleAPICalled" && msg.params.type === "error") {
-        consoleErrors.set(msg.sessionId, (consoleErrors.get(msg.sessionId) ?? 0) + 1);
-        const text = msg.params.args.map((a) => a.value ?? a.description ?? "").join(" ").slice(0, 200);
-        const seen = consoleTexts.get(msg.sessionId) ?? new Set();
-        seen.add(text);
-        consoleTexts.set(msg.sessionId, seen);
-      }
+  const portFile = join(profile, "DevToolsActivePort");
+  const debugPort = await waitFor(
+    () => existsSync(portFile) && readFileSync(portFile, "utf8").split("\n")[0],
+    20_000,
+    "Chromium DevTools port",
+  );
+  const version = await waitFor(
+    async () => (await fetch(`http://127.0.0.1:${debugPort}/json/version`)).json(),
+    20_000,
+    "DevTools endpoint",
+  );
+  const ws = new WebSocket(version.webSocketDebuggerUrl);
+  await new Promise((r) => ws.addEventListener("open", r, { once: true }));
+  let id = 0;
+  const pending = new Map();
+  const consoleErrors = new Map();
+  const consoleTexts = new Map();
+  ws.addEventListener("message", (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.id && pending.has(msg.id)) {
+      pending.get(msg.id)(msg);
+      pending.delete(msg.id);
+    } else if (msg.method === "Runtime.consoleAPICalled" && msg.params.type === "error") {
+      consoleErrors.set(msg.sessionId, (consoleErrors.get(msg.sessionId) ?? 0) + 1);
+      const text = msg.params.args.map((a) => a.value ?? a.description ?? "").join(" ").slice(0, 200);
+      const seen = consoleTexts.get(msg.sessionId) ?? new Set();
+      seen.add(text);
+      consoleTexts.set(msg.sessionId, seen);
+    }
+  });
+  const send = (method, params = {}, sessionId) =>
+    new Promise((resolve, reject) => {
+      const mid = ++id;
+      pending.set(mid, (msg) => (msg.error ? reject(new Error(`${method}: ${msg.error.message}`)) : resolve(msg.result)));
+      ws.send(JSON.stringify({ id: mid, method, params, sessionId }));
     });
-    const send = (method, params = {}, sessionId) =>
-      new Promise((resolve, reject) => {
-        const mid = ++id;
-        pending.set(mid, (msg) => (msg.error ? reject(new Error(`${method}: ${msg.error.message}`)) : resolve(msg.result)));
-        ws.send(JSON.stringify({ id: mid, method, params, sessionId }));
-      });
-    const evaluate = async (expression, sessionId) => {
-      const r = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId);
-      if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
-      return r.result.value;
-    };
+  const evaluate = async (expression, sessionId) => {
+    const r = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId);
+    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
+    return r.result.value;
+  };
+  const close = async () => {
+    ws.close();
+    try {
+      process.kill(-chrome.pid, "SIGTERM");
+    } catch {
+      /* already gone */
+    }
+    await sleep(300);
+    rmSync(profile, { recursive: true, force: true });
+  };
+  return { send, evaluate, consoleErrors, consoleTexts, close };
+}
 
+/** T-704: the uncapped zoom/scroll frame-time sweep. */
+async function sweepPass(base) {
+  const { send, evaluate, consoleErrors, consoleTexts, close } = await openBrowser([
+    "--disable-frame-rate-limit",
+    "--disable-gpu-vsync",
+  ]);
+  try {
     const probe = await send("Target.createTarget", { url: "about:blank" });
     const probeSession = (await send("Target.attachToTarget", { targetId: probe.targetId, flatten: true })).sessionId;
     const glRenderer = await evaluate(
@@ -267,17 +311,6 @@ async function main() {
         `${c.scene} scene`,
       );
       await sleep(2_000);
-      await send("Performance.enable", {}, sessionId);
-      const taskSeconds = async () =>
-        (await send("Performance.getMetrics", {}, sessionId)).metrics.find((m) => m.name === "TaskDuration")?.value ?? 0;
-      const idleBefore = await taskSeconds();
-      const idleFrames = await evaluate(
-        `new Promise((resolve) => { let n = 0; const t0 = performance.now(); ` +
-          `const f = () => { n += 1; if (performance.now() - t0 < 4000) requestAnimationFrame(f); else resolve(n); }; requestAnimationFrame(f); })`,
-        sessionId,
-      );
-      const idleBusyMs = ((await taskSeconds()) - idleBefore) * 1000;
-      const msPerFrame = idleBusyMs / Math.max(1, idleFrames);
       await evaluate(`${SWEEP}(3)`, sessionId);
       // Which renderer actually drew (a canvas holding a WebGL2 context has no 2D context).
       const used = await evaluate(
@@ -289,7 +322,7 @@ async function main() {
         await send("Profiler.setSamplingInterval", { interval: 200 }, sessionId);
         await send("Profiler.start", {}, sessionId);
       }
-      const run = await evaluate(`${SWEEP}(${SECONDS})`, sessionId);
+      const runResult = await evaluate(`${SWEEP}(${SECONDS})`, sessionId);
       if (PROFILE) {
         const { profile } = await send("Profiler.stop", {}, sessionId);
         const self = new Map();
@@ -305,8 +338,8 @@ async function main() {
       }
       await send("Target.closeTarget", { targetId });
 
-      const sorted = [...run.deltas].sort((a, b) => a - b);
-      const total = run.deltas.reduce((a, b) => a + b, 0);
+      const sorted = [...runResult.deltas].sort((a, b) => a - b);
+      const total = runResult.deltas.reduce((a, b) => a + b, 0);
       const tag = `frame_${c.scene}_${renderer}_${c.width}x${c.height}`;
       const p50 = percentile(sorted, 0.5);
       const p95 = percentile(sorted, 0.95);
@@ -314,7 +347,7 @@ async function main() {
       const max = sorted[sorted.length - 1] ?? 0;
       const over50 = sorted.filter((d) => d > LONG_FRAME_MS).length;
       say(
-        `# ${c.scene} ${c.width}x${c.height}, renderer setting ${renderer} (drew with ${used}) (canvas ${Math.round(run.canvasWidth)}x${Math.round(run.canvasHeight)}): ` +
+        `# ${c.scene} ${c.width}x${c.height}, renderer setting ${renderer} (drew with ${used}) (canvas ${Math.round(runResult.canvasWidth)}x${Math.round(runResult.canvasHeight)}): ` +
           `${sorted.length} frames, ${(sorted.length / (total / 1000)).toFixed(0)} fps, p50 ${p50.toFixed(2)} ms, ` +
           `p95 ${p95.toFixed(2)} ms, p99 ${p99.toFixed(2)} ms, max ${max.toFixed(1)} ms, >50 ms: ${over50}, ` +
           `console errors: ${consoleErrors.get(sessionId) ?? 0}`,
@@ -326,20 +359,103 @@ async function main() {
       result(`${tag}_max_ms`, max, "ms");
       result(`${tag}_frames_over_50ms`, over50, "frames", 1, "le");
       result(`${tag}_fps`, sorted.length / (total / 1000), "fps");
-      const idleTag = `idle_${c.scene}_${renderer}_${c.width}x${c.height}`;
-      say(
-        `# idle ${c.scene} ${renderer} ${c.width}x${c.height}: ${idleFrames} rAF frames in 4 s uncapped, main thread ` +
-          `${((idleBusyMs / 4000) * 100).toFixed(0)} % busy, ${msPerFrame.toFixed(2)} ms per frame → ` +
-          `${(msPerFrame * 6).toFixed(1)} % of a core at 60 Hz`,
-      );
-      result(`${idleTag}_main_thread_ms_per_frame`, msPerFrame, "ms");
-      result(`${idleTag}_pct_core_at_60hz`, msPerFrame * 6, "pct_core");
     }
-    ws.close();
+  } finally {
+    await close();
+  }
+}
+
+/** H-43: idle main-thread CPU and playback frame rate, vsync-paced. */
+async function idlePass(base, build) {
+  const { send, evaluate, consoleErrors, consoleTexts, close } = await openBrowser(["--window-size=1600,900"]);
+  try {
+    say(
+      `# H-43 idle pass (${build}) ${new Date().toISOString()}: ${IDLE_SECONDS} s idle per scene, vsync-paced 60 Hz ` +
+        `headless Chromium, 1600x900, renderer auto; load average ${loadavg().map((l) => l.toFixed(1)).join(" ")}`,
+    );
+    for (const scene of IDLE_SCENES) {
+      const { targetId } = await send("Target.createTarget", { url: "about:blank" });
+      const { sessionId } = await send("Target.attachToTarget", { targetId, flatten: true });
+      await send("Page.enable", {}, sessionId);
+      await send("Runtime.enable", {}, sessionId);
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: RAF_COUNTER }, sessionId);
+      await send("Page.navigate", { url: `${base}?preview&renderer=auto${scene.query ? `&${scene.query}` : ""}` }, sessionId);
+      await waitFor(() => evaluate(`!!document.querySelector('[data-testid="transport-play"]')`, sessionId), 30_000, `${scene.name} scene`);
+      await sleep(4_000);
+      await send("Performance.enable", {}, sessionId);
+      const taskSeconds = async () =>
+        (await send("Performance.getMetrics", {}, sessionId)).metrics.find((m) => m.name === "TaskDuration")?.value ?? 0;
+      const frames = () => evaluate("window.__pvRafCount", sessionId);
+      const measure = async (seconds) => {
+        const t0 = await taskSeconds();
+        const f0 = await frames();
+        const w0 = Date.now();
+        await sleep(seconds * 1000);
+        const t1 = await taskSeconds();
+        const f1 = await frames();
+        const wall = (Date.now() - w0) / 1000;
+        return { pct: ((t1 - t0) / wall) * 100, fps: (f1 - f0) / wall };
+      };
+      const idle = await measure(IDLE_SECONDS);
+      say(
+        `# idle ${build} ${scene.name}: main thread ${idle.pct.toFixed(2)} % busy, ${idle.fps.toFixed(1)} animation frames/s`,
+      );
+      result(`idle_${build}_${scene.name}_main_thread_pct`, Number(idle.pct.toFixed(3)), "pct_core", IDLE_TARGET_PCT[build], "le");
+      result(`idle_${build}_${scene.name}_raf_per_s`, Number(idle.fps.toFixed(2)), "per_s");
+      if (scene.name !== "empty") {
+        await evaluate(`document.querySelector('[data-testid="transport-play"]').click()`, sessionId);
+        await sleep(1_000);
+        const playing = await measure(PLAYBACK_SECONDS);
+        await evaluate(`document.querySelector('[data-testid="transport-stop"]')?.click()`, sessionId);
+        say(
+          `# playback ${build} ${scene.name}: ${playing.fps.toFixed(1)} animation frames/s, main thread ${playing.pct.toFixed(1)} % busy`,
+        );
+        result(`playback_${build}_${scene.name}_fps`, Number(playing.fps.toFixed(2)), "fps", PLAYBACK_MIN_FPS, "ge");
+        result(`playback_${build}_${scene.name}_main_thread_pct`, Number(playing.pct.toFixed(2)), "pct_core");
+      }
+      for (const text of consoleTexts.get(sessionId) ?? []) say(`#   console.error: ${text}`);
+      if ((consoleErrors.get(sessionId) ?? 0) > 0) say(`#   console errors: ${consoleErrors.get(sessionId)}`);
+      await send("Target.closeTarget", { targetId });
+    }
+  } finally {
+    await close();
+  }
+}
+
+async function main() {
+  mkdirSync(dirname(OUT), { recursive: true });
+  const vite = spawn("npm", ["--prefix", join(ROOT, "ui"), "run", "dev", "--", "--port", String(PORT), "--strictPort"], {
+    detached: true,
+    stdio: "ignore",
+  });
+  children.push(vite);
+  const base = `http://localhost:${PORT}/`;
+  try {
+    await waitFor(async () => (await fetch(base)).ok, 60_000, `Vite on ${base}`);
+    if (!IDLE_ONLY) {
+      await sweepPass(base);
+    }
+    await idlePass(base, "dev");
+    if (!NO_RELEASE) {
+      const outDir = join(ROOT, "target", "bench", "ui-dist");
+      await run("npx", ["vite", "build", "--outDir", outDir, "--emptyOutDir", "--logLevel", "warn"], {
+        cwd: join(ROOT, "ui"),
+        env: { ...process.env, VITE_PV_BENCH_PREVIEW: "1" },
+      });
+      const previewPort = PORT + 1;
+      const preview = spawn(
+        "npx",
+        ["vite", "preview", "--outDir", outDir, "--port", String(previewPort), "--strictPort", "--host", "localhost"],
+        { cwd: join(ROOT, "ui"), detached: true, stdio: "ignore" },
+      );
+      children.push(preview);
+      const releaseBase = `http://localhost:${previewPort}/`;
+      await waitFor(async () => (await fetch(releaseBase)).ok, 60_000, `vite preview on ${releaseBase}`);
+      await idlePass(releaseBase, "release");
+    }
   } finally {
     killAll();
     await sleep(300);
-    rmSync(profile, { recursive: true, force: true });
     writeFileSync(OUT, lines.join("\n") + "\n");
   }
 }

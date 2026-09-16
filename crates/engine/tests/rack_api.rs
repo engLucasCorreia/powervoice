@@ -66,7 +66,8 @@ fn module_telemetry_frames_carry_the_slots_with_telemetry() {
     eng.tick();
     eng.tick();
     let frames = frames.lock().unwrap();
-    assert!(frames.len() >= 2, "{} frames", frames.len());
+    // H-43: the engine is idle (stopped), so the second tick's identical values aren't resent.
+    assert_eq!(frames.len(), 1, "{} frames", frames.len());
     let last = frames.last().unwrap();
     assert_eq!(last.seq, frames.len() as u32 - 1);
     let record = last

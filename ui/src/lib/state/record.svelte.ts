@@ -225,12 +225,22 @@ export function onInputTelemetry(frame: TelemetryFrame, atMs: number = nowMs()):
     }
   }
   ballistics.update(frame.inPeakDbfs, atMs);
-  meter = {
+  const next: InputMeterView = {
     peakDbfs: ballistics.bar,
     holdDbfs: ballistics.hold,
     rmsDbfs: frame.inRmsDbfs,
     maxDbfs: Math.max(meter.maxDbfs, frame.inPeakDbfs),
   };
+  // H-43: an unchanged meter (e.g. no input open: every frame reads −∞) is not written again, so
+  // nothing that reads it re-renders.
+  if (
+    next.peakDbfs !== meter.peakDbfs ||
+    next.holdDbfs !== meter.holdDbfs ||
+    next.rmsDbfs !== meter.rmsDbfs ||
+    next.maxDbfs !== meter.maxDbfs
+  ) {
+    meter = next;
+  }
 }
 
 /** The Input (arm) toggle; locked on while recording. */

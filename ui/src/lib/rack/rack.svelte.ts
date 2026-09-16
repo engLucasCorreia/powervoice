@@ -349,7 +349,26 @@ export function onModuleTelemetry(message: unknown): void {
   for (const record of frame.records) {
     next[record.slotUid] = record.values;
   }
-  meters = next;
+  // H-43: a frame that repeats the current values is not written, so the slot meters don't
+  // re-render.
+  if (!sameMeters(meters, next)) {
+    meters = next;
+  }
+}
+
+function sameMeters(a: Record<number, readonly number[]>, b: Record<number, readonly number[]>): boolean {
+  const keys = Object.keys(b);
+  if (Object.keys(a).length !== keys.length) {
+    return false;
+  }
+  for (const key of keys) {
+    const x = a[Number(key)];
+    const y = b[Number(key)]!;
+    if (!x || x.length !== y.length || x.some((v, i) => v !== y[i])) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**

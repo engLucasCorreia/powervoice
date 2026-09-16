@@ -250,7 +250,15 @@ pub(crate) struct AnalyzerPublisher {
     inspector_window: Vec<f32>,
     inspector_countdown: u32,
     inspector_seq: u32,
+    /// H-43: the last `VXSA` frame sent was at rest ([`ANALYZER_REST_DB`], silent window).
+    rest_sent: bool,
 }
+
+/// H-43: a silent window whose averaged bands all read at or below this level (the lowest plot
+/// floor, SPEC-007 §3 `an_floor_db`) is "at rest": one such frame is sent, then nothing until the
+/// signal, a reset or a new subscriber comes along — a stopped transport no longer streams 60
+/// identical silent frames a second.
+pub(crate) const ANALYZER_REST_DB: f32 = -150.0;
 
 const DEFAULT_SAMPLE_RATE_HZ: u32 = 48_000;
 
@@ -282,6 +290,7 @@ impl Default for AnalyzerPublisher {
             inspector_window: Vec::new(),
             inspector_countdown: 0,
             inspector_seq: 0,
+            rest_sent: false,
         }
     }
 }
@@ -334,6 +343,7 @@ impl AnalyzerPublisher {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1).max(1);
         self.subs.insert(id, Subscription { sink, response });
+        self.rest_sent = false;
         self.update_gate();
         id
     }
@@ -341,6 +351,7 @@ impl AnalyzerPublisher {
     pub(crate) fn set_response(&mut self, id: u32, response: Response) {
         if let Some(s) = self.subs.get_mut(&id) {
             s.response = response;
+            self.rest_sent = false;
         }
     }
 
@@ -464,6 +475,20 @@ impl AnalyzerPublisher {
         if need[Response::Slow.code() as usize] {
             self.analyzer.levels_db(Response::Slow, &mut slow);
         }
+
+        // H-43: one at-rest frame (silent window, every band at the floor) reaches the
+        // subscribers; after it nothing is sent until the signal, a reset or a subscriber returns.
+        let at_floor = |levels: &[f32]| levels.iter().all(|&db| db <= ANALYZER_REST_DB);
+        let resting = silent
+            && !reset
+            && !dropped
+            && (!need[Response::Fast.code() as usize] || at_floor(&fast))
+            && (!need[Response::Medium.code() as usize] || at_floor(&medium))
+            && (!need[Response::Slow.code() as usize] || at_floor(&slow));
+        if resting && self.rest_sent {
+            return;
+        }
+        self.rest_sent = resting;
 
         self.seq = self.seq.wrapping_add(1);
         let seq = self.seq;

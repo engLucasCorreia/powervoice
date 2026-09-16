@@ -16,6 +16,8 @@ import {
 } from "../ipc/commands";
 import { VXTM_FLAGS, decodeVxtm, toArrayBuffer, type TelemetryFrame } from "../ipc/telemetry";
 import { nowMs, PeakBallistics, READOUT_SMOOTHING_TAU_MS, SmoothedDb, ThrottledReadout } from "../meters/ballistics";
+import { METER_FLOOR_DB } from "../meters/meterScale";
+import { createFrameClient } from "../render/frameScheduler";
 import { registerAction } from "../shortcuts";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { ClockSync, PlayheadExtrapolator } from "../transport/playhead";
@@ -36,11 +38,14 @@ import { selectionState } from "./selection.svelte";
  * frame and `out_rms_dbfs` over a proper 300 ms sliding window (`crates/engine/src/telemetry.rs`,
  * `Meter`) — this store only adds ballistics/readout pacing on top, the same way the input meter
  * does (`record.svelte.ts`). `OUT_CLIP` latches client-side until {@link clearOutputClip}, like
- * the input meter's clip lamp. Deliberately no `requestAnimationFrame`/`setInterval` loop here:
- * the bar/hold/readout only move in response to a real telemetry frame, and the reactive `meter`
- * assignment is skipped entirely once nothing has actually changed (owner note, H-41: a meter that
- * has decayed to the floor on a silent signal must not keep repainting or holding the main thread
- * busy — see `meterEquals` below).
+ * the input meter's clip lamp. The reactive `meter` assignment is skipped entirely once nothing
+ * has actually changed (owner note, H-41: a meter that has decayed to the floor on a silent signal
+ * must not keep repainting or holding the main thread busy — see `meterEquals` below).
+ *
+ * H-43 (idle CPU): no perpetual animation-frame loop. The playhead is extrapolated on frames from
+ * the shared scheduler only while it moves (playing or recording); an idle engine stops sending
+ * telemetry once its meters rest, so the meter's bar and hold finish falling on frames too — and
+ * both stop requesting frames once there's nothing left to move.
  */
 
 const IDLE: TransportStateDto = {
@@ -277,30 +282,129 @@ export function onTelemetry(message: unknown): void {
     outputClipLatched = true;
   }
   const atMs = nowMs();
-  outputBallistics.update(frame.outPeakDbfs, atMs);
-  rmsSmoothed.update(frame.outRmsDbfs, atMs);
+  lastFrameAtMs = atMs;
+  lastOutPeakDbfs = frame.outPeakDbfs;
+  lastOutRmsDbfs = frame.outRmsDbfs;
+  // H-41 (owner note): once the meter has settled — decayed to the floor on a silent signal, with
+  // nothing left to throttle or smooth toward — `writeMeter` skips the reactive write, so a frame
+  // that changes nothing visible never triggers Svelte re-renders/repaints.
+  writeMeter(stepMeter(frame.outPeakDbfs, frame.outRmsDbfs, atMs));
+  if (meterVisible(meter)) {
+    // H-43: an idle engine stops sending once its own meters rest, so the bar and hold finish
+    // falling on animation frames (`meterFrame`), which stop at the floor.
+    meterClient.invalidate();
+  }
+  const nowNs = clock.nowNs();
+  extrapolator.update(
+    { sample: frame.playheadSample, timeNs: frame.playheadTimeNs, rate: frame.rate },
+    nowNs,
+    state.doc_len_samples,
+  );
+  moving = frame.rate > 0;
+  if (moving) {
+    // Playing or recording: the playhead is extrapolated every animation frame (`playheadFrame`).
+    playheadClient.invalidate();
+  } else {
+    // Stopped (rate 0): the anchor is the position — no animation needed.
+    playheadSamples = extrapolator.position(nowNs, state.doc_len_samples);
+  }
+}
+
+// --- H-43: animation frames only while something moves ------------------------------------------
+
+/** With no telemetry frame for this long, the output meter's ballistics run on animation frames
+ * (longer than two frame periods at the 30 Hz telemetry setting). */
+const METER_STALE_MS = 100;
+/** A level at or below this counts as the engine reporting silence (its idle rest floor). */
+const SILENT_SOURCE_DBFS = -120;
+/** A moving playhead keeps extrapolating for at most this long after its last telemetry frame
+ * (the engine sends every frame while playing or recording; a stalled stream mustn't animate
+ * forever). */
+const PLAYHEAD_STALE_MS = 1_000;
+
+let lastFrameAtMs = Number.NEGATIVE_INFINITY;
+let lastOutPeakDbfs = Number.NEGATIVE_INFINITY;
+let lastOutRmsDbfs = Number.NEGATIVE_INFINITY;
+/** The last telemetry frame had a moving playhead (playing or recording: `rate > 0`). */
+let moving = false;
+
+function writeMeter(next: OutputMeter): void {
+  if (!meterEquals(meter, next)) {
+    meter = next;
+  }
+}
+
+/** One ballistics step toward `peakDbfs`/`rmsDbfs` at `atMs` (a telemetry frame or, once the
+ * stream has stopped, an animation frame repeating the last one). */
+function stepMeter(peakDbfs: number, rmsDbfs: number, atMs: number): OutputMeter {
+  outputBallistics.update(peakDbfs, atMs);
+  rmsSmoothed.update(rmsDbfs, atMs);
   peakReadout.update(outputBallistics.hold, atMs);
   rmsReadout.update(rmsSmoothed.value, atMs);
-  const next: OutputMeter = {
+  return {
     peakDbfs: outputBallistics.bar,
     holdDbfs: outputBallistics.hold,
-    rmsDbfs: frame.outRmsDbfs,
+    rmsDbfs,
     peakReadoutDbfs: peakReadout.value,
     rmsReadoutDbfs: rmsReadout.value,
     clip: outputClipLatched,
   };
-  // H-41 (owner note): once the meter has settled — decayed to the floor on a silent signal, with
-  // nothing left to throttle or smooth toward — skip the reactive write so an idle telemetry
-  // stream (which keeps arriving at the telemetry rate regardless of the signal) doesn't keep
-  // triggering Svelte re-renders/repaints for a bar that visibly isn't moving anymore.
-  if (!meterEquals(meter, next)) {
-    meter = next;
+}
+
+/** Whether any bar or the hold tick still shows above the meter's scale floor. */
+function meterVisible(m: OutputMeter): boolean {
+  return m.peakDbfs > METER_FLOOR_DB || m.holdDbfs > METER_FLOOR_DB || m.rmsDbfs > METER_FLOOR_DB;
+}
+
+/**
+ * H-43 item 4: the output meter's decay once telemetry stops. While frames still arrive they
+ * drive the meter (this only keeps watching); once the stream is stale the ballistics keep
+ * stepping on animation frames with the last frame's (silent) input until the bar and hold have
+ * fallen below the scale, then everything snaps to silence and no further frame is requested.
+ * The peak-hold timer doesn't keep a loop alive on its own: a meter that isn't visibly moving
+ * any more and has no hold above its bar stops too.
+ */
+function meterFrame(): boolean {
+  const atMs = nowMs();
+  if (atMs - lastFrameAtMs < METER_STALE_MS) {
+    return meterVisible(meter);
   }
-  extrapolator.update(
-    { sample: frame.playheadSample, timeNs: frame.playheadTimeNs, rate: frame.rate },
-    clock.nowNs(),
-    state.doc_len_samples,
-  );
+  const prev = meter;
+  const next = stepMeter(lastOutPeakDbfs, lastOutRmsDbfs, atMs);
+  const sourceSilent = lastOutPeakDbfs <= SILENT_SOURCE_DBFS && lastOutRmsDbfs <= SILENT_SOURCE_DBFS;
+  if (sourceSilent && !meterVisible(next)) {
+    outputBallistics.reset();
+    rmsSmoothed.reset(Number.NEGATIVE_INFINITY);
+    peakReadout.reset(Number.NEGATIVE_INFINITY);
+    rmsReadout.reset(Number.NEGATIVE_INFINITY);
+    writeMeter({ ...SILENT, clip: outputClipLatched });
+    return false;
+  }
+  writeMeter(next);
+  return !(meter === prev && next.holdDbfs <= next.peakDbfs);
+}
+
+/** H-43: the extrapolated playhead, every animation frame while it moves. Runs before the
+ * renderers (priority), so they draw this frame's position. */
+function playheadFrame(): boolean {
+  if (!extrapolator.hasAnchor) {
+    return false;
+  }
+  playheadSamples = extrapolator.position(clock.nowNs(), state.doc_len_samples);
+  return moving && nowMs() - lastFrameAtMs < PLAYHEAD_STALE_MS;
+}
+
+const PLAYHEAD_PRIORITY = -100;
+const meterClient = createFrameClient(meterFrame, { priority: PLAYHEAD_PRIORITY + 1, name: "output-meter" });
+const playheadClient = createFrameClient(playheadFrame, { priority: PLAYHEAD_PRIORITY, name: "playhead" });
+
+/**
+ * H-43: whether the playhead is moving (playing or recording) — renderers keep requesting frames
+ * while it is, so they draw every frame at the display rate. Not reactive: renderers redraw on
+ * `playheadSamples` changes, and ask this from inside their frame callback.
+ */
+export function isPlayheadMoving(): boolean {
+  return moving;
 }
 
 /** Clicking the output meter's clip indicator clears the latch (H-41, like the input meter's). */
@@ -339,26 +443,11 @@ export async function initTransport(): Promise<() => void> {
       });
     }),
   );
-  let disposed = false;
-
-  const requestFrame: (cb: () => void) => number =
-    typeof requestAnimationFrame === "function"
-      ? (cb) => requestAnimationFrame(cb)
-      : (cb) => setTimeout(cb, 16) as unknown as number;
-  const cancelFrame: (id: number) => void =
-    typeof cancelAnimationFrame === "function" ? (id) => cancelAnimationFrame(id) : (id) => clearTimeout(id);
-  let frameId = 0;
-  const onFrame = () => {
-    if (disposed) {
-      return;
-    }
-    if (extrapolator.hasAnchor) {
-      playheadSamples = extrapolator.position(clock.nowNs(), state.doc_len_samples);
-    }
-    frameId = requestFrame(onFrame);
-  };
-  frameId = requestFrame(onFrame);
-  cleanups.push(() => cancelFrame(frameId));
+  // H-43: no perpetual animation-frame loop here any more — the playhead and the meter's decay
+  // request frames from the shared scheduler only while they move (`playheadFrame`/`meterFrame`).
+  cleanups.push(() => {
+    moving = false;
+  });
 
   const timer = setInterval(() => void syncClock(), CLOCK_SYNC_INTERVAL_MS);
   cleanups.push(() => clearInterval(timer));
@@ -384,7 +473,6 @@ export async function initTransport(): Promise<() => void> {
   }
 
   return () => {
-    disposed = true;
     for (const cleanup of cleanups) {
       try {
         cleanup();
@@ -411,4 +499,8 @@ export function resetTransportForTest(): void {
   selectionWanted = null;
   selectionInFlight = false;
   clock.offsetNs = 0;
+  lastFrameAtMs = Number.NEGATIVE_INFINITY;
+  lastOutPeakDbfs = Number.NEGATIVE_INFINITY;
+  lastOutRmsDbfs = Number.NEGATIVE_INFINITY;
+  moving = false;
 }

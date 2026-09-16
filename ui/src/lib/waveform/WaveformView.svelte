@@ -28,7 +28,9 @@
     setSelectionFromResult,
     shiftClickTo,
   } from "../state/selection.svelte";
-  import { seek, transportState } from "../state/transport.svelte";
+  import { isPlayheadMoving, seek, transportState } from "../state/transport.svelte";
+  import { createFrameClient } from "../render/frameScheduler";
+  import { themeState } from "../theme/theme.svelte";
   import {
     audioKeyFor,
     consumePendingRestore,
@@ -196,6 +198,19 @@
    * prop. */
   const vzoom = verticalZoomState();
 
+  // H-43: the canvas draws on demand from the shared frame scheduler (`render/frameScheduler.ts`,
+  // replacing H-32's perpetual rAF loop): one frame whenever an input of `draw()` changes (the
+  // dependency effect below, peaks arriving, the GL context), and every frame while the playhead
+  // moves or a take records. A draw that throws is retried by the scheduler, and any later change
+  // draws again.
+  const frames = createFrameClient(
+    () => {
+      draw();
+      return isPlayheadMoving() || isRecording;
+    },
+    { name: "waveform" },
+  );
+
   const lenSamples = $derived(doc.current.len_samples);
   const rateHz = $derived(doc.current.sample_rate_hz);
   const isOpen = $derived(hasDocument(doc.current));
@@ -273,11 +288,11 @@
     const level = pickLevel(spp);
     if (level === RAW_SPP) {
       const count = Math.min(Math.ceil(viewportPx * spp) + 2 + extra, 1 << 20);
-      void requester.request(start, count, spp);
+      void requester.request(start, count, spp).then(frames.invalidate);
     } else {
       const fetchStart = Math.floor(start / level) * level;
       const count = Math.min(Math.ceil((viewportPx * spp + extra) / level) + 1, 65_536);
-      void requester.request(fetchStart, count, spp);
+      void requester.request(fetchStart, count, spp).then(frames.invalidate);
     }
   });
 
@@ -416,6 +431,7 @@
       onContextLost: () => {
         glRenderer?.dispose();
         glRenderer = null;
+        frames.invalidate(); // redraw with the Canvas2D fallback
         queueMicrotask(() =>
           pushNotice({ level: "warning", key: "notice.renderer.context_lost_waveform", params: {}, persistent: false, id: null, cleared: false }),
         );
@@ -423,12 +439,24 @@
     });
     glHost = host;
     glRenderer = host.gl ? new WaveformGlRenderer(host.gl) : null;
+    frames.invalidate();
     return () => {
       glRenderer?.dispose();
       glRenderer = null;
       host.dispose();
       glHost = null;
     };
+  });
+
+  // H-43: every input of `draw()` that can change, read in full on every run (no early return, so
+  // no dependency is ever dropped the way H-32's `$effect(draw)` lost them); a change requests one
+  // frame. Non-reactive inputs (peaks responses, the GL context) invalidate where they land.
+  $effect(() => {
+    void [canvasEl, viewportPx, heightPx, isOpen, lenSamples, rateHz, startSample, samplesPerPixel];
+    void [vzoom.current, liveNewTake, liveBuckets, liveStartSample, liveSpb, rec.elapsedSamples, layout];
+    void [markers.list, selection.current, transport.state.loop_range, transport.playheadSamples];
+    void [doc.current.audio_rev, themeState().revision];
+    frames.invalidate();
   });
 
   function draw(): void {
@@ -1204,34 +1232,7 @@
       registerAction("selection.extend_right", () => extendKeyboard(1)),
     ];
 
-    const requestFrame: (cb: () => void) => number =
-      typeof requestAnimationFrame === "function"
-        ? (cb) => requestAnimationFrame(cb)
-        : (cb) => setTimeout(cb, 16) as unknown as number;
-    const cancelFrame: (id: number) => void =
-      typeof cancelAnimationFrame === "function"
-        ? (id) => cancelAnimationFrame(id)
-        : (id) => clearTimeout(id);
-    let disposed = false;
-    let frameId = 0;
-    const loop = () => {
-      if (disposed) {
-        return;
-      }
-      try {
-        draw();
-      } finally {
-        // H-32: reschedule unconditionally — a transient bad read (e.g. the shared `transport`
-        // store, guarded at the source in `transport.svelte.ts`) must never stop this loop from
-        // trying again next frame.
-        frameId = requestFrame(loop);
-      }
-    };
-    frameId = requestFrame(loop);
-    cleanups.push(() => cancelFrame(frameId));
-    cleanups.push(() => {
-      disposed = true;
-    });
+    cleanups.push(() => frames.dispose());
 
     return () => {
       for (const cleanup of cleanups) {

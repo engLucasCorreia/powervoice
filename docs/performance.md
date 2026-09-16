@@ -10,7 +10,7 @@ fixes T-704 made (with before/after numbers), and the open findings.
 |---|---|---|
 | `just bench` | Every `cargo bench` target: module/rack CPU, spec CPU budgets, playback start, peaks, chunk store, encoders, sandbox IPC | `target/bench/raw.log` |
 | `just test-big` | Release checks on 60-min documents: the real open path, import cold/warm, memory, undo/redo, recovery, edit ops, tile latency, sidecar | `target/bench/big.log` |
-| `just bench-ui` | Headless UI frame-time sweep (its own Vite on port 5193 + Chromium over CDP), plus the idle-CPU baseline | `target/bench/ui.log` |
+| `just bench-ui` | Headless UI frame-time sweep (its own Vite on port 5193 + Chromium over CDP), plus the H-43 idle pass (idle CPU and playback frame rate, dev and release builds) | `target/bench/ui.log` |
 | `just perf-matrix` | Rewrites the matrix below from the three logs | `docs/performance.md` |
 
 Each measurement prints `BENCH_RESULT` lines, using the T-110 convention from
@@ -303,18 +303,54 @@ Each code change has a regression test:
     22–29 frames over 50 ms per 10 s sweep. The spikes cluster on tile arrivals; texture uploads
     and tile scheduling are the next suspects.
   - The Canvas2D fallback still computes every pixel in JS: 15–34 fps.
-- **Idle CPU (H-43 baseline).** These are dev-build (Vite) figures, measured with uncapped rAF as
-  main-thread time per idle frame × 60 Hz. The perpetual draw loops (H-32) redraw every frame even
-  when nothing changes.
+- **Idle CPU (H-43, fixed).** The owner measured the web view's main thread at about one full core
+  while the debug app sat idle. A CDP trace of the preview App (10 s idle, before the fix) showed
+  three causes:
+  - **Perpetual draw loops.** Every canvas renderer redrew at the display rate from its own
+    `requestAnimationFrame` loop (the H-32 rule): waveform, spectral view and EQ graph, plus the
+    transport's playhead loop. That is 120–180 animation frames a second with nothing on screen
+    changing. The top JS stacks were `WaveformView loop → draw → drawWebgl2 → buildColumnQuads /
+    QuadBatch.rect`, `EqGraph loop → drawInner → totalCurveToScreen / nodeGainDb`, `SpectralView
+    loop → drawSpectrogramWebgl2` and the transport's `onFrame`.
+  - **Telemetry at 60 Hz while stopped.** The engine sent `VXTM`, `VXMT` and `VXSA` every control
+    tick whether or not anything changed, and each frame was decoded and written into a Svelte
+    store (the analyzer's `frame`, the rack's slot meters, the input meter).
+  - **Meter transitions.** The output meter animates `height`/`bottom` with a 100 ms CSS
+    transition, so any moving level keeps a style recalc + layout running every frame. The
+    preview's fake 20 Hz meter signal did this even while "stopped" (about 60 layouts a second in
+    the empty state). In the real app it only happens while a level moves.
 
-  | Scene | Canvas2D | WebGL2 |
-  |---|---|---|
-  | Waveform 1280×720 | ~1.0 ms/frame, 6 % of a core | ~1.0 ms/frame, 6 % |
-  | Waveform 2126×850 | 2.9 ms/frame, 17 % | 1.9 ms/frame, 12 % |
-  | Split view 1280×720 | 42 ms/frame (can't hold 60 Hz) | 1.3 ms/frame, 8 % |
-  | Split view 2126×850 | 46 ms/frame (can't hold 60 Hz) | 2.2 ms/frame, 13 % |
+  The fixes:
+  - `ui/src/lib/render/frameScheduler.ts` is one shared on-demand scheduler. A renderer requests a
+    frame when an input changes, and keeps frames coming only while something animates (playback,
+    recording, a meter or peak marker falling). It keeps H-32's robustness: a thrown draw is
+    retried on the next frames and never blocks later redraws.
+  - The engine gates idle telemetry (`IdleTelemetryGate`, `crates/engine/src/telemetry.rs`).
+    While stopped with nothing monitored or armed, `VXTM` goes out only on a change, with a 4 Hz
+    heartbeat for a steady non-silent level, and falls silent at the floor. `VXMT` skips repeats.
+    `VXSA` sends one at-rest frame, then nothing until the signal returns.
+  - The UI stores skip unchanged values.
+  - The output meter's decay runs on scheduler frames once telemetry stops, and ends at the floor.
 
-  The rows come from `idle_*` in `target/bench/ui.log`.
+  Numbers from `just bench-ui`'s idle pass on a quiet machine (load average < 1): vsync-paced
+  headless Chromium, 1600×900, renderer `auto`. They are main-thread busy % of one core, with
+  animation frames per second in brackets. "Before" is the ticket's base commit, with the preview
+  mock patched to stream what the pre-H-43 engine sent while idle: 60 Hz silent `VXTM` and `VXSA`.
+  `VXMT` wasn't emulated, so the before rack row is a lower bound.
+
+  | Scene | Before, dev | Before, release | After, dev | After, release |
+  |---|---|---|---|---|
+  | Empty app | 4.0 % (120/s) | 4.1 % (120/s) | 0.03 % (0/s) | 0.02 % (0/s) |
+  | Document | 7.8 % (120/s) | 6.8 % (120/s) | 0.007 % (0/s) | 0.006 % (0/s) |
+  | Document + rack (EQ graph) | 13.4 % (180/s) | 12.1 % (180/s) | 0.006 % (0/s) | 0.005 % (0/s) |
+  | Split view (waveform + spectral) | 7.8 % (180/s) | 7.4 % (180/s) | 0.009 % (0/s) | 0.007 % (0/s) |
+
+  Playback after the fix still runs at 60.0 frames/s in every scene, with the main thread 18–23 %
+  busy. Headless Chromium on the GPU is much cheaper per frame than WebKitGTK, the owner's
+  renderer (more so with debug JS). The owner's one core is the same per-frame work at WebKitGTK's
+  cost. The "after" numbers are about zero because nothing runs at all while idle: no animation
+  frame, and no IPC message. The rows come from `idle_*` and `playback_*` in `target/bench/ui.log`;
+  the H-43 group in the matrix above holds them.
 - **Output-callback worst case (`just bench-callback`, ADR-002 §2) is load-sensitive.** At load
   average 10–16, the 128-frame row's max callback reached 4–13 ms, over its 2.7 ms deadline, while
   p99 stayed within the deadline at every block size. T-110 measured p99 ≤ 5 % of the deadline on

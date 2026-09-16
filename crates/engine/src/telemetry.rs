@@ -117,6 +117,11 @@ impl TelemetryRateGate {
         self.counter = 0;
     }
 
+    /// The effective publish rate (60 or 30 Hz).
+    pub(crate) fn rate_hz(&self) -> u32 {
+        60 / self.divisor.max(1)
+    }
+
     /// Call once per control tick; `true` on ticks that should publish.
     pub(crate) fn due(&mut self) -> bool {
         self.counter += 1;
@@ -126,6 +131,94 @@ impl TelemetryRateGate {
         } else {
             false
         }
+    }
+}
+
+/// H-43: an idle, unchanged but not yet silent `VXTM` frame is still re-sent at this rate (a
+/// heartbeat for a steady level while nothing else moves).
+pub(crate) const IDLE_HEARTBEAT_HZ: u32 = 4;
+
+/// H-43: a meter reading at or below this level counts as "at the floor" — far below every UI
+/// meter's scale (−60 dBFS) and the RMS window's floating-point residue after silence.
+pub(crate) const TELEMETRY_REST_DBFS: f32 = -120.0;
+
+/// H-43: two meter readings closer than this (dB) count as unchanged.
+const METER_EPSILON_DB: f32 = 0.01;
+
+/// Two meter readings that show the same thing: within [`METER_EPSILON_DB`] while both are
+/// finite, otherwise bit-identical — two `-inf` readings are the same reading (digital silence),
+/// and comparing the bits says that outright instead of comparing floats with `==`.
+fn meter_same(a: f32, b: f32) -> bool {
+    if a.is_finite() && b.is_finite() {
+        (a - b).abs() < METER_EPSILON_DB
+    } else {
+        a.to_bits() == b.to_bits()
+    }
+}
+
+fn meter_at_rest(db: f32) -> bool {
+    db <= TELEMETRY_REST_DBFS
+}
+
+/// Everything the UI shows from a frame, minus the counter and the anchor's time (which advances
+/// every tick even while the transport is stopped).
+fn same_content(a: &TelemetryFrame, b: &TelemetryFrame) -> bool {
+    a.flags == b.flags
+        && a.playhead_sample == b.playhead_sample
+        && a.rate.to_bits() == b.rate.to_bits()
+        && a.audio_rev == b.audio_rev
+        && a.dropped_rt_events == b.dropped_rt_events
+        && meter_same(a.out_peak_dbfs, b.out_peak_dbfs)
+        && meter_same(a.out_rms_dbfs, b.out_rms_dbfs)
+        && meter_same(a.in_peak_dbfs, b.in_peak_dbfs)
+        && meter_same(a.in_rms_dbfs, b.in_rms_dbfs)
+}
+
+/// H-43 (idle CPU): decides which due `VXTM` frames actually go out.
+///
+/// - **Active** (playing, recording or finishing a take, monitoring, or an input open for its
+///   meter): every due frame, at the full `telemetry_rate_hz`.
+/// - **Idle**: a frame goes out only when its content changed since the last one sent (a seek, a
+///   meter still falling, a flag); an unchanged frame is repeated at [`IDLE_HEARTBEAT_HZ`] only
+///   while a meter still reads above [`TELEMETRY_REST_DBFS`]; once every meter rests at the floor
+///   the stream falls silent until something changes.
+#[derive(Debug, Default)]
+pub(crate) struct IdleTelemetryGate {
+    last: Option<TelemetryFrame>,
+    publishes_since_sent: u32,
+}
+
+impl IdleTelemetryGate {
+    /// Call once per due publish with the frame about to go out; `true` if it should be sent.
+    /// `publish_rate_hz` is the effective telemetry rate (60 or 30).
+    pub(crate) fn admit(
+        &mut self,
+        frame: &TelemetryFrame,
+        active: bool,
+        publish_rate_hz: u32,
+    ) -> bool {
+        self.publishes_since_sent = self.publishes_since_sent.saturating_add(1);
+        let changed = self
+            .last
+            .as_ref()
+            .is_none_or(|last| !same_content(last, frame));
+        let resting = meter_at_rest(frame.out_peak_dbfs)
+            && meter_at_rest(frame.out_rms_dbfs)
+            && meter_at_rest(frame.in_peak_dbfs)
+            && meter_at_rest(frame.in_rms_dbfs);
+        let heartbeat =
+            !resting && self.publishes_since_sent >= (publish_rate_hz / IDLE_HEARTBEAT_HZ).max(1);
+        let send = active || changed || heartbeat;
+        if send {
+            self.last = Some(*frame);
+            self.publishes_since_sent = 0;
+        }
+        send
+    }
+
+    /// Forgets the last frame (a new subscriber always gets the current state at once).
+    pub(crate) fn reset(&mut self) {
+        *self = Self::default();
     }
 }
 
@@ -333,17 +426,47 @@ pub type ModuleTelemetrySink = Box<dyn FnMut(&ModuleTelemetryFrame) + Send>;
 pub(crate) struct ModuleTelemetryPublisher {
     sink: Option<ModuleTelemetrySink>,
     seq: u32,
+    /// H-43: the records of the last frame sent (idle frames that repeat them are skipped).
+    last: Option<Vec<ModuleTelemetryRecord>>,
+}
+
+/// H-43: two module telemetry values closer than this count as unchanged (the slot meters show
+/// one decimal).
+const MODULE_VALUE_EPSILON: f32 = 1e-3;
+
+/// One module telemetry value unchanged (see [`meter_same`] for the `to_bits` rationale).
+fn value_same(p: f32, q: f32) -> bool {
+    if p.is_finite() && q.is_finite() {
+        (p - q).abs() < MODULE_VALUE_EPSILON
+    } else {
+        p.to_bits() == q.to_bits()
+    }
+}
+
+fn records_same(a: &[ModuleTelemetryRecord], b: &[ModuleTelemetryRecord]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(x, y)| {
+            x.slot_uid == y.slot_uid
+                && x.values.len() == y.values.len()
+                && x.values
+                    .iter()
+                    .zip(&y.values)
+                    .all(|(&p, &q)| value_same(p, q))
+        })
 }
 
 impl ModuleTelemetryPublisher {
     pub(crate) fn set_sink(&mut self, sink: Option<ModuleTelemetrySink>) {
         self.sink = sink;
         self.seq = 0;
+        self.last = None;
     }
 
     /// One frame from `rack`'s slots, only while a subscriber exists and at least one slot has
-    /// the extension (SPEC-016 §4.12).
-    pub(crate) fn publish(&mut self, rack: Option<&vox_rack::RackHost>, now_ns: u64) {
+    /// the extension (SPEC-016 §4.12). H-43: while the engine is idle (`active == false`, see
+    /// [`IdleTelemetryGate`]) a frame whose values match the last one sent is skipped, so a
+    /// settled rack sends nothing.
+    pub(crate) fn publish(&mut self, rack: Option<&vox_rack::RackHost>, now_ns: u64, active: bool) {
         let (Some(sink), Some(rack)) = (self.sink.as_mut(), rack) else {
             return;
         };
@@ -358,6 +481,15 @@ impl ModuleTelemetryPublisher {
         if records.is_empty() {
             return;
         }
+        if !active
+            && self
+                .last
+                .as_deref()
+                .is_some_and(|last| records_same(last, &records))
+        {
+            return;
+        }
+        self.last = Some(records.clone());
         let frame = ModuleTelemetryFrame {
             seq: self.seq,
             frame_time_ns: now_ns,
@@ -473,6 +605,116 @@ mod tests {
     }
 
     // --- H-16: telemetry rate gate ---------------------------------------------------------
+
+    fn idle_frame(playhead: u64, out_peak: f32, out_rms: f32) -> TelemetryFrame {
+        TelemetryFrame {
+            seq: 0,
+            flags: 0,
+            playhead_sample: playhead,
+            playhead_time_ns: 0,
+            rate: 0.0,
+            out_peak_dbfs: out_peak,
+            out_rms_dbfs: out_rms,
+            in_peak_dbfs: f32::NEG_INFINITY,
+            in_rms_dbfs: f32::NEG_INFINITY,
+            audio_rev: 1,
+            dropped_rt_events: 0,
+        }
+    }
+
+    /// H-43: counts how many of `n` due publishes the gate lets out.
+    fn admitted(
+        gate: &mut IdleTelemetryGate,
+        n: u32,
+        frame: impl Fn(u32) -> TelemetryFrame,
+        active: bool,
+    ) -> u32 {
+        (0..n)
+            .filter(|&i| gate.admit(&frame(i), active, 60))
+            .count() as u32
+    }
+
+    #[test]
+    fn idle_gate_sends_the_first_frame_then_falls_silent_at_the_floor() {
+        let mut gate = IdleTelemetryGate::default();
+        let silent = |i: u32| TelemetryFrame {
+            playhead_time_ns: u64::from(i) * 16_666_667,
+            seq: i,
+            ..idle_frame(1000, f32::NEG_INFINITY, f32::NEG_INFINITY)
+        };
+        assert_eq!(
+            admitted(&mut gate, 60, silent, false),
+            1,
+            "one frame, then silence"
+        );
+        assert_eq!(
+            admitted(&mut gate, 600, silent, false),
+            0,
+            "an idle ten seconds sends nothing"
+        );
+    }
+
+    #[test]
+    fn idle_gate_sends_every_change_immediately() {
+        let mut gate = IdleTelemetryGate::default();
+        let f = idle_frame(1000, f32::NEG_INFINITY, f32::NEG_INFINITY);
+        assert!(gate.admit(&f, false, 60));
+        assert!(!gate.admit(&f, false, 60));
+        // A seek while stopped.
+        assert!(gate.admit(
+            &idle_frame(2000, f32::NEG_INFINITY, f32::NEG_INFINITY),
+            false,
+            60
+        ));
+        // A flag (clip, xrun).
+        let clipped = TelemetryFrame {
+            flags: vxtm_flags::XRUN,
+            ..idle_frame(2000, f32::NEG_INFINITY, f32::NEG_INFINITY)
+        };
+        assert!(gate.admit(&clipped, false, 60));
+        // A falling RMS (the 300 ms window emptying after Stop) goes out frame by frame.
+        let falling = |i: u32| idle_frame(2000, f32::NEG_INFINITY, -20.0 - i as f32);
+        assert_eq!(admitted(&mut gate, 18, falling, false), 18);
+        // A sub-0.01 dB wobble is not a change.
+        assert!(gate.admit(&idle_frame(2000, -30.0, -40.0), false, 60));
+        assert!(!gate.admit(&idle_frame(2000, -30.004, -40.004), false, 60));
+    }
+
+    #[test]
+    fn idle_gate_heartbeats_a_steady_level_at_4_hz_but_not_the_floor() {
+        let mut gate = IdleTelemetryGate::default();
+        let steady = |_| idle_frame(1000, -30.0, -36.0);
+        let sent = admitted(&mut gate, 60, steady, false);
+        assert_eq!(
+            sent, IDLE_HEARTBEAT_HZ,
+            "the first frame, then a heartbeat every 250 ms"
+        );
+        let mut gate = IdleTelemetryGate::default();
+        let floor = |_| idle_frame(1000, -130.0, -140.0);
+        assert_eq!(
+            admitted(&mut gate, 60, floor, false),
+            1,
+            "below the rest floor: no heartbeat"
+        );
+    }
+
+    #[test]
+    fn active_engine_sends_every_due_frame() {
+        let mut gate = IdleTelemetryGate::default();
+        let f = |_| idle_frame(1000, f32::NEG_INFINITY, f32::NEG_INFINITY);
+        assert_eq!(admitted(&mut gate, 60, f, true), 60);
+        gate.reset();
+        assert!(
+            gate.admit(&f(0), false, 60),
+            "a reset gate sends the current state at once"
+        );
+    }
+
+    #[test]
+    fn rate_gate_reports_its_effective_rate() {
+        assert_eq!(TelemetryRateGate::new(60).rate_hz(), 60);
+        assert_eq!(TelemetryRateGate::new(30).rate_hz(), 30);
+    }
 
     #[test]
     fn rate_gate_fires_every_tick_at_60hz() {

@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import { eqAxisLayout, EQ_AXIS_FONT_PX } from "./axisLayout";
   import { t, tDynamic } from "../i18n";
   import type { RackSlotDto, ResponseCurveDto } from "../ipc/bindings";
@@ -19,6 +18,8 @@
   import { buildEqNodes, hitTestNode, nodeGainDb, nodeFreqsHz, type EqNode } from "./nodes";
   import { formatRulerFreqHz } from "../spectrum/freqAxis";
   import { eqBandColor, themeColors } from "../theme/themeColors";
+  import { themeState } from "../theme/theme.svelte";
+  import { createFrameClient } from "../render/frameScheduler";
 
   /**
    * The EQ graph panel (S3-07, SPEC-015 §2.6, lean slice): log-frequency axis, ±12/±24 dB gain
@@ -85,44 +86,18 @@
     return () => ro.disconnect();
   });
 
-  // H-32: draw on a perpetual animation-frame loop (like `WaveformView`/`SpectralView`/
-  // `AnalyzerPanel`), not a reactive `$effect(() => draw())`. A Svelte `$effect` only re-runs for
-  // state it actually read during its *last* run; the rack column's width can briefly read wide
-  // (or 0) before the persisted layout settles on first paint, and a `$effect`-scheduled draw that
-  // returns early (or throws) before reaching `curve`/`nodes` never subscribes to their later
-  // arrival — the graph is left showing only whatever partial frame it managed, permanently,
-  // until something it *did* read (e.g. `width`) happens to change again (a manual window
-  // resize). The rAF loop redraws unconditionally every frame, so a bad first-paint measurement
-  // self-heals on the very next frame with no dependency tracking involved.
-  onMount(() => {
-    const requestFrame: (cb: () => void) => number =
-      typeof requestAnimationFrame === "function"
-        ? (cb) => requestAnimationFrame(cb)
-        : (cb) => setTimeout(cb, 16) as unknown as number;
-    const cancelFrame: (id: number) => void =
-      typeof cancelAnimationFrame === "function"
-        ? (id) => cancelAnimationFrame(id)
-        : (id) => clearTimeout(id);
-    let disposed = false;
-    let frameId = 0;
-    const loop = () => {
-      if (disposed) {
-        return;
-      }
-      try {
-        draw();
-      } finally {
-        // Reschedule unconditionally — even a bug inside `draw()` that somehow escapes its own
-        // try/catch must never stop this loop from trying again next frame (H-32).
-        frameId = requestFrame(loop);
-      }
-    };
-    frameId = requestFrame(loop);
-    return () => {
-      disposed = true;
-      cancelFrame(frameId);
-    };
+  // H-43: draw on demand from the shared frame scheduler (`render/frameScheduler.ts`), replacing
+  // H-32's perpetual rAF loop. H-32's lesson still holds: a reactive `$effect(() => draw())` only
+  // re-subscribes to what its *last* run read, so a draw that bailed out at an unsettled width (or
+  // threw) before reading `curve`/`nodes` never woke up for their arrival. Here the dependency list
+  // is read in full on every run, separately from the draw, and a draw that throws is retried by
+  // the scheduler on the next frames (and any later change draws again).
+  const frames = createFrameClient(() => draw(), { name: "eq-graph" });
+  $effect(() => {
+    void [canvasEl, width, curve, nodes, gainRangeDb, selected, fHi, themeState().revision];
+    frames.invalidate();
   });
+  $effect(() => () => frames.dispose());
 
   /** The UI font for canvas labels (a font stack, not a colour). */
   function fontFamily(): string {
@@ -147,15 +122,9 @@
     ctx.save();
     try {
       drawInner(ctx, dpr);
-    } catch (err) {
-      // A draw must never throw all the way out to the rAF loop below — that would stop `loop()`
-      // from rescheduling its next frame and leave the graph frozen forever, just like the
-      // original H-32 bug via a different mechanism. Log and retry on the next frame instead.
-      if (import.meta.env.DEV) {
-        console.error("[EqGraph] draw failed; retrying next frame", err);
-      }
     } finally {
-      // Always balances the `ctx.save()` above, even after a throw — an unbalanced context stack
+      // A throw propagates to the frame scheduler, which logs it (dev builds) and retries on the
+      // next frame (H-32/H-43). Always balances the `ctx.save()` above, even after a throw — an unbalanced context stack
       // would otherwise distort every later frame's transform.
       ctx.restore();
     }

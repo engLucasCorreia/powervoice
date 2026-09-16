@@ -43,6 +43,7 @@ TIGHT_MARGIN = 0.30
 FRAME_SIZES = ("1280x720", "2126x850")
 FRAME_RENDERERS = ("canvas2d", "auto")
 FRAME_STATS = ("p50_ms", "p95_ms", "p99_ms", "frames_over_50ms")
+IDLE_SCENES = ("empty", "document", "document_rack", "spectral")
 
 
 def frame_metrics(scene: str) -> list[str]:
@@ -89,6 +90,29 @@ GROUPS: list[tuple[str, str, str, list[str]]] = [
         "Same sweep with `scene=spectral` (split view).",
         "just bench-ui",
         frame_metrics("spectral"),
+    ),
+    (
+        "H-43 — idle main-thread CPU ≤ 2 % of one core in a release build (≤ 10 % debug); "
+        "playback still draws at the display rate (60 fps)",
+        "`scripts/bench/ui_frames.mjs` idle pass: the preview App (renderer `auto`) in "
+        "vsync-paced (60 Hz) headless Chromium — not the uncapped sweep above — 10 s idle per "
+        "scene after a 4 s settle; busy = CDP `TaskDuration` / wall time. `dev` is the Vite dev "
+        "server (debug JS), `release` a `vite build` bundle with the bench preview "
+        "(`VITE_PV_BENCH_PREVIEW=1`). Then Play for 3 s: animation frames the app ran per second.",
+        "just bench-ui",
+        [
+            *[
+                f"idle_{build}_{scene}_main_thread_pct"
+                for build in ("dev", "release")
+                for scene in IDLE_SCENES
+            ],
+            *[
+                f"playback_{build}_{scene}_fps"
+                for build in ("dev", "release")
+                for scene in IDLE_SCENES
+                if scene != "empty"
+            ],
+        ],
     ),
     (
         "PROMPT §2 / SPEC-003 AC-1 — playback start < 50 ms (Play → first non-silent frame written "

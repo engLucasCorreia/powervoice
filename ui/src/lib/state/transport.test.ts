@@ -1,5 +1,5 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TransportStateDto } from "../ipc/bindings";
 import { VXTM_FLAGS } from "../ipc/telemetry";
 import { clearActionHandlers } from "../shortcuts";
@@ -12,6 +12,7 @@ import {
   resetTransportForTest,
   transportState,
 } from "./transport.svelte";
+import { frameScheduler } from "../render/frameScheduler";
 
 /**
  * S2-03: `extrapolatedPositionAt` is SPEC-009 §4.3's "position at the key press" — the same
@@ -24,6 +25,7 @@ afterEach(() => {
   clearMocks();
   clearActionHandlers();
   resetTransportForTest();
+  frameScheduler.resetForTest();
 });
 
 function u64(dv: DataView, offset: number, value: number): void {
@@ -227,6 +229,126 @@ describe("the output meter (H-41)", () => {
       expect(transportState().meter).toBe(settled);
     } finally {
       now.mockRestore();
+      stop();
+    }
+  });
+});
+
+describe("animation frames only while something moves (H-43)", () => {
+  const FAKE = [
+    "setTimeout",
+    "clearTimeout",
+    "setInterval",
+    "clearInterval",
+    "requestAnimationFrame",
+    "cancelAnimationFrame",
+    "performance",
+  ] as const;
+
+  async function setUpWith(playing: boolean): Promise<() => void> {
+    mockIPC((cmd) => {
+      if (cmd === "clock_now_ns") return performance.now() * 1e6;
+      if (cmd === "transport_get") {
+        return transportStateDto({ playing, doc_len_samples: 10_000_000, doc_rate_hz: 48_000, can_play: true });
+      }
+      return null;
+    });
+    return initTransport();
+  }
+
+  /** Animation frames the shared scheduler ran during `ms` of fake time. */
+  function framesDuring(ms: number): number {
+    const before = frameScheduler.stats.frames;
+    vi.advanceTimersByTime(ms);
+    return frameScheduler.stats.frames - before;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: [...FAKE] });
+    // A frame an earlier (real-timer) test requested must not look "already scheduled" here.
+    frameScheduler.resetForTest();
+  });
+
+  afterEach(() => {
+    frameScheduler.resetForTest();
+    vi.useRealTimers();
+  });
+
+  it("an idle second schedules no frame; after Stop the meter falls to the floor on its own, then frames stop", async () => {
+    const stop = await setUpWith(false);
+    try {
+      expect(framesDuring(1000)).toBe(0);
+
+      // The engine's frames around a Stop: the last loud block, then its final silent frame —
+      // after which an idle engine sends nothing more (crates/engine/tests/idle_telemetry.rs).
+      onTelemetry(buildVxtmFrame({ playheadSample: 480, playheadTimeNs: 0, rate: 0, outPeakDbfs: -6, outRmsDbfs: -9 }));
+      vi.advanceTimersByTime(17);
+      onTelemetry(buildVxtmFrame({ playheadSample: 480, playheadTimeNs: 0, rate: 0 }));
+      expect(transportState().meter.peakDbfs).toBeGreaterThan(-60); // still falling
+      expect(transportState().playheadSamples).toBe(480);
+
+      // No telemetry: the bar and the (held, then released) hold tick keep falling on animation
+      // frames, reach the floor and snap to silence.
+      expect(framesDuring(6000)).toBeGreaterThan(100);
+      const settled = transportState().meter;
+      expect(settled.peakDbfs).toBe(Number.NEGATIVE_INFINITY);
+      expect(settled.holdDbfs).toBe(Number.NEGATIVE_INFINITY);
+      expect(settled.rmsDbfs).toBe(Number.NEGATIVE_INFINITY);
+      expect(settled.peakReadoutDbfs).toBe(Number.NEGATIVE_INFINITY);
+      expect(settled.rmsReadoutDbfs).toBe(Number.NEGATIVE_INFINITY);
+
+      // Then an idle second costs nothing: no frame, no reactive meter write.
+      expect(framesDuring(1000)).toBe(0);
+      expect(transportState().meter).toBe(settled);
+    } finally {
+      stop();
+    }
+  });
+
+  it.each([
+    ["playback", VXTM_FLAGS.PLAYING],
+    ["recording", VXTM_FLAGS.RECORDING],
+  ])("%s animates the playhead every frame, and frames stop after the transport stops", async (_, flag) => {
+    const stop = await setUpWith(true);
+    try {
+      let sample = 0;
+      const before = frameScheduler.stats.frames;
+      // One second of engine telemetry at 60 Hz while moving.
+      for (let i = 0; i < 60; i++) {
+        onTelemetry(
+          buildVxtmFrame({
+            playheadSample: sample,
+            playheadTimeNs: performance.now() * 1e6,
+            rate: 48_000,
+            flags: flag,
+            outPeakDbfs: -20,
+            outRmsDbfs: -24,
+          }),
+        );
+        vi.advanceTimersByTime(1000 / 60);
+        sample += 800;
+      }
+      expect(frameScheduler.stats.frames - before).toBeGreaterThanOrEqual(55);
+      expect(transportState().playheadSamples).toBeGreaterThan(40_000);
+
+      // Stop: the engine's final frame (rate 0), then silence.
+      onTelemetry(buildVxtmFrame({ playheadSample: sample, playheadTimeNs: performance.now() * 1e6, rate: 0 }));
+      vi.advanceTimersByTime(6000);
+      expect(transportState().playheadSamples).toBe(sample);
+      expect(framesDuring(1000)).toBe(0);
+    } finally {
+      stop();
+    }
+  });
+
+  it("a moving playhead whose telemetry stalls stops animating instead of running forever", async () => {
+    const stop = await setUpWith(true);
+    try {
+      onTelemetry(buildVxtmFrame({ playheadSample: 0, playheadTimeNs: performance.now() * 1e6, rate: 48_000, flags: VXTM_FLAGS.PLAYING }));
+      expect(framesDuring(500)).toBeGreaterThan(20);
+      vi.advanceTimersByTime(2000);
+      expect(framesDuring(1000)).toBe(0);
+    } finally {
       stop();
     }
   });

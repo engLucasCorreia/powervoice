@@ -341,7 +341,13 @@ function memoVxst(
   return buf;
 }
 
-function vxtm(seq: number, flags: number, playhead: number, levels: [number, number, number, number]): ArrayBuffer {
+function vxtm(
+  seq: number,
+  flags: number,
+  playhead: number,
+  levels: [number, number, number, number],
+  rate: number = PREVIEW_RATE_HZ,
+): ArrayBuffer {
   const buf = new ArrayBuffer(72);
   const view = new DataView(buf);
   writeMagic(view, "VXTM");
@@ -351,7 +357,7 @@ function vxtm(seq: number, flags: number, playhead: number, levels: [number, num
   view.setUint32(12, flags, true);
   view.setBigUint64(16, BigInt(Math.round(playhead)), true);
   view.setBigUint64(24, BigInt(Math.round(performance.now() * 1e6)), true);
-  view.setFloat64(32, PREVIEW_RATE_HZ, true);
+  view.setFloat64(32, rate, true);
   view.setFloat32(40, levels[0], true);
   view.setFloat32(44, levels[1], true);
   view.setFloat32(48, levels[2], true);
@@ -811,6 +817,47 @@ export function installPreviewIpc(options: PreviewOptions): void {
   let lastSpectrumSources: Array<"source" | "processed"> = ["processed"];
   let seq = 0;
 
+  // H-43: the telemetry stream behaves like the engine's (`IdleTelemetryGate`): while the
+  // transport is stopped it sends the current state once — and again after every transport
+  // command — with silent meters and a still playhead (rate 0); while playing, or in the recording
+  // scene, it streams at the 60 Hz telemetry rate.
+  const recordingScene = hasScene("recording");
+  let telemetrySink: Sink | null = null;
+  let streamTimer: ReturnType<typeof setInterval> | null = null;
+  let mockPlaying = false;
+  let mockPlayhead = 23.4 * PREVIEW_RATE_HZ;
+  let mockPlayedAtMs = 0;
+  const mockPosition = (): number =>
+    mockPlaying ? mockPlayhead + ((performance.now() - mockPlayedAtMs) / 1000) * PREVIEW_RATE_HZ : mockPlayhead;
+  const telemetryFrame = (): ArrayBuffer => {
+    seq += 1;
+    const wobble = Math.sin(seq / 9) * 2;
+    if (recordingScene) {
+      return vxtm(seq, 2 | 4, RECORDED_SAMPLES + seq * 800, [-18 + wobble, -27 + wobble, -9 + wobble, -21 + wobble]);
+    }
+    if (mockPlaying) {
+      return vxtm(seq, 1, mockPosition(), [-14 + wobble, -23 + wobble, -Infinity, -Infinity]);
+    }
+    return vxtm(seq, 0, mockPlayhead, [-Infinity, -Infinity, -Infinity, -Infinity], 0);
+  };
+  const pushTelemetry = (): void => telemetrySink?.onmessage(telemetryFrame());
+  const syncTelemetry = (): void => {
+    const stream = recordingScene || mockPlaying;
+    if (stream && streamTimer === null) {
+      streamTimer = setInterval(pushTelemetry, 1000 / 60);
+    } else if (!stream && streamTimer !== null) {
+      clearInterval(streamTimer);
+      streamTimer = null;
+    }
+    pushTelemetry();
+  };
+  const moveTransport = (playing: boolean, playhead: number = mockPosition()): void => {
+    mockPlayhead = playhead;
+    mockPlaying = playing;
+    mockPlayedAtMs = performance.now();
+    syncTelemetry();
+  };
+
   // H-37: the Loop toggle and the synced selection (the loop region while loop is on).
   let loopEnabled = false;
   let selectionRange: [number, number] | null = null;
@@ -854,18 +901,24 @@ export function installPreviewIpc(options: PreviewOptions): void {
         case "transport_get":
           return transportSnapshot();
         case "transport_play":
-          return transportSnapshot({ playing: true });
+          moveTransport(true);
+          return transportSnapshot({ playing: true, playhead_samples: Math.round(mockPlayhead) });
         case "transport_pause":
-          return transportSnapshot({ playing: false });
+          moveTransport(false);
+          return transportSnapshot({ playing: false, playhead_samples: Math.round(mockPlayhead) });
         case "transport_stop":
+          moveTransport(false, 0);
           return transportSnapshot({ playing: false, playhead_samples: 0, play_start_samples: 0 });
         case "transport_play_from_start":
+          moveTransport(true, 0);
           return transportSnapshot({ playing: true, playhead_samples: 0, play_start_samples: 0 });
         case "transport_return_to_start":
+          moveTransport(false, 0);
           return transportSnapshot({ playing: false, playhead_samples: 0, play_start_samples: 0 });
         case "transport_seek": {
           const at = a.positionSamples as number;
-          return transportSnapshot({ playhead_samples: at, play_start_samples: at });
+          moveTransport(mockPlaying, at);
+          return transportSnapshot({ playing: mockPlaying, playhead_samples: at, play_start_samples: at });
         }
         case "transport_set_loop":
           loopEnabled = a.enabled === true;
@@ -878,24 +931,10 @@ export function installPreviewIpc(options: PreviewOptions): void {
         case "record_get":
           return recordFixture(options);
         case "telemetry_subscribe": {
-          const sink = a.channel as Sink;
-          const recording = hasScene("recording");
-          const tick = () => {
-            seq += 1;
-            const wobble = Math.sin(seq / 3) * 2;
-            const playhead = recording ? RECORDED_SAMPLES + seq * 2400 : 23.4 * PREVIEW_RATE_HZ;
-            sink.onmessage(
-              vxtm(seq, recording ? 2 | 4 : 0, playhead, [
-                recording ? -18 + wobble : -14 + wobble,
-                recording ? -27 + wobble : -23 + wobble,
-                recording ? -9 + wobble : -120,
-                recording ? -21 + wobble : -120,
-              ]),
-            );
-          };
+          telemetrySink = a.channel as Sink;
           // Start once the stores have their initial state (the real engine only streams
           // telemetry after the transport exists).
-          setTimeout(() => setInterval(tick, 50), 600);
+          setTimeout(syncTelemetry, 600);
           return null;
         }
         case "recent_files_get":

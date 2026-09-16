@@ -174,6 +174,7 @@ impl StreamingQuantizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vox_testkit::spectrum::Window;
 
     #[test]
     fn grid_exact_16_bit_values_round_trip_without_dither() {
@@ -343,37 +344,14 @@ mod tests {
 
     // --- H-60 (SPEC-005 AC-4): dither removes harmonic distortion, TPDF whitens it ------------
 
-    /// Magnitude spectrum in dB (unnormalized: only relative levels within one call are
-    /// meaningful) of `samples` via a single real FFT of `samples.len()` points.
-    fn magnitude_spectrum_db(samples: &[i32], scale: f64) -> Vec<f64> {
-        let mut planner = realfft::RealFftPlanner::<f64>::new();
-        let fft = planner.plan_fft_forward(samples.len());
-        let mut input: Vec<f64> = samples.iter().map(|&s| f64::from(s) / scale).collect();
-        let mut spectrum = fft.make_output_vec();
-        fft.process(&mut input, &mut spectrum).unwrap();
-        spectrum
+    /// `samples` (16-bit-quantized ints, `scale` = `2^15`) as the `f32` frame
+    /// `vox_testkit::spectrum::Spectrum::analyze` expects. `scale` is a power of two, so this
+    /// conversion is exact (no precision lost vs. the `f64::from(s) / scale` this replaces).
+    fn to_frame(samples: &[i32], scale: f64) -> Vec<f32> {
+        samples
             .iter()
-            .map(|c| 20.0 * (c.norm() + 1e-300).log10())
+            .map(|&s| (f64::from(s) / scale) as f32)
             .collect()
-    }
-
-    /// The median dB level of the bins in `[center - window, center + window]`, excluding
-    /// `[center - exclude, center + exclude]` (the harmonic bin itself and its immediate
-    /// skirt) — the AC-4 "median of the neighbouring bins" reference level.
-    fn neighbor_median_db(
-        spectrum_db: &[f64],
-        center: usize,
-        exclude: usize,
-        window: usize,
-    ) -> f64 {
-        let lo = center.saturating_sub(window);
-        let hi = (center + window).min(spectrum_db.len() - 1);
-        let mut levels: Vec<f64> = (lo..=hi)
-            .filter(|&k| k.abs_diff(center) > exclude)
-            .map(|k| spectrum_db[k])
-            .collect();
-        levels.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        levels[levels.len() / 2]
     }
 
     /// SPEC-005 AC-4: a low-level sine, saved at 16-bit with **Dither None**, shows a clearly
@@ -390,35 +368,57 @@ mod tests {
     /// tones" convention), and a single frame because the effect this test checks for (a
     /// stationary nonlinearity's harmonics vs. dither's white floor) doesn't need averaging to
     /// show up cleanly at 8192 points. The full spec-literal AC-4 harness (real tones, BH4,
-    /// 10 s average) is a candidate for a future `testkit` spectral-analysis helper (none exists
-    /// yet in this workspace — every crate that needs one currently hand-rolls it, see
-    /// `crates/io/tests/codec_decode.rs::dominant_frequency_hz`); proposed as a follow-up rather
-    /// than grown here, since a shared helper touches every consumer's test conventions.
+    /// 10 s average) is a candidate for a future extension of `vox_testkit::spectrum`'s
+    /// harmonic-series conveniences; not grown here since it isn't needed to pass this AC.
+    ///
+    /// Uses `vox_testkit::spectrum::Spectrum` (H-73) for the FFT and the "median of neighbouring
+    /// bins" reference level, in place of this test's own former `magnitude_spectrum_db` /
+    /// `neighbor_median_db` helpers -- same rectangular window (bin-centred tones, no leakage to
+    /// control) and the same exclude/window bin radii (3 / 40), now expressed in Hz via
+    /// `Spectrum::bin_hz()`, which round-trips exactly here since every frequency involved is an
+    /// exact multiple of `bin_hz` (dyadic: `RATE_HZ / N = 375/64`). No asserted number changed.
     #[test]
     fn tpdf_masks_harmonic_distortion_that_dither_none_leaves_isolated() {
         const N: usize = 8192;
-        const RATE_HZ: f64 = 48_000.0;
+        const RATE_HZ: u32 = 48_000;
         // Bin-centred fundamental near 1000 Hz (bin 171 of 8192 @ 48 kHz = 1001.953125 Hz), so its
         // harmonics (2x/3x/5x) land on exact bins too, with zero leakage under a rectangular
         // window.
         const K0: usize = 171;
-        let f0_hz = K0 as f64 * RATE_HZ / N as f64;
+        let f0_hz = K0 as f64 * f64::from(RATE_HZ) / N as f64;
         // -80 dBFS peak, "≈3.3 LSB at 16-bit" per SPEC-005 AC-4.
         let amp = 10f64.powf(-80.0 / 20.0);
         let samples: Vec<f32> = (0..N)
-            .map(|i| (amp * (2.0 * std::f64::consts::PI * f0_hz * i as f64 / RATE_HZ).sin()) as f32)
+            .map(|i| {
+                (amp * (2.0 * std::f64::consts::PI * f0_hz * i as f64 / f64::from(RATE_HZ)).sin())
+                    as f32
+            })
             .collect();
 
         let (none, _) = quantize_dithered(&samples, 16, DitherMode::None);
         let (tpdf, _) = quantize_dithered(&samples, 16, DitherMode::Tpdf);
         let scale = f64::from(1u32 << 15);
-        let none_db = magnitude_spectrum_db(&none, scale);
-        let tpdf_db = magnitude_spectrum_db(&tpdf, scale);
+        let none_spectrum = vox_testkit::spectrum::Spectrum::analyze(
+            &to_frame(&none, scale),
+            RATE_HZ,
+            Window::Rectangular,
+        )
+        .unwrap();
+        let tpdf_spectrum = vox_testkit::spectrum::Spectrum::analyze(
+            &to_frame(&tpdf, scale),
+            RATE_HZ,
+            Window::Rectangular,
+        )
+        .unwrap();
+        let bin_hz = none_spectrum.bin_hz();
+        let exclude_hz = 3.0 * bin_hz;
+        let window_hz = 40.0 * bin_hz;
 
         // AC-4's own worked example: with Dither None, the 3 kHz component (3rd harmonic, bin
         // 3*K0) is >= 20 dB above the median of its neighbouring band.
-        let third = 3 * K0;
-        let none_excess = none_db[third] - neighbor_median_db(&none_db, third, 3, 40);
+        let third_hz = 3.0 * f0_hz;
+        let none_excess = none_spectrum.level_at_hz(third_hz)
+            - none_spectrum.local_noise_floor_db(third_hz, exclude_hz, window_hz);
         assert!(
             none_excess >= 20.0,
             "Dither None: 3rd-harmonic bin is only {none_excess:.1} dB above its neighbours \
@@ -429,17 +429,20 @@ mod tests {
         // floor -- no longer an isolated spike. (The spec's own "+3 dB" bound is for a full 10 s
         // BH4 average; a single 8192-point frame's per-bin noise estimate is noisier, so this
         // uses a slightly wider tolerance appropriate to one frame.)
-        for &k in &[2 * K0, 3 * K0, 5 * K0] {
-            let excess = tpdf_db[k] - neighbor_median_db(&tpdf_db, k, 3, 40);
+        for &harmonic in &[2.0, 3.0, 5.0] {
+            let hz = harmonic * f0_hz;
+            let excess = tpdf_spectrum.level_at_hz(hz)
+                - tpdf_spectrum.local_noise_floor_db(hz, exclude_hz, window_hz);
             assert!(
                 excess <= 6.0,
-                "TPDF: harmonic bin {k} is {excess:.1} dB above its neighbours (want <= 6 dB, \
-                 i.e. masked into the dither floor, not left as a distortion line)"
+                "TPDF: harmonic bin at {hz} Hz is {excess:.1} dB above its neighbours (want \
+                 <= 6 dB, i.e. masked into the dither floor, not left as a distortion line)"
             );
         }
 
         // And the isolated-harmonic gap must actually close under TPDF vs. None at the same bin.
-        let tpdf_third_excess = tpdf_db[third] - neighbor_median_db(&tpdf_db, third, 3, 40);
+        let tpdf_third_excess = tpdf_spectrum.level_at_hz(third_hz)
+            - tpdf_spectrum.local_noise_floor_db(third_hz, exclude_hz, window_hz);
         assert!(
             tpdf_third_excess < none_excess - 10.0,
             "TPDF should suppress the 3rd harmonic's isolation by at least 10 dB vs. Dither \

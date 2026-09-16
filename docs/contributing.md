@@ -61,6 +61,15 @@ just dev                # run the app
 Tests that need real audio devices, a display or an optional system library skip themselves.
 Write the acceptance tests from the spec **before** the implementation.
 
+A test that needs to look at a signal in the frequency domain (a dominant frequency, a harmonic's
+level, a noise floor) should reach for `vox_testkit::spectrum::Spectrum` rather than hand-rolling
+a DFT: `Spectrum::analyze(samples, sample_rate_hz, window)` windows and FFTs one frame
+(`samples.len()` must be a power of two) and gives back `dominant_frequency_hz`, `level_at_hz`,
+`harmonic_levels_db` and `local_noise_floor_db`/`noise_floor_db`. `Window` defaults to
+Blackman-Harris; use `Window::Rectangular` for deliberately bin-centred tones where leakage would
+blur neighbouring bins (see `crates/dsp/src/dither.rs`'s AC-4 harmonic-isolation test). It has its
+own small FFT rather than depending on `realfft` (ADR-001 §3 confines that to `dsp`).
+
 ### Useful environment variables
 
 | Variable | Effect |

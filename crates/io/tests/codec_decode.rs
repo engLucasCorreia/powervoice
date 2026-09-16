@@ -77,27 +77,21 @@ fn decode_mono(path: &Path) -> (vox_io::ProbeInfo, Vec<f32>) {
     (info, out)
 }
 
+/// H-73: was a hand-rolled `O(n^2)` DFT peak-bin search; now `vox_testkit::spectrum::Spectrum`
+/// (rectangular window, matching this function's former unwindowed DFT -- these fixtures'
+/// 997 Hz tone isn't bin-centred, so a taper window would in principle move the found peak, but
+/// not by more than the +-20 Hz tolerance every call site already asserts). `Spectrum::analyze`
+/// requires a power-of-two frame length, so this takes the first 8192 samples exactly rather than
+/// `.min(8192)` -- every fixture here is 2 s at 48 kHz (96 000 samples), far longer than that.
 fn dominant_frequency_hz(samples: &[f32], rate: u32) -> f64 {
-    // A simple Goertzel-free peak-bin search over a real DFT magnitude at a modest resolution --
-    // good enough to confirm "same tone", not a replacement for testkit's BH4 analysis.
-    let n = samples.len().min(8192);
-    let mut best_bin = 0usize;
-    let mut best_mag = 0.0f64;
-    for k in 1..n / 2 {
-        let angle = -2.0 * std::f64::consts::PI * k as f64 / n as f64;
-        let (mut re, mut im) = (0.0f64, 0.0f64);
-        for (i, &s) in samples[..n].iter().enumerate() {
-            let a = angle * i as f64;
-            re += f64::from(s) * a.cos();
-            im += f64::from(s) * a.sin();
-        }
-        let mag = (re * re + im * im).sqrt();
-        if mag > best_mag {
-            best_mag = mag;
-            best_bin = k;
-        }
-    }
-    best_bin as f64 * f64::from(rate) / n as f64
+    const N: usize = 8192;
+    let spectrum = vox_testkit::spectrum::Spectrum::analyze(
+        &samples[..N],
+        rate,
+        vox_testkit::spectrum::Window::Rectangular,
+    )
+    .expect("fixture has at least 8192 samples");
+    spectrum.dominant_frequency_hz()
 }
 
 fn have_flac_cli() -> bool {

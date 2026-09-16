@@ -11,6 +11,7 @@ pub mod golden;
 pub mod measure;
 pub mod prng;
 pub mod signal;
+pub mod spectrum;
 pub mod true_peak;
 pub mod units;
 pub mod wav;

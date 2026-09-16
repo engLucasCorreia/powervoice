@@ -71,12 +71,14 @@ Optional extras, installed automatically by `apt` as recommendations:
 
 On Arch: `sudo pacman -S lame lilv`. Everything else works without them.
 
-**Windows and macOS:** CI now builds an installer for each (`.msi`/`.exe` on Windows, `.dmg` on
-macOS) and attaches it to the release above, when the build succeeds — but treat it as
-**unverified — never run by the maintainer.** Nobody has installed or launched either one; they may
-simply not work. Unsigned/unnotarized too (Windows SmartScreen and macOS Gatekeeper will both
-warn), and the macOS build is Apple Silicon only. If you'd rather not risk it, or the CI build
-failed for this release, [build from source](docs/building.md) instead.
+**Windows and macOS:** CI attempts an installer for each (`.msi`/`.exe` on Windows, `.dmg` on
+macOS) and, when the build succeeds, attaches it to the release above — but treat it as
+**unverified — never run by the maintainer.** As of this writing that build does **not** succeed: a
+pre-existing case-sensitivity bug in the UI (two source files collide on Windows'/macOS' default
+case-insensitive filesystems; see [docs/building.md](docs/building.md#windows)) fails it before an
+installer is produced, so there may be nothing to download for this release at all. If one exists,
+it's still unsigned/unnotarized (Windows SmartScreen and macOS Gatekeeper will both warn), and the
+macOS build is Apple Silicon only. [Build from source](docs/building.md) instead.
 
 ## Build from source
 

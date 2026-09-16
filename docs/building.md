@@ -199,6 +199,27 @@ Manually: `sudo apt install liblilv-0-0` (Debian/Ubuntu), `sudo dnf install lilv
 **Overriding the library path**: set `POWERVOICE_LILV` to an absolute path to a custom lilv build
 (advanced use only; normally unnecessary).
 
+### Plugin editor windows
+
+Third-party plugins can provide graphical editor windows (CLAP and LV2 only; VST3 not yet tested;
+JSFX has no window). These windows run in the plugin sandbox, which loads the required libraries at
+runtime — PowerVoice does not bundle them.
+
+**Linux**: plugin windows need the X11 library (`libX11`) at runtime. Without it, or without an X
+server (under Wayland, use XWayland), the window button is disabled with a reason. Additionally,
+LV2 plugin windows need **suil** (`libsuil-0-0`) to instantiate X11 UIs; without it, LV2 plugins with
+graphical UIs simply have no window (CLAP and VST3 UIs are unaffected).
+
+- **Linux (.deb)**: `libx11-6` and `libsuil-0-0` are `Recommends`, so `apt` installs them by default.
+  Manually: `sudo apt install libx11-6 libsuil-0-0` (Debian/Ubuntu), `sudo dnf install libx11 suil`
+  (Fedora), or `sudo pacman -S xorg-xlibclient lilv` (Arch).
+- **Linux (AppImage)**: install the system packages as above; the AppImage doesn't bundle them.
+- **macOS**: plugin editor windows are not yet supported.
+- **Windows**: plugin editor windows are untested and may not work reliably.
+
+**After a plugin crash**: the plugin sandbox restarts and the window does not reopen automatically.
+Reopen it from the plugin's rack slot.
+
 ### JSFX support (vendored ysfx)
 
 JSFX effects are hosted through **ysfx** (the JoepVanlier fork's Apache-2.0 library, with Cockos'

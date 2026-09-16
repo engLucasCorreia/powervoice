@@ -217,6 +217,24 @@ You don't need to restart PowerVoice: lilv is loaded the next time an LV2 plugin
 **Rescan** in the Plugin Manager. Advanced: to use your own lilv build, set the `POWERVOICE_LILV`
 environment variable to its full path.
 
+### Plugin editor windows
+
+Some plugins offer a graphical editor window. Open it by clicking the window icon (⊟) in the
+plugin's rack slot. The window stays open while you edit and closes when you remove the plugin
+from the rack or PowerVoice closes.
+
+**On Linux**: the window needs X11 or XWayland. If neither is available, the window button is
+disabled. LV2 plugin windows additionally need the **suil** library; LV2 plugins without suil have
+no window (but still process audio normally). See [Building PowerVoice](building.md) for
+installation instructions.
+
+**On Windows and macOS**: plugin editor windows are not yet supported. CLAP and VST3 plugins
+still work; they simply have no graphical window.
+
+**After a plugin crash**: if a plugin crashes, its window closes and doesn't reopen
+automatically — the plugin's sandbox restarts to recover. Reopen the window by clicking the
+window icon again.
+
 ### Where JSFX effects come from
 
 JSFX are REAPER's text-based effects. PowerVoice runs them with its own built-in JSFX engine, in the

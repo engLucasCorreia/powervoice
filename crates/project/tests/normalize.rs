@@ -245,16 +245,35 @@ fn ac7_already_normalized_and_non_finite() {
         "still just the first edit"
     );
 
-    // A non-finite sample in scope.
+    // H-60 (SPEC-005 §2.3): a non-finite sample never survives into a document — `ChunkStore`
+    // now sanitizes NaN/±inf to 0.0 at commit (`commit_chunk`/`commit_chunk_with_id`), so this
+    // is no longer a "normalize refuses non-finite input" scenario at the public API surface: it
+    // is a "a document never contains a non-finite sample in the first place" one. `new_session`
+    // here goes through the same public `ChunkWriter` path a real import/capture/edit does, so
+    // if this ever regressed (a future writer bypassing the store's sanitization), the sample
+    // would reach `normalize_peak` and it would still refuse — that defensive path keeps its own
+    // direct unit coverage in `crates/project/src/normalize.rs` and `crates/project/src/store/
+    // mod.rs` (via a test-only bypass of the sanitization, since it can no longer be reached
+    // through any public writer).
     let mut with_nan = f3();
     with_nan[100] = f32::NAN;
     let mut session = new_session(tmp.path(), &with_nan);
     let before = session.current();
+    let sanitized = read_all(session.store(), &before);
+    assert!(
+        sanitized.iter().all(|s| s.is_finite()),
+        "the store must never hold the NaN sample fed to it"
+    );
+    assert_eq!(
+        sanitized[100].to_bits(),
+        0.0f32.to_bits(),
+        "the NaN sample was replaced with silence"
+    );
     let range = validate_range(0, before.len_samples, before.len_samples).unwrap();
-    let err = vox_project::normalize_peak(&mut session, range, -1.0).unwrap_err();
-    assert!(matches!(err, vox_project::ProjectError::NonFiniteSample));
-    assert_eq!(session.current().audio_rev, before.audio_rev);
-    assert_eq!(session.history().undo_depth(), 0);
+    // The scope is otherwise a clean 1 kHz sine well above the "already normalized" tolerance,
+    // so normalize now succeeds (there is nothing left to refuse).
+    let applied = vox_project::normalize_peak(&mut session, range, -1.0).unwrap();
+    assert!(matches!(applied, NormalizeResult::Applied(_)));
 }
 
 /// AC-10: one undo entry labelled `history.normalize`; a seeded sequence of normalizes with

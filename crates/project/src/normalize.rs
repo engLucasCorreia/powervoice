@@ -677,7 +677,7 @@ mod tests {
     use super::*;
     use crate::edit::validate_range;
     use crate::session::SessionConfig;
-    use crate::store::StoreOptions;
+    use crate::store::{StoreOptions, WrittenAudio};
 
     fn dbfs(linear: f64) -> f64 {
         20.0 * linear.log10()
@@ -705,6 +705,29 @@ mod tests {
         let mut writer = session.chunk_writer();
         writer.append(samples).unwrap();
         let audio = writer.finish().unwrap();
+        session.set_floor(&audio, Vec::new()).unwrap();
+        (session, dir)
+    }
+
+    /// H-60: like [`session_with`], but commits `samples` through
+    /// `ChunkStore::commit_chunk_raw_for_test`, bypassing the store's own non-finite
+    /// sanitization (`commit_chunk`/`commit_chunk_with_id`, H-60) — every real writer (import,
+    /// capture, edits, compaction) is now sanitized at commit, so a normal `session_with` can
+    /// never produce a document holding NaN/±inf. This helper exists only so the *defensive*
+    /// `NonFiniteSample` checks in `scan_peak`/`scan_loudness` (meant for a chunk that predates
+    /// that guarantee, or a future writer that bypasses it) keep real test coverage instead of
+    /// becoming unreachable dead code.
+    fn session_with_raw_non_finite(tag: &str, samples: &[f32]) -> (Session, std::path::PathBuf) {
+        let dir = tmp_dir(tag);
+        let mut config = SessionConfig::new(48_000);
+        config.store = StoreOptions::with_memory_budget(64 * 1024 * 1024);
+        let mut session = Session::create(&dir, config).unwrap();
+        let loc = session.store().commit_chunk_raw_for_test(samples).unwrap();
+        let audio = WrittenAudio {
+            pieces: vec![Piece::chunk(loc.id, 0, samples.len() as u32)],
+            chunks: vec![loc.id],
+            len_samples: samples.len() as u64,
+        };
         session.set_floor(&audio, Vec::new()).unwrap();
         (session, dir)
     }
@@ -762,7 +785,7 @@ mod tests {
     #[test]
     fn scan_peak_rejects_non_finite_samples() {
         let samples = vec![0.1, f32::NAN, 0.3];
-        let (session, dir) = session_with("nan", &samples);
+        let (session, dir) = session_with_raw_non_finite("nan", &samples);
         let range = validate_range(0, 3, 3).unwrap();
         let err = scan_peak(session.store(), &session.current(), range).unwrap_err();
         assert!(matches!(err, ProjectError::NonFiniteSample));
@@ -873,7 +896,7 @@ mod tests {
     #[test]
     fn normalize_peak_refuses_non_finite_input_and_changes_nothing() {
         let samples = vec![0.1, f32::NAN, 0.3];
-        let (mut session, dir) = session_with("nan-apply", &samples);
+        let (mut session, dir) = session_with_raw_non_finite("nan-apply", &samples);
         let before = session.current().clone();
         let range = validate_range(0, 3, 3).unwrap();
         let err = normalize_peak(&mut session, range, -1.0).unwrap_err();
@@ -1015,7 +1038,7 @@ mod tests {
     #[test]
     fn normalize_lufs_refuses_non_finite_input_and_changes_nothing() {
         let samples = vec![0.1, f32::NAN, 0.3];
-        let (mut session, dir) = session_with("lufs-nan", &samples);
+        let (mut session, dir) = session_with_raw_non_finite("lufs-nan", &samples);
         let before = session.current().clone();
         let range = validate_range(0, 3, 3).unwrap();
         let err = normalize_lufs(&mut session, range, -19.0).unwrap_err();
@@ -1205,10 +1228,10 @@ mod tests {
             .unwrap();
         let mut samples = vec![0.1f32; CHUNK_SAMPLES];
         samples[1234] = f32::NAN;
-        let mut writer = store.writer();
-        writer.append(&samples).unwrap();
-        let written = writer.finish().unwrap();
-        let id = written.chunks[0];
+        // H-60: `ChunkStore::commit_chunk`/`ChunkWriter` now sanitize non-finite samples at
+        // commit, so this whole-chunk-NaN scenario is built via the raw test bypass instead
+        // (see `commit_chunk_raw_for_test`'s doc comment).
+        let id = store.commit_chunk_raw_for_test(&samples).unwrap().id;
         let snapshot = DocSnapshot::new(
             48_000,
             vec![Piece::chunk(id, 0, CHUNK_SAMPLES as u32)],
@@ -1231,10 +1254,8 @@ mod tests {
             .unwrap();
         let mut samples = vec![0.1f32; CHUNK_SAMPLES];
         samples[100] = f32::NAN; // outside [1000, 2000)
-        let mut writer = store.writer();
-        writer.append(&samples).unwrap();
-        let written = writer.finish().unwrap();
-        let id = written.chunks[0];
+        // H-60: raw bypass, see the whole-chunk test above.
+        let id = store.commit_chunk_raw_for_test(&samples).unwrap().id;
 
         let clean_range_snapshot =
             DocSnapshot::new(48_000, vec![Piece::chunk(id, 1_000, 1_000)], Vec::new());

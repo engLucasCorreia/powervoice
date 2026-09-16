@@ -340,4 +340,110 @@ mod tests {
         assert_eq!(streaming_clipped, one_shot_clipped);
         assert_eq!(out, one_shot);
     }
+
+    // --- H-60 (SPEC-005 AC-4): dither removes harmonic distortion, TPDF whitens it ------------
+
+    /// Magnitude spectrum in dB (unnormalized: only relative levels within one call are
+    /// meaningful) of `samples` via a single real FFT of `samples.len()` points.
+    fn magnitude_spectrum_db(samples: &[i32], scale: f64) -> Vec<f64> {
+        let mut planner = realfft::RealFftPlanner::<f64>::new();
+        let fft = planner.plan_fft_forward(samples.len());
+        let mut input: Vec<f64> = samples.iter().map(|&s| f64::from(s) / scale).collect();
+        let mut spectrum = fft.make_output_vec();
+        fft.process(&mut input, &mut spectrum).unwrap();
+        spectrum
+            .iter()
+            .map(|c| 20.0 * (c.norm() + 1e-300).log10())
+            .collect()
+    }
+
+    /// The median dB level of the bins in `[center - window, center + window]`, excluding
+    /// `[center - exclude, center + exclude]` (the harmonic bin itself and its immediate
+    /// skirt) — the AC-4 "median of the neighbouring bins" reference level.
+    fn neighbor_median_db(
+        spectrum_db: &[f64],
+        center: usize,
+        exclude: usize,
+        window: usize,
+    ) -> f64 {
+        let lo = center.saturating_sub(window);
+        let hi = (center + window).min(spectrum_db.len() - 1);
+        let mut levels: Vec<f64> = (lo..=hi)
+            .filter(|&k| k.abs_diff(center) > exclude)
+            .map(|k| spectrum_db[k])
+            .collect();
+        levels.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        levels[levels.len() / 2]
+    }
+
+    /// SPEC-005 AC-4: a low-level sine, saved at 16-bit with **Dither None**, shows a clearly
+    /// isolated harmonic (undithered rounding is a nonlinearity: it distorts, it doesn't add
+    /// noise) — but saved with **TPDF**, the same harmonic bins read within a few dB of their
+    /// surrounding noise floor, because TPDF replaces that correlated distortion with
+    /// signal-independent broadband dither noise. This is the one AC that proves dither does what
+    /// it's for, rather than only checking bulk residual statistics (AC-3) or bit-level bounds.
+    ///
+    /// Deliberately simplified from the spec's literal methodology (8192-point Blackman-Harris
+    /// averaged over 10 s of real 1000/2000/3000/5000 Hz tones) to one bin-centred tone and a
+    /// single rectangular-window 8192-point FFT frame — bin-centred so there is no spectral
+    /// leakage to account for without a taper window (`docs/references.md`'s "ACs use bin-centred
+    /// tones" convention), and a single frame because the effect this test checks for (a
+    /// stationary nonlinearity's harmonics vs. dither's white floor) doesn't need averaging to
+    /// show up cleanly at 8192 points. The full spec-literal AC-4 harness (real tones, BH4,
+    /// 10 s average) is a candidate for a future `testkit` spectral-analysis helper (none exists
+    /// yet in this workspace — every crate that needs one currently hand-rolls it, see
+    /// `crates/io/tests/codec_decode.rs::dominant_frequency_hz`); proposed as a follow-up rather
+    /// than grown here, since a shared helper touches every consumer's test conventions.
+    #[test]
+    fn tpdf_masks_harmonic_distortion_that_dither_none_leaves_isolated() {
+        const N: usize = 8192;
+        const RATE_HZ: f64 = 48_000.0;
+        // Bin-centred fundamental near 1000 Hz (bin 171 of 8192 @ 48 kHz = 1001.953125 Hz), so its
+        // harmonics (2x/3x/5x) land on exact bins too, with zero leakage under a rectangular
+        // window.
+        const K0: usize = 171;
+        let f0_hz = K0 as f64 * RATE_HZ / N as f64;
+        // -80 dBFS peak, "≈3.3 LSB at 16-bit" per SPEC-005 AC-4.
+        let amp = 10f64.powf(-80.0 / 20.0);
+        let samples: Vec<f32> = (0..N)
+            .map(|i| (amp * (2.0 * std::f64::consts::PI * f0_hz * i as f64 / RATE_HZ).sin()) as f32)
+            .collect();
+
+        let (none, _) = quantize_dithered(&samples, 16, DitherMode::None);
+        let (tpdf, _) = quantize_dithered(&samples, 16, DitherMode::Tpdf);
+        let scale = f64::from(1u32 << 15);
+        let none_db = magnitude_spectrum_db(&none, scale);
+        let tpdf_db = magnitude_spectrum_db(&tpdf, scale);
+
+        // AC-4's own worked example: with Dither None, the 3 kHz component (3rd harmonic, bin
+        // 3*K0) is >= 20 dB above the median of its neighbouring band.
+        let third = 3 * K0;
+        let none_excess = none_db[third] - neighbor_median_db(&none_db, third, 3, 40);
+        assert!(
+            none_excess >= 20.0,
+            "Dither None: 3rd-harmonic bin is only {none_excess:.1} dB above its neighbours \
+             (want >= 20 dB, i.e. a clearly isolated distortion line)"
+        );
+
+        // With TPDF, the 2nd/3rd/5th harmonics are each within a few dB of their local noise
+        // floor -- no longer an isolated spike. (The spec's own "+3 dB" bound is for a full 10 s
+        // BH4 average; a single 8192-point frame's per-bin noise estimate is noisier, so this
+        // uses a slightly wider tolerance appropriate to one frame.)
+        for &k in &[2 * K0, 3 * K0, 5 * K0] {
+            let excess = tpdf_db[k] - neighbor_median_db(&tpdf_db, k, 3, 40);
+            assert!(
+                excess <= 6.0,
+                "TPDF: harmonic bin {k} is {excess:.1} dB above its neighbours (want <= 6 dB, \
+                 i.e. masked into the dither floor, not left as a distortion line)"
+            );
+        }
+
+        // And the isolated-harmonic gap must actually close under TPDF vs. None at the same bin.
+        let tpdf_third_excess = tpdf_db[third] - neighbor_median_db(&tpdf_db, third, 3, 40);
+        assert!(
+            tpdf_third_excess < none_excess - 10.0,
+            "TPDF should suppress the 3rd harmonic's isolation by at least 10 dB vs. Dither \
+             None (None {none_excess:.1} dB, TPDF {tpdf_third_excess:.1} dB)"
+        );
+    }
 }

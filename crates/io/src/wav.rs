@@ -563,10 +563,38 @@ fn parse_wav_markers(bytes: &[u8]) -> Option<Vec<WavMarker>> {
     Some(markers)
 }
 
-/// UTF-8 first (SPEC-005 §4.6); this ticket's essential subset skips the Windows-1252 fallback
-/// (deferred — never-invalid `from_utf8_lossy` keeps this function total either way).
+/// SPEC-005 §2.9/§4.6: UTF-8 is tried first; any invalid byte sequence decodes the whole string
+/// as Windows-1252 instead (H-60 — the S2-03 module doc's "skips the Windows-1252 fallback,
+/// deferred" note above no longer applies).
 fn decode_text(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
+    match std::str::from_utf8(bytes) {
+        Ok(s) => s.to_owned(),
+        Err(_) => decode_windows_1252(bytes),
+    }
+}
+
+/// Windows-1252 decode table for bytes `0x80..=0x9F` (the WHATWG Encoding Standard's
+/// "windows-1252" index for that range; five of them — 0x81/0x8D/0x8F/0x90/0x9D — are undefined in
+/// the codepage and map to their own C1 control code point, matching real Windows behavior).
+/// `0x00..=0x7F` is plain ASCII and `0xA0..=0xFF` maps to the identical Unicode code point (Latin-1
+/// supplement), so only this 32-entry range needs a table.
+const WINDOWS_1252_HIGH: [char; 32] = [
+    '\u{20AC}', '\u{0081}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}', '\u{2020}', '\u{2021}',
+    '\u{02C6}', '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{008D}', '\u{017D}', '\u{008F}',
+    '\u{0090}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}', '\u{2014}',
+    '\u{02DC}', '\u{2122}', '\u{0161}', '\u{203A}', '\u{0153}', '\u{009D}', '\u{017E}', '\u{0178}',
+];
+
+fn decode_windows_1252(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|&b| match b {
+            0x80..=0x9F => WINDOWS_1252_HIGH[(b - 0x80) as usize],
+            // `u8 as char`: every byte value 0x00-0x7F and 0xA0-0xFF is already a valid Unicode
+            // scalar value at that same code point (ASCII, then the Latin-1 supplement).
+            _ => b as char,
+        })
+        .collect()
 }
 
 /// Appends `cue `/`LIST adtl` chunks to the still-open temp file `tmp` (before it is fsynced and
@@ -868,6 +896,85 @@ mod tests {
         let bytes = std::fs::read(&path).unwrap();
         let riff_size = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
         assert_eq!(riff_size, bytes.len() - 8);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // --- H-60: Windows-1252 marker-name fallback (SPEC-005 §2.9/§4.6, AC-8) ------------------
+
+    #[test]
+    fn decode_text_falls_back_to_windows_1252_for_invalid_utf8() {
+        // SPEC-005 AC-8's own example: byte 0xE9 (invalid on its own as UTF-8) decodes as 'é' —
+        // identical in Windows-1252 and Latin-1 for this byte.
+        assert_eq!(decode_text(&[0xE9]), "é");
+        // A full name mixing ASCII and a high byte: "caf" + 0xE9 -> "café".
+        assert_eq!(decode_text(b"caf\xE9"), "café");
+    }
+
+    #[test]
+    fn decode_text_keeps_valid_utf8_as_is() {
+        assert_eq!(decode_text("Café — take 2".as_bytes()), "Café — take 2");
+    }
+
+    #[test]
+    fn decode_text_maps_windows_1252_specific_punctuation() {
+        // 0x93/0x94 are curly double quotes in Windows-1252 (distinct from Latin-1, which has no
+        // printable glyph there) — proves the fallback is really CP1252, not plain Latin-1.
+        assert_eq!(decode_text(&[0x93, b'x', 0x94]), "\u{201C}x\u{201D}");
+    }
+
+    /// A `labl` chunk carrying a raw Windows-1252 byte (0xE9, invalid standalone UTF-8) round
+    /// trips to "é" through the real chunk walker, not just the `decode_text` unit above.
+    #[test]
+    fn read_wav_markers_decodes_a_windows_1252_label() {
+        let dir = tmp_dir("cp1252-label");
+        let path = dir.join("in.wav");
+
+        // A minimal valid WAV (44-byte header, no samples) with one cue point and one `labl`
+        // carrying a raw Windows-1252 byte for the name "caf\xE9" ("café").
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // patched below
+        bytes.extend_from_slice(b"WAVE");
+        bytes.extend_from_slice(b"fmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // mono
+        bytes.extend_from_slice(&48_000u32.to_le_bytes());
+        bytes.extend_from_slice(&96_000u32.to_le_bytes()); // byte rate
+        bytes.extend_from_slice(&2u16.to_le_bytes()); // block align
+        bytes.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // no audio
+
+        bytes.extend_from_slice(b"cue ");
+        bytes.extend_from_slice(&28u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // 1 cue point
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // id
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // dwPosition
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // dwChunkStart
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // dwBlockStart
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // dwSampleOffset
+
+        let mut labl_body = Vec::new();
+        labl_body.extend_from_slice(&1u32.to_le_bytes()); // cue id
+        labl_body.extend_from_slice(b"caf\xE9\0"); // Windows-1252 "café", NUL-terminated
+        let mut adtl_body = Vec::new();
+        adtl_body.extend_from_slice(b"adtl");
+        adtl_body.extend_from_slice(b"labl");
+        adtl_body.extend_from_slice(&(labl_body.len() as u32).to_le_bytes());
+        adtl_body.extend_from_slice(&labl_body);
+        bytes.extend_from_slice(b"LIST");
+        bytes.extend_from_slice(&(adtl_body.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&adtl_body);
+
+        let riff_size = (bytes.len() - 8) as u32;
+        bytes[4..8].copy_from_slice(&riff_size.to_le_bytes());
+        std::fs::write(&path, &bytes).unwrap();
+
+        let markers = read_wav_markers(&path).unwrap();
+        assert_eq!(markers.len(), 1);
+        assert_eq!(markers[0].name, "café");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

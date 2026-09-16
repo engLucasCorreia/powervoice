@@ -271,7 +271,9 @@ mod tests {
         }
         let snapshot = Snap::new(48_000, pieces, Vec::new());
 
-        for &spp in &[1u32, 64, 256, 1024, 4096] {
+        // H-60: the sweep used to stop at 4096, leaving the two coarsest pyramid levels (16 384,
+        // 65 536 — SPEC-006 §2.3's own level set) never checked against the brute-force reference.
+        for &spp in &[1u32, 64, 256, 1024, 4096, 16_384, 65_536] {
             let count = 200u32;
             let start = u64::from(rng.next_u32()) % snapshot.len_samples.max(1);
             let fast = peaks(&store, &snapshot, spp, start, count).unwrap();

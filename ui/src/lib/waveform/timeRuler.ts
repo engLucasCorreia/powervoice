@@ -12,11 +12,28 @@ function pad(n: number, width = 2): string {
   return String(n).padStart(width, "0");
 }
 
-/** Decimal places a tick label needs for step `stepSeconds` — `0` at a 1-second-or-coarser step,
- * milliseconds (matching `transport/playhead.ts::formatTime`'s own precision) below that, e.g.
- * `0:05.250` for a 250 ms step. */
+/**
+ * Decimal places a tick label needs for step `stepSeconds` — `0` at a 1-second-or-coarser step,
+ * otherwise enough decimals that two ticks `stepSeconds` apart always print visibly different
+ * labels, e.g. `0:05.250` for a 250 ms step.
+ *
+ * H-60 (SPEC-006 §2.5/§4.2, extreme zoom): a fixed 3-decimal (millisecond) precision was exact
+ * only down to a 1 ms step. At the documented zoom ceiling (`samplesPerPixel` down to 0.1,
+ * SPEC-006 §2.6 AC-4) the `{1,2,5}×10ⁿ` tick ladder (`coords.ts::niceTickStepSeconds`) can pick a
+ * step well under 1 ms — e.g. 0.2 ms at 48 kHz with a 70 px label gap — so consecutive ticks
+ * rounded to 3 decimals collided on an identical label (several ticks in a row reading
+ * "0:00.001"), silently violating §4.2's "consecutive labels are >= some minimum pixel gap"
+ * requirement (a pixel gap is only useful if the label text at that gap actually differs). Floors
+ * at 3 (unchanged for every step >= 1 ms, matching `transport/playhead.ts::formatTime`'s usual
+ * precision) and caps at 6: even at the fastest accepted document rate (384 kHz,
+ * `doc_rate_range_hz`, SPEC-005 §3) and the 0.1 samples/px zoom floor, the ladder's step never
+ * needs more than 5.
+ */
 function decimalsForStep(stepSeconds: number): number {
-  return stepSeconds >= 1 ? 0 : 3;
+  if (stepSeconds >= 1) {
+    return 0;
+  }
+  return Math.min(6, Math.max(3, Math.ceil(-Math.log10(stepSeconds))));
 }
 
 /**

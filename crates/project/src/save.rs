@@ -99,6 +99,27 @@ fn save_snapshot_wav_streaming<R: SampleSource>(
     Ok(writer.finish(&wav_markers)?)
 }
 
+/// SPEC-005 §2.7 pre-flight step 2 (`wav_max_bytes`, AC-18): would writing `len_samples` mono
+/// samples at `bits` push a WAV file's RIFF/`data` size fields — both `u32` — past their limit?
+/// Checked before any byte is written, so a document too long for WAV (≈ 6 h 12 min at 48 kHz
+/// 32-bit float) is refused instead of streaming for minutes and failing at the end. Independent
+/// of markers: [`vox_io`]'s own `append_markers` guard (`crates/io/src/wav.rs`) catches those
+/// separately, after the audio is already down, because markers are appended after `data` and
+/// their own size is unbounded by this check.
+pub fn wav_size_exceeds_limit(len_samples: u64, bits: vox_io::BitDepth) -> bool {
+    let bytes_per_sample: u64 = match bits {
+        vox_io::BitDepth::Int16 => 2,
+        vox_io::BitDepth::Int24 => 3,
+        vox_io::BitDepth::Float32 => 4,
+    };
+    // A conservative fixed overhead for `RIFF`/`fmt `/`fact`/`data` headers and the odd-size pad
+    // byte (at most a few dozen bytes) — what matters is that this never *under*-estimates, so a
+    // document this check accepts is one `write_wav` can always finish.
+    const HEADER_OVERHEAD_BYTES: u64 = 128;
+    let data_bytes = len_samples.saturating_mul(bytes_per_sample);
+    data_bytes.saturating_add(HEADER_OVERHEAD_BYTES) > u64::from(u32::MAX)
+}
+
 /// T-209 (SPEC-005 §2.8): overs found by [`overs_check`] — an integer target format's pre-flight
 /// clip check, computed *before* any byte is written. `peak_dbfs` is `20*log10(peak)` of the exact
 /// sample peak.
@@ -557,6 +578,50 @@ mod tests {
         let err = overs_check(&store, &snapshot, &cancel).unwrap_err();
         assert!(matches!(err, ProjectError::Cancelled));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- H-60: WAV size pre-flight (SPEC-005 §2.7/AC-18) -----------------------------------
+
+    #[test]
+    fn wav_size_limit_accepts_a_document_just_under_4_gib_and_refuses_just_over() {
+        // 32-bit float: 4 bytes/sample. `(u32::MAX - HEADER) / 4` samples fits; one more doesn't.
+        let max_bytes = u64::from(u32::MAX) - 128;
+        let fits = max_bytes / 4;
+        assert!(!wav_size_exceeds_limit(fits, vox_io::BitDepth::Float32));
+        assert!(wav_size_exceeds_limit(fits + 1, vox_io::BitDepth::Float32));
+    }
+
+    #[test]
+    fn wav_size_limit_60_min_48k_fixtures_fit_every_bit_depth() {
+        // The project's own 60-min reference fixtures (MEMORY T-006/T-704): 48 kHz * 3600 s.
+        let len_samples = 48_000u64 * 3600;
+        assert!(!wav_size_exceeds_limit(
+            len_samples,
+            vox_io::BitDepth::Int16
+        ));
+        assert!(!wav_size_exceeds_limit(
+            len_samples,
+            vox_io::BitDepth::Int24
+        ));
+        assert!(!wav_size_exceeds_limit(
+            len_samples,
+            vox_io::BitDepth::Float32
+        ));
+    }
+
+    #[test]
+    fn wav_size_limit_6_3_hours_of_48k_32f_is_refused_but_16_bit_is_not() {
+        // SPEC-005 AC-18's own example: "6.3 h of silence pieces at 48 kHz... WAV 32f is refused
+        // ... while WAV 16-bit is accepted."
+        let len_samples = (6.3 * 3600.0 * 48_000.0) as u64;
+        assert!(wav_size_exceeds_limit(
+            len_samples,
+            vox_io::BitDepth::Float32
+        ));
+        assert!(!wav_size_exceeds_limit(
+            len_samples,
+            vox_io::BitDepth::Int16
+        ));
     }
 
     #[test]

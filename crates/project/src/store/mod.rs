@@ -490,12 +490,57 @@ impl ChunkStore {
         self.commit_chunk_as(samples, Some(id))
     }
 
-    fn commit_chunk_as(&self, samples: &[f32], fixed_id: Option<ChunkId>) -> Result<ChunkLocation> {
+    fn validate_chunk_len(samples: &[f32]) -> Result<()> {
         if samples.is_empty() || samples.len() > CHUNK_SAMPLES {
             return Err(ProjectError::InvalidArgument(
                 "a chunk holds 1 ..= 65 536 samples",
             ));
         }
+        Ok(())
+    }
+
+    fn commit_chunk_as(&self, samples: &[f32], fixed_id: Option<ChunkId>) -> Result<ChunkLocation> {
+        Self::validate_chunk_len(samples)?;
+        // H-60 (SPEC-005 §2.3, T-300 follow-up): "a document never contains a non-finite sample"
+        // is a hard invariant of the store, not just import's discipline — every writer's audio
+        // (import, capture, edits, compaction re-committing a live chunk under a fixed id) funnels
+        // through this one function, so NaN/±inf is replaced with 0.0 here rather than trusted to
+        // have already been scrubbed by the caller. `ChunkPeaks::compute`'s `has_non_finite` flag
+        // and `scan_peak_accelerated`'s defensive `NonFiniteSample` refusal (`normalize.rs`) stay
+        // as belt-and-braces once this holds, rather than the only thing standing between a
+        // NaN/inf sample and the dither/save pipeline (SPEC-005 AC-14). Allocation-free in the
+        // overwhelmingly common (fully finite) case: no non-finite scan result, no copy.
+        let sanitized = if samples.iter().any(|s| !s.is_finite()) {
+            Some(
+                samples
+                    .iter()
+                    .map(|&s| if s.is_finite() { s } else { 0.0 })
+                    .collect::<Vec<f32>>(),
+            )
+        } else {
+            None
+        };
+        let samples: &[f32] = sanitized.as_deref().unwrap_or(samples);
+        self.commit_chunk_bytes(samples, fixed_id)
+    }
+
+    /// Test-only escape hatch (H-60): commits `samples` **without** [`Self::commit_chunk_as`]'s
+    /// non-finite sanitization, so `normalize.rs`'s defensive `NonFiniteSample` checks
+    /// (`scan_peak`, `scan_peak_accelerated`) keep real test coverage against a chunk that
+    /// somehow holds NaN/±inf — e.g. one written before this guarantee existed, or by a future
+    /// writer that bypasses [`Self::commit_chunk`] — instead of that code path becoming
+    /// unreachable dead code now that every real writer is sanitized at commit.
+    #[cfg(test)]
+    pub(crate) fn commit_chunk_raw_for_test(&self, samples: &[f32]) -> Result<ChunkLocation> {
+        Self::validate_chunk_len(samples)?;
+        self.commit_chunk_bytes(samples, None)
+    }
+
+    fn commit_chunk_bytes(
+        &self,
+        samples: &[f32],
+        fixed_id: Option<ChunkId>,
+    ) -> Result<ChunkLocation> {
         let len = samples.len() as u32;
         let byte_len = samples.len() * 4;
         let peaks = ChunkPeaks::compute(samples);
@@ -950,5 +995,69 @@ mod tests {
         assert_eq!(default_memory_budget(Some(GIB)), 512 * 1024 * 1024);
         assert_eq!(default_memory_budget(Some(8 * GIB)), 2 * GIB);
         assert_eq!(default_memory_budget(Some(64 * GIB)), 4 * GIB);
+    }
+
+    fn tmp_dir(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("vox-project-store-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// H-60 (SPEC-005 §2.3, T-300 follow-up): a chunk committed with NaN/±inf samples never
+    /// stores them — `commit_chunk_as` is the one place every writer's audio passes through, so
+    /// the "document never contains a non-finite sample" invariant holds regardless of whether the
+    /// caller (import, capture, an edit, compaction) already scrubbed its input.
+    #[test]
+    fn commit_chunk_replaces_non_finite_samples_with_silence() {
+        let dir = tmp_dir("non-finite");
+        let store = ChunkStore::create(&dir, 0, StoreOptions::with_memory_budget(64 * 1024 * 1024))
+            .unwrap();
+        let samples = vec![
+            0.5,
+            f32::NAN,
+            -0.25,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            0.125,
+        ];
+        let loc = store.commit_chunk(&samples).unwrap();
+
+        let mut back = vec![0.0f32; samples.len()];
+        store.read_chunk(loc.id, 0, &mut back).unwrap();
+        assert_eq!(back, vec![0.5, 0.0, -0.25, 0.0, 0.0, 0.125]);
+        assert!(
+            back.iter().all(|s| s.is_finite()),
+            "every sample read back must be finite"
+        );
+
+        // The peak pyramid computed at commit time already reflects the sanitized samples, not
+        // the raw non-finite input, so it never flags this (now-clean) chunk.
+        let peaks = store.chunk_peaks(loc.id).unwrap();
+        assert!(
+            !peaks.has_non_finite(),
+            "a chunk sanitized at commit must not be flagged has_non_finite"
+        );
+        let [mn, mx] = peaks.overall();
+        assert_eq!((mn, mx), (-0.25, 0.5));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The all-finite path (the overwhelming common case) is untouched byte for byte: sanitizing
+    /// must never perturb already-clean audio.
+    #[test]
+    fn commit_chunk_leaves_finite_samples_untouched() {
+        let dir = tmp_dir("all-finite");
+        let store = ChunkStore::create(&dir, 0, StoreOptions::with_memory_budget(64 * 1024 * 1024))
+            .unwrap();
+        let samples: Vec<f32> = (0..1000).map(|i| (i as f32 / 1000.0) - 0.5).collect();
+        let loc = store.commit_chunk(&samples).unwrap();
+
+        let mut back = vec![0.0f32; samples.len()];
+        store.read_chunk(loc.id, 0, &mut back).unwrap();
+        assert_eq!(back, samples);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

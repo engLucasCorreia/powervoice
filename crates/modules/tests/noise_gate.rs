@@ -1,7 +1,7 @@
 //! S3-02 Noise Gate (SPEC-013 subset): schema and ModuleTestHost (AC-1), open / close
 //! thresholds (AC-2/AC-3), no chatter (AC-4), hold (AC-5), attack shape (AC-6), release (AC-7),
 //! range (AC-8), sidechain HPF (AC-9), §4.3 zipper (AC-11), realtime = offline (AC-12),
-//! telemetry (AC-13).
+//! telemetry (AC-13), denormals and silence (AC-15, H-65).
 
 #![allow(clippy::float_cmp, clippy::needless_range_loop)] // exact values, indexed by sample time
 
@@ -15,8 +15,8 @@ use vox_dsp::dynamics::sidechain::ButterworthHighpass4;
 use vox_module_api::test_util::no_alloc;
 use vox_module_api::test_util::{ModuleTestHost, TestRng, ZIPPER_LEN};
 use vox_module_api::{
-    CurveBranch, Module, ModuleFactory, ParamFlags, ParamId, ProcessMode, Taper, TelemetryKind,
-    features, telemetry,
+    ActivateConfig, ChannelLayout, CurveBranch, Module, ModuleFactory, ParamFlags, ParamId,
+    ProcessMode, Taper, TelemetryKind, features, prepare_state, telemetry,
 };
 use vox_modules::{NoiseGate, NoiseGateFactory, builtin_factories};
 
@@ -37,6 +37,27 @@ fn gate(settings: &[(&str, f64)]) -> Box<dyn Module> {
     let mut s = vec![("sc_hpf_enabled", 0.0)];
     s.extend_from_slice(settings);
     activated(make, &s, SR)
+}
+
+/// As [`gate`], but keeps the concrete type so a test can reach the AC-15 state accessor after
+/// rendering (the trait object hides it). Does not force `sc_hpf_enabled` off.
+fn gate_concrete(settings: &[(&str, f64)]) -> Box<NoiseGate> {
+    let mut m = Box::new(NoiseGate::new());
+    let mut state = m.save_state().expect("save_state");
+    for (k, v) in settings {
+        assert!(state.params.contains_key(*k), "unknown parameter key `{k}`");
+        state.params.insert((*k).to_owned(), *v);
+    }
+    let state = prepare_state(&*m, state).expect("prepare_state");
+    m.load_state(&state).expect("load_state");
+    m.activate(&ActivateConfig {
+        sample_rate: SR,
+        max_block: 4096,
+        mode: ProcessMode::Offline,
+        layout: ChannelLayout::MONO,
+    })
+    .expect("activate");
+    m
 }
 
 /// Renders with 256-frame blocks, reading the gate lamp after every block.
@@ -621,6 +642,45 @@ fn sidechain_highpass_rejects_rumble() {
         report.push(format!("{freq} Hz {level:.2} (want {want:.2})"));
     }
     println!("AC-9 sidechain level: {}", report.join(", "));
+}
+
+// ---------------------------------------------------------------------------------------------
+// AC-15: denormals and silence (H-65)
+// ---------------------------------------------------------------------------------------------
+
+/// SPEC-013 AC-15: FTZ/DAZ off, HPF on, range −∞; 1 s of 0 dBFS white noise, then 120 s of
+/// digital silence. From `la` samples after the input goes silent the output is exactly 0.0 (`la`
+/// is always 0 in this slice: look-ahead is not yet available, SPEC-013 §0), and a test-only
+/// accessor finds no subnormal `f32`/`f64` in the module state (the sidechain HPF's biquad
+/// memories included).
+#[test]
+fn silence_after_a_loud_passage_has_no_subnormal_state() {
+    let s = [("sc_hpf_enabled", 1.0), ("range_db", -100.0)];
+    let loud = 48_000usize;
+    let silence = 120 * 48_000usize;
+    let mut x = white(0xAC15, 1.0, loud);
+    x.extend(std::iter::repeat_n(0.0f32, silence));
+    let mut m = gate_concrete(&s);
+    let y = render(
+        &mut *m,
+        &x,
+        &[],
+        Blocks::Random {
+            seed: 0xAC15,
+            max: 1024,
+        },
+    );
+    for (i, &v) in y.iter().enumerate().skip(loud) {
+        assert_eq!(v, 0.0, "sample {i} after the input went silent is {v}");
+    }
+    assert!(
+        y.iter().all(|v| v.is_finite() && !v.is_subnormal()),
+        "no subnormal or non-finite output sample"
+    );
+    assert!(
+        !m.state_has_subnormals(),
+        "AC-15: subnormal value in the module state after 120 s of silence"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------

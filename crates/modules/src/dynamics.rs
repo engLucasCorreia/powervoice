@@ -606,6 +606,23 @@ impl Dynamics {
         let g = g_ag_eff * db_to_lin(reduction + makeup_eff);
         delayed * (g as f32)
     }
+
+    /// Diagnostic (tests, SPEC-016 AC-18): true if any persistent state value — the detectors,
+    /// the AutoGate's linear gain or a section's dB ballistics — is a subnormal `f32`/`f64`. Not
+    /// on the RT path and not part of the public API surface.
+    #[doc(hidden)]
+    pub fn state_has_subnormals(&self) -> bool {
+        let vals = [
+            self.peak_max,
+            self.peak_dbfs,
+            self.rms.mean_square(),
+            self.autogate.gate.gain(),
+            self.expander.ballistics.gain_db(),
+            self.compressor.ballistics.gain_db(),
+            self.limiter.ballistics.gain_db(),
+        ];
+        vals.iter().any(|v| v.is_subnormal())
+    }
 }
 
 impl Default for Dynamics {

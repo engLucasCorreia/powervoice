@@ -305,6 +305,25 @@ impl NoiseGate {
         stats.level_dbfs = stats.level_dbfs.max(self.peak_dbfs);
         x * (g as f32)
     }
+
+    /// Diagnostic (tests, SPEC-013 AC-15): true if any persistent state value — the detector, the
+    /// gate's linear gain, the range ramp or the sidechain HPF's biquad memories — is a subnormal
+    /// `f32`/`f64`. Not on the RT path and not part of the public API surface.
+    #[doc(hidden)]
+    pub fn state_has_subnormals(&self) -> bool {
+        let hpf = self.hpf.state();
+        let vals = [
+            self.peak_max,
+            self.peak_dbfs,
+            self.gate.gain(),
+            self.range.current(),
+            hpf[0],
+            hpf[1],
+            hpf[2],
+            hpf[3],
+        ];
+        vals.iter().any(|v| v.is_subnormal())
+    }
 }
 
 impl Default for NoiseGate {

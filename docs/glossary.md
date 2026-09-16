@@ -208,8 +208,8 @@ Jump to: [A](#a) · [B](#b) · [C](#c) · [D](#d) · [E](#e) · [F](#f) · [G](#
 **Extension (module extension)**
 - *Plain:* an optional extra ability an effect can offer, such as drawing its EQ curve.
 - Typed interfaces behind `Module::extension(ExtensionId)`: `Telemetry`, `ResponseCurve`,
-  `NoiseProfile` (public) and `AdapterHealth`, `ParamText`, `PluginEditor` (host-internal). See
-  [plugins.md](architecture/plugins.md#extensions).
+  `NoiseProfile`, [`TransferCurve`](#t) (public) and `AdapterHealth`, `ParamText`, `PluginEditor`
+  (host-internal). See [plugins.md](architecture/plugins.md#extensions).
 
 ## F
 
@@ -313,9 +313,13 @@ Jump to: [A](#a) · [B](#b) · [C](#c) · [D](#d) · [E](#e) · [F](#f) · [G](#
   chunks.
 
 **Meter (peak / RMS)**
-- *Plain:* the bars that show how loud the sound is right now.
+- *Plain:* the vertical bar that shows how loud the sound is right now — a peak fill with a
+  brighter RMS fill inside it, and a **CLIP** lamp that lights and stays lit (latched) the moment a
+  sample clips, until you click it.
 - Output meter: peak since the last frame + 300 ms sliding RMS of the post-rack signal
-  (`vox_engine::telemetry::Meter`), sent in `VXTM` frames.
+  (`vox_engine::telemetry::Meter`), sent in `VXTM` frames; ballistics (attack/release/hold) in
+  `ui/src/lib/meters/ballistics.ts`. See [Check your
+  levels](user-guide.md#check-your-levels-analyzer-and-diagnostics).
 
 **Module / Module API**
 - *Plain:* one effect in the rack, and the rulebook every effect follows.
@@ -519,9 +523,23 @@ Jump to: [A](#a) · [B](#b) · [C](#c) · [D](#d) · [E](#e) · [F](#f) · [G](#
 **Tour (guided tour)**
 - *Plain:* a short, interactive walkthrough that highlights parts of the app and explains what
   they do, one step at a time.
-- `ui/src/lib/tour/`: the Welcome tour plus per-panel tours (Rack, Noise, Loudness, Punch-in,
-  Plugin Manager); progress is saved so a tour isn't offered twice unless it changes. See [Guided
-  tours](user-guide.md#guided-tours).
+- `ui/src/lib/tour/tours.ts`: six tours (Welcome, Effects rack and presets, Noise print and
+  reduction, Loudness/ACX and normalize, Punch-in, Plugin Manager), reachable from Help → Take the
+  Tour / Help → Tours, or the **?** button in the Rack, Loudness, Noise Reduction, Punch & pre-roll
+  and Plugin Manager panel headers; progress is saved so a tour isn't offered twice unless it
+  changes. See [Guided tours](user-guide.md#guided-tours).
+
+**Transfer curve**
+- *Plain:* a graph showing what comes out for a given level going in — flat means "unchanged,"
+  a dip means "turned down," so you can see exactly what a gate or compressor is doing to different
+  volumes at a glance.
+- The `TransferCurve` module extension (`org.powervoice.transfer-curve/1`, H-63): a module reports
+  its settled output level (dBFS) for a range of input levels, on the rising and falling branch
+  separately (for gates, which open and close at different thresholds), plus one draggable
+  threshold handle per active section. Drawn by `ui/src/lib/transfer/TransferGraph.svelte` in the
+  Noise Gate's and Dynamics' expanded rack slots. See
+  [dsp.md](architecture/dsp.md#noise-gate), [dsp.md](architecture/dsp.md#dynamics) and
+  [plugins.md](architecture/plugins.md#extensions).
 
 **True peak**
 - *Plain:* the real loudest point of the sound, including peaks that fall between samples.

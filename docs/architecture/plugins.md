@@ -116,12 +116,15 @@ Optional typed abilities behind `Module::extension` (`src/extension.rs`):
 | `Telemetry` (`org.powervoice.telemetry/1`) | Wait-free meter cells the host reads each tick → `VXMT` | Noise Gate, Dynamics, True-Peak Limiter |
 | `ResponseCurve` (`org.powervoice.response-curve/1`) | Magnitude response for the EQ graph | Parametric EQ |
 | `NoiseProfile` (`org.powervoice.noise-profile/1`) | Capture a noise print into the state blob | Noise Reduction |
+| `TransferCurve` (`org.powervoice.transfer-curve/1`) | Settled input→output level (dBFS in, dBFS out) per rising/falling branch, plus one draggable threshold handle per enabled section (`handles()`) | Noise Gate, Dynamics |
 | `AdapterHealth` | Host-internal: why an out-of-process module failed | `ProxyModule` |
 | `ParamText` | Host-internal: the plugin's own value text | `ProxyModule` (CLAP) |
 | `PluginEditor` | Host-internal: open/close the plugin's window, collect GUI edits | `ProxyModule` |
 
-`TransferCurve` (for the gate and dynamics graphs in SPEC-013/016) is not implemented, and
-`LiveState` (reserved in ADR-005 §11) doesn't exist.
+`TransferCurve` (H-63, `src/extension.rs`) backs the interactive transfer-curve graph
+(`ui/src/lib/transfer/TransferGraph.svelte`) in the Noise Gate's and Dynamics' expanded rack slots,
+read through `RackApi::transfer_curve()`/`rack_transfer_curve` — never evaluated in the UI itself.
+`LiveState` (reserved in ADR-005 §11) doesn't exist yet.
 
 ### Testing a module
 
@@ -151,9 +154,9 @@ PowerVoice's metadata (ADR-006), packaged in a validated zip.
   once in a sandbox. It must offer exactly the manifest's id and version with valid module-info,
   or everything is rolled back (a crash or timeout also blocklists the package). One version per
   id; uninstall removes the id folder. The modules folder is the first CLAP scan location.
-- Packaged modules run sandboxed like any plugin. They don't expose the telemetry, response-curve
-  or noise-profile extensions over CLAP yet (ADR-006 §2 lists them; `ClapModule` doesn't register
-  them). Locale and preset files inside a package are not merged yet (H-44).
+- Packaged modules run sandboxed like any plugin. They don't expose the telemetry, response-curve,
+  noise-profile or transfer-curve extensions over CLAP yet (ADR-006 §2 lists them; `ClapModule`
+  doesn't register them). Locale and preset files inside a package are not merged yet (H-44).
 
 ## The sandbox
 
@@ -210,6 +213,12 @@ flowchart LR
   the peer is parked — the one documented exception to the no-syscall rule (ADR-002 Amendment 2).
 - Plugin-originated events (a parameter moved in the plugin's GUI, a restart request) travel
   with the chunk they belong to (`PluginEnd::service_with_events`, H-36).
+- **Reset-chunk guarantee (H-55).** A `RESET` event (module `reset()`: a seek, a loop wrap, or a
+  transport start) always ends the input chunk it falls in, so the sandbox applies it at the
+  *first* sample of the next chunk rather than mid-chunk. Without this, whether a reset landed
+  mid-chunk depended on how far ahead the host happened to have published into the ring — which
+  made cross-run/cross-CI renders non-deterministic near a reset. Enforced in the chunk-splitting
+  loop (`crates/sandbox-ipc/src/plugin.rs`), tested in `crates/sandbox-ipc/tests/transport.rs`.
 
 **Control channel** (`sandbox-ipc/src/{control,protocol}.rs`, protocol **v3**): frames of
 `u32` length + `u32` JSON length + JSON + binary payload (≤ 64 MiB) over the sandbox's

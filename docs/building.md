@@ -236,9 +236,9 @@ Manually: `sudo apt install liblilv-0-0` (Debian/Ubuntu), `sudo dnf install lilv
 
 ### Plugin editor windows
 
-Third-party plugins can provide graphical editor windows (CLAP and LV2 only; VST3 not yet tested;
-JSFX has no window). These windows run in the plugin sandbox, which loads the required libraries at
-runtime — PowerVoice does not bundle them.
+Third-party plugins can provide graphical editor windows (CLAP, VST3 and LV2; JSFX has no window —
+JSFX runs its sliders as parameters instead). These windows run in the plugin sandbox, which loads
+the required libraries at runtime — PowerVoice does not bundle them.
 
 **Linux**: plugin windows need the X11 library (`libX11`) at runtime. Without it, or without an X
 server (under Wayland, use XWayland), the window button is disabled with a reason. Additionally,
@@ -250,7 +250,9 @@ graphical UIs simply have no window (CLAP and VST3 UIs are unaffected).
   (Fedora), or `sudo pacman -S xorg-xlibclient lilv` (Arch).
 - **Linux (AppImage)**: install the system packages as above; the AppImage doesn't bundle them.
 - **macOS**: plugin editor windows are not yet supported.
-- **Windows**: plugin editor windows are untested and may not work reliably.
+- **Windows**: plugin editor windows are implemented (a native top-level `HWND`, no X11
+  dependency), but like the rest of the Windows build they have never been run by the maintainer —
+  treat them as unverified rather than untested-and-broken.
 
 **After a plugin crash**: the plugin sandbox restarts and the window does not reopen automatically.
 Reopen it from the plugin's rack slot.

@@ -144,12 +144,16 @@ Long operations are jobs with one shared shape, in `src-tauri`
 4. `*_cancel(job_id)` sets the token; unknown ids are ignored.
 
 `JobKind`: `export`, `import`, `nr_capture`, `loudness_analyze`, `normalize_peak`,
-`normalize_lufs`, `calibration`, `bake`, `spectrum_analyze`. Import is special: its cancel tokens
-live in `DocumentService` and `document_open` emits the events itself. Jobs that **write back** to
-the document (normalize, bake) take a read-only source and set `normalize_busy`; they commit only
-if the snapshot (`Arc::ptr_eq`) and session are unchanged, and audio edits refuse with
-`error.document_busy` meanwhile. Save, export and bake hold `SpectroService::begin_background_job()`
-to halve the tile workers.
+`normalize_lufs`, `calibration`, `bake`, `spectrum_analyze`, `paste` (H-56), `save` (H-70). Import
+is special: its cancel tokens live in `DocumentService` and `document_open` emits the events
+itself. Jobs that **write back** to the document (normalize, bake) take a read-only source and set
+`normalize_busy`; they commit only if the snapshot (`Arc::ptr_eq`) and session are unchanged, and
+audio edits refuse with `error.document_busy` meanwhile. Save runs a free-space pre-flight
+(`estimated_save_output_bytes` + a 64 MiB margin) before writing a byte and can be cancelled
+mid-write (`document_save_cancel`); its errors are classified (`error.save.disk_full`,
+`.verify_failed`, `.permission`, `.too_large_for_wav`, `.sidecar_locked`, …) rather than a single
+generic message. Save, export and bake hold `SpectroService::begin_background_job()` to halve the
+tile workers.
 
 ## Transport rules
 
@@ -230,10 +234,16 @@ sequenceDiagram
   Doc->>Doc: refuse while recording, warn if open in another instance
   Doc->>Proj: Session::create → import_file (decoder thread → ChunkWriter)
   Proj-->>UI: job_progress(import, fraction)
+  loop while importing (H-71)
+    UI->>Cmd: import_peaks_get(job_id, range, spp) → binary VXPK, PARTIAL-flagged
+  end
   Doc->>Proj: read_sidecar(file.vo.json, identity)
   alt sidecar valid
     Doc->>Proj: session.set_floor(audio, markers)
     Doc->>Eng: rack_load_model(sidecar rack)
+  end
+  opt markers unreadable or out of range (H-72)
+    Doc-->>UI: notice.open.markers_unreadable / notice.open.markers_out_of_range
   end
   Doc->>Eng: set_document(store, snapshot) (stops playback first)
   Doc->>Doc: swap in the new document, close the old session
@@ -243,8 +253,16 @@ sequenceDiagram
 ```
 
 Cancel (`document_open_cancel`) leaves the previous document untouched: nothing is swapped until
-the import commits. Code: `src-tauri/src/ipc/document_commands.rs::document_open`,
-`src-tauri/src/document.rs::open_impl`, `crates/project/src/import.rs`, `crates/project/src/sidecar.rs`.
+the import commits. While the import job is still running, the waveform view polls
+`import_peaks_get(job_id, …)` (H-71, SPEC-006 AC-13) instead of `peaks_get` — the same `VXPK`
+framing over whatever the growing session has committed so far, `PARTIAL`-flagged with `(NaN, NaN)`
+buckets past that point, so the waveform fills in progressively rather than appearing all at once.
+Markers read from a WAV's `cue`/`LIST adtl` chunks that are malformed or reference positions
+outside the decoded audio are dropped and reported with a notice (H-72) rather than silently
+ignored or left to corrupt the marker list. Code:
+`src-tauri/src/ipc/document_commands.rs::document_open` / `import_peaks_get`,
+`src-tauri/src/document.rs::open_impl`, `crates/project/src/import.rs`,
+`crates/project/src/sidecar.rs`.
 
 ## Play
 

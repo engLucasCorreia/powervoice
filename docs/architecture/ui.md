@@ -86,8 +86,8 @@ typed with `satisfies EventName`; every store exports a `reset*ForTest()` helper
 
 ## Renderers
 
-Four components draw on a `<canvas>`: `WaveformView`, `SpectralView`, `EqGraph` and
-`SpectrumPlot`.
+Five components draw on a `<canvas>`: `WaveformView`, `SpectralView`, `EqGraph`, `SpectrumPlot`
+and `TransferGraph` (H-63, the Dynamics/Noise Gate transfer-curve graph).
 
 ```mermaid
 flowchart LR
@@ -101,7 +101,8 @@ flowchart LR
 
 - **WebGL2 first, Canvas2D fallback** (ADR-009): `GlContextHost` tries `webgl2` unless the
   preference forces Canvas2D, and on `webglcontextlost` switches to Canvas2D for good, with one
-  notice. The waveform and spectrogram use it; the EQ graph and analyzer plot are Canvas2D.
+  notice. The waveform and spectrogram use it; the EQ graph, analyzer plot and transfer-curve
+  graph are Canvas2D only.
 - **Data:** the waveform draws `VXPK` min/max buckets (or raw samples when zoomed in, with dots
   at ≥ 3 px per sample); the spectrogram draws `VXST` u8 tiles computed in Rust, colored on the GPU
   through a lookup texture. `shaderSampler.ts` mirrors the shader's sampling and is parity-tested
@@ -218,7 +219,7 @@ under Vitest for any command it doesn't handle.
 
 - **Vitest + jsdom** (`ui/vitest.config.ts`; `resolve.conditions: ["browser"]`; CSS token files
   are let through so contrast tests can read them). `npm --prefix ui test -- --run` runs about
-  2,000 tests; `npm --prefix ui run check` runs `svelte-check`.
+  2,200 tests; `npm --prefix ui run check` runs `svelte-check`.
 - IPC is mocked with `mockIPC` from `@tauri-apps/api/mocks`. DTO literals come from
   `ui/src/lib/test/fixtures.ts` (`settingsFixture`, `docDto`, `rackSlotDto`, …) — add new DTO
   fields there only.

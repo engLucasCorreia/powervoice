@@ -68,8 +68,11 @@ an input device is chosen.
    hiccup), PowerVoice fills the gap with silence and drops a marker there so you can find it
    later.
 4. **File → Save** (**Ctrl/⌘+S**) writes the audio file plus a sidecar `name.wav.vo.json` next to
-   it, holding your rack, markers, noise profile and view settings. Autosave/crash recovery runs
-   continuously in the background — see [Recovering after a crash or power
+   it, holding your rack, markers, noise profile and view settings. A long save (a big file, or a
+   slow disk) shows a progress bar with a **Cancel** button; PowerVoice checks there's enough free
+   disk space before writing a single byte, and a clear message if the save fails partway (disk
+   full, no permission, and so on) rather than a silent, half-written file. Autosave/crash recovery
+   runs continuously in the background — see [Recovering after a crash or power
    loss](#recovering-after-a-crash-or-power-loss).
 
 ### Re-recording part of a take (punch-in)
@@ -109,23 +112,40 @@ calibrated at.
 Markers are named bookmarks in your take — a retake, a cough, a chapter break — so you can find a
 moment again without scrubbing through the whole recording.
 
-- **M** drops a marker at the playhead (or **Edit → Markers → Add Marker**).
-- The **markers list** panel on the left shows every marker with its start time and duration;
-  clicking one jumps the playhead there. Double-click a marker's name to rename it.
+- **M** drops a marker at the playhead (or **Edit → Markers → Add Marker**). Made with a selection
+  active, it becomes a **region** marker spanning that selection rather than a single point.
+- The **markers list** panel on the left shows every marker with its type (Point, Region or
+  Dropout), start time and duration; clicking a marker (in the panel or on the waveform) jumps the
+  playhead there — and if it's a region, also sets the selection to exactly that region, so you can
+  immediately play, trim or delete just that stretch. Double-click a marker's name to rename it.
 - **Ctrl/⌘+Alt+→** / **←** jump to the next/previous marker (also **Edit → Markers → Next/Previous
-  Marker**).
+  Marker**) without changing the selection.
+- **Drag a marker's flag** on the waveform to move it (a region's edges resize individually;
+  Shift-drag moves the whole region instead). Drags snap to the cursor, the selection edges and
+  other markers when close, and **Esc** cancels a drag in progress.
 - **Ctrl/⌘+0** deletes the selected marker(s) (also **Edit → Markers → Delete Selected Marker**).
+- A red **Dropout** marker is added automatically where a recording had a brief input hiccup (see
+  [First recording](#first-recording)) — it's a kind of marker, not something you place yourself.
 - Markers are saved in the sidecar and, on export, as WAV `cue`/`LIST adtl` chunks, so they travel
-  with the file into other software that reads them.
+  with the file into other software that reads them. If a file's markers can't be read, or one
+  falls outside the audio (both signs the file was edited by something else), PowerVoice drops the
+  unreadable ones and tells you with a notice rather than silently keeping bad data.
 
 ## Editing and undo
 
 The usual clipboard operations work on the current selection: **Cut** (**Ctrl/⌘+X**), **Copy**
 (**Ctrl/⌘+C**), **Paste** (**Ctrl/⌘+V**), **Delete** (**Delete**), **Trim to Selection** (keep only
 the selection, **Ctrl/⌘+T**) and **Silence** (replace the selection with silence, keeping its
-length) — all in the **Edit** menu, and all destructive-but-undoable edits on your document (the
-effects rack itself is separate and non-destructive — see [the effects
-rack](#cleaning-up-the-effects-rack)).
+length) — all in the **Edit** menu and, on the waveform, its right-click menu (also reachable from
+the keyboard with the Menu key or Shift+F10) — and all destructive-but-undoable edits on your
+document (the effects rack itself is separate and non-destructive — see [the effects
+rack](#cleaning-up-the-effects-rack)). **Edit → Insert Silence…** adds a chosen length of silence
+at the cursor (or the start of the selection, if there is one) — enter a duration in seconds,
+timecode or samples.
+
+The clipboard holds one item and survives switching documents (open a different file, and Paste
+still has what you last copied) — the Edit menu's Paste item is only enabled when there's something
+to paste.
 
 **Undo** (**Ctrl/⌘+Z**) and **Redo** (**Ctrl/⌘+Shift+Z**) step back and forward through every edit,
 with no limit other than free disk space — see [why undo never runs
@@ -144,10 +164,14 @@ shows its frequency content, which makes hum, clicks and breaths easy to spot. T
   to a range. You can also scroll with the mouse wheel and zoom with Ctrl + wheel.
 - **Select**: drag to select a range, **Ctrl/⌘+A** selects all, **Esc** clears the selection.
   **←**/**→** nudge the cursor or selection, **Shift+←**/**Shift+→** extend it.
-- **Snap to zero crossing** (View menu, off by default): selection edges snap to the nearest point
-  where the waveform crosses silence, so cuts and edits never click.
+- **Snap to zero crossing** (View menu, off by default): when you extend a selection (drag or
+  Shift-click), its new edge snaps to the nearest point where the waveform crosses silence, so cuts
+  and edits never click.
 - **Time format**: View → Time Format shows the ruler and readouts as Timecode, Samples or
   Seconds.
+- **Amplitude Ruler** (View menu): shows the vertical scale as **dBFS** (the default, matching the
+  rest of the app's loudness numbers) or **Percent** (linear, ±100%, if you find that more
+  intuitive for reading levels at a glance).
 - **Loop playback** (**Ctrl/⌘+L**, or View → Loop Playback) repeats the current selection
   (10 ms or longer) instead of stopping at its end — handy for checking how a phrase or an edit
   sounds. A loop doesn't reset the effects rack at the seam, so a reverb or delay tail from a
@@ -200,10 +224,15 @@ quiet parts compare) of your voice:
   graph shows the exact curve you're drawing, live, as you drag it. A little cut around 200–500 Hz
   can reduce "boominess"; a little boost around 2–5 kHz can add clarity or "presence."
 - **Dynamics** evens out how loud and quiet parts of your voice are, in the style of Audition's
-  Dynamics panel: a **compressor** automatically turns down parts that go above a *threshold*, by
-  an amount set by its *ratio* (so a loud word doesn't jump out over a quiet one), and a
-  **limiter** acts as a hard ceiling that nothing can cross. Both report how much gain reduction
-  they're applying in real time, shown as a small meter in the rack.
+  Dynamics panel, as up to four stages in order: an **auto-gate** (quiets the sound between
+  phrases, off by default), an **expander** (widens the gap between quiet and loud, off by
+  default), a **compressor** — on by default — that automatically turns down parts that go above a
+  *threshold*, by an amount set by its *ratio* (so a loud word doesn't jump out over a quiet one),
+  and a **limiter** (a hard ceiling that nothing can cross, off by default). Each stage reports how
+  much gain reduction it's applying in real time, shown as a small meter in the rack, and expanding
+  the module shows an interactive **transfer curve**: a graph of what comes out for a given level
+  going in, with a draggable handle on the curve for each enabled stage's threshold, so you can set
+  it by eye as well as by ear.
 
 The [Spectrum Inspector and voice diagnostics](#check-your-levels-analyzer-and-diagnostics) can
 suggest specific EQ moves (for example, a de-esser frequency for harsh "s" sounds) that you can add
@@ -270,7 +299,8 @@ again; only repeated failures *during a scan* add it to the blocklist, which you
 **Unblock and rescan**.
 
 Some plugins have their own graphical editor window — open it from the window icon (⊟) in the
-plugin's rack slot (Linux needs X11 or XWayland; not yet supported on Windows or macOS). If a
+plugin's rack slot (Linux needs X11 or XWayland; implemented but unverified on Windows; not yet
+supported on macOS). If a
 plugin's window closes because it crashed, reopen it the same way once the plugin has restarted.
 
 ## Presets
@@ -293,8 +323,10 @@ alphabetically:
 
 The dock along the bottom shows what you're hearing:
 
-- **Meters**: a peak/RMS output meter (post-rack) and, while recording, an input meter with a clip
-  indicator.
+- **Meters**: a vertical peak/RMS output meter (post-rack, with safe/loud/hot colour zones and a
+  peak-hold tick) and, while recording, an input meter. Either meter's **CLIP** lamp latches on the
+  moment a sample clips and stays lit until you click it — so a brief clip you missed while looking
+  away still gets your attention.
 - **Analyzer**: a live graph of which frequencies are currently in the sound, in three modes —
   **Live** (right now), **Average** (analyze a whole selection or file, as the source or as
   processed through the rack, to see its long-term tone), and **Compare** (freeze two curves, A and
@@ -302,11 +334,13 @@ The dock along the bottom shows what you're hearing:
   source against the processed signal). **Peak hold** and labelled peaks help you read it; a
   Fast/Medium/Slow response smooths how quickly it reacts.
 - **Voice diagnostics** (the Analyzer panel's Diagnostics toggle): plain readouts of pitch (F0),
-  tone balance (how much "mud" around 200–500 Hz, "presence" around 2–5 kHz, and "air" above
-  10 kHz), sibilance (harsh "s" sounds, 4–10 kHz), mains hum, rumble, noise floor and signal-to-noise
-  ratio — each with a short hint ("A bit boomy — try a gentle cut around 300 Hz") and, for several,
-  an **Add EQ band here** button that inserts a matching Parametric EQ move.
-- **Spectrum Inspector** (**View → Spectrum Inspector**): a larger, dedicated live spectrum view
+  tone balance (how much "mud" around 200–500 Hz, "presence" around 2–5 kHz, and "air" around
+  10–16 kHz), sibilance (harsh "s" sounds, 4–10 kHz), mains hum, rumble (below 80 Hz), noise floor
+  and signal-to-noise ratio — each with a short hint ("A bit boomy — try a gentle cut around
+  300 Hz") and, for several, an **Add EQ band here** button that inserts a matching Parametric EQ
+  move.
+- **Spectrum Inspector** (**View → Spectrum Inspector**, no default shortcut): a larger, dedicated
+  live spectrum view
   with its own FFT size, window and response settings, for closer inspection than the compact
   Analyzer panel — wheel to zoom, drag to pan, Shift-drag to zoom to a range, double-click to
   reset.
@@ -469,8 +503,11 @@ disabled. LV2 plugin windows additionally need the **suil** library; LV2 plugins
 no window (but still process audio normally). See [Building PowerVoice](building.md) for
 installation instructions.
 
-**On Windows and macOS**: plugin editor windows are not yet supported. CLAP and VST3 plugins
-still work; they simply have no graphical window.
+**On Windows**: plugin editor windows are implemented (a native window, no X11 needed) but, like
+the rest of the Windows build, have never been run by the maintainer — treat them as unverified.
+
+**On macOS**: plugin editor windows are not yet supported. CLAP and VST3 plugins still work; they
+simply have no graphical window.
 
 **After a plugin crash**: if a plugin crashes, its window closes and doesn't reopen
 automatically — the plugin's sandbox restarts to recover. Reopen the window by clicking the

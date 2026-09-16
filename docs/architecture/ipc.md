@@ -78,15 +78,26 @@ version or truncated buffer. `u64` values are read as `lo + hi × 2^32`.
 
 | Magic | Content | Header | Rust encoder | Transport | UI decoder |
 |---|---|---|---|---|---|
-| `VXTM` | Playhead anchor (heard position + time) + output meter peak/RMS | fixed 72 bytes | `crates/engine/src/telemetry.rs` | `telemetry_subscribe` channel, 60 Hz (or 30) | `ui/src/lib/ipc/telemetry.ts` |
+| `VXTM` | Playhead anchor (heard position + time) + output meter peak/RMS | fixed 72 bytes | `crates/engine/src/telemetry.rs` | `telemetry_subscribe` channel, 60 Hz (or 30), idle-gated (below) | `ui/src/lib/ipc/telemetry.ts` |
 | `VXMT` | Per-slot module telemetry (gain reduction, levels, indicators) | 32 | `crates/engine/src/telemetry.rs` | `module_telemetry_subscribe` channel, per control tick while subscribed | `ui/src/lib/ipc/moduleTelemetry.ts` |
-| `VXSA` | Live analyzer: 1/24-octave levels + flags (reset, dropped, silent) | 48 | `crates/engine/src/analyzer.rs` | `analyzer_subscribe` channel | `ui/src/lib/ipc/analyzer.ts` |
+| `VXSA` | Live analyzer: 1/24-octave levels + flags (reset, dropped, silent) | 48 | `crates/engine/src/analyzer.rs` | `analyzer_subscribe` channel, own rest-gating (below) | `ui/src/lib/ipc/analyzer.ts` |
 | `VXIS` | Spectrum Inspector live spectrum | 40 | `crates/engine/src/analyzer.rs` | `analyzer_inspector_subscribe` channel | `ui/src/lib/ipc/inspector.ts` |
 | `VXLT` | Long-term average spectrum (+ noise curve) | 36 | `src-tauri/src/spectrum.rs` | `spectrum_analyze_curve` response | `ui/src/lib/ipc/inspector.ts` |
 | `VXST` | Spectrogram tile: u8 magnitudes, frame-major, `PREVIEW`/`LAST` flags | 64 | `crates/engine/src/spectro/vxst.rs` | `spectro_attach` channel, fed by `spectro_request` | `ui/src/lib/spectrogram/vxst.ts` |
 | `VXPK` | Waveform min/max buckets, or raw samples when zoomed in | 48 | `crates/project/src/vxpk.rs` | `peaks_get` / `record_peaks_get` response | `ui/src/lib/waveform/vxpk.ts` |
 
 `analyzer_voice_subscribe` is the one JSON channel (a `VoiceReportDto` a few times a second).
+
+**Idle gating (H-43).** `VXTM` goes through `IdleTelemetryGate` (`crates/engine/src/telemetry.rs`):
+while playing, recording or monitoring, every due frame goes out at the full rate; once idle, a
+frame is sent only when its content changed, plus a heartbeat while any meter is still above the
+rest floor, and nothing at all once every meter has settled at the floor. `VXSA` is idle-gated
+separately (`crates/engine/src/analyzer.rs`, `ANALYZER_REST_DB`): one "at rest" frame once every
+subscribed band falls to the floor, then silence until the signal returns, a reset happens, or a
+new subscriber attaches. `VXMT` isn't gated — it only runs at all while at least one slot is
+subscribed to. This is why the dock analyzer and meters cost ~0 % CPU at idle instead of streaming
+at 60 Hz into silence.
+
 Test fixtures for every frame are generated from Rust (`export_bindings_*_fixture` tests) into
 `ui/src/lib/ipc/vx*_fixture.ts` and diffed by `just check-types`, so both sides decode the same
 bytes. The EQ response curve is JSON today (`rack_response_curve` → `ResponseCurveDto`); the

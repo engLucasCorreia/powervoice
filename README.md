@@ -119,7 +119,7 @@ app, without any code.
 
 The project is developed spec-first: specs and ADRs define behaviour, and work is tracked as
 tickets in [`tickets/`](tickets/). Every change passes `just check`, which runs formatting,
-lints, ~1,800 UI tests and the full Rust suite.
+lints, ~2,200 UI tests and the full Rust suite.
 
 ## License
 

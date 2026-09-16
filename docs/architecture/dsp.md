@@ -175,7 +175,9 @@ The sidechain filter only shapes what the detector hears; the audio itself is ne
 | `lookahead_ms` | ms | 0 … 20 | 0 | **hidden, not implemented yet** |
 
 Telemetry: `gate_open` (indicator), `gain_db` (gain reduction, shown in the slot header),
-`sidechain_level_dbfs`.
+`sidechain_level_dbfs`. `TransferCurve` (H-63, §Extensions): the settled output level per input
+level, with one draggable threshold handle (`threshold_db`) — drawn in the expanded rack slot by
+`ui/src/lib/transfer/TransferGraph.svelte`.
 
 ## Noise Reduction
 
@@ -293,11 +295,16 @@ flowchart LR
 | `lookahead_ms` | ms | 0 … 20, step 1 | 0 | the module's latency; a change requests `Restart` |
 
 Telemetry: `gr_total_db` (shown in the slot header), per-section gain reduction, input level and
-the AutoGate's open lamp. Latency = the look-ahead in samples.
+the AutoGate's open lamp. Latency = the look-ahead in samples. `TransferCurve` (H-63,
+§Extensions): the AutoGate section's settled output level per input level, with a draggable
+threshold handle — drawn in the expanded rack slot by
+`ui/src/lib/transfer/TransferGraph.svelte`.
 
-> **Code vs SPEC-016.** All four sections and the look-ahead are live (H-58). Still missing: the
-> `TransferCurve` extension (§4.11) and therefore the custom panel with its transfer graph, the
-> `VXTC`/`VXMT` frames and `set_param_plain` (T-403/T-410 remainder).
+> **Code vs SPEC-016.** All four sections, the look-ahead and the `TransferCurve` graph are live
+> (H-58, H-63). Still missing: per-component curves and a live operating-point dot on the graph, a
+> bespoke Dynamics panel beyond the generic slot body, and `VXTC` as its own binary frame (the
+> curve is read through `RackApi::transfer_curve()`/`rack_transfer_curve`, not a dedicated wire
+> frame) — T-410/H-77 remainder.
 
 ## True-Peak Limiter
 

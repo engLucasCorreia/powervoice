@@ -47,13 +47,55 @@ const NORMALIZE_TARGET_MAX_DB: f64 = 0.0;
 const NORMALIZE_LUFS_TARGET_MIN_LUFS: f64 = -60.0;
 const NORMALIZE_LUFS_TARGET_MAX_LUFS: f64 = 0.0;
 
-/// The OS data dir's `sessions` subfolder (mirrors `settings::project_dirs`'s convention; no
-/// state dir on macOS/Windows, so those fall back to the data dir like `logging.rs` does).
+/// The OS **local** data dir's `sessions` subfolder (H-51, ADR-004 §1 Amendment 8 / ADR-001 §6):
+/// `directories::ProjectDirs::data_dir()` is `FOLDERID_RoamingAppData` on Windows, which can be
+/// synced to another machine or a network share — exactly what ADR-004 §1 already rules out for
+/// this multi-GB recovery/scratch data (recordings must not sit in a roaming profile). Modules
+/// already use the local dir (`app_local_data_dir`, `plugins.rs`); sessions did not.
+/// `data_local_dir()` is `FOLDERID_LocalAppData` on Windows, and is *identical* to `data_dir()`
+/// on Linux (`$XDG_DATA_HOME`/`~/.local/share`) and macOS (`~/Library/Application Support`), so
+/// this changes only Windows behaviour.
+///
+/// Also migrates a session directory left behind at the old (roaming) path into the new one —
+/// see [`migrate_sessions_dir`]. A no-op on every OS but Windows, since the old and new paths are
+/// otherwise the same path.
 pub fn default_sessions_dir() -> PathBuf {
     match directories::ProjectDirs::from("app", "powervoice", "powervoice") {
-        Some(dirs) => dirs.data_dir().join("sessions"),
+        Some(dirs) => {
+            let new = dirs.data_local_dir().join("sessions");
+            let old = dirs.data_dir().join("sessions");
+            if let Err(error) = migrate_sessions_dir(&old, &new) {
+                tracing::warn!(
+                    old = %old.display(),
+                    new = %new.display(),
+                    %error,
+                    "H-51: could not migrate the old roaming sessions directory"
+                );
+            }
+            new
+        }
         None => std::env::temp_dir().join("powervoice").join("sessions"),
     }
+}
+
+/// Moves `old` to `new` when `old` holds a leftover session directory and `new` doesn't exist
+/// yet. A no-op (returns `Ok(false)`) when there is nothing to migrate, when `old == new` (every
+/// OS but Windows), or when `new` already exists — this never overwrites or merges an existing
+/// new-location session, since guessing which one is "current" could lose an open document; an
+/// orphaned `old` is left for the user/GC to deal with, same as before this ticket.
+///
+/// Pure filesystem move over explicit paths, so it is testable with a fake "home" (any temp
+/// directory standing in for the real OS data dir) without touching real paths or environment
+/// variables (CLAUDE.md/webkit.rs convention: keep OS decisions pure and parameterized).
+pub(crate) fn migrate_sessions_dir(old: &Path, new: &Path) -> std::io::Result<bool> {
+    if old == new || new.exists() || !old.exists() {
+        return Ok(false);
+    }
+    if let Some(parent) = new.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::rename(old, new)?;
+    Ok(true)
 }
 
 /// T-306: everything about the open document's sidecar besides the session itself (SPEC-018).
@@ -6514,5 +6556,91 @@ mod tests {
         let id = service.recovery_list()[0].id.clone();
         let outcome = service.recover(&id, RecoveredTakeAction::Apply).unwrap();
         assert_eq!(outcome.info.spectral_view, Some(spectral));
+    }
+
+    // --- H-51 item 3: sessions belong in the local data dir, not the roaming one -------------
+
+    /// A pretend "old" (roaming-style) and "new" (local-style) pair of session directories under
+    /// a fake home (a fresh temp dir): [`migrate_sessions_dir`]'s decision is per-path, not tied
+    /// to any real OS API, so this exercises the Windows case (`old != new`) without needing to
+    /// run on Windows.
+    fn fake_home() -> (PathBuf, PathBuf, PathBuf) {
+        let home = crate::test_util::tmp_dir("h51-migrate");
+        let old = home.join("Roaming").join("powervoice").join("sessions");
+        let new = home.join("Local").join("powervoice").join("sessions");
+        (home, old, new)
+    }
+
+    #[test]
+    fn h51_migrates_an_old_roaming_session_dir_into_the_new_local_one() {
+        let (_home, old, new) = fake_home();
+        std::fs::create_dir_all(old.join("sess-1")).unwrap();
+        std::fs::write(old.join("sess-1").join("meta.json"), b"{}").unwrap();
+
+        let migrated = migrate_sessions_dir(&old, &new).unwrap();
+
+        assert!(migrated, "should report that it moved something");
+        assert!(!old.exists(), "the old directory should be gone");
+        assert!(new.join("sess-1").join("meta.json").is_file());
+    }
+
+    #[test]
+    fn h51_migration_is_a_no_op_when_there_is_nothing_to_migrate() {
+        let (_home, old, new) = fake_home();
+        // Neither `old` nor `new` exists yet (first run ever).
+        let migrated = migrate_sessions_dir(&old, &new).unwrap();
+        assert!(!migrated);
+        assert!(!old.exists());
+        assert!(!new.exists());
+    }
+
+    #[test]
+    fn h51_migration_never_overwrites_an_existing_new_location() {
+        let (_home, old, new) = fake_home();
+        std::fs::create_dir_all(old.join("sess-old")).unwrap();
+        std::fs::create_dir_all(new.join("sess-new")).unwrap();
+
+        let migrated = migrate_sessions_dir(&old, &new).unwrap();
+
+        assert!(
+            !migrated,
+            "must not clobber a session already at the new path"
+        );
+        assert!(
+            old.join("sess-old").exists(),
+            "the old session is left alone, not deleted"
+        );
+        assert!(
+            new.join("sess-new").exists(),
+            "the new session is untouched"
+        );
+    }
+
+    #[test]
+    fn h51_migration_is_a_no_op_when_old_and_new_are_the_same_path() {
+        // Linux and macOS: `directories::ProjectDirs::data_dir()` and `data_local_dir()` report
+        // the same path, so `default_sessions_dir` passes the same path as both `old` and `new`.
+        // Renaming a directory onto itself must never be attempted (or reported as a migration).
+        let (_home, _old, new) = fake_home();
+        std::fs::create_dir_all(new.join("sess-1")).unwrap();
+
+        let migrated = migrate_sessions_dir(&new, &new).unwrap();
+
+        assert!(!migrated);
+        assert!(
+            new.join("sess-1").exists(),
+            "self-migration must not delete anything"
+        );
+    }
+
+    /// `default_sessions_dir` itself always resolves to `data_local_dir()/sessions`, never
+    /// `data_dir()/sessions` — the two differ only on Windows (`FOLDERID_LocalAppData` vs.
+    /// `FOLDERID_RoamingAppData`); on this platform they happen to be equal, but the function
+    /// must still be calling the *local* accessor, which this asserts directly.
+    #[test]
+    fn h51_default_sessions_dir_uses_the_local_not_roaming_accessor() {
+        let dirs = directories::ProjectDirs::from("app", "powervoice", "powervoice").unwrap();
+        let expected = dirs.data_local_dir().join("sessions");
+        assert_eq!(default_sessions_dir(), expected);
     }
 }

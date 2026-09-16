@@ -19,9 +19,14 @@
 ## Decision
 
 ### 1. Session directory
-Each open document has one session directory at `<app_local_data_dir>/sessions/<session-id>/`.
-The root is passed in by the composition root (Tauri `app_local_data_dir()` for the identifier
-`app.powervoice.editor`), so `project` has no Tauri or `directories` dependency.
+Each open document has one session directory at `<local data dir>/sessions/<session-id>/`. The
+root is passed in by the composition root, so `project` has no Tauri or `directories` dependency.
+**Superseded by Amendment 8 (H-51):** the composition root does not actually pass Tauri's
+`app_local_data_dir()` here — that API names the *modules* directory instead (ADR-001 §4). The
+sessions root comes from `directories::ProjectDirs::data_local_dir()`
+(`src-tauri/src/document.rs::default_sessions_dir`), and — until H-51 — it was
+`ProjectDirs::data_dir()`, the **roaming** profile on Windows, contradicting this section's own
+"Local, not roaming" rationale below. See Amendment 8.
 
 ```
 session.lock          PID, host, start time; OS advisory lock held while the session is open
@@ -37,7 +42,8 @@ Rationale for the location:
   must survive.
 - **Not next to the audio file.** Synced folders, network shares and removable media are unsafe for
   memory mapping and multi-GB scratch data.
-- **Local, not roaming.** `%LOCALAPPDATA%` on Windows keeps it off roaming profiles.
+- **Local, not roaming.** `%LOCALAPPDATA%` on Windows keeps it off roaming profiles. (This was the
+  intent from M0; it did not hold in code until Amendment 8/H-51 fixed `default_sessions_dir`.)
 
 ### 2. Chunks: **65 536 samples (256 KiB)**
 - **Immutability.** A chunk is up to 65 536 f32 LE samples, and is immutable once committed.
@@ -406,3 +412,37 @@ attachments exactly like the rest of the journal.
   (length-preserving, SPEC-012 §2.8.1), committed through the same job pattern as normalize: the
   render writes new chunks off the document lock; the commit re-checks that the snapshot is the
   one the job read.
+
+## Amendment 8 — H-51: sessions belong in the OS **local** data dir on every platform (2026-09-16)
+T-706's documentation pass found that §1's "Local, not roaming" rationale did not hold in code:
+`default_sessions_dir` (`src-tauri/src/document.rs`) built the root from
+`directories::ProjectDirs::data_dir()`, which is `FOLDERID_RoamingAppData` on Windows — a roaming
+profile, exactly what §1 rules out for this multi-GB recovery/scratch data. This is a real defect
+(item 3), not a doc-only gap; fixed under this ticket, not just documented.
+
+- **Fix.** `default_sessions_dir` now uses `ProjectDirs::data_local_dir()`
+  (`FOLDERID_LocalAppData` on Windows). On Linux (`$XDG_DATA_HOME`/`~/.local/share`) and macOS
+  (`~/Library/Application Support`), `directories` reports the *same* path for `data_dir()` and
+  `data_local_dir()`, so this changes nothing on those platforms — only Windows moves.
+- **Migration.** A new pure function, `migrate_sessions_dir(old, new)`, moves a leftover session
+  directory from the old (roaming) path into the new (local) one on the next start: a no-op when
+  there is nothing at `old`, when `old == new` (every OS but Windows — the common case, so this
+  never touches the filesystem there beyond one path comparison), or when something already
+  exists at `new` (it never overwrites or merges — an orphaned `old` is left for the user/GC,
+  since guessing which session is "current" risks losing an open document). `default_sessions_dir`
+  calls it before returning the (new) path, so existing Windows installs recover their recordings
+  automatically the first time they run a build with this fix.
+- **Why not Tauri's `app_local_data_dir()`.** That API is already in use for the *modules*
+  directory (ADR-001 §4, `plugins.rs`) and is only available from inside a Tauri `App`/`AppHandle`
+  at setup time; `default_sessions_dir` is a plain function with no Tauri dependency, matching §1's
+  "so `project` has no Tauri or `directories` dependency" intent for the *store* — only the
+  composition root (`src-tauri`) depends on `directories`, same as it already did for `settings.rs`
+  and `logging.rs`. Switching to `app_local_data_dir()` would have been an equally valid fix, but a
+  larger, riskier diff (it would move `default_sessions_dir` into `lib.rs`'s `setup` closure and
+  change its signature) for the same runtime path on every platform that matters (Linux/macOS
+  don't move; Windows lands on the same `%LOCALAPPDATA%\powervoice\powervoice\data` either way).
+- **Test.** `migrate_sessions_dir` is pure over explicit paths, so it is unit-tested with a fake
+  "home" (a temp directory standing in for the real OS data dir) covering: migrates when only
+  `old` exists; no-op when neither exists; no-op and non-destructive when both exist; no-op when
+  `old == new` (the Linux/macOS case, guarding against a self-rename). A further test pins
+  `default_sessions_dir` to `data_local_dir()`, not `data_dir()`, directly.

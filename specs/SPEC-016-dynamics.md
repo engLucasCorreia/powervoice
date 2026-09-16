@@ -17,6 +17,24 @@
   conventions) · ADR-005 (§3 params, §4 events, §8 latency, §11 extensions; **§11 addition proposed
   in §4.11**) · ADR-003 (binary IPC; **two frames proposed in §4.12**) · ADR-002 §2 (RT contract,
   FTZ/DAZ) · ADR-001 §4/§5 · PROMPT §3.4 item 5, §5 · `docs/references.md` (Audition Dynamics)
+- **Implementation status (H-51, doc/code sweep):** the module shipped early as a vertical slice
+  (S3-02, `crates/modules/src/dynamics.rs`), ahead of and narrower than the T-403/T-407/T-410 plan
+  above. **Live:** identity, the full permanent parameter schema, Compressor + makeup, Limiter, the
+  shared detector/ballistics/ramps (§4.2–§4.6, §4.8–§4.10), Telemetry for the sections below.
+  **Deferred (not T-403/T-407):**
+  - **AutoGate and Expander** — their parameters (`autogate_*`, `expander_*`) exist in the schema
+    but are flagged `HIDDEN` and have no effect on the signal (module doc comment: "Not yet
+    available in this slice"); their telemetry channels (`TELEMETRY_GR_AUTOGATE`,
+    `TELEMETRY_GR_EXPANDER`, `TELEMETRY_AUTOGATE_OPEN`) always read 0.
+  - **Look-ahead** (`lookahead_ms`) — likewise `HIDDEN`, no effect; `latency_samples()` always
+    returns 0, so §4.9's latency table and AC-10 do not hold yet.
+  - **The `TransferCurve` extension** (§4.11) **does not exist** in `module-api`: `ExtensionId`
+    and `Extension` (`crates/module-api/src/extension.rs`) have no such variant. Everything that
+    depends on it — the transfer graph (§2.6), AC-14, and SPEC-013's UI — is therefore also not
+    implemented.
+
+  Every acceptance criterion, panel section and wire format below that covers AutoGate, Expander,
+  look-ahead or `TransferCurve` describes the T-403/T-407/T-410 target, not current behaviour.
 
 ## 1. Purpose
 A voice-over take swings between loud and soft words, has breaths and room tone between phrases,

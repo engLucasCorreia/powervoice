@@ -260,7 +260,8 @@ flowchart TB
   end
   subgraph win["Windows"]
     w1["%APPDATA%\powervoice\powervoice\config\<br/>settings.json · presets\"]
-    w2["%APPDATA%\powervoice\powervoice\data\<br/>sessions\ · logs\ · crashes\"]
+    w2["%LOCALAPPDATA%\powervoice\powervoice\data\<br/>sessions\"]
+    w2b["%APPDATA%\powervoice\powervoice\data\<br/>logs\ · crashes\"]
     w3["%LOCALAPPDATA%\powervoice\powervoice\cache\<br/>plugin caches"]
     w4["%LOCALAPPDATA%\app.powervoice.editor\<br/>modules\"]
     w5["%LOCALAPPDATA%\Programs\Common\CLAP · VST3"]
@@ -270,9 +271,10 @@ flowchart TB
 | Data | `ProjectDirs` method | Linux | macOS | Windows |
 |---|---|---|---|---|
 | Settings, presets | `config_dir` | `~/.config/powervoice` | `~/Library/Application Support/app.powervoice.powervoice` | `%APPDATA%\powervoice\powervoice\config` |
-| Sessions, JSFX `Effects` | `data_dir` | `~/.local/share/powervoice` | same as config | `%APPDATA%\powervoice\powervoice\data` (roaming) |
+| **Sessions** (H-51) | `data_local_dir` | `~/.local/share/powervoice` | same as config | `%LOCALAPPDATA%\powervoice\powervoice\data` |
+| JSFX `Effects` | `data_dir` (unix only — none on Windows) | `~/.local/share/powervoice` | same as config | — |
 | Plugin caches | `cache_dir` | `~/.cache/powervoice` | `~/Library/Caches/app.powervoice.powervoice` | `%LOCALAPPDATA%\powervoice\powervoice\cache` |
-| Logs, crashes | `state_dir`, else `data_dir` | `~/.local/state/powervoice` | data dir | data dir |
+| Logs, crashes | `state_dir`, else `data_dir` | `~/.local/state/powervoice` | data dir | data dir (roaming — untouched by H-51, see below) |
 | Installed modules | Tauri `app_local_data_dir()` | `~/.local/share/app.powervoice.editor/modules` | `~/Library/Application Support/app.powervoice.editor/modules` | `%LOCALAPPDATA%\app.powervoice.editor\modules` |
 | Per-user plugin install folders | format convention (`install.rs`) | `~/.clap`, `~/.vst3`, `~/.lv2`, `…/powervoice/Effects` | `~/Library/Audio/Plug-Ins/{CLAP,VST3,LV2}` | `%LOCALAPPDATA%\Programs\Common\{CLAP,VST3}` |
 
@@ -280,7 +282,15 @@ flowchart TB
 to `<temp>/powervoice/…`. Windows and macOS paths follow the `directories` crate's conventions and
 are untested (the owner tests on Linux).
 
-> **Differs from ADR-004 §1:** the ADR puts sessions under Tauri's `app_local_data_dir` (local,
-> not roaming, on Windows). The code uses `ProjectDirs::data_dir()`, which is the roaming profile
-> on Windows, and a different folder name (`powervoice` vs `app.powervoice.editor`) from the
-> installed modules.
+`data_dir`/`data_local_dir` report the *same* path on Linux and macOS — only Windows
+(`FOLDERID_RoamingAppData` vs `FOLDERID_LocalAppData`) tells them apart — so the sessions fix below
+changes nothing outside Windows.
+
+> **H-51 (fixed a real defect, not just a doc gap):** ADR-004 §1 always intended sessions to be
+> local, never roaming, on Windows. The code used `ProjectDirs::data_dir()` (roaming) regardless;
+> it now uses `data_local_dir()`. `default_sessions_dir` also migrates a leftover session
+> directory from the old (roaming) path into the new (local) one on first start after upgrading —
+> see ADR-004 §1 Amendment 8. Logs/crashes still fall back to `data_dir` on Windows (no `state_dir`
+> there); that was not in this ticket's scope, and log/crash data is disposable, unlike recordings.
+> The sessions and installed-modules folder names still differ (`powervoice` vs
+> `app.powervoice.editor`) — a separate, harmless inconsistency, also not part of this fix.

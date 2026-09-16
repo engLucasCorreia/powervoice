@@ -4,9 +4,10 @@
 //! latency has drained that fade-out), runs the live rack in sub-blocks of at most `MAX_BLOCK`,
 //! mixes the drift-corrected monitor signal in (T-107, SPEC-002 §2.7, ADR-002 §4 step 3–4:
 //! Through rack into the rack input with the playback, Dry after the rack; see `monitor`), writes
-//! the mono result to every device channel, meters the rack output and reports one
-//! [`RtEvent::Block`] (heard position, heard time, output latency, peak, energy) to the control
-//! thread. T-401 (SPEC-012 §2.5, SPEC-003 §2.2): the document end ([`RtEvent::Ended`]) is
+//! the mono result to every device channel, meters that same output signal (rack output plus Dry
+//! monitoring, SPEC-007 §2.9 — exactly what the analyzer tap and the device both receive; H-51)
+//! and reports one [`RtEvent::Block`] (heard position, heard time, output latency, peak, energy)
+//! to the control thread. T-401 (SPEC-012 §2.5, SPEC-003 §2.2): the document end ([`RtEvent::Ended`]) is
 //! reported once the rack has drained its latency after the last sample, so the transport stops
 //! when that sample is heard, not when it enters the rack. While the monitor feeds the rack, a transport restart skips the rack reset: the live
 //! input keeps flowing through it, so a reset would cut the talent's monitored voice.
@@ -899,15 +900,20 @@ impl OutputCallback for OutputCb {
                 } else {
                     st.rack_out[i] * st.next_out_gain()
                 };
-                peak = peak.max(s.abs());
-                sum_sq += f64::from(s) * f64::from(s);
-                // Dry monitoring: after the rack, unity gain (never recorded, never metered).
+                // Dry monitoring: after the rack, unity gain.
                 let mut y = s + parts.monitor.dry()[i];
                 // T-304 (SPEC-022 §2.14): the calibration sweep, after the rack.
                 if st.calib_pos.is_some() {
                     let heard = heard_time_ns + frames_to_ns((done + i) as u64, dev_rate);
                     y += st.calib_sample(parts, heard);
                 }
+                // H-51 (SPEC-007 §2.9): the output meter is the same `out` signal handed to the
+                // analyzer tap below and written to the device — rack output plus Dry
+                // monitoring — so it reads exactly what the user hears, not just the rack's own
+                // output. It used to be computed from `s` (pre-Dry), which under-read whenever
+                // Dry monitoring was audible.
+                peak = peak.max(y.abs());
+                sum_sq += f64::from(y) * f64::from(y);
                 // T-208: stage the analyzer tap's signal in `rack_out` (no longer needed as `s`
                 // past this point) rather than a second scratch buffer.
                 st.rack_out[i] = y;

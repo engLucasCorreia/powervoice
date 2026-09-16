@@ -15,9 +15,10 @@
 //! `RackModel` is live when the job starts (`EngineHandle::rack_model()`, added by S3-01/T-103 for
 //! this handoff) — no automation, matching `vox_rack::offline::render`'s "static parameters"
 //! contract. LUFS normalize (`vox_project::normalize_lufs`, wired through
-//! `DocumentService::edit_normalize_lufs`) measures the raw *source* samples directly instead
-//! (SPEC-010's write path, `project` alone, no rack — see `crates/project/src/normalize.rs`'s
-//! module docs), so it needs none of this file.
+//! `ipc::normalize_commands::edit_normalize_lufs_start` → `NormalizeService::start_lufs_job` →
+//! `DocumentService::finish_normalize_lufs`, H-51: there is no single `edit_normalize_lufs`)
+//! measures the raw *source* samples directly instead (SPEC-010's write path, `project` alone, no
+//! rack — see `crates/project/src/normalize.rs`'s module docs), so it needs none of this file.
 //!
 //! S4-03 (ACX check) reuses this same service and its render plumbing (`LoudnessService::
 //! run_acx_check`, `render_processed_to_buffer`) rather than duplicating the read/render setup —

@@ -13,7 +13,9 @@ use std::sync::{Arc, Mutex};
 use vox_engine::backend::StreamId;
 use vox_engine::backend::fake::{CallbackSizes, FakeBackend, FakeDevice, FakeDirection};
 use vox_engine::record::{MonitorMode, RecordState, RecordingResult};
-use vox_engine::{DevicePrefs, Direction, EngineConfig, HostId, ManualEngine, RackCommand};
+use vox_engine::{
+    DevicePrefs, Direction, EngineConfig, HostId, ManualEngine, RackCommand, TelemetryFrame,
+};
 use vox_module_api::test_util::{
     TestDelay, TestRestart, ZipperWindow, alloc_checks_active, analyze_zipper, no_alloc,
 };
@@ -214,6 +216,17 @@ impl Rig {
             })
             .unwrap();
     }
+
+    /// Installs the 60 Hz telemetry sink (H-51), collecting every frame.
+    fn telemetry_sink(&mut self) -> Arc<Mutex<Vec<TelemetryFrame>>> {
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let sink = frames.clone();
+        self.eng
+            .set_telemetry_sink(Some(Box::new(move |f: &TelemetryFrame| {
+                sink.lock().unwrap().push(*f)
+            })));
+        frames
+    }
 }
 
 /// RMS in dB of `x`.
@@ -304,6 +317,58 @@ fn ac9_modes_set_the_level_and_switch_without_clicks() {
         "{st:?}"
     );
     assert_eq!(r.fake.rt_violations(), 0, "a callback allocated");
+}
+
+// --- H-51 item 6: the output meter reads what the user hears, including Dry monitoring --------
+
+/// H-51 (SPEC-007 §2.9, ADR-002 §4): Dry-monitoring the same −20 dBFS tone as AC-9, with no rack
+/// and playback stopped, must show up in the *output telemetry meter*
+/// (`out_peak_dbfs`/`out_rms_dbfs`), at the same −23.01 dB RMS AC-9 measures on the device output
+/// itself. Before the fix the meter was computed pre-Dry (post-rack only), so it kept reading
+/// silence while Dry monitoring was clearly audible on the device — a divergence from the
+/// analyzer tap, which (per SPEC-007 §2.9) already includes Dry monitoring.
+#[test]
+fn h51_output_meter_matches_the_device_during_dry_monitoring() {
+    let mut r = rig(mic(RATE, 0.0, 256, tone), dac(RATE, 0.0, 256));
+    let frames = r.telemetry_sink();
+    r.run_ms(20);
+    r.arm();
+    let st = r.set_mode(MonitorMode::Dry);
+    assert!(st.monitoring, "{st:?}");
+    r.run_ms(1_000);
+
+    let out = r.output();
+    let device_db = rms_db(&out[out.len() - 24_000..]);
+    assert!(
+        (device_db - (-23.01)).abs() < 0.05,
+        "sanity check against AC-9: {device_db} dB"
+    );
+
+    let last = frames
+        .lock()
+        .unwrap()
+        .last()
+        .copied()
+        .expect("at least one telemetry frame while monitoring");
+    assert!(
+        (f64::from(last.out_rms_dbfs) - device_db).abs() < 0.5,
+        "the meter should read what the device hears: meter {} dB vs device {device_db} dB",
+        last.out_rms_dbfs
+    );
+    assert!(
+        last.out_peak_dbfs > -30.0 && last.out_peak_dbfs.is_finite(),
+        "the meter peak should reflect the dry-monitored tone, got {}",
+        last.out_peak_dbfs
+    );
+
+    // Off: the meter must fall back to silence along with the device.
+    r.set_mode(MonitorMode::Off);
+    r.run_ms(1_000);
+    let last_off = frames.lock().unwrap().last().copied().unwrap();
+    assert!(
+        last_off.out_peak_dbfs <= -120.0 && last_off.out_rms_dbfs <= -120.0,
+        "{last_off:?}"
+    );
 }
 
 /// Records one 1 s take with `mode` monitoring (same deterministic rig every time) and returns

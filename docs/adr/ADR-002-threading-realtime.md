@@ -31,11 +31,12 @@ audio thread.
 | cpal **input** callback | host (RT) | **never** | Deinterleaves the selected channel; pushes to capture ring + monitor ring; input meter. |
 | **reader/prefetch** | `engine` | may block on I/O; no per-block allocation | Holds the playback `Arc<DocSnapshot>`, reads chunks (mmap), resamples doc→device rate, keeps ~200 ms in the playback ring. |
 | **capture-writer** | `engine` | yes | Drains the capture ring into the crash-safe take WAV + chunk store (ADR-004); live recording peaks. |
-| workers | `engine` (`rayon` pool, N = clamp(cores − 2, 1, 8)) | yes | Peaks, spectrogram tiles, analysis, import/save/export/bake jobs. Cancellation via generation tokens. |
+| workers | `engine` (N = clamp(cores − 2, 1, 8)) | yes | Peaks, spectrogram tiles, analysis, import/save/export/bake jobs. Cancellation via generation tokens. **Superseded (H-51):** plain `std::thread::Builder`-spawned threads, not a `rayon` pool — see Amendment 5. |
 
 Control tick (16 ms):
 - drain the RT event rings;
-- aggregate telemetry into 30 Hz frames (ADR-003);
+- aggregate telemetry into frames at the telemetry rate (ADR-003; **superseded, see Amendment 5**
+  — 60 Hz by default, settable to 30, not a fixed 30 Hz);
 - drain the return ring: call `deactivate()` on retired chains/instances and drop them (ADR-005);
 - check stream error flags.
 
@@ -78,7 +79,7 @@ flowchart LR
   |---|---|
   | Commands | 1024 |
   | RT events | 1024 per stream |
-  | Monitor | 8192 frames |
+  | Monitor | 65 536 frames (superseded from 8192 by Amendment 1 §1 — 8192 can't hold 4·F* once periods reach 1024 frames) |
   | Capture | 10 s |
   | Playback | 64 packets |
   | Return (audio → control) | 64 |
@@ -363,3 +364,19 @@ Per SPEC-003 Amendment 2 (A-026). Refines §5's start/seek sequence and §8:
   still uses the callback's first frame.
 - **Through-rack monitoring** (T-107) keeps the previous sequence: no reset, no pre-roll, the fades
   at the rack input.
+
+## Amendment 5 — H-51 doc correction: worker pool and telemetry rate (2026-09-16)
+T-706's documentation pass found two stale facts in §1's table; both are text-only corrections,
+matching code already in place — no behaviour changed.
+- **No `rayon` pool.** §1's "workers" row named a `rayon` pool; `rayon` isn't a dependency of any
+  crate in the workspace. The spectrogram tile service spawns its own fixed-size pool of
+  `std::thread::Builder` threads (`crates/engine/src/spectro/mod.rs`, N = clamp(cores − 2, 1, 8), as
+  §1 already said), and each import/save/export/bake/normalize/loudness-analysis job spawns its own
+  worker thread rather than drawing from a shared pool. §1's *sizing rule* (clamp(cores − 2, 1, 8))
+  and cancellation-by-generation-token were, and still are, accurate for the spectro pool; they were
+  never a shared-pool-wide policy.
+- **Telemetry rate is 60 Hz by default, not a fixed 30 Hz.** §1's control-tick bullet said
+  "aggregate telemetry into 30 Hz frames"; the shipped default (`Settings::telemetry_rate_hz`,
+  H-16) is **60 Hz**, with 30 Hz an alternative the user can pick in Settings
+  (`EngineHandle::set_telemetry_rate_hz`). Nothing in ADR-003 or SPEC-003 ever fixed it at 30; this
+  was simply a wrong number in this table.

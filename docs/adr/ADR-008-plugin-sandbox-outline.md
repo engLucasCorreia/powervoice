@@ -117,6 +117,14 @@ flowchart LR
   on macOS, EOF on the control socket or kqueue on the parent pid. The sandbox never outlives the
   editor.
 
+**Superseded by Amendments 2 §2, 3 §3 and 13 §3 (H-51: folding this in, as implemented):** the
+control channel is the child's **stdin/stdout pipes** (`std::process`), not a socket — this works
+identically on every OS with no fd passing, and stdin EOF tells the sandbox the host is gone on
+every platform (Amendment 2 §2). The frame is a length-prefixed JSON message plus a separate
+binary payload for state, as this section anticipated, but the message set grew: the protocol is
+now at **version 3** (Amendment 3 §3 added `ParamTexts`/`TextToParam`, v2; Amendment 13 §3 added
+`OpenEditor`/`CloseEditor`/editor notifications, v3), each version additive over the last.
+
 ### 5. Watchdog and failure policy
 - The sandbox bumps a **heartbeat** counter every processed block and in its idle loop. A watchdog
   thread on the editor side (not the audio thread) checks it along with the miss counter.
@@ -130,6 +138,12 @@ flowchart LR
   - the crash is counted and the plugin is **flagged** (warning badge) in the plugin manager.
 
   There is no automatic restart, because a deterministic crash would loop.
+  **Superseded by Amendment 2 §6 (H-51: folding this in, T-802 implementation):** a sandboxed slot
+  *does* now restart automatically, once, from its last committed state, before falling back to
+  this bypassed/flagged/Restart-button behaviour on a second failure within the same budget. This
+  section's "no automatic restart" text is kept for its rationale (a deterministic crash looping
+  forever) — Amendment 2 §6's "once" bound is exactly what avoids that loop while still recovering
+  from a one-off crash.
 - **Recording is never affected:** the take is written from the dry input path, not through the rack
   (ADR-002). A plugin failure can only affect what is heard.
 - **During an offline render:** failure **aborts the render with an error**. We never export a
@@ -162,6 +176,19 @@ The sandbox binary links the format hosts: CLAP (`clack-host`), VST3 (`vst3`), L
 (`ysfx`, **only here**; see ADR-007), and VST2 (T-811, gated; prefers a Carla bridge). The editor
 binary links none of them. This keeps foreign code, crash risk and license-sensitive code in one
 binary.
+**Superseded by Amendments 3 §1, 6 §1, 8 §1 and 11 §1 (H-51: folding this in, as implemented):**
+- **CLAP** uses hand-written bindings (`vox-clap-abi`), not `clack-host` — its API isn't frozen,
+  which conflicts with ADR-007's exact-version pinning, and the used subset is small (Amendment 3
+  §1).
+- **VST3** uses the `vst3` crate (coupler-rs, pre-generated SDK 3.8.0 bindings), not hand-written
+  bindings (Amendment 6 §1).
+- **LV2** uses `lilv` through a hand-written, runtime-loaded (`libloading`) function table, not
+  `livi` — linking `livi`'s `lilv-sys` at build time would make every build need lilv's
+  development files and would take CLAP/VST3 down too on a machine without `liblilv-0` (Amendment
+  8 §1). LV2 is **unix only** here (no Windows LV2 support is implemented).
+- **JSFX** (`ysfx`) is confirmed **unix only**, on x86-64/aarch64; elsewhere the backend answers
+  `UNSUPPORTED` and the editor doesn't look for JSFX plugins at all (Amendment 11 §1).
+- **VST2** (T-811) remains gated/not implemented, as this section already said.
 
 ### 9. Security scope
 The sandbox is a **crash-isolation boundary, not a security boundary**: plugins keep the user's

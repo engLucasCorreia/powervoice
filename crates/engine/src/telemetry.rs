@@ -37,7 +37,8 @@ pub struct TelemetryFrame {
     pub playhead_time_ns: u64,
     /// Document samples per second while playing, 0 when stopped.
     pub rate: f64,
-    /// Output peak since the previous frame (post-rack).
+    /// Output peak since the previous frame (post-rack, plus Dry monitoring if audible — H-51,
+    /// SPEC-007 §2.9: the same signal the device and the analyzer tap receive).
     pub out_peak_dbfs: f32,
     /// Output RMS over the audio since the previous frame.
     pub out_rms_dbfs: f32,

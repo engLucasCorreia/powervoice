@@ -11,6 +11,16 @@
   **§4.3 zipper measurement is normative**; §2.4 smoothing; §2.5 latency) · SPEC-004 OD-4 (rack edits
   are not undoable) · SPEC-000 · ADR-005 (§3, §8, §11; the `TransferCurve` addition proposed in
   SPEC-016 §4.11) · ADR-002 §2 · PROMPT §3.4 item 2 · `docs/references.md`
+- **Implementation status (H-51, doc/code sweep):** the module shipped early as a vertical slice
+  (S3-02, `crates/modules/src/noise_gate.rs`), ahead of and narrower than the T-408 plan above.
+  **Live:** identity, range, hysteresis, hold, the sidechain high-pass, the gate core (§4.7 below,
+  shared with SPEC-016). **Deferred, not T-408:** **look-ahead** — `lookahead_ms` exists in the
+  permanent parameter schema but is flagged `HIDDEN` and has no effect; `latency_samples()` always
+  returns 0 (module doc comment: "Not yet available in this slice"). **Deferred, blocked on
+  SPEC-016's own T-403:** the `TransferCurve` extension referenced throughout this spec (§2.7 UI,
+  §4.3, §4.11) **does not exist** in `module-api` (`ExtensionId`/`Extension` have no such variant) —
+  see SPEC-016's own status note. Every acceptance criterion, UI section and wire format below that
+  depends on look-ahead or `TransferCurve` describes the T-408/T-410 target, not current behaviour.
 
 ## 1. Purpose
 Between phrases a voice-over take carries room tone, computer fans, traffic rumble and breaths. A

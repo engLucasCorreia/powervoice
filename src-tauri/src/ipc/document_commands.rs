@@ -47,8 +47,13 @@ fn emit_clipboard_changed<R: Runtime>(app: &AppHandle<R>, doc: &DocumentService)
 
 /// Common tail of every S2-01 command: `document_changed` (`audio_rev`/`len_samples`/dirty for
 /// the waveform and title bar) and `history_state` (the Edit menu).
-/// `pub(crate)`: also used by `loudness_commands::edit_normalize_lufs` (S4-01), which is the same
-/// shape of command as every other S2-01/S2-02 edit here.
+///
+/// `pub(crate)`, but **not** used by the normalize jobs (S2-02/S4-01): those run on their own
+/// thread (`normalize.rs`, driven by `ipc::normalize_commands::edit_normalize_peak_start`/
+/// `edit_normalize_lufs_start`) and commit off the async command's own thread, so they can't call
+/// this directly — they emit the same `document_changed`/`history_state` shape themselves once a
+/// job commits (H-51: this comment used to claim otherwise, naming a command,
+/// `loudness_commands::edit_normalize_lufs`, that doesn't exist).
 pub(crate) fn after_edit<R: Runtime>(app: &AppHandle<R>, doc: &DocumentService) {
     let info: DocumentDto = doc.info().into();
     emit_document_changed(app, &info);

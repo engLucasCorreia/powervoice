@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  documentTimeFieldChars,
   formatDocumentTime,
   formatSamplesValue,
   formatSecondsValue,
   parseDocumentTime,
 } from "./timeFormat";
+import type { TimeRulerFormat } from "./timeFormat";
 
 describe("formatDocumentTime / parseDocumentTime (SPEC-006 §2.5)", () => {
   const RATES = [44_100, 48_000, 96_000];
@@ -76,5 +78,53 @@ describe("formatDocumentTime / parseDocumentTime (SPEC-006 §2.5)", () => {
     expect(parseDocumentTime("-5", 48_000, "samples")).toBeNull();
     expect(parseDocumentTime("1.5", 0, "seconds")).toBeNull();
     expect(parseDocumentTime("", 48_000, "samples")).toBeNull();
+  });
+});
+
+describe("documentTimeFieldChars (H-48 item 1: toolbar readout fields must not clip)", () => {
+  const FORMATS: TimeRulerFormat[] = ["timecode", "samples", "seconds"];
+
+  it("is always wide enough for the document's own length — the worst case for Start/End/Length", () => {
+    for (const format of FORMATS) {
+      for (const rateHz of [44_100, 48_000, 96_000]) {
+        for (const lenSamples of [0, 1, 480_000, 172_800_000, 4_000_000_000]) {
+          const chars = documentTimeFieldChars(rateHz, lenSamples, format);
+          const worst = formatDocumentTime(lenSamples, rateHz, format).length;
+          expect(chars).toBeGreaterThanOrEqual(worst);
+        }
+      }
+    }
+  });
+
+  it("is wide enough for every value the field could actually show, not just the maximum", () => {
+    for (const format of FORMATS) {
+      const rateHz = 48_000;
+      const lenSamples = 172_800_000; // a real ~1-hour-class document
+      const chars = documentTimeFieldChars(rateHz, lenSamples, format);
+      for (const samples of [0, 1, lenSamples / 4, lenSamples / 2, lenSamples]) {
+        const text = formatDocumentTime(Math.round(samples), rateHz, format);
+        expect(text.length).toBeLessThanOrEqual(chars);
+      }
+    }
+  });
+
+  // The owner's exact repro: a fixed 8ch box clipped "00:00:19.000" (12 chars) to "00:00:19.(".
+  it("fixes the reported clip: a 10 s take in timecode needs 12ch, not the old fixed 8ch", () => {
+    const rateHz = 48_000;
+    const lenSamples = 10 * rateHz;
+    expect(formatDocumentTime(lenSamples, rateHz, "timecode")).toBe("00:00:10.000");
+    expect(documentTimeFieldChars(rateHz, lenSamples, "timecode")).toBeGreaterThanOrEqual(12);
+  });
+
+  it("grows for a long document in samples/seconds format, instead of a one-size-fits-all guess", () => {
+    const shortChars = documentTimeFieldChars(48_000, 48_000, "samples"); // 1 s: "48000"
+    const longChars = documentTimeFieldChars(48_000, 4_000_000_000, "samples"); // "4000000000"
+    expect(longChars).toBeGreaterThan(shortChars);
+  });
+
+  it("never goes below a sane minimum, even for a near-empty document", () => {
+    for (const format of FORMATS) {
+      expect(documentTimeFieldChars(48_000, 0, format)).toBeGreaterThanOrEqual(4);
+    }
   });
 });

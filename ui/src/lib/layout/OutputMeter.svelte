@@ -17,7 +17,10 @@
    */
 
   const transport = transportState();
-  const LINE_HEIGHT_PX = 12;
+  // Matches the `.tick` rule's own `line-height: var(--pv-leading-xs)` below, so the collision
+  // maths (`meterScaleTicks`) reasons about the same box the browser actually lays out (H-48
+  // item 2: an inaccurate, too-small line height was part of why labels could look crowded).
+  const LINE_HEIGHT_PX = 16;
 
   let trackEl: HTMLDivElement | undefined;
   let trackHeightPx = $state(0);
@@ -154,13 +157,16 @@
     font-size: var(--pv-text-xs);
     font-variant-numeric: tabular-nums;
     text-align: right;
-    line-height: 1;
+    line-height: var(--pv-leading-xs);
     white-space: nowrap;
   }
 
   .track {
+    /* H-48 item 2: noticeably wider than before — the bar was thin relative to the 13rem column
+       it lives in — while staying a fixed rem value (never measured or set from a live level, so
+       the column itself still never resizes). */
     position: relative;
-    width: 0.85rem;
+    width: 2.5rem;
     flex: none;
     overflow: hidden;
     border-radius: var(--pv-radius-sm);

@@ -3,7 +3,7 @@
   import { t } from "../i18n";
   import { selectionState, setSelectionFromResult } from "../state/selection.svelte";
   import { timeRulerFormatState } from "../state/waveformView.svelte";
-  import { formatDocumentTime, parseDocumentTime } from "../waveform/timeFormat";
+  import { documentTimeFieldChars, formatDocumentTime, parseDocumentTime } from "../waveform/timeFormat";
 
   /**
    * Selection start/end/length readouts (T-206, SPEC-006 §2.2/§2.9's "selection start/end/length
@@ -27,6 +27,11 @@
   const rateHz = $derived(doc.current.sample_rate_hz);
   const lenSamples = $derived(doc.current.len_samples);
   const sel = $derived(selection.current);
+
+  /** H-48 item 1: sized to the widest value this document/format pair can produce (the document's
+   * own length), in tabular figures, instead of a fixed guess that clipped long timecodes and
+   * samples counts. All three fields share one width so they stay aligned. */
+  const fieldChars = $derived(documentTimeFieldChars(rateHz, lenSamples, timeFormat.current));
 
   let draftStart = $state<string | null>(null);
   let draftEnd = $state<string | null>(null);
@@ -120,6 +125,7 @@
         spellcheck="false"
         data-testid="selection-start"
         value={startText}
+        style:width="{fieldChars}ch"
         oninput={(e) => (draftStart = e.currentTarget.value)}
         onkeydown={(e) => onKeydown(e, () => commitStart(draftStart ?? startText), () => (draftStart = null))}
         onblur={() => draftStart !== null && commitStart(draftStart)}
@@ -134,6 +140,7 @@
         spellcheck="false"
         data-testid="selection-end"
         value={endText}
+        style:width="{fieldChars}ch"
         oninput={(e) => (draftEnd = e.currentTarget.value)}
         onkeydown={(e) => onKeydown(e, () => commitEnd(draftEnd ?? endText), () => (draftEnd = null))}
         onblur={() => draftEnd !== null && commitEnd(draftEnd)}
@@ -148,6 +155,7 @@
         spellcheck="false"
         data-testid="selection-length"
         value={lengthText}
+        style:width="{fieldChars}ch"
         oninput={(e) => (draftLength = e.currentTarget.value)}
         onkeydown={(e) =>
           onKeydown(e, () => commitLength(draftLength ?? lengthText), () => (draftLength = null))}
@@ -190,7 +198,8 @@
   }
 
   input {
-    width: 8ch;
+    /* H-48 item 1: width comes from the `fieldChars` inline style (sized to the active time
+       format and this document's length), not a fixed guess. */
     min-width: 0;
     padding: 0;
     border: none;

@@ -26,6 +26,16 @@ export const HOT_ZONE_DB = -3;
  * first when the meter is too short to fit them all. */
 const FINITE_TICKS_DB = [0, -3, -6, -12, -18, -24, -36, -48, -60] as const;
 
+/**
+ * Minimum clear space kept between two neighbouring tick labels (H-48 item 2 owner report:
+ * "-12/-18/-24 run together" at short dock heights). `fitAxisLabels`'s own default (2 px) is only
+ * enough to stop literal overlap — at some dock heights that let three ticks survive the fit only
+ * 2 px apart, which reads as crowded even though nothing technically collides. A few more pixels
+ * gives every kept label real breathing room, at the cost of dropping one more tick sooner as the
+ * meter gets shorter — exactly the "drop labels that don't fit" the ticket asks for.
+ */
+export const METER_LABEL_GAP_PX = 4;
+
 export interface MeterTick {
   /** Pixel y from the top of the track (0 = 0 dBFS, `heightPx` = the absolute floor). */
   y: number;
@@ -58,7 +68,7 @@ export function meterFraction(db: number): number {
  * short the meter gets — unlike the waveform's amplitude ruler, −∞ is a genuine value here (the
  * meter's silent rest position), not an unlabelable centerline, so it earns its own tick.
  */
-export function meterScaleTicks(heightPx: number, lineHeightPx: number, gapPx = 2): MeterTick[] {
+export function meterScaleTicks(heightPx: number, lineHeightPx: number, gapPx = METER_LABEL_GAP_PX): MeterTick[] {
   if (!(heightPx > 0) || !(lineHeightPx > 0)) {
     return [];
   }

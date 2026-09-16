@@ -139,3 +139,24 @@ export function parseDocumentTime(
       return parseTimecodeValue(trimmed, sampleRateHz);
   }
 }
+
+/** A readout field is never sized smaller than this many characters, even for a very short
+ * document — a one- or two-digit box reads as broken, not just "sized to fit" (H-48 item 1). */
+const MIN_TIME_FIELD_CHARS = 4;
+
+/**
+ * How many characters (`ch`, tabular figures) a Start/End/Length readout field needs to show any
+ * value this document/format pair can produce, without clipping (H-48 item 1 owner report: the
+ * toolbar's selection fields clipped, e.g. "00:00:19.(" out of a fixed 8ch box). The worst case
+ * for every one of the three fields is the document's own length in samples — `Start`/`End` can
+ * reach it directly, and `Length` reaches it once the whole document is selected — so sizing every
+ * field to that one value's formatted width keeps the three fields aligned as well.
+ */
+export function documentTimeFieldChars(
+  sampleRateHz: number,
+  lenSamples: number,
+  format: TimeRulerFormat,
+): number {
+  const worstCase = formatDocumentTime(Math.max(0, lenSamples), sampleRateHz, format).length;
+  return Math.max(worstCase, MIN_TIME_FIELD_CHARS);
+}

@@ -15,6 +15,7 @@
   } from "../spectrum/freqAxis";
   import { dbAxisTicks, yForAnalyzerDb } from "./analyzerMath";
   import { createPeakHold, resetPeakHold, updatePeakHold, type PeakHoldBand } from "./peakHold";
+  import { pickMarker, stepMarkers, type PeakMarker } from "./peakMarkers";
   import { findPeaks, type SpectralPeak } from "./peaks";
   import { placePeakLabels } from "./peakLabels";
   import { formatNote } from "./notes";
@@ -49,8 +50,6 @@
 
   const LABEL_TAU_S = 0.4;
   const LABEL_PICK_MS = 100;
-  const MARKER_HOLD_S = 1.5;
-  const MARKER_FALL_DB_PER_S = 6;
   const LABEL_FONT_PX = 10;
   const LABEL_H_PX = 28;
 
@@ -106,7 +105,7 @@
   let labelPeaks = $state.raw<SpectralPeak[]>([]);
 
   let holds: PeakHoldBand[] = [];
-  let markers: Array<{ freqHz: number; levelDb: number; holdS: number }> = [];
+  let markers: PeakMarker[] = [];
   let labelLevels: Float32Array | null = null;
   let labelCurve: PlotCurve | null = null;
   let lastCurve: PlotCurve | null = null;
@@ -204,21 +203,13 @@
     if (peakLabels) {
       if (labelLevels && labelCurve && now - lastPickAt >= LABEL_PICK_MS) {
         lastPickAt = now;
-        pickPeaks(labelCurve, labelLevels);
+        pickPeaks(labelCurve, labelLevels, now);
       } else if (labelLevels && now - lastPickAt < LABEL_PICK_MS && lastCurveAt > lastPickAt) {
         animating = true; // a newer curve is waiting for its pick
       }
-      for (const m of markers) {
-        if (m.holdS > 0) {
-          m.holdS = Math.max(0, m.holdS - dtS);
-        } else {
-          m.levelDb -= MARKER_FALL_DB_PER_S * dtS;
-        }
-      }
-      markers = markers.filter((m) => {
-        const live = c ? levelAt(c, m.freqHz) : -Infinity;
-        return m.levelDb >= floorDb && m.levelDb > live + 0.05;
-      });
+      // H-48 item 3: one shared ballistics implementation (`meters/ballistics.ts::PeakBallistics`,
+      // via `peakMarkers.ts`) for hold + release + snap-to-silence, instead of this file's own.
+      markers = stepMarkers(markers, (freqHz) => (c ? levelAt(c, freqHz) : Number.NEGATIVE_INFINITY), floorDb, now);
       if (markers.length > 0) {
         animating = true;
       }
@@ -226,21 +217,14 @@
     return animating;
   }
 
-  function pickPeaks(c: PlotCurve, levels: Float32Array): void {
+  function pickPeaks(c: PlotCurve, levels: Float32Array, atMs: number): void {
     const [fLo, fHi] = displayRange;
     const peaks = findPeaks(
       { freqsHz: c.freqsHz, levelsDb: levels },
       { count: peakCount, floorDb: floorDb + 6, fMinHz: Math.max(fLo, 20), fMaxHz: fHi },
     );
     for (const p of peaks) {
-      const m = markers.find((k) => Math.abs(Math.log2(k.freqHz / p.freqHz)) < 1 / 12);
-      if (!m) {
-        markers.push({ freqHz: p.freqHz, levelDb: p.levelDb, holdS: MARKER_HOLD_S });
-      } else if (p.levelDb >= m.levelDb) {
-        m.freqHz = p.freqHz;
-        m.levelDb = p.levelDb;
-        m.holdS = MARKER_HOLD_S;
-      }
+      pickMarker(markers, p.freqHz, p.levelDb, atMs);
     }
     labelPeaks = peaks;
     onpeaks?.(peaks);
@@ -400,7 +384,7 @@
       ctx.lineWidth = colors.strokePx;
       for (const m of markers) {
         const x = xForFreq(m.freqHz);
-        const y = yForDb(m.levelDb);
+        const y = yForDb(m.pb.hold);
         ctx.globalAlpha = 0.75;
         ctx.beginPath();
         ctx.moveTo(x - 4, y);

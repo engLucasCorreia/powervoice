@@ -122,14 +122,27 @@ Time readouts size their fields from the document and format, not from the curre
 (`waveform/timeFormat.ts::documentTimeFieldChars`), so the Selection readout never clips or
 jitters.
 
-- **Draw loops, as the code is today:** `WaveformView`, `SpectralView` and `EqGraph` run a
-  perpetual `requestAnimationFrame` loop started in `onMount` (rescheduled in `finally`, so a
-  throwing frame can't stop it — H-32) and redraw every frame; `SpectrumPlot` draws on demand
-  (`requestDraw()`) and keeps animating only while peak-hold markers fall — and because those
-  markers rest on the shared ballistics, the loop now actually stops once the signal goes quiet;
-  the transport store runs an rAF loop to extrapolate the playhead; meters update only when
-  telemetry arrives. The idle-CPU work in H-43 replaces the perpetual loops with a frame
-  scheduler — check [`ui/src/lib/render/`](../../ui/src/lib/render/) for the current rule.
+- **Draw loops (H-43, H-47):** every canvas renderer draws **on demand** from one shared
+  scheduler, [`render/frameScheduler.ts`](../../ui/src/lib/render/frameScheduler.ts) — the
+  perpetual per-renderer `requestAnimationFrame` loops of H-32 are gone, and an idle app schedules
+  no frame at all. A renderer registers with `createFrameClient(callback)` and calls
+  `invalidate()` wherever an input of its draw changes (new data, viewport, size, theme, playhead,
+  telemetry); any number of `invalidate()`s before the next frame coalesce into one `rAF` for all
+  clients, run in `priority` order. The callback returns `true` **only while it is still
+  animating** — playback, recording, a meter decaying, and (H-47) while budgeted tile uploads are
+  still outstanding — and then gets the next frame automatically. H-32's robustness is kept: each
+  client draws inside its own `try/catch`, a throwing draw is retried on a bounded number of
+  following frames, and `installInputInvalidation()` redraws everything once on discrete user
+  input, so a renderer that missed a change heals at the user's next gesture.
+- **Per-frame GPU upload budget (H-47):** a `spectro_request` is served up to 64 `VXST` tiles
+  (SPEC-007 §4.6), which all arrive between two frames. The spectrogram's WebGL2 renderer uploads
+  at most [`render/uploadBudget.ts`](../../ui/src/lib/render/uploadBudget.ts)'s
+  `DEFAULT_UPLOAD_BUDGET` per frame (2 tiles / 2 MiB) — visible tiles before off-screen margin,
+  newest first — and reports the backlog, which `SpectralView` turns into the next frame. Tile
+  textures live in a 64 MiB least-recently-drawn cache, are re-used across frames and re-filled
+  with `texSubImage2D` when the tile size is unchanged; a tile that has scrolled off screen keeps
+  its texture, so scrolling back costs no upload. Before H-47 the renderer deleted every texture
+  the latest draw hadn't used and re-created it on the next one.
 
 ## Layout and splitters
 

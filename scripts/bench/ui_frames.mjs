@@ -39,7 +39,8 @@
  *
  * Usage (`just bench-ui`): node scripts/bench/ui_frames.mjs [--port 5193] [--seconds 10]
  *   [--out target/bench/ui.log] [--case document:2126x850]... [--profile] [--renderer canvas2d]
- *   [--idle-only] [--no-release] [--idle-seconds 10]. `--idle-only` skips the frame-time sweep,
+ *   [--idle-only] [--no-idle] [--no-release] [--idle-seconds 10]. `--idle-only` skips the frame-time
+ *   sweep, `--no-idle` the idle/playback passes (H-47 used it for quick renderer iterations) and
  *   `--no-release` the release build's idle pass.
  *   `--renderer auto|webgl2|canvas2d` picks the renderer Setting (default: both canvas2d — the
  *   fallback, which does its per-pixel work in JS — and auto, the app default: WebGL2 first). `--case` limits the run
@@ -78,6 +79,7 @@ const RENDERERS = args.includes("--renderer") ? [opt("renderer", "canvas2d")] : 
 const FRAME_BUDGET_MS = 16.7;
 const LONG_FRAME_MS = 50;
 const IDLE_ONLY = args.includes("--idle-only");
+const NO_IDLE = args.includes("--no-idle");
 const NO_RELEASE = args.includes("--no-release");
 const IDLE_SECONDS = Number(opt("idle-seconds", "10"));
 const IDLE_SCENES = [
@@ -435,8 +437,10 @@ async function main() {
     if (!IDLE_ONLY) {
       await sweepPass(base);
     }
-    await idlePass(base, "dev");
-    if (!NO_RELEASE) {
+    if (!NO_IDLE) {
+      await idlePass(base, "dev");
+    }
+    if (!NO_RELEASE && !NO_IDLE) {
       const outDir = join(ROOT, "target", "bench", "ui-dist");
       await run("npx", ["vite", "build", "--outDir", outDir, "--emptyOutDir", "--logLevel", "warn"], {
         cwd: join(ROOT, "ui"),

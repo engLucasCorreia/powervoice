@@ -23,6 +23,12 @@ import { TILE_FRAMES } from "./geometry";
 import type { SpectroTile } from "./spectroRequester";
 import { QuadProgram, linkProgram } from "../render/glProgram";
 import type { Rgba } from "../render/quads";
+import {
+  DEFAULT_UPLOAD_BUDGET,
+  planUploads,
+  type UploadBudget,
+  type UploadCandidate,
+} from "../render/uploadBudget";
 
 const TILE_VS = `#version 300 es
 in vec2 aPos;
@@ -202,9 +208,15 @@ interface TileUniforms {
 
 interface TileTextureEntry {
   texture: WebGLTexture;
+  /** Allocated texture size; an upload of the same size is a `texSubImage2D`, not a realloc. */
   frames: number;
   bins: number;
-  sourceTile: SpectroTile;
+  /** The tile object whose pixels are in the texture (identity, not contents — the requester
+   * replaces the object when a tile is refined or re-fetched). */
+  sourceTile: SpectroTile | null;
+  bytes: number;
+  /** Draw counter of the last frame that drew this tile (the cache's LRU key). */
+  lastDrawn: number;
 }
 
 export interface SpectrogramTileEntry {
@@ -235,7 +247,27 @@ export interface SpectrogramGlDrawOptions {
   tiles: readonly SpectrogramTileEntry[];
   /** Selection/marker/playhead, pre-batched by the caller with `../render/overlayGeometry.ts`. */
   overlay: Float32Array | null;
+  /** H-47: per-frame upload budget; defaults to {@link DEFAULT_UPLOAD_BUDGET}. */
+  uploadBudget?: UploadBudget;
 }
+
+/** H-47: what one {@link SpectrogramGlRenderer.draw} left for the following frames. */
+export interface SpectrogramGlDrawResult {
+  /** Tiles whose texture upload was deferred by the budget — draw again while this is > 0. */
+  pendingUploads: number;
+  /** Payload bytes still waiting (diagnostics). */
+  pendingBytes: number;
+  /** Tiles uploaded this frame. */
+  uploaded: number;
+}
+
+/**
+ * H-47: how much texture memory the tile cache keeps. Tiles are 256 KiB (2048-point FFT) to 2 MiB
+ * (16 384-point), so this holds a few hundred of the small ones — far more than the ~10 a viewport
+ * shows, which is the point: scrolling back over a tile, or a zoom step that returns to a hop
+ * already seen, then costs nothing instead of a full re-upload. Least-recently-drawn first out.
+ */
+export const TILE_TEXTURE_CACHE_BYTES = 64 * 1024 * 1024;
 
 export class SpectrogramGlRenderer {
   private readonly gl: WebGL2RenderingContext;
@@ -247,9 +279,22 @@ export class SpectrogramGlRenderer {
   private lutName: ColormapName | null = null;
   private readonly tileTextures = new Map<string, TileTextureEntry>();
   private readonly overlayProgram: QuadProgram;
+  private readonly maxTextureBytes: number;
+  private textureBytes = 0;
+  /** Monotonic draw counter: the cache's LRU clock and the upload priority's arrival order. */
+  private drawSeq = 0;
+  /** Reused quad vertices — the draw loop allocated a `Float32Array` per tile per frame. */
+  private readonly quadVerts = new Float32Array(12);
+  /** Reused per-frame scratch, so a draw allocates nothing per tile. */
+  private readonly pendingCandidates: UploadCandidate[] = [];
+  private readonly pendingTiles = new Map<string, SpectroTile>();
+  /** When each tile object was first offered to a draw — the upload priority's "newest first".
+   * Weak, so a tile the requester dropped is collected with its entry. */
+  private readonly seenTiles = new WeakMap<SpectroTile, number>();
 
-  constructor(gl: WebGL2RenderingContext) {
+  constructor(gl: WebGL2RenderingContext, maxTextureBytes = TILE_TEXTURE_CACHE_BYTES) {
     this.gl = gl;
+    this.maxTextureBytes = maxTextureBytes;
     this.program = linkProgram(gl, TILE_VS, TILE_FS);
     this.uniforms = {
       uResolutionPx: gl.getUniformLocation(this.program, "uResolutionPx"),
@@ -312,47 +357,89 @@ export class SpectrogramGlRenderer {
     this.lutName = name;
   }
 
-  private ensureTileTexture(key: string, tile: SpectroTile): WebGLTexture {
+  /**
+   * H-47: uploads `tile`'s pixels into `key`'s texture, creating it only the first time and
+   * re-allocating it only when the tile's dimensions changed — a tile of the same size (the
+   * common case: every tile of one FFT size and hop is 256 × bins) is a `texSubImage2D` into the
+   * texture that is already there. The old code created **and deleted** a texture per tile per
+   * draw; the T-704 sweep did 847 `createTexture` + 847 `deleteTexture` for 847 uploads.
+   */
+  private uploadTile(key: string, tile: SpectroTile): void {
     const gl = this.gl;
     const existing = this.tileTextures.get(key);
-    if (existing && existing.sourceTile === tile) {
-      return existing.texture;
-    }
     const texture = existing?.texture ?? gl.createTexture();
     if (!texture) {
       throw new Error("WebGL2: createTexture (tile) failed");
     }
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, tile.bins, tile.frames, 0, gl.RED, gl.UNSIGNED_BYTE, tile.data);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    this.tileTextures.set(key, { texture, frames: tile.frames, bins: tile.bins, sourceTile: tile });
-    return texture;
+    if (existing && existing.frames === tile.frames && existing.bins === tile.bins) {
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, tile.bins, tile.frames, gl.RED, gl.UNSIGNED_BYTE, tile.data);
+    } else {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, tile.bins, tile.frames, 0, gl.RED, gl.UNSIGNED_BYTE, tile.data);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    }
+    const bytes = tile.data.byteLength;
+    this.textureBytes += bytes - (existing?.bytes ?? 0);
+    this.tileTextures.delete(key);
+    this.tileTextures.set(key, {
+      texture,
+      frames: tile.frames,
+      bins: tile.bins,
+      sourceTile: tile,
+      bytes,
+      lastDrawn: this.drawSeq,
+    });
   }
 
-  /** Evicts tile textures not seen in the latest draw (mirrors the requester's own LRU — a tile
-   * that scrolled out of the requester's cache should not keep a GPU texture alive forever). */
-  private evictUnused(seenKeys: ReadonlySet<string>): void {
-    for (const [key, entry] of this.tileTextures) {
-      if (!seenKeys.has(key)) {
-        this.gl.deleteTexture(entry.texture);
-        this.tileTextures.delete(key);
+  /**
+   * H-47: keeps the cache under {@link TILE_TEXTURE_CACHE_BYTES}, least-recently-drawn first.
+   * Textures drawn in the current frame are never evicted. (The old rule deleted every texture
+   * that the latest draw did not use, so every scroll re-uploaded what it had just thrown away.)
+   */
+  private evictOverCap(): void {
+    if (this.textureBytes <= this.maxTextureBytes) {
+      return;
+    }
+    const byAge = [...this.tileTextures.entries()].sort((a, b) => a[1].lastDrawn - b[1].lastDrawn);
+    for (const [key, entry] of byAge) {
+      if (this.textureBytes <= this.maxTextureBytes || entry.lastDrawn === this.drawSeq) {
+        break;
       }
+      this.gl.deleteTexture(entry.texture);
+      this.tileTextures.delete(key);
+      this.textureBytes -= entry.bytes;
     }
   }
 
-  draw(opts: SpectrogramGlDrawOptions): void {
+  /** Textures currently held (diagnostics/tests). */
+  get cachedTextures(): number {
+    return this.tileTextures.size;
+  }
+
+  /** Texture payload bytes currently held (diagnostics/tests). */
+  get cachedBytes(): number {
+    return this.textureBytes;
+  }
+
+  /**
+   * Draws one frame and returns what the per-frame upload budget left over (H-47): while
+   * `pendingUploads > 0` the caller must ask the H-43 frame scheduler for another frame, so the
+   * backlog drains at the display rate instead of in one spike.
+   */
+  draw(opts: SpectrogramGlDrawOptions): SpectrogramGlDrawResult {
     const gl = this.gl;
+    this.drawSeq += 1;
     gl.viewport(0, 0, opts.backingWidthPx, opts.backingHeightPx);
     const [br, bg, bb, ba] = opts.background;
     gl.clearColor(br, bg, bb, ba);
     gl.clear(gl.COLOR_BUFFER_BIT);
 
     if (opts.backingWidthPx <= 0 || opts.backingHeightPx <= 0) {
-      return;
+      return { pendingUploads: 0, pendingBytes: 0, uploaded: 0 };
     }
 
     this.ensureLut(opts.colormap);
@@ -375,7 +462,33 @@ export class SpectrogramGlRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this.lutTexture);
     gl.uniform1i(u.uLut, 1);
 
-    const seenKeys = new Set<string>();
+    // H-47 pass 1: which visible tiles need their pixels uploaded (a tile whose texture already
+    // holds this exact tile object needs nothing), and how the frame's budget splits them.
+    const candidates = this.pendingCandidates;
+    const wanted = this.pendingTiles;
+    candidates.length = 0;
+    wanted.clear();
+    for (const entry of opts.tiles) {
+      const key = `${entry.tile.fftSize}:${entry.tile.hop}:${entry.tileIndex}`;
+      const cached = this.tileTextures.get(key);
+      if (cached?.sourceTile === entry.tile) {
+        continue;
+      }
+      wanted.set(key, entry.tile);
+      candidates.push({ key, bytes: entry.tile.data.byteLength, x0: entry.x0, x1: entry.x1, seq: this.tileSeq(entry.tile) });
+    }
+    const plan = planUploads(candidates, opts.uploadBudget ?? DEFAULT_UPLOAD_BUDGET, opts.backingWidthPx);
+    for (const candidate of plan.upload) {
+      const tile = wanted.get(candidate.key);
+      if (tile) {
+        this.uploadTile(candidate.key, tile);
+      }
+    }
+
+    // Pass 2: draw every tile that has a texture. A tile still waiting for its upload keeps the
+    // pixels it had (a preview under a refined tile) or, with nothing uploaded yet, is simply not
+    // drawn — the pending background SPEC-007 §2.8 already specifies for a tile that hasn't come.
+    const verts = this.quadVerts;
     for (const entry of opts.tiles) {
       const x0 = Math.max(0, entry.x0);
       const x1 = Math.min(opts.backingWidthPx, entry.x1);
@@ -383,25 +496,44 @@ export class SpectrogramGlRenderer {
         continue;
       }
       const key = `${entry.tile.fftSize}:${entry.tile.hop}:${entry.tileIndex}`;
-      seenKeys.add(key);
-      const texture = this.ensureTileTexture(key, entry.tile);
-      gl.uniform1i(u.uTileFrames, entry.tile.frames);
-      gl.uniform1i(u.uTileBins, entry.tile.bins);
+      const cached = this.tileTextures.get(key);
+      if (!cached) {
+        continue;
+      }
+      cached.lastDrawn = this.drawSeq;
+      gl.uniform1i(u.uTileFrames, cached.frames);
+      gl.uniform1i(u.uTileBins, cached.bins);
       gl.uniform1f(u.uTileBaseFrame, entry.tileIndex * TILE_FRAMES);
       gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.bindTexture(gl.TEXTURE_2D, cached.texture);
       gl.uniform1i(u.uTile, 0);
-      const verts = new Float32Array([x0, 0, x1, 0, x0, opts.backingHeightPx, x1, 0, x1, opts.backingHeightPx, x0, opts.backingHeightPx]);
+      verts[0] = x0; verts[1] = 0;
+      verts[2] = x1; verts[3] = 0;
+      verts[4] = x0; verts[5] = opts.backingHeightPx;
+      verts[6] = x1; verts[7] = 0;
+      verts[8] = x1; verts[9] = opts.backingHeightPx;
+      verts[10] = x0; verts[11] = opts.backingHeightPx;
       gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
       gl.bufferSubData(gl.ARRAY_BUFFER, 0, verts);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
     gl.bindVertexArray(null);
-    this.evictUnused(seenKeys);
+    this.evictOverCap();
 
     if (opts.overlay && opts.overlay.length > 0) {
       this.overlayProgram.draw(opts.overlay, opts.backingWidthPx, opts.backingHeightPx, gl.TRIANGLES);
     }
+    return { pendingUploads: plan.deferred.length, pendingBytes: plan.deferredBytes, uploaded: plan.upload.length };
+  }
+
+  /** Arrival order of a tile object: the draw that first saw it (newest = largest). */
+  private tileSeq(tile: SpectroTile): number {
+    let seq = this.seenTiles.get(tile);
+    if (seq === undefined) {
+      seq = this.drawSeq;
+      this.seenTiles.set(tile, seq);
+    }
+    return seq;
   }
 
   dispose(): void {
@@ -410,6 +542,7 @@ export class SpectrogramGlRenderer {
       gl.deleteTexture(entry.texture);
     }
     this.tileTextures.clear();
+    this.textureBytes = 0;
     gl.deleteTexture(this.lutTexture);
     gl.deleteBuffer(this.quadBuffer);
     gl.deleteVertexArray(this.vao);

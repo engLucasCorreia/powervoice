@@ -8,7 +8,29 @@
 
 import { TILE_FRAMES } from "./geometry";
 import type { SpectroTile } from "./spectroRequester";
-import { dequantizeDb } from "./vxst";
+import { dequantizeDb, Q_CEIL_DB, Q_FLOOR_DB } from "./vxst";
+
+/** H-47: `dequantizeDb`'s span, so {@link columnDb} can inline it as the identical expression. */
+const Q_SPAN_DB = Q_CEIL_DB - Q_FLOOR_DB;
+/**
+ * H-47: `dequantizeDb(code)` for every one of the 256 codes, precomputed once. A tile code is a
+ * `u8`, so this is the whole domain, and each entry is the **same expression** evaluated the same
+ * way — the table is bit-exact, not an approximation. It replaces a multiply **and a division**
+ * per bin per column (~1.5 M of each per Canvas2D frame of a 2126×850 split view) with one L1
+ * load; `x / 255` can't be turned into `x * (1 / 255)` without changing the result, so the
+ * division was unavoidable inline.
+ */
+const CODE_DB = ((): Float64Array => {
+  const table = new Float64Array(256);
+  for (let code = 0; code < 256; code++) {
+    table[code] = Q_FLOOR_DB + (code * Q_SPAN_DB) / 255;
+  }
+  return table;
+})();
+/** H-47: {@link columnDb}'s internal "no tile covers this" marker — numeric, so its two hot loops
+ * compare instead of calling `Number.isNaN`. Below every possible dB value, and never written to
+ * `out` (which keeps `NaN`). */
+const UNKNOWN = -Infinity;
 
 /** Looks up the tile holding frame `tileIndex * TILE_FRAMES .. +TILE_FRAMES`, or `undefined` if
  * it hasn't arrived (SPEC-007 §2.8: shown as pending). */
@@ -153,6 +175,16 @@ export function createColumnScratch(bins: number): ColumnScratch {
  *   (`dequantizeDb` is strictly increasing, so this is exactly the max of the dequantized values);
  * - no closures or allocations per bin; only the bins the rows can reach are computed.
  * The per-pixel version cost ~0.5–3 s per frame on a 60-min document's split view.
+ *
+ * H-47 (this was 66 % of the self time of every Canvas2D frame of the split view):
+ * - "unknown" is `-Infinity` rather than `NaN` inside both passes, so each of the ~1 000 bins per
+ *   column and each pixel's bin span compares numerically instead of calling `Number.isNaN`
+ *   (`out` still gets `NaN`, unchanged);
+ * - the one-frame-row and two-frame-row cases — every zoom level the app actually draws at — read
+ *   their tile row through hoisted locals instead of indexing the `rowData`/`rowBase`/`rowBins`
+ *   arrays per bin, and `dequantizeDb` is inlined as the same `-150 + code · 156 / 255`
+ *   expression (identical float operations, so the values are bit-for-bit the old ones — the
+ *   `columnDb` ≡ `pixelDb` parity test in `samplerColumn.test.ts` is exact).
  */
 export function columnDb(
   lookup: TileLookup,
@@ -221,15 +253,47 @@ export function columnDb(
   const lastBin = Math.min(bins - 1, Math.ceil(maxHi) + 1);
   const values = scratch.values;
   const { rowData, rowBase, rowBins } = scratch;
-  for (let bin = firstBin; bin <= lastBin; bin++) {
-    let v = Number.NaN;
-    if (rows > 0 && interpolate) {
-      const d0 = rowData[0];
-      const d1 = rowData[1];
-      const v0 = d0 && bin < rowBins[0]! ? dequantizeDb(d0[rowBase[0]! + bin]!) : null;
-      const v1 = d1 && bin < rowBins[1]! ? dequantizeDb(d1[rowBase[1]! + bin]!) : null;
-      v = v0 === null ? (v1 ?? Number.NaN) : v1 === null ? v0 : v0 + (v1 - v0) * frac;
-    } else if (rows > 0) {
+  if (rows === 0) {
+    values.fill(UNKNOWN, firstBin, lastBin + 1);
+  } else if (interpolate) {
+    // Two frame rows, linearly interpolated (zoomed in past one frame per pixel).
+    const d0 = rowData[0] ?? null;
+    const d1 = rowData[1] ?? null;
+    const b0 = rowBase[0]!;
+    const b1 = rowBase[1]!;
+    const n0 = d0 ? rowBins[0]! : 0;
+    const n1 = d1 ? rowBins[1]! : 0;
+    for (let bin = firstBin; bin <= lastBin; bin++) {
+      const has0 = bin < n0;
+      const has1 = bin < n1;
+      if (has0 && has1) {
+        const v0 = CODE_DB[d0![b0 + bin]!]!;
+        const v1 = CODE_DB[d1![b1 + bin]!]!;
+        values[bin] = v0 + (v1 - v0) * frac;
+      } else if (has0) {
+        values[bin] = CODE_DB[d0![b0 + bin]!]!;
+      } else if (has1) {
+        values[bin] = CODE_DB[d1![b1 + bin]!]!;
+      } else {
+        values[bin] = UNKNOWN;
+      }
+    }
+  } else if (rows === 1) {
+    // One frame row (the zoomed-out case: one or two frames per device column).
+    const d = rowData[0] ?? null;
+    if (!d) {
+      values.fill(UNKNOWN, firstBin, lastBin + 1);
+    } else {
+      const base = rowBase[0]!;
+      const top = Math.min(lastBin, rowBins[0]! - 1);
+      for (let bin = firstBin; bin <= top; bin++) {
+        values[bin] = CODE_DB[d[base + bin]!]!;
+      }
+      values.fill(UNKNOWN, top + 1, lastBin + 1);
+    }
+  } else {
+    // The maximum over three or more frame rows.
+    for (let bin = firstBin; bin <= lastBin; bin++) {
       let best = -1;
       for (let k = 0; k < rows; k++) {
         const d = rowData[k];
@@ -240,18 +304,15 @@ export function columnDb(
           }
         }
       }
-      if (best >= 0) {
-        v = dequantizeDb(best);
-      }
+      values[bin] = best >= 0 ? CODE_DB[best]! : UNKNOWN;
     }
-    values[bin] = v;
   }
 
   // Frequency axis: `sampleGridSpan(bins, binLo[py], binHi[py], …)` over the column's values.
   for (let py = 0; py < out.length; py++) {
     const lo = binLo[py]!;
     const hi = binHi[py]!;
-    let v = Number.NaN;
+    let v = UNKNOWN;
     if (bins > 0 && hi > lo) {
       const clampedLo = Math.max(0, lo);
       const clampedHi = Math.min(bins, hi);
@@ -261,7 +322,7 @@ export function columnDb(
           const i1 = Math.min(bins - 1, Math.ceil(clampedHi) - 1);
           for (let i = i0; i <= i1; i++) {
             const x = values[i]!;
-            if (!Number.isNaN(x) && (Number.isNaN(v) || x > v)) {
+            if (x > v) {
               v = x;
             }
           }
@@ -271,10 +332,10 @@ export function columnDb(
           const i1 = Math.min(bins - 1, i0 + 1);
           const v0 = values[i0]!;
           const v1 = values[i1]!;
-          v = Number.isNaN(v0) ? v1 : Number.isNaN(v1) ? v0 : v0 + (v1 - v0) * (center - i0);
+          v = v0 === UNKNOWN ? v1 : v1 === UNKNOWN ? v0 : v0 + (v1 - v0) * (center - i0);
         }
       }
     }
-    out[py] = v;
+    out[py] = v === UNKNOWN ? Number.NaN : v;
   }
 }

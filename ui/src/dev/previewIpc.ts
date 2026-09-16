@@ -308,6 +308,17 @@ const tileMemo = new Map<string, ArrayBuffer>();
  * upload — rather than ~10 ms of preview-only synthesis per new tile on the UI thread (the real
  * app computes tiles on Rust workers). */
 const LONG_TILE_TEMPLATES = 16;
+/**
+ * H-47: the templated tiles are synthesized at **this** hop whatever hop was requested, so the
+ * whole zoom sweep shares one set of {@link LONG_TILE_TEMPLATES} templates per FFT size instead of
+ * re-synthesizing 16 of them at every new hop. Without it the sweep's own mock cost 77–97 % of the
+ * self time inside every frame over 50 ms (H-47's CDP attribution): each Ctrl+wheel step picks a
+ * new hop, and the 16 fresh ~10 ms syntheses landed on the UI thread in `setTimeout(0)` tasks —
+ * a measurement artifact of the preview, not a renderer cost (the real app's tiles come from Rust
+ * workers over IPC). The header still carries the requested hop, so geometry is unchanged; only
+ * the fake content no longer varies with zoom.
+ */
+const LONG_TEMPLATE_HOP_DIV = 4;
 
 function memoVxst(
   requestId: number,
@@ -319,10 +330,11 @@ function memoVxst(
   templated = false,
 ): ArrayBuffer {
   const source = templated ? tile % LONG_TILE_TEMPLATES : tile;
-  const key = `${fft}:${hop}:${source}`;
+  const sourceHop = templated ? fft / LONG_TEMPLATE_HOP_DIV : hop;
+  const key = `${fft}:${sourceHop}:${source}`;
   let base = tileMemo.get(key);
   if (!base) {
-    base = vxst(0, 0, fft, hop, source, false);
+    base = vxst(0, 0, fft, sourceHop, source, false);
     if (tileMemo.size >= TILE_MEMO_CAP) {
       const oldest = tileMemo.keys().next().value;
       if (oldest !== undefined) {
@@ -337,6 +349,7 @@ function memoVxst(
   view.setUint32(12, last ? 1 : 0, true);
   view.setBigUint64(16, BigInt(audioRev), true);
   view.setBigUint64(24, BigInt(tile * TILE_FRAMES * hop), true);
+  view.setUint32(32, hop, true);
   view.setUint32(56, tile, true);
   return buf;
 }

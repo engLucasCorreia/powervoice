@@ -50,7 +50,7 @@
   import { crispOffset, themeColors } from "../theme/themeColors";
   import { pushNotice } from "../state/notices.svelte";
   import { rendererPref } from "../state/rendererPref.svelte";
-  import { colorForT, type ColormapName, cssGradientFor, normalizeDb } from "./colormap";
+  import { type ColormapName, colormapLut, cssGradientFor } from "./colormap";
   import { detectMaxTextureSize, isFftSizeDisabled } from "./fftLimit";
   import {
     autoFftSize,
@@ -134,8 +134,10 @@
   // moves. A draw that throws is retried by the scheduler, and any later change draws again.
   const frames = createFrameClient(
     () => {
-      draw();
-      return isPlayheadMoving();
+      // H-47: `draw()` is true while tile uploads are still budgeted over following frames, so the
+      // backlog drains at the display rate (the H-43 contract: animate only while work remains).
+      const uploading = draw();
+      return uploading || isPlayheadMoving();
     },
     { name: "spectral" },
   );
@@ -302,7 +304,7 @@
    * tile-boundary approximation. Overlays reuse the same `../render/overlayGeometry.ts` builder
    * as the waveform, with `markerStyle: "lines"` to match this pane's own (simpler) Canvas2D
    * overlay look. */
-  function drawSpectrogramWebgl2(renderer: SpectrogramGlRenderer, backingW: number, backingH: number, dpr: number): void {
+  function drawSpectrogramWebgl2(renderer: SpectrogramGlRenderer, backingW: number, backingH: number, dpr: number): boolean {
     const fftSize = spectral.fftSize ?? autoFftSize(rateHz);
     const sppDev = samplesPerPixel / dpr;
     const hop = hopForZoom(sppDev, fftSize);
@@ -345,7 +347,7 @@
       },
     });
 
-    renderer.draw({
+    const result = renderer.draw({
       backingWidthPx: backingW,
       backingHeightPx: backingH,
       background: themeColors().spec.bg.rgba,
@@ -363,6 +365,7 @@
       tiles,
       overlay: overlay.vertexCount > 0 ? overlay.toFloat32Array() : null,
     });
+    return result.pendingUploads > 0;
   }
 
   function drawSpectrogram(ctx: CanvasRenderingContext2D, backingW: number, backingH: number, dpr: number): void {
@@ -385,11 +388,17 @@
       return tile;
     };
     const scale = spectral.freqScale;
-    const colormap = spectral.colormap;
     const floorDb = spectral.floorDb;
     const ceilDb = spectral.ceilDb;
     const [pr, pg, pb] = themeColors().spec.pending.rgba;
     const pendingRgb = [Math.round(pr * 255), Math.round(pg * 255), Math.round(pb * 255)] as const;
+    // H-47: `colorForT(colormap, normalizeDb(db, floorDb, ceilDb))` per pixel, without the three
+    // calls and the `[r, g, b]` tuple each of them allocated (~11 % of the Canvas2D frame plus its
+    // GC): both functions are affine then clamped then rounded to the same 256-entry LUT index,
+    // so the index is `round(clamp((db − floorDb) · 255 / (ceilDb − floorDb), 0, 255))`.
+    const lut = colormapLut(spectral.colormap);
+    const dbSpan = ceilDb - floorDb;
+    const lutScale = dbSpan > 0 ? 255 / dbSpan : 0;
 
     const image = ctx.createImageData(backingW, backingH);
     const data = image.data;
@@ -413,23 +422,26 @@
     // 60-min document's split view).
     const columnOut = new Float64Array(backingH);
     const columnScratch = createColumnScratch(bins);
+    const rowStride = backingW * 4;
     for (let px = 0; px < backingW; px++) {
       columnDb(getTile, total, bins, frameLoArr[px]!, frameHiArr[px]!, binLoArr, binHiArr, columnOut, columnScratch);
+      let idx = px * 4;
       for (let py = 0; py < backingH; py++) {
         const db = columnOut[py]!;
-        const idx = (py * backingW + px) * 4;
-        if (Number.isNaN(db)) {
+        // `db === db` is "not NaN" without the `Number.isNaN` call, once per pixel.
+        if (db === db) {
+          const t = (db - floorDb) * lutScale;
+          const li = (t > 0 ? (t < 255 ? Math.round(t) : 255) : 0) * 3;
+          data[idx] = lut[li]!;
+          data[idx + 1] = lut[li + 1]!;
+          data[idx + 2] = lut[li + 2]!;
+        } else {
           data[idx] = pendingRgb[0];
           data[idx + 1] = pendingRgb[1];
           data[idx + 2] = pendingRgb[2];
-        } else {
-          const value = normalizeDb(db, floorDb, ceilDb);
-          const [r, g, b] = colorForT(colormap, value);
-          data[idx] = r;
-          data[idx + 1] = g;
-          data[idx + 2] = b;
         }
         data[idx + 3] = 255;
+        idx += rowStride;
       }
     }
     ctx.putImageData(image, 0, 0);
@@ -498,9 +510,10 @@
     frames.invalidate();
   });
 
-  function draw(): void {
+  /** Draws one frame; `true` while budgeted tile uploads are still pending (H-47). */
+  function draw(): boolean {
     if (!canvasEl || viewportPx <= 0 || heightPx <= 0) {
-      return;
+      return false;
     }
     // H-12 (HiDPI): the canvas's backing store is sized in device pixels regardless of whether a
     // 2D context is available, so the element itself is always HiDPI-correct (and this part is
@@ -514,7 +527,7 @@
     }
     if (glHost?.kind === "webgl2" && glRenderer) {
       if (isOpen && lenSamples > 0 && rateHz > 0) {
-        drawSpectrogramWebgl2(glRenderer, backingW, backingH, dpr);
+        return drawSpectrogramWebgl2(glRenderer, backingW, backingH, dpr);
       } else {
         // No document (or not enough info yet): still clear to the background so the pane never
         // shows a stale frame from a previously open document.
@@ -537,11 +550,11 @@
           overlay: null,
         });
       }
-      return;
+      return false;
     }
     const ctx = canvasEl.getContext("2d");
     if (!ctx) {
-      return; // jsdom in tests, or a browser with no 2D canvas support
+      return false; // jsdom in tests, or a browser with no 2D canvas support
     }
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -555,6 +568,7 @@
       drawOverlays(ctx);
     }
     ctx.restore();
+    return false;
   }
 
   function zoomAt(anchorSample: number, anchorPx: number, nextSpp: number): void {

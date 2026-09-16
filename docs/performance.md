@@ -92,22 +92,22 @@ How: Same sweep with `scene=spectral` (split view). Reproduce: `just bench-ui`.
 
 | metric | measured | target | margin | status |
 |---|---|---|---|---|
-| `frame_spectral_canvas2d_1280x720_p50_ms` | 47.9 ms | ≤ 16.7 | -187 % | **FAIL** |
-| `frame_spectral_canvas2d_1280x720_p95_ms` | 199.9 ms | ≤ 16.7 | -1097 % | **FAIL** |
-| `frame_spectral_canvas2d_1280x720_p99_ms` | 297.6 ms | ≤ 50 | -495 % | **FAIL** |
-| `frame_spectral_canvas2d_1280x720_frames_over_50ms` | 65 frames | ≤ 1 | -6400 % | **FAIL** |
-| `frame_spectral_canvas2d_2126x850_p50_ms` | 45.8 ms | ≤ 16.7 | -174 % | **FAIL** |
-| `frame_spectral_canvas2d_2126x850_p95_ms` | 91.4 ms | ≤ 16.7 | -447 % | **FAIL** |
-| `frame_spectral_canvas2d_2126x850_p99_ms` | 169.2 ms | ≤ 50 | -238 % | **FAIL** |
-| `frame_spectral_canvas2d_2126x850_frames_over_50ms` | 64 frames | ≤ 1 | -6300 % | **FAIL** |
-| `frame_spectral_auto_1280x720_p50_ms` | 4.3 ms | ≤ 16.7 | +74 % | pass |
-| `frame_spectral_auto_1280x720_p95_ms` | 9.8 ms | ≤ 16.7 | +41 % | pass |
-| `frame_spectral_auto_1280x720_p99_ms` | 111.4 ms | ≤ 50 | -123 % | **FAIL** |
-| `frame_spectral_auto_1280x720_frames_over_50ms` | 23 frames | ≤ 1 | -2200 % | **FAIL** |
-| `frame_spectral_auto_2126x850_p50_ms` | 5.9 ms | ≤ 16.7 | +65 % | pass |
-| `frame_spectral_auto_2126x850_p95_ms` | 15.4 ms | ≤ 16.7 | +8 % | tight |
-| `frame_spectral_auto_2126x850_p99_ms` | 115.4 ms | ≤ 50 | -131 % | **FAIL** |
-| `frame_spectral_auto_2126x850_frames_over_50ms` | 22 frames | ≤ 1 | -2100 % | **FAIL** |
+| `frame_spectral_canvas2d_1280x720_p50_ms` | 4.1 ms | ≤ 16.7 | +75 % | pass |
+| `frame_spectral_canvas2d_1280x720_p95_ms` | 12.2 ms | ≤ 16.7 | +27 % | tight |
+| `frame_spectral_canvas2d_1280x720_p99_ms` | 14.8 ms | ≤ 50 | +70 % | pass |
+| `frame_spectral_canvas2d_1280x720_frames_over_50ms` | 0 frames | ≤ 1 | +100 % | pass |
+| `frame_spectral_canvas2d_2126x850_p50_ms` | 9.7 ms | ≤ 16.7 | +42 % | pass |
+| `frame_spectral_canvas2d_2126x850_p95_ms` | 22.7 ms | ≤ 16.7 | -36 % | **FAIL** |
+| `frame_spectral_canvas2d_2126x850_p99_ms` | 25.5 ms | ≤ 50 | +49 % | pass |
+| `frame_spectral_canvas2d_2126x850_frames_over_50ms` | 0 frames | ≤ 1 | +100 % | pass |
+| `frame_spectral_auto_1280x720_p50_ms` | 3.8 ms | ≤ 16.7 | +77 % | pass |
+| `frame_spectral_auto_1280x720_p95_ms` | 6.6 ms | ≤ 16.7 | +60 % | pass |
+| `frame_spectral_auto_1280x720_p99_ms` | 9.5 ms | ≤ 50 | +81 % | pass |
+| `frame_spectral_auto_1280x720_frames_over_50ms` | 0 frames | ≤ 1 | +100 % | pass |
+| `frame_spectral_auto_2126x850_p50_ms` | 2.9 ms | ≤ 16.7 | +83 % | pass |
+| `frame_spectral_auto_2126x850_p95_ms` | 9.8 ms | ≤ 16.7 | +41 % | pass |
+| `frame_spectral_auto_2126x850_p99_ms` | 17.1 ms | ≤ 50 | +66 % | pass |
+| `frame_spectral_auto_2126x850_frames_over_50ms` | 0 frames | ≤ 1 | +100 % | pass |
 
 ### PROMPT §2 / SPEC-003 AC-1 — playback start < 50 ms (Play → first non-silent frame written to the device buffer)
 
@@ -278,7 +278,7 @@ How: `vox-project` `sidecar_perf`. Reproduce: `just test-big`.
 | Peaks query (`vox_project::peaks`) | Keeps the last chunk's pyramid across the output buckets of one query. It used to re-read, CRC-check and decode the ~11 KB record for every bucket. | 1000 buckets: 1.12 ms (spp 64), 1.17 ms (1024), 1.19 ms (4096); 10 240 record reads for 10 chunks | 17 µs, 40 µs, 119 µs; 10 reads. A zoomed 2126-px view on a 60-min document: p95 0.31 ms |
 | Peak pyramid (`ChunkPeaks::compute`) | 8-lane compare-and-select min/max instead of a serial fold, and a branch-free non-finite scan | 165.7 µs per 64 Ki-sample chunk; 482–602 ms for a 60-min import | 18.8 µs (8.8×); 88–154 ms |
 | Import (`import_file`) | Decoding and downmixing run on their own thread, overlapping chunk commits (bounded channel, recycled buffers) | Open 60 min: best 2241 ms, worst 2654 ms (3 opens, load ~7) | Best 1671 ms, median 1734 ms (5 opens, load ~10) |
-| Spectrogram, Canvas2D path | `columnDb`: the time rule is computed once per column and bin, and its max is taken on raw codes; the renderer keeps a per-draw tile memo. Both are exactly `pixelDb`'s values (tested). | Split view 1280×720: 2 fps (p50 491 ms); 2126×850: 0.35 fps (p50 2809 ms) | 15–34 fps (p50 22–48 ms); 16–20 fps (p50 44–46 ms). Still misses (see below) |
+| Spectrogram, Canvas2D path | `columnDb`: the time rule is computed once per column and bin, and its max is taken on raw codes; the renderer keeps a per-draw tile memo. Both are exactly `pixelDb`'s values (tested). | Split view 1280×720: 2 fps (p50 491 ms); 2126×850: 0.35 fps (p50 2809 ms) | 15–34 fps (p50 22–48 ms); 16–20 fps (p50 44–46 ms). Finished by H-47 below |
 | WebGL2 quads (`QuadBatch`) | Writes into a growable `Float32Array` and hands back a view. It used to push 36 numbers per quad into a JS array and copy that into a new `Float32Array` every frame. | Waveform, WebGL2, 2126×850: p95 19.3 ms, p99 42.3 ms, 5 frames > 50 ms | p95 11.8–12.4 ms, p99 27–31 ms, 0–2 frames > 50 ms |
 
 Each code change has a regression test:
@@ -287,6 +287,38 @@ Each code change has a regression test:
 - `samplerColumn.test.ts`
 - `quadsTyped.test.ts`
 - the existing `import` tests (cancel, damage, downmix, markers)
+
+## H-47 fixes — split-view frame spikes
+
+T-704 reported the split view spiking to p99 110–130 ms on WebGL2 (22–29 frames over 50 ms,
+clustered on tile arrivals) and the Canvas2D fallback stuck at 15–34 fps. H-47 attributed those
+frames with a CDP CPU profile aligned to the page's own `requestAnimationFrame` windows, plus
+every GL call timed from inside the page (headless Chromium, 60-min document, `scene=spectral`,
+2126×850).
+
+**The spikes were the measurement harness, not the renderer.** 96.7 % of the self time inside
+every WebGL2 frame over 50 ms, and 77.4 % of the Canvas2D one, was `vxst()` in
+`ui/src/dev/previewIpc.ts` — the preview's *own* tile synthesis, on the UI thread. GL work inside
+those same frames was 3.7 ms out of 2769 ms, and the whole 10 s sweep spent 122 ms inside GL calls
+for 212 MiB of texture upload. T-704's memo keyed a template on (FFT size, **hop**, tile % 16), and
+every Ctrl+wheel step of the sweep picks a new hop, so each zoom step re-synthesized 16 fresh
+~10 ms tiles in `setTimeout(0)` tasks that landed inside a frame. The real app never pays this:
+tiles come from Rust tile workers over IPC.
+
+| Area | Change | Before | After |
+|---|---|---|---|
+| Preview tile mock (measurement) | The long document's templates are synthesized at a canonical hop (`fft/4`) whatever hop was requested — the header still carries the requested hop, so geometry is unchanged — so the whole sweep shares 16 templates per FFT size. | Split view, WebGL2: p99 34.5 ms, max 152 ms, 25 frames > 50 ms; Canvas2D 2126×850: 38 fps, p95 98.4 ms, 30 frames > 50 ms | WebGL2: p99 11.9 ms, max 17.7 ms, 0 frames > 50 ms; Canvas2D: 51 fps, p95 39.1 ms, 3 frames > 50 ms |
+| Spectrogram tile textures (`spectrogram/webglRenderer.ts`) | A 64 MiB least-recently-drawn texture cache, re-used textures and `texSubImage2D` when the tile size is unchanged. The old rule deleted every texture the latest draw hadn't used, so a scroll re-uploaded what it had just thrown away. | 847 `createTexture` + 847 `deleteTexture` for 847 uploads, 212 MiB in 10 s | No texture create or delete after the first draw of a tile; a tile that scrolled off screen and back costs no upload |
+| Per-frame upload budget (`render/uploadBudget.ts`) | At most 2 tiles / 2 MiB uploaded per frame (visible before off-screen margin, newest first); the rest are uploaded on the following frames, which the renderer asks for by staying "animating" (the H-43 scheduler contract). | A 64-tile request could upload in one frame | Bounded per frame at every FFT size, backlog drained at the display rate |
+| Spectrogram, Canvas2D path (`sampler.ts::columnDb`, `SpectralView.svelte`) | `dequantizeDb` per bin (a multiply and a **division**, ~1.5 M of each per 2126×850 frame) becomes a bit-exact 256-entry table; "unknown" is `-Infinity` instead of `NaN`, so both hot loops compare instead of calling `Number.isNaN`; the one- and two-frame-row cases read through hoisted locals; the pixel loop indexes the colormap LUT directly instead of `normalizeDb` + `clamp01` + `colorForT` (which allocated a tuple per pixel). | Split view 1280×720: 81 fps, p50 12.4 ms, p95 21.9 ms; 2126×850: 38 fps, p50 19.4 ms, p95 98.4 ms | 167 fps, p50 4.1 ms, p95 12.2 ms; 82 fps, p50 9.7 ms, p95 22.7 ms |
+
+Every rendered value is unchanged: `samplerColumn.test.ts` still asserts `columnDb` ≡ `pixelDb`
+exactly (SPEC-007 AC-13), and the colormap index is the same expression `colorForT` computes.
+
+Regression tests: `render/uploadBudget.test.ts` (priority order, the per-frame cap, a backlog
+draining over frames) and `spectrogram/webglRenderer.test.ts` (no re-upload of an unchanged tile,
+`texSubImage2D` re-use, off-screen textures kept, LRU eviction, the budget across frames, only
+uploaded tiles drawn) against a recording fake WebGL2 context.
 
 ## Findings and open items
 
@@ -351,12 +383,24 @@ Each code change has a regression test:
   cost. The "after" numbers are about zero because nothing runs at all while idle: no animation
   frame, and no IPC message. The rows come from `idle_*` and `playback_*` in `target/bench/ui.log`;
   the H-43 group in the matrix above holds them.
-- **Output-callback worst case (`just bench-callback`, ADR-002 §2) is load-sensitive.** At load
-  average 10–16, the 128-frame row's max callback reached 4–13 ms, over its 2.7 ms deadline, while
-  p99 stayed within the deadline at every block size. T-110 measured p99 ≤ 5 % of the deadline on
-  a quiet machine, and T-704 didn't touch the callback path. The bench thread isn't realtime-
-  scheduled, so it gets preempted under load; H-43 or a later RT pass should re-check on an idle
-  machine.
+- **Output-callback worst case (`just bench-callback`, ADR-002 §2) is load-sensitive — re-checked
+  in H-47 and it was the load.** T-704 saw the 128-frame row's max callback reach 4–13 ms, over
+  its 2.7 ms deadline, at load average 10–16, while p99 stayed within the deadline at every block
+  size, and left "re-check on an idle machine" open. On a quiet machine the whole histogram sits
+  far inside its deadlines:
+
+  | block | deadline | p50 | p99 | max | max as % of the deadline |
+  |---|---|---|---|---|---|
+  | 128 | 2666.7 µs | 32.8 µs | 32.8 µs | 264.3 µs | 9.9 % |
+  | 256 | 5333.3 µs | 65.5 µs | 65.5 µs | 287.9 µs | 5.4 % |
+  | 512 | 10 666.7 µs | 131.1 µs | 524.3 µs | 679.3 µs | 6.4 % |
+  | 1024 | 21 333.3 µs | 262.1 µs | 262.1 µs | 396.3 µs | 1.9 % |
+
+  A second run taken while the machine was still busy from a build gave 595 µs / 1730 µs /
+  1800 µs / 2869 µs — still inside every deadline, and an order of magnitude better than T-704's
+  worst. The bench thread isn't realtime-scheduled, so what T-704 measured was preemption, not the
+  callback path. Nothing in the audio path needs a fix; the caveat to keep is that this bench only
+  means something on a quiet machine.
 - **The UI frame-time rows vary with background load.** The matrix shows the latest sweep. In it,
   the Canvas2D waveform at 2126×850 failed (p95 45.7 ms); in the sweep before, it passed (p95
   13.6 ms, 0 frames over 50 ms). The split-view failures reproduce in every run.

@@ -818,4 +818,67 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// H-50: audited alongside normalize/export/loudness/bake's own success-path ordering bug —
+    /// here the real "result" (the installed print) is already committed by
+    /// `EngineHandle::nr_capture_apply` inside `run_pipeline`, synchronously before it returns
+    /// `Ok`, so it is already installed by the time `run_job` even decides the terminal state is
+    /// `Done` (unlike the other services, no reordering was needed). This locks that invariant in
+    /// end to end through the real job thread, polled with `wait_for_finish` rather than raced.
+    #[test]
+    fn a_successful_job_installs_the_print_before_the_terminal_done_progress_event() {
+        let dir = tmp_dir("success-order");
+        let (_engine, handle, _driver) = live_engine_with_nr_slot();
+        let documents = doc_service_for(&dir, handle.clone());
+        // 2 s at a moderate level: comfortably past the short/loud warning thresholds, so the
+        // job succeeds with no warnings to keep this test focused on the print alone.
+        let samples = white_noise(11, 0.03, 2 * 48_000);
+        let path = dir.join("in.wav");
+        vox_testkit::wav::write_wav_file(
+            &path,
+            &samples,
+            1,
+            48_000,
+            vox_testkit::wav::BitDepth::Float32,
+        )
+        .unwrap();
+        documents.open(&path, false).unwrap();
+
+        let events: Arc<Mutex<Vec<TestEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        let emit: NrCaptureEmitter = Arc::new(move |event| {
+            let e = match event {
+                NrCaptureEvent::Progress(dto) => TestEvent::Progress(dto.state),
+                NrCaptureEvent::Notice(n) => TestEvent::Notice(n.key),
+            };
+            sink.lock().unwrap().push(e);
+        });
+        let inner = Arc::new(Inner {
+            documents,
+            engine: handle.clone(),
+            registry: Arc::new(registry()),
+            emit,
+            next_id: AtomicU32::new(1),
+            jobs: Mutex::new(std::collections::HashMap::new()),
+        });
+        let service = NrCaptureService(inner);
+
+        let (_job_id, slot) = service
+            .start_job(NrCaptureRequest {
+                hint_slot: None,
+                start: 0,
+                end: samples.len() as u64,
+            })
+            .unwrap();
+        assert_eq!(wait_for_finish(&events), JobState::Done);
+
+        let snap = handle.rack_snapshot();
+        assert_eq!(
+            snap.slots[slot].info.noise_profile,
+            Some(vox_rack::NoiseProfileStatus::Loaded),
+            "the captured print must already be installed once Done is observed"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

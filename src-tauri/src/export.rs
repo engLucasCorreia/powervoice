@@ -279,12 +279,9 @@ fn run_job(
     if let (JobState::Failed, Err(err)) = (state, &result) {
         (inner.emit)(ExportEvent::Notice(notice_from_error(err)));
     }
-    (inner.emit)(ExportEvent::Progress(JobProgressDto {
-        job_id,
-        kind: JobKind::Export,
-        state,
-        fraction,
-    }));
+    // H-50: the success notice goes out before the terminal `Done` progress event too (mirrors
+    // the `Failed` ordering above, and H-30's convention generally), so anything that sees
+    // `Done` already has it.
     if state == JobState::Done {
         let name = path
             .file_name()
@@ -294,6 +291,12 @@ fn run_job(
             Notice::toast(NoticeLevel::Info, "notice.export.done").with_param("name", name),
         ));
     }
+    (inner.emit)(ExportEvent::Progress(JobProgressDto {
+        job_id,
+        kind: JobKind::Export,
+        state,
+        fraction,
+    }));
 }
 
 /// Renders `[start, end)` of `source`'s snapshot through `model` into memory (T-602: the render
@@ -990,6 +993,92 @@ mod tests {
             spectro.worker_cap_now(),
             4,
             "the cap is restored once the export finishes"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum SuccessTestEvent {
+        Progress(JobState),
+        Notice(String),
+    }
+
+    fn wait_for_finish(events: &Mutex<Vec<SuccessTestEvent>>) -> JobState {
+        for _ in 0..500 {
+            if let Some(state) = events.lock().unwrap().iter().find_map(|e| match e {
+                SuccessTestEvent::Progress(state) if *state != JobState::Running => Some(*state),
+                _ => None,
+            }) {
+                return state;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("the export job never reported a terminal state within 5s");
+    }
+
+    /// H-50: `notice.export.done` used to go out *after* the terminal `Done` progress event, so
+    /// under load a test (or the UI) that reacted to `Done` could miss it — the same bug H-30
+    /// fixed for the `Failed` path. `run_job` on its own thread (like the real job), polled with
+    /// `wait_for_finish` rather than raced: the notice must already be in `events` the moment
+    /// `Done` is first observed, with no further waiting.
+    #[test]
+    fn a_successful_job_posts_the_done_notice_before_the_terminal_done_progress_event() {
+        let dir = tmp_dir("success-order");
+        let fake = FakeBackend::new(1);
+        let engine_registry =
+            Arc::new(Registry::with_factories(vox_modules::builtin_factories()).unwrap());
+        let engine = Engine::start(EngineConfig::new(Arc::new(fake), engine_registry)).unwrap();
+        let documents = DocumentService::new(dir.join("sessions"), engine.handle());
+
+        let samples = vox_testkit::signal::sine(440.0, -12.0, 0.2, 48_000).unwrap();
+        let len = samples.len() as u64;
+        let source = source_from(&dir, &samples, 48_000);
+
+        let events: Arc<Mutex<Vec<SuccessTestEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        let emit: ExportEmitter = Arc::new(move |event| {
+            let e = match event {
+                ExportEvent::Progress(dto) => SuccessTestEvent::Progress(dto.state),
+                ExportEvent::Notice(n) => SuccessTestEvent::Notice(n.key),
+            };
+            sink.lock().unwrap().push(e);
+        });
+        let inner = Arc::new(Inner {
+            documents,
+            engine: engine.handle(),
+            registry: Arc::new(registry()),
+            spectro: None,
+            emit,
+            next_id: AtomicU32::new(1),
+            jobs: Mutex::new(std::collections::HashMap::new()),
+        });
+
+        let out_path = dir.join("out.wav");
+        std::thread::Builder::new()
+            .name("export-success-order-job".into())
+            .spawn(move || {
+                run_job(
+                    inner,
+                    1,
+                    source,
+                    RackModel::default(),
+                    0,
+                    len,
+                    out_path,
+                    ExportFormat::Wav(vox_io::BitDepth::Int24),
+                    48_000,
+                    CancelToken::new(),
+                );
+            })
+            .unwrap();
+
+        assert_eq!(wait_for_finish(&events), JobState::Done);
+        let got = events.lock().unwrap().clone();
+        assert!(
+            got.iter()
+                .any(|e| matches!(e, SuccessTestEvent::Notice(key) if key == "notice.export.done")),
+            "the done notice must already be present once Done is observed: {got:?}"
         );
 
         std::fs::remove_dir_all(&dir).unwrap();

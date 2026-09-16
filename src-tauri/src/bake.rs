@@ -221,7 +221,9 @@ fn run_job(
             .finish_bake(&source, edit, RackModel::default())
         {
             Ok(_) => {
-                (inner.emit)(progress_event(job_id, JobState::Done, 1.0));
+                // H-50: mirrors `fail_job`'s H-30 ordering below — the document refresh and the
+                // done notice go out before the terminal `Done` progress event, so anything that
+                // sees `Done` (the UI's job store, `wait_for_finish` in tests) already has both.
                 (inner.emit)(BakeEvent::DocumentChanged {
                     info: inner.documents.info().into(),
                     history: inner.documents.history_state().into(),
@@ -230,6 +232,7 @@ fn run_job(
                     NoticeLevel::Info,
                     "notice.bake.done",
                 )));
+                (inner.emit)(progress_event(job_id, JobState::Done, 1.0));
             }
             Err(err) => fail_job(&inner, job_id, &err),
         },
@@ -487,6 +490,9 @@ mod tests {
         .unwrap()
     }
 
+    /// Also covers H-50: `DocumentChanged`/`notice.bake.done` must already be in `h.events` the
+    /// moment `wait_for_finish` observes `Done` (checked right below, with no extra polling) —
+    /// flaked under load before the success-path ordering fix.
     #[test]
     fn ac16_a_whole_file_bake_equals_export_resets_the_rack_and_undo_redo_restore_both() {
         let x = voice();

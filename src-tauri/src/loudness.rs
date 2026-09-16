@@ -293,15 +293,17 @@ fn run_job(
     if let (JobState::Failed, Err(err)) = (state, &result) {
         (inner.emit)(LoudnessEvent::Notice(notice_from_error(err)));
     }
+    // H-50: the report goes out before the terminal `Done` progress event too (same bug/fix as
+    // the `Failed` notice above), so anything that sees `Done` already has it.
+    if let Ok(report) = result {
+        (inner.emit)(LoudnessEvent::Report { job_id, report });
+    }
     (inner.emit)(LoudnessEvent::Progress(JobProgressDto {
         job_id,
         kind: JobKind::LoudnessAnalyze,
         state,
         fraction,
     }));
-    if let Ok(report) = result {
-        (inner.emit)(LoudnessEvent::Report { job_id, report });
-    }
 }
 
 /// Read → (optionally rack-render) → stream into a [`LoudnessMeter`]. `rack_model: None` is
@@ -804,6 +806,91 @@ mod tests {
             got.iter()
                 .any(|e| matches!(e, TestEvent::Notice(key) if key == "error.loudness.rack")),
             "the notice must already be present once `Failed` is observed: {got:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// H-50: `loudness_report` used to go out *after* the terminal `Done` progress event, so
+    /// under load a listener reacting to `Done` (like `wait_for_finish` below) could miss it —
+    /// the same bug H-30 fixed for the `Failed` path. `LoudnessSource::Source` needs no live
+    /// rack, so a device-free fake engine is enough (mirrors `nr_capture.rs`'s `stopped_engine`).
+    #[test]
+    fn a_successful_job_reports_the_report_before_the_terminal_done_progress_event() {
+        use vox_engine::EngineConfig;
+        use vox_engine::backend::fake::FakeBackend;
+
+        let dir = crate::test_util::tmp_dir("loudness-success-order");
+        let fake = FakeBackend::new(1);
+        let engine_registry =
+            Arc::new(Registry::with_factories(vox_modules::builtin_factories()).unwrap());
+        let engine =
+            vox_engine::Engine::start(EngineConfig::new(Arc::new(fake), engine_registry)).unwrap();
+        let handle = engine.handle();
+        let documents = DocumentService::new(dir.join("sessions"), handle.clone());
+        let samples = vox_testkit::signal::sine(440.0, -12.0, 0.2, 48_000).unwrap();
+        let path = dir.join("in.wav");
+        vox_testkit::wav::write_wav_file(
+            &path,
+            &samples,
+            1,
+            48_000,
+            vox_testkit::wav::BitDepth::Float32,
+        )
+        .unwrap();
+        documents.open(&path, false).unwrap();
+
+        #[derive(Debug, Clone, PartialEq)]
+        enum SuccessTestEvent {
+            Progress(JobState),
+            Report,
+        }
+        let events: Arc<Mutex<Vec<SuccessTestEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        let emit: LoudnessEmitter = Arc::new(move |event| {
+            let e = match event {
+                LoudnessEvent::Progress(dto) => SuccessTestEvent::Progress(dto.state),
+                LoudnessEvent::Report { .. } => SuccessTestEvent::Report,
+                LoudnessEvent::Notice(_) => return,
+            };
+            sink.lock().unwrap().push(e);
+        });
+        let inner = Arc::new(Inner {
+            documents,
+            engine: handle,
+            registry: Arc::new(registry()),
+            emit,
+            next_id: AtomicU32::new(1),
+            jobs: Mutex::new(HashMap::new()),
+        });
+        let service = LoudnessService(inner);
+
+        service
+            .start_job(LoudnessRequest {
+                range: None,
+                source: LoudnessSource::Source,
+            })
+            .unwrap();
+
+        let mut state = None;
+        for _ in 0..500 {
+            state = events.lock().unwrap().iter().find_map(|e| match e {
+                SuccessTestEvent::Progress(s) if *s != JobState::Running => Some(*s),
+                _ => None,
+            });
+            if state.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(state, Some(JobState::Done));
+        assert!(
+            events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|e| matches!(e, SuccessTestEvent::Report)),
+            "loudness_report must already be present once Done is observed"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

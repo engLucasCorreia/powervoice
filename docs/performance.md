@@ -384,10 +384,10 @@ uploaded tiles drawn) against a recording fake WebGL2 context.
   frame, and no IPC message. The rows come from `idle_*` and `playback_*` in `target/bench/ui.log`;
   the H-43 group in the matrix above holds them.
 - **Output-callback worst case (`just bench-callback`, ADR-002 §2) is load-sensitive — re-checked
-  in H-47 and it was the load.** T-704 saw the 128-frame row's max callback reach 4–13 ms, over
-  its 2.7 ms deadline, at load average 10–16, while p99 stayed within the deadline at every block
-  size, and left "re-check on an idle machine" open. On a quiet machine the whole histogram sits
-  far inside its deadlines:
+  independently in both H-47 and H-50, and it was the load.** T-704 saw the 128-frame row's max
+  callback reach 4–13 ms, over its 2.7 ms deadline, at load average 10–16, while p99 stayed within
+  the deadline at every block size, and left "re-check on an idle machine" open. On a quiet
+  machine (H-47's run) the whole histogram sits far inside its deadlines:
 
   | block | deadline | p50 | p99 | max | max as % of the deadline |
   |---|---|---|---|---|---|
@@ -396,11 +396,19 @@ uploaded tiles drawn) against a recording fake WebGL2 context.
   | 512 | 10 666.7 µs | 131.1 µs | 524.3 µs | 679.3 µs | 6.4 % |
   | 1024 | 21 333.3 µs | 262.1 µs | 262.1 µs | 396.3 µs | 1.9 % |
 
-  A second run taken while the machine was still busy from a build gave 595 µs / 1730 µs /
+  A second H-47 run taken while the machine was still busy from a build gave 595 µs / 1730 µs /
   1800 µs / 2869 µs — still inside every deadline, and an order of magnitude better than T-704's
-  worst. The bench thread isn't realtime-scheduled, so what T-704 measured was preemption, not the
-  callback path. Nothing in the audio path needs a fix; the caveat to keep is that this bench only
-  means something on a quiet machine.
+  worst. H-50 re-ran the same bench again on its own idle window (load average 1.2; `ps` still
+  showed a `cargo check` that had started in the same second, too recent to move the 1-minute
+  average): 269.6 / 284.0 / 328.9 / 389.8 µs max (10.1 %, 5.3 %, 3.1 %, 1.8 % of deadline, 128→1024
+  frames), then 4 more runs at load average 4.2–13.2, ranging 266.7–948.4 µs (128 frames) up to
+  389.8–2192.3 µs (1024 frames) — the 1024-frame row is the noisiest under load in absolute terms,
+  but its worst observed max there is still only ~10 % of its deadline. Across both tickets' runs,
+  idle or loaded, no max has exceeded its deadline since T-704's original measurement, so no
+  follow-up ticket is opened for this item. The bench thread isn't realtime-scheduled, so what
+  T-704 measured was preemption, not the callback path; the caveat both tickets agree on is that
+  this bench only means something on a quiet machine, and it should still be re-checked
+  periodically rather than declared fixed for good from one or two idle sessions.
 - **The UI frame-time rows vary with background load.** The matrix shows the latest sweep. In it,
   the Canvas2D waveform at 2126×850 failed (p95 45.7 ms); in the sweep before, it passed (p95
   13.6 ms, 0 frames over 50 ms). The split-view failures reproduce in every run.

@@ -201,12 +201,10 @@ fn run_peak_job(
     match plan_result {
         Ok(plan) => match inner.documents.finish_normalize_peak(&source, plan) {
             Ok(outcome) => {
-                (inner.emit)(NormalizeEvent::Progress(JobProgressDto {
-                    job_id,
-                    kind: JobKind::NormalizePeak,
-                    state: JobState::Done,
-                    fraction: 1.0,
-                }));
+                // H-50: mirrors `fail_job`'s H-30 ordering — every event that answers "what
+                // happened" (the document refresh, an info notice, the result itself) goes out
+                // *before* the terminal `Done` progress event, so anything that sees `Done`
+                // (the UI's job store, `wait_for_finish` in tests) already has the result.
                 (inner.emit)(NormalizeEvent::DocumentChanged {
                     info: inner.documents.info().into(),
                     history: inner.documents.history_state().into(),
@@ -225,6 +223,12 @@ fn run_peak_job(
                     job_id,
                     kind: JobKind::NormalizePeak,
                     result: outcome.result.into(),
+                }));
+                (inner.emit)(NormalizeEvent::Progress(JobProgressDto {
+                    job_id,
+                    kind: JobKind::NormalizePeak,
+                    state: JobState::Done,
+                    fraction: 1.0,
                 }));
             }
             Err(err) => fail_job(&inner, job_id, JobKind::NormalizePeak, err),
@@ -270,12 +274,7 @@ fn run_lufs_job(
     match plan_result {
         Ok(plan) => match inner.documents.finish_normalize_lufs(&source, plan) {
             Ok(outcome) => {
-                (inner.emit)(NormalizeEvent::Progress(JobProgressDto {
-                    job_id,
-                    kind: JobKind::NormalizeLufs,
-                    state: JobState::Done,
-                    fraction: 1.0,
-                }));
+                // H-50: same success-path ordering as `run_peak_job` above.
                 (inner.emit)(NormalizeEvent::DocumentChanged {
                     info: inner.documents.info().into(),
                     history: inner.documents.history_state().into(),
@@ -295,6 +294,12 @@ fn run_lufs_job(
                     job_id,
                     kind: JobKind::NormalizeLufs,
                     result: outcome.result.into(),
+                }));
+                (inner.emit)(NormalizeEvent::Progress(JobProgressDto {
+                    job_id,
+                    kind: JobKind::NormalizeLufs,
+                    state: JobState::Done,
+                    fraction: 1.0,
                 }));
             }
             Err(err) => fail_job(&inner, job_id, JobKind::NormalizeLufs, err),
@@ -543,23 +548,20 @@ mod tests {
         assert_eq!(wait_for_finish(&events), JobState::Done);
         assert!(!documents.is_normalize_busy());
 
-        // `normalize_result` is a separate emit just after the terminal `job_progress`, so under
-        // load it can land a moment later — poll for it instead of racing it.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        let result = loop {
-            let found = events.lock().unwrap().iter().find_map(|e| match e {
+        // H-50: `normalize_result` now goes out before the terminal `Done` progress event (the
+        // same ordering fix `run_peak_job` got), so it must already be present the moment
+        // `wait_for_finish` observes `Done` — no extra polling needed.
+        let result = events
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|e| match e {
                 TestEvent::Result(dto) if dto.job_id == job_id => Some(*dto),
                 _ => None,
-            });
-            if let Some(dto) = found {
-                break dto;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "expected a normalize_result event"
+            })
+            .expect(
+                "expected a normalize_result event to already be present once Done is observed",
             );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        };
         assert!(result.result.changed);
         assert_eq!(result.kind, JobKind::NormalizeLufs);
 

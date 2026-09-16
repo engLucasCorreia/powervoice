@@ -184,6 +184,9 @@ impl Inner {
                         accepted = result.accepted,
                         "latency calibration finished"
                     );
+                    // H-50 audit: already correctly ordered — `Result` goes out before the
+                    // terminal `Done` progress event below, so anything that sees `Done` already
+                    // has it (no reordering needed here, unlike normalize/export/loudness/bake).
                     (self.emit)(CalibrationEvent::Result(CalibrationResultDto::new(
                         job_id,
                         verify,

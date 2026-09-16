@@ -12,6 +12,8 @@ check:
     python3 scripts/notices/generate.py --check
     python3 scripts/docs/test_check.py
     python3 scripts/docs/check.py
+    python3 scripts/test_check_case_collisions.py
+    python3 scripts/check_case_collisions.py
     @if [ -f ui/package.json ]; then node scripts/docs/generate_shortcuts.mjs --check; fi
     @if [ -f ui/package.json ]; then npm --prefix ui run check; fi
     @if [ -f ui/package.json ]; then npm --prefix ui test -- --run; fi

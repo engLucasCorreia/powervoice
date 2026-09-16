@@ -3,7 +3,7 @@
 
   /**
    * H-19: the visible `role="menubar"` bar — purely a semantic/visual wrapper. All coordination
-   * (which menu is open, focus movement, mnemonics) lives in `menubar.svelte.ts` and each menu
+   * (which menu is open, focus movement, mnemonics) lives in `menu.svelte.ts` and each menu
    * component itself; this component holds no logic of its own.
    */
   let { label, children }: { label: string; children: Snippet } = $props();

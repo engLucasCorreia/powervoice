@@ -1,7 +1,7 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
-import { resetMenuBarForTest } from "../menu/menubar.svelte";
+import { resetMenuBarForTest } from "../menu/menu.svelte";
 import { pluginsState, resetPluginsForTest } from "../plugins/plugins.svelte";
 import { settle } from "../plugins/testing";
 import EffectsMenu from "./EffectsMenu.svelte";

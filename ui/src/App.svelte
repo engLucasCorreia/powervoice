@@ -48,7 +48,7 @@
   import ViewMenu from "./lib/layout/ViewMenu.svelte";
   import LoudnessPanel from "./lib/loudness/LoudnessPanel.svelte";
   import { initLoudness } from "./lib/loudness/loudness.svelte";
-  import { attachMenuBarMnemonics } from "./lib/menu/menubar.svelte";
+  import { attachMenuBarMnemonics } from "./lib/menu/menu.svelte";
   import MenuBar from "./lib/menu/MenuBar.svelte";
   import NormalizeDialog from "./lib/normalize/NormalizeDialog.svelte";
   import NormalizeLufsDialog from "./lib/normalize/NormalizeLufsDialog.svelte";

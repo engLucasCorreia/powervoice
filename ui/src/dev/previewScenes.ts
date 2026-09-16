@@ -13,7 +13,7 @@ import { openAbout } from "../lib/help/about.svelte";
 import { dispatchAction } from "../lib/shortcuts";
 import { runAcxCheck } from "../lib/loudness/acx.svelte";
 import { startLoudnessAnalyze } from "../lib/loudness/loudness.svelte";
-import { openMenu, type MenuId } from "../lib/menu/menubar.svelte";
+import { openMenu, type MenuId } from "../lib/menu/menu.svelte";
 import { installFrom, openPluginManager } from "../lib/plugins/plugins.svelte";
 import { openPreferences } from "../lib/preferences/preferences.svelte";
 import { openRecoveryStorage } from "../lib/recovery/recovery.svelte";

@@ -9,7 +9,7 @@ import {
   openMenu,
   resetMenuBarForTest,
   toggleMenu,
-} from "./menubar.svelte";
+} from "./menu.svelte";
 
 function mountTriggers(): HTMLElement[] {
   const container = document.createElement("div");

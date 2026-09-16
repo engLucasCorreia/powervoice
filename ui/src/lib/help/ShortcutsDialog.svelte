@@ -3,7 +3,7 @@
   import { isPlatformMac, type ShortcutScope } from "../shortcuts/registry";
   import { shortcutRows, type ShortcutRow } from "../shortcuts/shortcutLabel";
   import { Dialog, Kbd } from "../ui";
-  import { closeShortcutsDialog, shortcutsDialogState } from "./shortcutsDialog.svelte";
+  import { closeShortcutsDialog, shortcutsDialogState } from "./shortcuts.svelte";
 
   /**
    * T-701: Help ▸ Keyboard Shortcuts — every registry entry, grouped by scope, with its

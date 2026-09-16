@@ -6,7 +6,7 @@
   import { dispatchAction } from "../shortcuts";
   import { shortcutLabelForAction } from "../shortcuts/shortcutLabel";
   import MenuBarMenu from "../menu/MenuBarMenu.svelte";
-  import { MENU_MNEMONICS } from "../menu/menubar.svelte";
+  import { MENU_MNEMONICS } from "../menu/menu.svelte";
   import type { RendererPreference } from "../render/rendererMode";
   import { rendererPref, setRendererPreference } from "../state/rendererPref.svelte";
   import { hasSelection } from "../state/selection.svelte";

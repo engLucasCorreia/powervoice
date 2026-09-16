@@ -1,12 +1,12 @@
 <script lang="ts">
   import { t } from "../i18n";
   import MenuBarMenu from "../menu/MenuBarMenu.svelte";
-  import { MENU_MNEMONICS } from "../menu/menubar.svelte";
+  import { MENU_MNEMONICS } from "../menu/menu.svelte";
   import type { MenuEntry } from "../ui/menuModel";
   import { startTour } from "../tour/tour.svelte";
   import { TOUR_IDS, TOURS } from "../tour/tours";
   import { openAbout } from "./about.svelte";
-  import { openShortcutsDialog } from "./shortcutsDialog.svelte";
+  import { openShortcutsDialog } from "./shortcuts.svelte";
 
   /** Help menu (H-19; T-709 adds Take the Tour and Tours ▸): "About PowerVoice…", with the app version (SPEC-000-adjacent
    * `app_info` — the ticket's "About with version"). H-26: on the shared menu. */

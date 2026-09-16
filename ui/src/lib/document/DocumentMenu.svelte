@@ -6,7 +6,7 @@
   import { isPlatformMac } from "../shortcuts/registry";
   import { shortcutLabelForAction } from "../shortcuts/shortcutLabel";
   import MenuBarMenu from "../menu/MenuBarMenu.svelte";
-  import { closeAllMenus, MENU_MNEMONICS } from "../menu/menubar.svelte";
+  import { closeAllMenus, MENU_MNEMONICS } from "../menu/menu.svelte";
   import { openPreferences } from "../preferences/preferences.svelte";
   import { openRecoveryStorage } from "../recovery/recovery.svelte";
   import { openNewRecordingPrompt, recordState } from "../state/record.svelte";

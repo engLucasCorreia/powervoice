@@ -5,7 +5,7 @@
   import { isPlatformMac } from "../shortcuts/registry";
   import { shortcutLabelForAction } from "../shortcuts/shortcutLabel";
   import MenuBarMenu from "../menu/MenuBarMenu.svelte";
-  import { MENU_MNEMONICS } from "../menu/menubar.svelte";
+  import { MENU_MNEMONICS } from "../menu/menu.svelte";
   import { markersState } from "../markers/markers.svelte";
   import { openPreferences } from "../preferences/preferences.svelte";
   import { recordState } from "../state/record.svelte";

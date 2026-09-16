@@ -4,7 +4,7 @@
   import { dispatchAction } from "../shortcuts";
   import { shortcutLabelForAction } from "../shortcuts/shortcutLabel";
   import MenuBarMenu from "../menu/MenuBarMenu.svelte";
-  import { closeAllMenus, focusMenuTrigger, MENU_MNEMONICS } from "../menu/menubar.svelte";
+  import { closeAllMenus, focusMenuTrigger, MENU_MNEMONICS } from "../menu/menu.svelte";
   import {
     canNormalize,
     FAVORITE_TARGETS_DB,

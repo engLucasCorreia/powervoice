@@ -4,7 +4,7 @@
  * Progress (completed/skipped/dismissed + the tour's version) is saved in `Settings.tours`.
  */
 import type { TourOutcome, ToursSettingsDto } from "../ipc/bindings";
-import { closeAllMenus } from "../menu/menubar.svelte";
+import { closeAllMenus } from "../menu/menu.svelte";
 import { saveSettings, settingsState } from "../state/settings.svelte";
 import { recordOutcome, shouldOfferTour } from "./progress";
 import { TOURS, type TourDef, type TourId, type TourStep } from "./tours";

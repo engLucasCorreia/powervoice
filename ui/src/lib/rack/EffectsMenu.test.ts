@@ -3,7 +3,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RackStateDto } from "../ipc/bindings";
 import { clearActionHandlers, registerAction } from "../shortcuts";
-import { resetMenuBarForTest } from "../menu/menubar.svelte";
+import { resetMenuBarForTest } from "../menu/menu.svelte";
 import { resetNormalizeForTest } from "../state/normalize.svelte";
 import { resetNormalizeLufsForTest } from "../state/normalizeLufs.svelte";
 import { resetRecordForTest } from "../state/record.svelte";

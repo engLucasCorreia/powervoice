@@ -57,7 +57,7 @@ export function formatDocumentTime(
 /** Parses `[hh:]mm:ss[.fff]` (a bare `ss[.fff]` group is accepted too) into samples, or `null` for
  * anything else. Matches exactly what {@link formatTime} writes, plus the shorter forms a user
  * might type. */
-function parseTimecodeValue(text: string, sampleRateHz: number): number | null {
+export function parseTimecodeValue(text: string, sampleRateHz: number): number | null {
   if (!(sampleRateHz > 0)) {
     return null;
   }
@@ -102,7 +102,7 @@ function parseTimecodeValue(text: string, sampleRateHz: number): number | null {
 /** A plain (unsigned) number: digits, an optional single `.` or `,` decimal separator. Document
  * positions are never negative, so this intentionally doesn't accept `units.ts::parseNumber`'s
  * minus-sign glyphs. */
-function parsePlainNumber(text: string): number | null {
+export function parsePlainNumber(text: string): number | null {
   const normalized = text.trim().replace(",", ".");
   if (!/^\d+\.?\d*$|^\.\d+$/.test(normalized)) {
     return null;

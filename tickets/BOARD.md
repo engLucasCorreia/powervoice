@@ -94,12 +94,13 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-54 | The last failing performance row: `frame_spectral_canvas2d_2126x850_p95_ms` 21.2 ms vs SPEC-007 AC-10's ≤ 16.7 ms — the Canvas2D (software) split view at a large window during a continuous zoom+scroll sweep. Either optimise further (the WebGL2 path passes everywhere) or amend AC-10 to scope the 60 fps target per renderer/window size, with the owner's 2126×850 window in mind | S | todo |
 | H-55 | Packaged-module determinism failure on CI: `voxmod.rs::the_module_test_host_suite_passes_through_the_adapter` — two instances of the packaged Gain differ at sample 10558 on GitHub's 2-core runner, passes locally (5/5, incl. single-threaded and under load); CI run 35064469629 | O | done |
 | H-62 | Sandbox event-ring overflow is silent (H-55 open question): `HostEnd::push_event` / the proxy drop events when the ring is full (counted in `events_dropped`, never surfaced) — another timing-dependent divergence under heavy automation; surface it as a notice/slot status and test it | S | todo |
-| H-56 | Insert silence + cross-document clipboard (T-302 remainder, SPEC-008) | S | in progress |
+| H-56 | Insert silence + cross-document clipboard (T-302 remainder, SPEC-008) | S | done |
 | H-57 | Markers: kinds in the core model, drag, region→selection (T-303 remainder, SPEC-009) | S | done |
 | H-58 | Dynamics part 2: activate Expander + AutoGate, real look-ahead latency (T-407 remainder, SPEC-016 part 2) | O | done |
 | H-63 | `TransferCurve` module-api extension (H-58): the last blocker for SPEC-016 AC-17's transfer graph, SPEC-013's gate UI and T-410's custom Dynamics panel + VXMT telemetry | O | todo |
 | H-64 | Marker follow-ups (H-57): auto-scroll while dragging past the canvas edge (SPEC-009 §2.5 `drag_autoscroll_rate`), SPEC-009 §2.13 case 3 — a WAV cue set differing from the sidecar should win with a notice (credited to T-306 but unimplemented), and the deferred panel work (filter, sort, virtualization, Delete All/Filtered, rename shortcut) | S | todo |
 | H-65 | Close SPEC-016 AC-18 properly (H-58): a `#[doc(hidden)]`/cfg(test) state accessor on Dynamics (and NoiseGate) so the 120 s silence test can assert no subnormals in the module state, not just in the output | S | todo |
+| H-66 | Waveform right-click context menu for the edit ops (SPEC-008 §2.11 — never built by S2-01: Cut/Copy/Paste/Delete/Trim/Silence/Insert Silence), and gate `edit_copy` against a running normalize/paste job like its six siblings | S | todo |
 | H-59 | Engine/recording/IPC/UI hardening audit (T-105/T-106/T-108/T-109 remainder): matrix vs SPEC-001/002/003 + ADR-003, fill real gaps | O | in progress |
 | H-60 | Save pipeline / peaks / waveform renderer audit (T-201/T-203/T-205 remainder): matrix vs SPEC-005/006/009/018, fill real gaps | S | in progress |
 | H-61 | Windows + macOS installers from CI (T-705 remainder), labelled unverified | S | in progress |

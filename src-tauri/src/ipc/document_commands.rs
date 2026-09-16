@@ -6,7 +6,7 @@ use tauri::ipc::Response;
 use tauri::{AppHandle, Emitter, Runtime, State};
 use vox_project::{ImportProbe, PEAKS_RAW_SPP, VxpkHeader, encode_vxpk};
 
-use crate::document::{DocumentService, PasteTarget};
+use crate::document::{DocumentService, PasteJobSource, PasteTarget, document_error};
 use crate::ipc::document_dto::{
     ClipboardChangedDto, DocumentDto, DocumentProbeDto, DownmixChoiceDto, EditResultDto,
     EditTargetDto, HistoryStateDto, MarkerDto, MarkerRangeKindDto, PeaksRequestDto,
@@ -14,8 +14,8 @@ use crate::ipc::document_dto::{
 use crate::ipc::error::IpcError;
 use crate::ipc::events::EventName;
 use crate::ipc::{
-    ImportStartedDto, IpcErrorCode, JobKind, JobProgressDto, JobState, emit_import_started,
-    emit_job_progress,
+    ImportStartedDto, IpcErrorCode, JobKind, JobProgressDto, JobState, Notice, NoticeLevel,
+    emit_import_started, emit_job_progress, emit_notice,
 };
 use crate::settings::{BitDepth, MultichannelPolicy, SaveDitherPref, SettingsStore};
 
@@ -485,6 +485,12 @@ pub async fn edit_copy<R: Runtime>(
 
 /// Pastes the clipboard at `target` (SPEC-008 §2.1). `error.clipboard_empty` when nothing was
 /// cut/copied yet.
+///
+/// H-56 (SPEC-008 §2.6): when the clipboard was materialized from a different, now-closed
+/// document and isn't cached for this one yet, this instead runs the cross-document import as a
+/// job (§2.6.1): `job_progress` (kind `paste`) reports its progress and `edit_paste_cancel(job_id)`
+/// cancels it from another command invocation while this one is still awaiting — cancelling, like
+/// any other failure, leaves the document and the clipboard exactly as before.
 #[tauri::command]
 pub async fn edit_paste<R: Runtime>(
     app: AppHandle<R>,
@@ -493,9 +499,186 @@ pub async fn edit_paste<R: Runtime>(
 ) -> Result<EditResultDto, IpcError> {
     let service = (*doc).clone();
     let target: PasteTarget = target.into();
-    let result: EditResultDto = run_blocking(move || service.edit_paste(target))
-        .await?
-        .into();
+    let needs_job = {
+        let service = service.clone();
+        run_blocking(move || Ok(service.paste_needs_job())).await?
+    };
+    let result: EditResultDto = if needs_job {
+        run_cross_document_paste(&app, &service, target).await?
+    } else {
+        run_blocking(move || service.edit_paste(target))
+            .await?
+            .into()
+    };
+    after_edit(&app, &doc);
+    emit_clipboard_changed(&app, &doc);
+    Ok(result)
+}
+
+/// "‹rate› kHz" as `notice.paste_resampled`'s `from`/`to` params (H-56), e.g. `48_000` -> "48
+/// kHz", `44_100` -> "44.1 kHz".
+fn khz_label(hz: u32) -> String {
+    let khz = f64::from(hz) / 1000.0;
+    if (khz - khz.round()).abs() < 1e-9 {
+        format!("{:.0} kHz", khz.round())
+    } else {
+        format!("{khz:.1} kHz")
+    }
+}
+
+/// H-56 (SPEC-008 §2.6.1): the cross-document paste job — begins it (validates the target, marks
+/// the document busy), imports the materialized clipboard on a blocking thread with progress
+/// events, then commits. Never called for a `Bound` (or already-cached) clipboard; see
+/// [`edit_paste`].
+async fn run_cross_document_paste<R: Runtime>(
+    app: &AppHandle<R>,
+    service: &DocumentService,
+    target: PasteTarget,
+) -> Result<EditResultDto, IpcError> {
+    let begin_service = service.clone();
+    let source: PasteJobSource =
+        run_blocking(move || begin_service.begin_paste_job(target)).await?;
+    let (job_id, cancel) = service.start_paste_job();
+    if let Err(error) = emit_job_progress(
+        app,
+        JobProgressDto {
+            job_id,
+            kind: JobKind::Paste,
+            state: JobState::Running,
+            fraction: 0.0,
+        },
+    ) {
+        tracing::warn!(%error, "emitting the paste job's first job_progress failed");
+    }
+    let app_for_job = app.clone();
+    let import_source = source.clone();
+    let written = run_blocking(move || {
+        let mut last_fraction = 0.0f32;
+        vox_project::clipboard::import_clip(
+            &import_source.clip,
+            &import_source.store,
+            import_source.target_rate_hz,
+            &cancel,
+            &mut |fraction| {
+                if fraction - last_fraction >= 0.01 || fraction >= 1.0 {
+                    last_fraction = fraction;
+                    if let Err(error) = emit_job_progress(
+                        &app_for_job,
+                        JobProgressDto {
+                            job_id,
+                            kind: JobKind::Paste,
+                            state: JobState::Running,
+                            fraction,
+                        },
+                    ) {
+                        tracing::warn!(%error, "emitting paste job_progress failed");
+                    }
+                }
+            },
+        )
+        .map_err(document_error)
+    })
+    .await;
+    service.end_paste_job(job_id);
+
+    let written = match written {
+        Ok(written) => written,
+        Err(err) => {
+            service.abandon_paste_job();
+            let state = if err.code == IpcErrorCode::Cancelled {
+                JobState::Cancelled
+            } else {
+                JobState::Failed
+            };
+            if let Err(error) = emit_job_progress(
+                app,
+                JobProgressDto {
+                    job_id,
+                    kind: JobKind::Paste,
+                    state,
+                    fraction: 0.0,
+                },
+            ) {
+                tracing::warn!(%error, "emitting the paste job's terminal job_progress failed");
+            }
+            return Err(err);
+        }
+    };
+
+    let converted = source.clip.sample_rate_hz != source.target_rate_hz;
+    let from = source.clip.sample_rate_hz;
+    let to = source.target_rate_hz;
+    let finish_service = service.clone();
+    let finish_source = source.clone();
+    let result =
+        run_blocking(move || finish_service.finish_paste_job(&finish_source, written)).await;
+    match result {
+        Ok(result) => {
+            if let Err(error) = emit_job_progress(
+                app,
+                JobProgressDto {
+                    job_id,
+                    kind: JobKind::Paste,
+                    state: JobState::Done,
+                    fraction: 1.0,
+                },
+            ) {
+                tracing::warn!(%error, "emitting the paste job's Done job_progress failed");
+            }
+            if converted {
+                let notice = Notice::toast(NoticeLevel::Info, "notice.paste_resampled")
+                    .with_param("from", khz_label(from))
+                    .with_param("to", khz_label(to));
+                if let Err(error) = emit_notice(app, notice) {
+                    tracing::warn!(%error, "emitting notice.paste_resampled failed");
+                }
+            }
+            Ok(result.into())
+        }
+        Err(err) => {
+            if let Err(error) = emit_job_progress(
+                app,
+                JobProgressDto {
+                    job_id,
+                    kind: JobKind::Paste,
+                    state: JobState::Failed,
+                    fraction: 0.0,
+                },
+            ) {
+                tracing::warn!(%error, "emitting the paste job's terminal job_progress failed");
+            }
+            Err(err)
+        }
+    }
+}
+
+/// Cancels a running cross-document paste job (SPEC-008 §2.6.1 "Cancel"). Best-effort, like every
+/// other job's cancel command — a no-op for an unknown or already-finished job id.
+#[tauri::command]
+pub async fn edit_paste_cancel(
+    doc: State<'_, DocumentService>,
+    job_id: u32,
+) -> Result<(), IpcError> {
+    doc.cancel_paste_job(job_id);
+    Ok(())
+}
+
+/// Inserts `len_samples` of silence at `target` (SPEC-008 §2.1/§2.5): at the selection start if
+/// one exists, otherwise the cursor. `error.insert_silence_duration` outside the dialog's 1
+/// sample .. 3 600 s range.
+#[tauri::command]
+pub async fn edit_insert_silence<R: Runtime>(
+    app: AppHandle<R>,
+    doc: State<'_, DocumentService>,
+    target: EditTargetDto,
+    len_samples: u64,
+) -> Result<EditResultDto, IpcError> {
+    let service = (*doc).clone();
+    let target: PasteTarget = target.into();
+    let result: EditResultDto =
+        run_blocking(move || service.edit_insert_silence(target, len_samples))
+            .await?
+            .into();
     after_edit(&app, &doc);
     Ok(result)
 }

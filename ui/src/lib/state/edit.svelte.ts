@@ -1,10 +1,19 @@
 import { listen } from "@tauri-apps/api/event";
-import type { ClipboardChangedDto, EditResultDto, EditTargetDto, EventName, IpcError, HistoryStateDto } from "../ipc/bindings";
+import type {
+  ClipboardChangedDto,
+  EditResultDto,
+  EditTargetDto,
+  EventName,
+  IpcError,
+  HistoryStateDto,
+  JobProgressDto,
+} from "../ipc/bindings";
 import {
   editCopy,
   editCut,
   editDelete,
   editPaste,
+  editPasteCancel,
   editSilence,
   editTrim,
   historyRedo,
@@ -39,13 +48,23 @@ const EMPTY_CLIPBOARD: ClipboardChangedDto = {
   sample_rate_hz: null,
 };
 
+/** H-56 (SPEC-008 §2.6.1): a cross-document paste job's progress — shown via the shared
+ * `NormalizeProgressDialog` (its own 250 ms "still running" delay and Cancel). */
+export interface PasteJobState {
+  jobId: number;
+  fraction: number;
+  state: "running" | "done" | "cancelled" | "failed";
+}
+
 let history = $state<HistoryStateDto>({ ...IDLE_HISTORY });
 let clipboard = $state<ClipboardChangedDto>({ ...EMPTY_CLIPBOARD });
+let pasteJob = $state<PasteJobState | null>(null);
 
 /** Read-only accessor for components (the Edit menu). */
 export function editState(): {
   readonly history: HistoryStateDto;
   readonly clipboard: ClipboardChangedDto;
+  readonly pasteJob: PasteJobState | null;
 } {
   return {
     get history() {
@@ -53,6 +72,9 @@ export function editState(): {
     },
     get clipboard() {
       return clipboard;
+    },
+    get pasteJob() {
+      return pasteJob;
     },
   };
 }
@@ -120,6 +142,29 @@ export function paste(): Promise<void> {
 export const undo = (): Promise<void> => run(historyUndo);
 export const redo = (): Promise<void> => run(historyRedo);
 
+/** Applies one `job_progress` event to the store (kind `paste` only) — a pure function so it's
+ * directly testable (mirrors `state/normalize.svelte.ts`'s `applyNormalizeJobProgress`). The
+ * `edit_paste` command's own promise (in `paste()` above) carries the finished edit result — this
+ * only drives the progress dialog. */
+export function applyPasteJobProgress(payload: JobProgressDto): void {
+  if (payload.kind !== "paste") {
+    return;
+  }
+  pasteJob = { jobId: payload.job_id, fraction: payload.fraction, state: payload.state };
+}
+
+/** Cancels a running cross-document paste job (`edit_paste_cancel`, best-effort). */
+export function cancelPasteJob(): void {
+  if (pasteJob && pasteJob.state === "running") {
+    void editPasteCancel(pasteJob.jobId).catch(report);
+  }
+}
+
+/** Dismisses a finished paste job's progress dialog (Done/Cancelled/Failed). */
+export function dismissPasteJob(): void {
+  pasteJob = null;
+}
+
 /**
  * Wires the store: keymap actions and the `history_state`/`clipboard_changed` events. Returns
  * the teardown.
@@ -153,6 +198,14 @@ export async function initEdit(): Promise<() => void> {
   } catch {
     // Same fallback as above.
   }
+  try {
+    const unlisten = await listen<JobProgressDto>("job_progress" satisfies EventName, (e) => {
+      applyPasteJobProgress(e.payload);
+    });
+    cleanups.push(unlisten);
+  } catch {
+    // Same fallback as above.
+  }
   return () => {
     for (const cleanup of cleanups) {
       try {
@@ -168,4 +221,5 @@ export async function initEdit(): Promise<() => void> {
 export function resetEditForTest(): void {
   history = { ...IDLE_HISTORY };
   clipboard = { ...EMPTY_CLIPBOARD };
+  pasteJob = null;
 }

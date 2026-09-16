@@ -280,12 +280,65 @@ pub struct WaveformViewInfo {
     pub vertical_zoom: f64,
 }
 
-/// S2-01: the in-app clipboard (SPEC-008 §2.6), same-document only for now (cleared whenever a
-/// new session replaces the open one — its pieces reference the closed session's chunks).
-struct ClipboardData {
+/// S2-01/H-56: the in-app clipboard (SPEC-008 §2.6). `Bound` pieces reference the currently open
+/// document's session chunks (paste is then a pure splice, S2-01); once that session closes,
+/// [`DocumentService::materialize_clipboard`] streams its audio to
+/// `<app_local_data_dir>/clipboard/` before the session is torn down, and the clipboard becomes
+/// `Materialized` until the next paste imports it into whichever document is open by then.
+enum ClipboardData {
+    Bound {
+        pieces: Vec<Piece>,
+        sample_rate_hz: u32,
+        len_samples: u64,
+    },
+    Materialized {
+        clip: vox_project::clipboard::MaterializedClip,
+        /// H-56 (SPEC-008 §2.6 "later pastes"): pieces already imported (and, if the rates
+        /// differed, converted) for the specific open session named by `session_id` — reused by
+        /// a later paste into that same document without re-reading/re-resampling. `None` until
+        /// the first paste since materializing.
+        converted: Option<ConvertedClip>,
+    },
+}
+
+/// H-56 (SPEC-008 §2.6): a materialized clip's audio, already converted for one specific session
+/// (a rate mismatch was involved — a same-rate import instead rebinds the clipboard straight back
+/// to [`ClipboardData::Bound`], see [`DocumentService::finish_paste_job`]).
+struct ConvertedClip {
+    session_id: String,
     pieces: Vec<Piece>,
-    sample_rate_hz: u32,
-    len_samples: u64,
+}
+
+impl ClipboardData {
+    fn len_samples(&self) -> u64 {
+        match self {
+            ClipboardData::Bound { len_samples, .. } => *len_samples,
+            ClipboardData::Materialized { clip, .. } => clip.len_samples,
+        }
+    }
+
+    fn sample_rate_hz(&self) -> u32 {
+        match self {
+            ClipboardData::Bound { sample_rate_hz, .. } => *sample_rate_hz,
+            ClipboardData::Materialized { clip, .. } => clip.sample_rate_hz,
+        }
+    }
+
+    /// H-56 (SPEC-008 §2.6: "the clipboard is a reachability root for compaction"): the pieces of
+    /// this clipboard that reference `session_id`'s chunk store, if any — `Bound` is always
+    /// implicitly tied to whatever session is currently open (that invariant is
+    /// [`DocumentService::materialize_clipboard`]'s job); a `Materialized` clip's own audio lives
+    /// in a plain file outside every store, but its `converted` cache (if any) references exactly
+    /// one session's chunks.
+    fn reachable_pieces(&self, session_id: &str) -> Vec<Piece> {
+        match self {
+            ClipboardData::Bound { pieces, .. } => pieces.clone(),
+            ClipboardData::Materialized {
+                converted: Some(c), ..
+            } if c.session_id == session_id => c.pieces.clone(),
+            ClipboardData::Materialized { .. } => Vec::new(),
+        }
+    }
 }
 
 /// The clipboard's public shape (`clipboard_changed` event): `None` fields mean it's empty.
@@ -514,6 +567,9 @@ fn normalize_marker_name(name: &str) -> String {
 
 struct Inner {
     sessions_dir: PathBuf,
+    /// H-56 (SPEC-008 §2.6): where a materialized clipboard's `clip.f32`/`meta.json` live — a
+    /// sibling of `sessions_dir` (see [`DocumentService::new`]).
+    clipboard_dir: PathBuf,
     engine: EngineHandle,
     open: Mutex<Option<OpenDocument>>,
     clipboard: Mutex<Option<ClipboardData>>,
@@ -523,6 +579,9 @@ struct Inner {
     /// concurrent edit can't race the job's eventual commit (which re-checks the snapshot anyway,
     /// [`DocumentService::finish_normalize_peak`]/[`Self::finish_normalize_lufs`]).
     normalize_busy: Mutex<bool>,
+    /// H-56 (SPEC-008 §2.6.1): `true` while a cross-document paste job is importing/resampling
+    /// the materialized clipboard on its own thread — mirrors `normalize_busy`.
+    paste_busy: Mutex<bool>,
     /// H-30: `true` specifically while a bake job is running — separate from `normalize_busy`
     /// (shared with peak/LUFS normalize too), because only a bake's `finish_bake` loads a
     /// post-job rack into the engine: a rack edit made mid-bake would otherwise be silently
@@ -551,6 +610,10 @@ struct Inner {
     /// `document_open_cancel` names. Removed once the job finishes, whatever the outcome.
     import_jobs: Mutex<HashMap<u32, CancelToken>>,
     next_import_job: AtomicU32,
+    /// H-56 (SPEC-008 §2.6.1): cancel tokens of running cross-document paste jobs, keyed by the
+    /// id `edit_paste_cancel` names (mirrors `import_jobs`).
+    paste_jobs: Mutex<HashMap<u32, CancelToken>>,
+    next_paste_job: AtomicU32,
     /// H-40: set by `audio::forward_rack_notice` (the engine's event sink, off-thread — it must
     /// never call `EngineHandle` back, MEMORY.md S1-01) when a `RackNotice::SlotRecovered`
     /// arrives; consumed by [`DocumentService::sync_pending_rack_recovery`], which does the
@@ -589,6 +652,18 @@ pub struct NormalizeJobSource {
     pub snapshot: Arc<vox_project::DocSnapshot>,
     pub sample_rate_hz: u32,
     pub range: Range,
+    session_id: String,
+}
+
+/// H-56 (SPEC-008 §2.6.1): the read-only facts a cross-document paste job's own thread needs
+/// (mirrors [`NormalizeJobSource`]) — no `&mut Session` until [`DocumentService::finish_paste_job`]'s
+/// commit.
+#[derive(Clone)]
+pub struct PasteJobSource {
+    pub store: Arc<vox_project::ChunkStore>,
+    pub target_rate_hz: u32,
+    pub target: EditTarget,
+    pub clip: vox_project::clipboard::MaterializedClip,
     session_id: String,
 }
 
@@ -1164,12 +1239,24 @@ fn close_with_retry(mut session: Session) {
 
 impl DocumentService {
     pub fn new(sessions_dir: PathBuf, engine: EngineHandle) -> Self {
+        // H-56 (SPEC-008 §2.6): a sibling of `sessions_dir` rather than a new constructor
+        // parameter — every existing call site (composition root, ~25 tests) keeps working
+        // unchanged, and a test's own temp `sessions_dir` still gives it an isolated clipboard
+        // directory. Swept now ("deleted ... if stale, at start-up", §2.6): a fresh app run has
+        // no use for whatever a previous run left there.
+        let clipboard_dir = sessions_dir
+            .parent()
+            .map(|p| p.join("clipboard"))
+            .unwrap_or_else(|| sessions_dir.join("clipboard"));
+        vox_project::clipboard::sweep_stale_dir(&clipboard_dir);
         Self(Arc::new(Inner {
             sessions_dir,
+            clipboard_dir,
             engine,
             open: Mutex::new(None),
             clipboard: Mutex::new(None),
             normalize_busy: Mutex::new(false),
+            paste_busy: Mutex::new(false),
             bake_running: Mutex::new(false),
             spectro: OnceLock::new(),
             pending_sidecar_notice: Mutex::new(Vec::new()),
@@ -1177,6 +1264,8 @@ impl DocumentService {
             session_dirs: Mutex::new(()),
             import_jobs: Mutex::new(HashMap::new()),
             next_import_job: AtomicU32::new(1),
+            paste_jobs: Mutex::new(HashMap::new()),
+            next_paste_job: AtomicU32::new(1),
             pending_rack_recovery: AtomicBool::new(false),
         }))
     }
@@ -1333,11 +1422,14 @@ impl DocumentService {
             store: Arc::clone(session.store()),
             snapshot,
         }));
-        *self.0.clipboard.lock().unwrap() = None;
         let mut doc = OpenDocument::new(session, path, save_bits, sidecar);
         doc.save_container = save_container;
         doc.recovered = true;
         let mut guard = self.0.open.lock().unwrap();
+        // H-56 (SPEC-008 §2.6): materialize a `Bound` clipboard before its session closes.
+        if let Some(current) = guard.as_ref() {
+            self.materialize_clipboard(current.session.store());
+        }
         let previous = guard.replace(doc);
         let info = info_of(&self.0.engine, guard.as_ref());
         drop(guard);
@@ -1360,10 +1452,13 @@ impl DocumentService {
             }
             guard.take()
         };
+        // H-56 (SPEC-008 §2.6): materialize a `Bound` clipboard before its session closes.
+        if let Some(doc) = &previous {
+            self.materialize_clipboard(doc.session.store());
+        }
         // T-901: "Close all plugin windows" on document close (a no-op without a live rack).
         let _ = self.0.engine.rack_command(RackCommand::CloseAllEditors);
         self.0.engine.set_document(None);
-        *self.0.clipboard.lock().unwrap() = None;
         if let Some(doc) = previous {
             close_with_retry(doc.session);
         }
@@ -1411,14 +1506,26 @@ impl DocumentService {
         if self.is_normalize_busy() || self.0.engine.transport_state().playing {
             return None;
         }
-        let clip = self
-            .0
-            .clipboard
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|c| c.pieces.clone())
-            .unwrap_or_default();
+        let clip = {
+            let open_session_id = self
+                .0
+                .open
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|d| d.session.id().to_string());
+            match open_session_id {
+                Some(id) => self
+                    .0
+                    .clipboard
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(|c| c.reachable_pieces(&id))
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            }
+        };
         let mut report = vox_project::HousekeepingReport::default();
         for _ in 0..3 {
             let prepared = {
@@ -1495,16 +1602,17 @@ impl DocumentService {
 
     /// Settings → Recovery & storage's "Session storage: X (history Y)" for the open document.
     pub fn storage_usage(&self) -> Option<vox_project::DiskUsage> {
+        let guard = self.0.open.lock().unwrap();
+        let doc = guard.as_ref()?;
         let clip = self
             .0
             .clipboard
             .lock()
             .unwrap()
             .as_ref()
-            .map(|c| c.pieces.clone())
+            .map(|c| c.reachable_pieces(doc.session.id()))
             .unwrap_or_default();
-        let guard = self.0.open.lock().unwrap();
-        guard.as_ref().map(|d| d.session.disk_usage(&clip))
+        Some(doc.session.disk_usage(&clip))
     }
 
     /// The currently open document (or [`DocumentInfo::default`] when none is open).
@@ -1729,9 +1837,6 @@ impl DocumentService {
             store,
             snapshot: Arc::clone(&snapshot),
         }));
-        // S2-01: a new document replaces the clipboard (same-document only, SPEC-008 §2.6) — its
-        // pieces reference the session that's about to close.
-        *self.0.clipboard.lock().unwrap() = None;
 
         let meta = std::fs::metadata(path).ok();
         sidecar.file_size_bytes = meta.as_ref().map(|m| m.len()).unwrap_or(0);
@@ -1752,6 +1857,11 @@ impl DocumentService {
         doc.source_channels = import.source_channels;
         doc.had_foreign_metadata = import.has_foreign_metadata;
         let mut guard = self.0.open.lock().unwrap();
+        // H-56 (SPEC-008 §2.6): materialize a `Bound` clipboard before its session closes — its
+        // pieces reference the session that's about to close.
+        if let Some(current) = guard.as_ref() {
+            self.materialize_clipboard(current.session.store());
+        }
         let previous = guard.replace(doc);
         let info = info_of(&self.0.engine, guard.as_ref());
         drop(guard);
@@ -2005,6 +2115,12 @@ impl DocumentService {
         *self.0.normalize_busy.lock().unwrap()
     }
 
+    /// H-56: `true` while a cross-document paste job is running (SPEC-008 §2.2's "another
+    /// document job runs" — `error.document_busy`; mirrors [`Self::is_normalize_busy`]).
+    pub fn is_paste_busy(&self) -> bool {
+        *self.0.paste_busy.lock().unwrap()
+    }
+
     /// H-30: `true` specifically while a bake job is running (`begin_bake_job`..
     /// `finish_bake`/`abandon_bake_job`) — `ipc::rack_commands` refuses rack edits then
     /// (`error.bake.busy`) instead of letting the bake's post-job rack load silently clobber
@@ -2060,8 +2176,11 @@ impl DocumentService {
                 store: Arc::clone(session.store()),
                 snapshot: session.current(),
             }));
-            // S2-01: same as `open` — a new document invalidates the clipboard.
-            *self.0.clipboard.lock().unwrap() = None;
+            // H-56 (SPEC-008 §2.6): same as `open` — materialize a `Bound` clipboard before its
+            // session closes.
+            if let Some(current) = guard.as_ref() {
+                self.materialize_clipboard(current.session.store());
+            }
             previous = guard.replace(OpenDocument::new(
                 session,
                 None,
@@ -2149,7 +2268,9 @@ impl DocumentService {
                             store: Arc::clone(fresh.store()),
                             snapshot: fresh.current(),
                         }));
-                        *self.0.clipboard.lock().unwrap() = None;
+                        // H-56 (SPEC-008 §2.6): materialize a `Bound` clipboard before the broken
+                        // session is dropped.
+                        self.materialize_clipboard(doc.session.store());
                         if let Some(broken) = guard.replace(OpenDocument::new(
                             fresh,
                             None,
@@ -2364,10 +2485,70 @@ impl DocumentService {
     pub fn clipboard_info(&self) -> ClipboardInfo {
         match self.0.clipboard.lock().unwrap().as_ref() {
             Some(c) => ClipboardInfo {
-                len_samples: Some(c.len_samples),
-                sample_rate_hz: Some(c.sample_rate_hz),
+                len_samples: Some(c.len_samples()),
+                sample_rate_hz: Some(c.sample_rate_hz()),
             },
             None => ClipboardInfo::default(),
+        }
+    }
+
+    /// H-56 (SPEC-008 §2.6): `true` when a plain `edit_paste` would need the cross-document
+    /// import job (§2.6.1) instead of a pure splice — the clipboard is materialized and isn't
+    /// already converted for whatever document is currently open. `false` for an empty clipboard
+    /// (`edit_paste` then just returns `error.clipboard_empty`) or one already usable as a splice
+    /// (`Bound`, or `Materialized` with a matching `converted` cache).
+    pub fn paste_needs_job(&self) -> bool {
+        let guard = self.0.open.lock().unwrap();
+        let Some(doc) = guard.as_ref() else {
+            return false;
+        };
+        let session_id = doc.session.id();
+        match self.0.clipboard.lock().unwrap().as_ref() {
+            Some(ClipboardData::Materialized { converted, .. }) => !converted
+                .as_ref()
+                .is_some_and(|c| c.session_id == session_id),
+            _ => false,
+        }
+    }
+
+    /// H-56 (SPEC-008 §2.6): streams a `Bound` clipboard's audio to
+    /// `<app_local_data_dir>/clipboard/` before `store` (its owning session's chunk store) is torn
+    /// down, so the clipboard survives the session closing. Called at every point that replaces
+    /// or closes the open document, while `store` is still the *closing* session's — a
+    /// `Materialized` clipboard (already detached from a session) or an empty one is left
+    /// untouched. A failure (e.g. disk full) clears the clipboard and queues
+    /// `notice.clipboard_lost` instead of failing the close/open itself (SPEC-008 §2.6).
+    fn materialize_clipboard(&self, store: &Arc<vox_project::ChunkStore>) {
+        let mut guard = self.0.clipboard.lock().unwrap();
+        let (pieces, sample_rate_hz) = match guard.as_ref() {
+            Some(ClipboardData::Bound {
+                pieces,
+                sample_rate_hz,
+                ..
+            }) => (pieces.clone(), *sample_rate_hz),
+            _ => return,
+        };
+        match vox_project::clipboard::materialize(
+            store,
+            &pieces,
+            sample_rate_hz,
+            &self.0.clipboard_dir,
+        ) {
+            Ok(clip) => {
+                *guard = Some(ClipboardData::Materialized {
+                    clip,
+                    converted: None,
+                });
+            }
+            Err(error) => {
+                tracing::warn!(%error, "materializing the clipboard failed");
+                *guard = None;
+                drop(guard);
+                self.push_sidecar_notice(SidecarNoticeInfo {
+                    key: "notice.clipboard_lost",
+                    params: Vec::new(),
+                });
+            }
         }
     }
 
@@ -2409,7 +2590,7 @@ impl DocumentService {
     /// §2.6). Refused with `error.no_selection`/`error.invalid_range` (bad range) or
     /// `error.not_while_recording` (`Session::commit_edit`); changes nothing on any error.
     pub fn edit_cut(&self, start: u64, end: u64) -> Result<EditResult, IpcError> {
-        if self.is_normalize_busy() {
+        if self.is_normalize_busy() || self.is_paste_busy() {
             return Err(document_busy());
         }
         let mut guard = self.0.open.lock().unwrap();
@@ -2422,7 +2603,7 @@ impl DocumentService {
         let (built, clip) = edit::cut(&snapshot, range).map_err(document_error)?;
         let step = doc.session.commit_edit(built).map_err(document_error)?;
         let len_samples = edit::pieces_len_samples(&clip);
-        *self.0.clipboard.lock().unwrap() = Some(ClipboardData {
+        *self.0.clipboard.lock().unwrap() = Some(ClipboardData::Bound {
             pieces: clip,
             sample_rate_hz: doc.session.sample_rate_hz(),
             len_samples,
@@ -2443,7 +2624,7 @@ impl DocumentService {
         let snapshot = doc.session.current();
         let clip = edit::copy(&snapshot, range).map_err(document_error)?;
         let len_samples = edit::pieces_len_samples(&clip);
-        *self.0.clipboard.lock().unwrap() = Some(ClipboardData {
+        *self.0.clipboard.lock().unwrap() = Some(ClipboardData::Bound {
             pieces: clip,
             sample_rate_hz: doc.session.sample_rate_hz(),
             len_samples,
@@ -2458,9 +2639,14 @@ impl DocumentService {
     }
 
     /// Pastes the clipboard at `target` (SPEC-008 §2.1). `error.clipboard_empty` when nothing was
-    /// cut/copied yet.
+    /// cut/copied yet. A pure splice: when the clipboard is `Bound` to the open document's own
+    /// session, or `Materialized` but already converted+cached for it (H-56, `paste_needs_job`
+    /// said `false`). If the clipboard is `Materialized` and not yet usable here, this returns
+    /// `error.document_busy` — the caller (`ipc::document_commands::edit_paste`) must have called
+    /// [`Self::paste_needs_job`] first and run [`Self::begin_paste_job`]/[`Self::finish_paste_job`]
+    /// instead.
     pub fn edit_paste(&self, target: PasteTarget) -> Result<EditResult, IpcError> {
-        if self.is_normalize_busy() {
+        if self.is_normalize_busy() || self.is_paste_busy() {
             return Err(document_busy());
         }
         let mut guard = self.0.open.lock().unwrap();
@@ -2474,18 +2660,26 @@ impl DocumentService {
             PasteTarget::Cursor(_) => return Err(invalid_range()),
             PasteTarget::Range(s, e) => EditTarget::Range(Self::selected_range(doc, s, e)?),
         };
+        let session_id = doc.session.id().to_string();
         let clipboard = self.0.clipboard.lock().unwrap();
-        let clip = clipboard.as_ref().ok_or_else(clipboard_empty)?;
-        let inserted_len_samples = edit::pieces_len_samples(&clip.pieces);
-        let built = edit::paste(&clip.pieces, resolved);
+        let pieces: Vec<Piece> = match clipboard.as_ref() {
+            Some(ClipboardData::Bound { pieces, .. }) => pieces.clone(),
+            Some(ClipboardData::Materialized {
+                converted: Some(c), ..
+            }) if c.session_id == session_id => c.pieces.clone(),
+            Some(ClipboardData::Materialized { .. }) => return Err(document_busy()),
+            None => return Err(clipboard_empty()),
+        };
         drop(clipboard);
+        let inserted_len_samples = edit::pieces_len_samples(&pieces);
+        let built = edit::paste(&pieces, resolved);
         let step = doc.session.commit_edit(built).map_err(document_error)?;
         Ok(self.apply_committed(doc, step, edit::post_paste(resolved, inserted_len_samples)))
     }
 
     /// Deletes `[start, end)`, closing the gap.
     pub fn edit_delete(&self, start: u64, end: u64) -> Result<EditResult, IpcError> {
-        if self.is_normalize_busy() {
+        if self.is_normalize_busy() || self.is_paste_busy() {
             return Err(document_busy());
         }
         let mut guard = self.0.open.lock().unwrap();
@@ -2504,7 +2698,7 @@ impl DocumentService {
     /// Trims the document to `[start, end)` (Audition: Crop). A whole-document trim is a no-op
     /// (`changed = false`, no undo entry, playback not stopped — SPEC-008 §2.1).
     pub fn edit_trim(&self, start: u64, end: u64) -> Result<EditResult, IpcError> {
-        if self.is_normalize_busy() {
+        if self.is_normalize_busy() || self.is_paste_busy() {
             return Err(document_busy());
         }
         let mut guard = self.0.open.lock().unwrap();
@@ -2530,7 +2724,7 @@ impl DocumentService {
 
     /// Silences `[start, end)` with exact `+0.0` samples (length-preserving: no marker moves).
     pub fn edit_silence(&self, start: u64, end: u64) -> Result<EditResult, IpcError> {
-        if self.is_normalize_busy() {
+        if self.is_normalize_busy() || self.is_paste_busy() {
             return Err(document_busy());
         }
         let mut guard = self.0.open.lock().unwrap();
@@ -2544,6 +2738,168 @@ impl DocumentService {
             .commit_edit(edit::silence(range))
             .map_err(document_error)?;
         Ok(self.apply_committed(doc, step, edit::post_silence(range)))
+    }
+
+    /// SPEC-008 §4.3: an Insert Silence duration outside §2.5's 1 sample .. 3 600 s range.
+    fn insert_silence_duration_error() -> IpcError {
+        IpcError::new(
+            IpcErrorCode::InvalidArgument,
+            "error.insert_silence_duration",
+        )
+    }
+
+    /// Inserts `len_samples` of silence at `target`'s position (SPEC-008 §2.1/§2.5): the
+    /// selection start if `target` is a `Range`, otherwise the cursor. Never removes anything —
+    /// `Range`'s end is ignored. One undo entry `history.insert_silence`; the inserted range
+    /// becomes the selection (SPEC-008 §2.3).
+    pub fn edit_insert_silence(
+        &self,
+        target: PasteTarget,
+        len_samples: u64,
+    ) -> Result<EditResult, IpcError> {
+        if self.is_normalize_busy() || self.is_paste_busy() {
+            return Err(document_busy());
+        }
+        let mut guard = self.0.open.lock().unwrap();
+        let doc = guard.as_mut().ok_or_else(no_document)?;
+        if doc.session.is_recording() {
+            return Err(IpcError::not_while_recording());
+        }
+        let rate_hz = doc.session.sample_rate_hz();
+        let m = edit::validate_insert_silence_len(len_samples, rate_hz)
+            .map_err(|_| Self::insert_silence_duration_error())?;
+        let doc_len = doc.session.current().len_samples;
+        let resolved = match target {
+            PasteTarget::Cursor(c) if c <= doc_len => EditTarget::Cursor(c),
+            PasteTarget::Cursor(_) => return Err(invalid_range()),
+            PasteTarget::Range(s, e) => EditTarget::Range(Self::selected_range(doc, s, e)?),
+        };
+        let step = doc
+            .session
+            .commit_edit(edit::insert_silence(resolved, m))
+            .map_err(document_error)?;
+        Ok(self.apply_committed(doc, step, edit::post_insert_silence(resolved, m)))
+    }
+
+    // --- H-56: cross-document paste job (SPEC-008 §2.6.1) ------------------------------------
+
+    /// Begins a cross-document paste job — validates the target the same way [`Self::edit_paste`]
+    /// does, marks the document busy, and hands back the read-only facts the job's own thread
+    /// needs to import the materialized clipboard without holding the document lock (mirrors
+    /// [`Self::begin_normalize_job`]). Only meaningful when [`Self::paste_needs_job`] is `true`.
+    pub fn begin_paste_job(&self, target: PasteTarget) -> Result<PasteJobSource, IpcError> {
+        let mut busy = self.0.paste_busy.lock().unwrap();
+        if *busy || self.is_normalize_busy() {
+            return Err(document_busy());
+        }
+        let guard = self.0.open.lock().unwrap();
+        let doc = guard.as_ref().ok_or_else(no_document)?;
+        if doc.session.is_recording() {
+            return Err(IpcError::not_while_recording());
+        }
+        let len_samples = doc.session.current().len_samples;
+        let target = match target {
+            PasteTarget::Cursor(c) if c <= len_samples => EditTarget::Cursor(c),
+            PasteTarget::Cursor(_) => return Err(invalid_range()),
+            PasteTarget::Range(s, e) => EditTarget::Range(Self::selected_range(doc, s, e)?),
+        };
+        let clip = match self.0.clipboard.lock().unwrap().as_ref() {
+            Some(ClipboardData::Materialized { clip, .. }) => clip.clone(),
+            Some(ClipboardData::Bound { .. }) => return Err(document_busy()),
+            None => return Err(clipboard_empty()),
+        };
+        *busy = true;
+        Ok(PasteJobSource {
+            store: Arc::clone(doc.session.store()),
+            session_id: doc.session.id().to_string(),
+            target_rate_hz: doc.session.sample_rate_hz(),
+            target,
+            clip,
+        })
+    }
+
+    /// Releases the paste-busy flag without committing anything (the job was cancelled, or the
+    /// import failed before it produced any written audio).
+    pub fn abandon_paste_job(&self) {
+        *self.0.paste_busy.lock().unwrap() = false;
+    }
+
+    /// Commits a finished cross-document paste job's written audio as one `history.paste` undo
+    /// entry, and rebinds/caches the clipboard (SPEC-008 §2.6 "later pastes"): a same-rate import
+    /// fully rebinds the clipboard to this session (`Bound`) and deletes the materialized file;
+    /// a converted one is cached for this session only (`converted`), keeping the original-rate
+    /// file for any other document. Always releases the busy flag. If the open document changed
+    /// session under the job (another `document_open` while it ran), this commits nothing —
+    /// `error.document_busy`, exactly like a cancellation (SPEC-008 §2.6.1 all-or-nothing); the
+    /// written chunks become unreachable store data, reclaimed by compaction.
+    pub fn finish_paste_job(
+        &self,
+        source: &PasteJobSource,
+        written: WrittenAudio,
+    ) -> Result<EditResult, IpcError> {
+        let mut guard = self.0.open.lock().unwrap();
+        let result = (|| {
+            let doc = guard.as_mut().ok_or_else(no_document)?;
+            if doc.session.id() != source.session_id {
+                return Err(document_busy());
+            }
+            let inserted_len_samples = written.len_samples;
+            let built = edit::paste(&written.pieces, source.target);
+            let step = doc.session.commit_edit(built).map_err(document_error)?;
+            Ok((
+                self.apply_committed(
+                    doc,
+                    step,
+                    edit::post_paste(source.target, inserted_len_samples),
+                ),
+                written.pieces.clone(),
+            ))
+        })();
+        drop(guard);
+        if let Ok((_, ref pieces)) = result {
+            let mut clipboard = self.0.clipboard.lock().unwrap();
+            if source.clip.sample_rate_hz == source.target_rate_hz {
+                vox_project::clipboard::delete_materialized(&source.clip);
+                *clipboard = Some(ClipboardData::Bound {
+                    pieces: pieces.clone(),
+                    sample_rate_hz: source.target_rate_hz,
+                    len_samples: written.len_samples,
+                });
+            } else if let Some(ClipboardData::Materialized { converted, .. }) = clipboard.as_mut() {
+                *converted = Some(ConvertedClip {
+                    session_id: source.session_id.clone(),
+                    pieces: pieces.clone(),
+                });
+            }
+        }
+        *self.0.paste_busy.lock().unwrap() = false;
+        result.map(|(edit_result, _)| edit_result)
+    }
+
+    /// Registers a new cross-document paste job's cancel token (mirrors `start_import_job`), so
+    /// `edit_paste_cancel(job_id)` can reach it from another command invocation.
+    pub fn start_paste_job(&self) -> (u32, CancelToken) {
+        let job_id = self.0.next_paste_job.fetch_add(1, Ordering::Relaxed);
+        let cancel = CancelToken::new();
+        self.0
+            .paste_jobs
+            .lock()
+            .unwrap()
+            .insert(job_id, cancel.clone());
+        (job_id, cancel)
+    }
+
+    /// `edit_paste_cancel`: best-effort, like every other job's cancel — a no-op for an unknown or
+    /// already-finished job id.
+    pub fn cancel_paste_job(&self, job_id: u32) {
+        if let Some(cancel) = self.0.paste_jobs.lock().unwrap().get(&job_id) {
+            cancel.cancel();
+        }
+    }
+
+    /// Unregisters a finished (done/cancelled/failed) paste job's cancel token.
+    pub fn end_paste_job(&self, job_id: u32) {
+        self.0.paste_jobs.lock().unwrap().remove(&job_id);
     }
 
     /// S2-02/S4-01, superseded by H-09's job path below: `target_db` range check shared by
@@ -4896,6 +5252,289 @@ mod tests {
         // Nothing changed.
         assert_eq!(service.info().audio_rev, service.info().audio_rev);
         assert!(!service.history_state().can_undo);
+    }
+
+    // --- H-56: Insert silence (SPEC-008 §2.1/§2.5) -----------------------------------------
+
+    #[test]
+    fn insert_silence_at_the_cursor_start_and_end_is_one_undo_entry() {
+        let (service, _engine, dir) = service("insert-silence");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.2, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let len = samples.len() as u64;
+
+        // At 48 kHz, "1.000 s" is exactly 48 000 samples (SPEC-008 AC-6).
+        let mid = service
+            .edit_insert_silence(PasteTarget::Cursor(1_000), 48_000)
+            .unwrap();
+        assert!(mid.changed);
+        assert_eq!(mid.len_samples, len + 48_000);
+        assert_eq!(mid.selection, Some((1_000, 1_000 + 48_000)));
+        assert_eq!(mid.playhead_samples, 1_000);
+        assert_eq!(
+            service.history_state().undo_label.as_deref(),
+            Some("history.insert_silence")
+        );
+
+        let at_start = service
+            .edit_insert_silence(PasteTarget::Cursor(0), 10)
+            .unwrap();
+        assert_eq!(at_start.selection, Some((0, 10)));
+
+        let cur_len = at_start.len_samples;
+        let at_end = service
+            .edit_insert_silence(PasteTarget::Cursor(cur_len), 10)
+            .unwrap();
+        assert_eq!(at_end.selection, Some((cur_len, cur_len + 10)));
+        assert_eq!(at_end.len_samples, cur_len + 10);
+
+        // With a selection, silence is inserted at the start and nothing is removed.
+        let with_selection = service
+            .edit_insert_silence(PasteTarget::Range(5, 20), 100)
+            .unwrap();
+        assert_eq!(with_selection.selection, Some((5, 105)));
+
+        let undo = service.history_undo().unwrap();
+        assert_eq!(undo.selection, None, "undo clears the selection");
+
+        // Undo repeatedly back to the original document.
+        for _ in 0..3 {
+            service.history_undo().unwrap();
+        }
+        assert_eq!(service.info().len_samples, len);
+        assert!(!service.history_state().can_undo);
+    }
+
+    #[test]
+    fn insert_silence_into_an_empty_document_inserts_at_zero() {
+        let (service, _engine, dir) = service("insert-silence-empty");
+        open_test_doc(&service, &dir, &[]);
+        assert_eq!(service.info().len_samples, 0);
+        let result = service
+            .edit_insert_silence(PasteTarget::Cursor(0), 500)
+            .unwrap();
+        assert_eq!(result.len_samples, 500);
+        assert_eq!(result.selection, Some((0, 500)));
+    }
+
+    #[test]
+    fn insert_silence_duration_validation() {
+        let (service, _engine, dir) = service("insert-silence-duration");
+        let samples = vox_testkit::signal::silence(0.1, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+
+        assert_eq!(
+            service
+                .edit_insert_silence(PasteTarget::Cursor(0), 0)
+                .unwrap_err()
+                .key,
+            "error.insert_silence_duration"
+        );
+        assert_eq!(
+            service
+                .edit_insert_silence(PasteTarget::Cursor(0), 3_600 * 48_000 + 1)
+                .unwrap_err()
+                .key,
+            "error.insert_silence_duration"
+        );
+        assert!(!service.history_state().can_undo, "rejected: no undo entry");
+        assert!(
+            service
+                .edit_insert_silence(PasteTarget::Cursor(0), 3_600 * 48_000)
+                .is_ok_and(|r| r.changed),
+            "exactly the 1 h ceiling is accepted"
+        );
+    }
+
+    #[test]
+    fn insert_silence_is_refused_while_recording_or_busy() {
+        let (service, _engine, dir) = service("insert-silence-recording");
+        open_test_doc(
+            &service,
+            &dir,
+            &vox_testkit::signal::silence(0.05, 48_000).unwrap(),
+        );
+        let (mut capture, _info) = service
+            .begin_recording(48_000, BitDepth::Bit24, true)
+            .unwrap();
+        capture.append(&[0.0; 100]).unwrap();
+        assert_eq!(
+            service
+                .edit_insert_silence(PasteTarget::Cursor(0), 10)
+                .unwrap_err()
+                .code,
+            IpcErrorCode::NotWhileRecording
+        );
+        service.discard_take(capture.id());
+    }
+
+    // --- H-56: cross-document clipboard (SPEC-008 §2.6) ------------------------------------
+
+    /// AC-15 analog: a same-rate cross-document paste rebinds the clipboard to the new session
+    /// (a pure splice, no job) and a second paste reuses it directly.
+    #[test]
+    fn clipboard_survives_closing_the_source_document_same_rate() {
+        let (service, _engine, dir) = service("clip-cross-same-rate");
+        let a_samples = vox_testkit::signal::sine(440.0, -6.0, 0.1, 48_000).unwrap();
+        open_test_doc(&service, &dir, &a_samples);
+        let cut = service.edit_cut(0, 2_000).unwrap();
+        assert!(cut.changed);
+        assert_eq!(service.clipboard_info().len_samples, Some(2_000));
+
+        // Closing A (without saving) hands the clipboard's audio to a materialized file — it
+        // does not clear the clipboard.
+        service.close().unwrap();
+        assert_eq!(
+            service.clipboard_info().len_samples,
+            Some(2_000),
+            "the clipboard survives the source document closing"
+        );
+        assert!(!service.paste_needs_job(), "no document is open yet");
+
+        // Open B at the same rate and paste: `paste_needs_job` is true until the first import.
+        let b_samples = vox_testkit::signal::sine(220.0, -6.0, 0.1, 48_000).unwrap();
+        open_test_doc(&service, &dir, &b_samples);
+        assert!(service.paste_needs_job());
+
+        let source = service.begin_paste_job(PasteTarget::Cursor(0)).unwrap();
+        assert_eq!(source.target_rate_hz, 48_000);
+        let cancel = vox_project::CancelToken::new();
+        let written = vox_project::clipboard::import_clip(
+            &source.clip,
+            &source.store,
+            48_000,
+            &cancel,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(written.len_samples, 2_000);
+        let result = service.finish_paste_job(&source, written).unwrap();
+        assert!(result.changed);
+        assert_eq!(result.len_samples, b_samples.len() as u64 + 2_000);
+        assert!(!service.is_paste_busy(), "busy flag released");
+
+        // Same-rate import rebinds the clipboard: a later paste is a pure, job-free splice.
+        assert!(!service.paste_needs_job());
+        let second = service.edit_paste(PasteTarget::Cursor(0)).unwrap();
+        assert!(second.changed);
+    }
+
+    /// AC-16 analog: a cross-document paste with a sample-rate mismatch resamples to the exact
+    /// expected length and caches the converted pieces for later pastes into the same document.
+    #[test]
+    fn clipboard_paste_with_a_rate_mismatch_resamples_and_caches() {
+        let (service, _engine, dir) = service("clip-cross-rate-mismatch");
+        let a_samples = vec![0.0f32; 44_100]; // 1.000 s at 44.1 kHz
+        let a_path = dir.join("a.wav");
+        write_fixture_wav(
+            &a_path,
+            &a_samples,
+            vox_testkit::wav::BitDepth::Float32,
+            44_100,
+        );
+        service.open(&a_path, false).unwrap();
+        service.edit_copy(0, 44_100).unwrap();
+        service.close().unwrap();
+
+        let b_samples = vox_testkit::signal::silence(0.5, 48_000).unwrap();
+        open_test_doc(&service, &dir, &b_samples);
+        assert!(service.paste_needs_job());
+
+        let source = service.begin_paste_job(PasteTarget::Cursor(0)).unwrap();
+        assert_eq!(source.clip.sample_rate_hz, 44_100);
+        assert_eq!(source.target_rate_hz, 48_000);
+        let cancel = vox_project::CancelToken::new();
+        let written = vox_project::clipboard::import_clip(
+            &source.clip,
+            &source.store,
+            source.target_rate_hz,
+            &cancel,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(written.len_samples, 48_000, "round(44100 * 48000/44100)");
+        let result = service.finish_paste_job(&source, written).unwrap();
+        assert!(result.changed);
+
+        // The converted pieces are cached for this document: a second paste needs no job.
+        assert!(!service.paste_needs_job());
+        let second = service.edit_paste(PasteTarget::Cursor(0)).unwrap();
+        assert!(second.changed);
+    }
+
+    /// A materialize failure (here: the clipboard directory's path is occupied by a plain file)
+    /// clears the clipboard and posts `notice.clipboard_lost` instead of failing the close.
+    #[test]
+    fn a_materialize_failure_clears_the_clipboard_and_posts_a_notice() {
+        let dir = tmp_dir("clip-materialize-fails");
+        // `DocumentService::new` derives the clipboard directory as a sibling of `sessions_dir`
+        // (`dir/clipboard`) — occupy that path with a plain file so `materialize` can't create a
+        // directory there.
+        std::fs::write(dir.join("clipboard"), b"not a directory").unwrap();
+        let engine = test_engine();
+        let service = DocumentService::new(dir.join("sessions"), engine.handle());
+        open_test_doc(
+            &service,
+            &dir,
+            &vox_testkit::signal::sine(440.0, -6.0, 0.1, 48_000).unwrap(),
+        );
+        service.edit_cut(0, 1_000).unwrap();
+        assert_eq!(service.clipboard_info().len_samples, Some(1_000));
+
+        service.close().unwrap();
+        assert_eq!(
+            service.clipboard_info().len_samples,
+            None,
+            "a failed materialize clears the clipboard"
+        );
+        let notices = service.take_sidecar_notices();
+        assert!(
+            notices.iter().any(|n| n.key == "notice.clipboard_lost"),
+            "{notices:?}"
+        );
+    }
+
+    /// While a cross-document paste job is running (`begin_paste_job` called, not yet finished),
+    /// other edit commands are refused like any other document job (SPEC-008 §2.2).
+    #[test]
+    fn other_edits_are_refused_while_a_paste_job_is_running() {
+        let (service, _engine, dir) = service("clip-cross-busy");
+        let a_samples = vox_testkit::signal::sine(440.0, -6.0, 0.1, 44_100).unwrap();
+        let a_path = dir.join("a.wav");
+        write_fixture_wav(
+            &a_path,
+            &a_samples,
+            vox_testkit::wav::BitDepth::Float32,
+            44_100,
+        );
+        service.open(&a_path, false).unwrap();
+        service.edit_copy(0, a_samples.len() as u64).unwrap();
+        service.close().unwrap();
+
+        open_test_doc(
+            &service,
+            &dir,
+            &vox_testkit::signal::silence(0.2, 48_000).unwrap(),
+        );
+        let source = service.begin_paste_job(PasteTarget::Cursor(0)).unwrap();
+        assert!(service.is_paste_busy());
+        assert_eq!(
+            service.edit_cut(0, 10).unwrap_err().key,
+            "error.document_busy"
+        );
+        assert_eq!(
+            service
+                .edit_insert_silence(PasteTarget::Cursor(0), 10)
+                .unwrap_err()
+                .key,
+            "error.document_busy"
+        );
+
+        service.abandon_paste_job();
+        assert!(!service.is_paste_busy());
+        // Nothing was written and the clipboard is unchanged (still materialized).
+        assert!(service.paste_needs_job());
+        drop(source);
     }
 
     #[test]

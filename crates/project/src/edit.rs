@@ -14,6 +14,10 @@ pub const LABEL_PASTE: &str = "history.paste";
 pub const LABEL_DELETE: &str = "history.delete";
 pub const LABEL_TRIM: &str = "history.trim";
 pub const LABEL_SILENCE: &str = "history.silence";
+pub const LABEL_INSERT_SILENCE: &str = "history.insert_silence";
+
+/// SPEC-008 §2.5: Insert Silence's duration range, "1 sample to 3 600 s".
+pub const INSERT_SILENCE_MAX_SECONDS: u64 = 3_600;
 
 /// A non-empty, in-bounds `[start, end)` document-sample selection (SPEC-006 §2.2), validated by
 /// [`validate_range`].
@@ -123,6 +127,36 @@ pub fn pieces_len_samples(pieces: &[Piece]) -> u64 {
     pieces.iter().map(Piece::len_samples).sum()
 }
 
+/// Why a candidate Insert Silence duration can't be used (SPEC-008 §2.5, §4.3's
+/// `error.insert_silence_duration`): `0` samples, or more than [`INSERT_SILENCE_MAX_SECONDS`] at
+/// the document's rate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InsertSilenceLenError;
+
+/// Validates an Insert Silence duration already converted to samples (the dialog does the
+/// parsing/rounding, SPEC-008 §2.5) against the document's sample rate.
+pub fn validate_insert_silence_len(
+    len_samples: u64,
+    sample_rate_hz: u32,
+) -> Result<u64, InsertSilenceLenError> {
+    let max = INSERT_SILENCE_MAX_SECONDS.saturating_mul(u64::from(sample_rate_hz));
+    if len_samples == 0 || len_samples > max {
+        return Err(InsertSilenceLenError);
+    }
+    Ok(len_samples)
+}
+
+/// Inserts `len_samples` of silence at `target`'s position: the selection start if one exists,
+/// otherwise the cursor (SPEC-008 §2.1/§2.5) — inserting never removes anything, so a `Range`
+/// target's end is ignored.
+pub fn insert_silence(target: Target, len_samples: u64) -> Edit {
+    let at = match target {
+        Target::Cursor(c) => c,
+        Target::Range(r) => r.start,
+    };
+    Edit::new(LABEL_INSERT_SILENCE).replace(at, 0, Piece::silence_run(len_samples))
+}
+
 // --- Post-edit selection/cursor (SPEC-008 §2.3) -------------------------------------------------
 
 /// Cut and Delete: no selection, playhead at the removed range's start.
@@ -143,6 +177,12 @@ pub fn post_paste(target: Target, inserted_len_samples: u64) -> PostEdit {
         selection: Some((at, at + inserted_len_samples)),
         playhead: at,
     }
+}
+
+/// Insert silence: the inserted range becomes the selection, playhead at its start (mirrors
+/// [`post_paste`] — SPEC-008 §2.3).
+pub fn post_insert_silence(target: Target, len_samples: u64) -> PostEdit {
+    post_paste(target, len_samples)
 }
 
 /// Trim: no selection, playhead at 0 (the start of what was kept).
@@ -250,6 +290,47 @@ mod tests {
         assert_eq!(
             post_paste(Target::Range(range), inserted).selection,
             Some((10, 30))
+        );
+    }
+
+    #[test]
+    fn insert_silence_len_validation() {
+        assert_eq!(
+            validate_insert_silence_len(0, 48_000),
+            Err(InsertSilenceLenError)
+        );
+        assert_eq!(validate_insert_silence_len(1, 48_000), Ok(1));
+        assert_eq!(
+            validate_insert_silence_len(3_600 * 48_000, 48_000),
+            Ok(3_600 * 48_000)
+        );
+        assert_eq!(
+            validate_insert_silence_len(3_600 * 48_000 + 1, 48_000),
+            Err(InsertSilenceLenError)
+        );
+    }
+
+    #[test]
+    fn insert_silence_at_cursor_and_over_a_selection_start() {
+        let m = 480;
+        let at_cursor = insert_silence(Target::Cursor(5), m);
+        assert_eq!(at_cursor.label_key, LABEL_INSERT_SILENCE);
+        let crate::history::EditOp::Replace { at, remove_len, .. } = &at_cursor.ops[0];
+        assert_eq!((*at, *remove_len), (5, 0), "insert never removes anything");
+        assert_eq!(
+            post_insert_silence(Target::Cursor(5), m).selection,
+            Some((5, 5 + m))
+        );
+
+        // Inserting silence with a selection: SPEC-008 §2.1 "inserts at the selection start and
+        // removes nothing" — the range's end is ignored.
+        let range = validate_range(10, 40, 100).unwrap();
+        let over_selection = insert_silence(Target::Range(range), m);
+        let crate::history::EditOp::Replace { at, remove_len, .. } = &over_selection.ops[0];
+        assert_eq!((*at, *remove_len), (10, 0));
+        assert_eq!(
+            post_insert_silence(Target::Range(range), m).selection,
+            Some((10, 10 + m))
         );
     }
 

@@ -158,6 +158,11 @@ pub enum JobKind {
     /// its diagnostics arrive as a `spectrum_report` event, its curves via
     /// `spectrum_analyze_curve`.
     SpectrumAnalyze,
+    /// H-56 (SPEC-008 §2.6.1): a cross-document paste that needs the clipboard's materialized
+    /// audio imported (and, on a rate mismatch, resampled) into the open document — `edit_paste`'s
+    /// own job, cancelled by `edit_paste_cancel`. Its finished edit result is `edit_paste`'s own
+    /// return value (mirrors `Import`), not a separate event.
+    Paste,
 }
 
 /// `job_progress`'s lifecycle. `Running` fractions are monotonically non-decreasing in `[0, 1]`;

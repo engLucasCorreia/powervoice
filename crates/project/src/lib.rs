@@ -34,6 +34,7 @@
 //!   never touches the store.
 
 pub mod budget;
+pub mod clipboard;
 pub mod disk;
 pub mod edit;
 pub mod error;
@@ -58,7 +59,10 @@ pub use budget::{
     DiskAction, DiskLimits, DiskUsage, HousekeepingReport, PreparedCompaction, decide,
 };
 pub use disk::{FixedFreeSpace, FreeSpaceProvider, SystemFreeSpace};
-pub use edit::{PostEdit, Range, RangeError, Target as EditTarget, validate_range};
+pub use edit::{
+    INSERT_SILENCE_MAX_SECONDS, InsertSilenceLenError, PostEdit, Range, RangeError,
+    Target as EditTarget, validate_insert_silence_len, validate_range,
+};
 pub use error::{ProjectError, Result};
 pub use fs_util::canonical_path_for_compare;
 pub use history::{Edit, EditOp, History, HistoryStep, LabelParams, MarkerMapping, MarkerOp};

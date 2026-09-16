@@ -16,6 +16,8 @@
   import { initDocument } from "./lib/document/document.svelte";
   import { initRecentFiles } from "./lib/document/recentFiles.svelte";
   import EditMenu from "./lib/edit/EditMenu.svelte";
+  import InsertSilenceDialog from "./lib/edit/InsertSilenceDialog.svelte";
+  import { cancelPasteJob, dismissPasteJob, editState } from "./lib/state/edit.svelte";
   import ExportDialog from "./lib/export/ExportDialog.svelte";
   import AboutDialog from "./lib/help/AboutDialog.svelte";
   import ShortcutsDialog from "./lib/help/ShortcutsDialog.svelte";
@@ -50,6 +52,7 @@
   import MenuBar from "./lib/menu/MenuBar.svelte";
   import NormalizeDialog from "./lib/normalize/NormalizeDialog.svelte";
   import NormalizeLufsDialog from "./lib/normalize/NormalizeLufsDialog.svelte";
+  import NormalizeProgressDialog from "./lib/normalize/NormalizeProgressDialog.svelte";
   import EffectsMenu from "./lib/rack/EffectsMenu.svelte";
   import BakeDialogs from "./lib/rack/BakeDialogs.svelte";
   import ManagePresetsDialog from "./lib/rack/ManagePresetsDialog.svelte";
@@ -96,6 +99,8 @@
    * large monitor never wedges a smaller one (item 3's own note in `settings.rs`).
    */
   const layout = layoutState();
+  /** H-56 (SPEC-008 §2.6.1): the cross-document paste job's progress dialog. */
+  const edit = editState();
 
   let mainAreaEl: HTMLElement | undefined = $state();
   let mainAreaWidthPx = $state(0);
@@ -498,6 +503,14 @@
 <ChannelChoiceDialog />
 <ClipPromptDialog />
 <ImportProgressBar />
+<InsertSilenceDialog />
+<NormalizeProgressDialog
+  job={edit.pasteJob}
+  titleKey="job.paste"
+  testidPrefix="paste-progress"
+  onCancel={cancelPasteJob}
+  onDismiss={dismissPasteJob}
+/>
 <ExportDialog />
 <NewRecordingDialog />
 <LowDiskDialog />

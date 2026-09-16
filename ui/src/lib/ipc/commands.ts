@@ -580,9 +580,20 @@ export async function editCopy(startSamples: number, endSamples: number): Promis
   return invoke<EditResultDto>("edit_copy" satisfies CommandName, { startSamples, endSamples });
 }
 
-/** S2-01: pastes the clipboard at `target` (a cursor or a selection to replace). */
+/**
+ * S2-01/H-56: pastes the clipboard at `target` (a cursor or a selection to replace). When the
+ * clipboard was materialized from a different, now-closed document (SPEC-008 §2.6) and isn't
+ * cached for this one yet, this instead runs the cross-document import as a job: `job_progress`
+ * (kind `paste`) reports its progress while this promise is still pending, and `editPasteCancel`
+ * cancels it from elsewhere.
+ */
 export async function editPaste(target: EditTargetDto): Promise<EditResultDto> {
   return invoke<EditResultDto>("edit_paste" satisfies CommandName, { target });
+}
+
+/** H-56: cancels a running cross-document paste job (best-effort, SPEC-008 §2.6.1 "Cancel"). */
+export async function editPasteCancel(jobId: number): Promise<void> {
+  return invoke<void>("edit_paste_cancel" satisfies CommandName, { jobId });
 }
 
 /** S2-01: deletes `[startSamples, endSamples)`, closing the gap. */
@@ -598,6 +609,21 @@ export async function editTrim(startSamples: number, endSamples: number): Promis
 /** S2-01: silences `[startSamples, endSamples)` with exact `+0.0` samples. */
 export async function editSilence(startSamples: number, endSamples: number): Promise<EditResultDto> {
   return invoke<EditResultDto>("edit_silence" satisfies CommandName, { startSamples, endSamples });
+}
+
+/**
+ * H-56: inserts `lenSamples` of silence at `target` (SPEC-008 §2.1/§2.5) — at the selection start
+ * if `target` is a range, otherwise the cursor. `error.insert_silence_duration` outside 1 sample
+ * .. 3 600 s.
+ */
+export async function editInsertSilence(
+  target: EditTargetDto,
+  lenSamples: number,
+): Promise<EditResultDto> {
+  return invoke<EditResultDto>("edit_insert_silence" satisfies CommandName, {
+    target,
+    lenSamples,
+  });
 }
 
 /**

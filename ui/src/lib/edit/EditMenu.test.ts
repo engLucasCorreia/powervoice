@@ -7,6 +7,7 @@ import type { ActionId } from "../shortcuts/actions";
 import { resetMarkersForTest, selectMarker } from "../markers/markers.svelte";
 import { resetMenuBarForTest } from "../menu/menubar.svelte";
 import { resetEditForTest } from "../state/edit.svelte";
+import { insertSilenceState, resetInsertSilenceForTest } from "../state/insertSilence.svelte";
 import { applyRecordStateForTest, resetRecordForTest } from "../state/record.svelte";
 import { resetSelectionForTest, setSelectionFromResult } from "../state/selection.svelte";
 import { docDto } from "../test/fixtures";
@@ -25,6 +26,7 @@ afterEach(() => {
   resetEditForTest();
   resetSelectionForTest();
   resetMarkersForTest();
+  resetInsertSilenceForTest();
 });
 
 async function openFixtureDocument(): Promise<void> {
@@ -93,6 +95,57 @@ describe("EditMenu (H-19)", () => {
     );
     // Silence has no default binding (menu only) — no shortcut span at all.
     expect(target.querySelector('[data-testid="menu-silence"] .shortcut')).toBeNull();
+    // Insert Silence… has no default binding either (SPEC-008 §2.11 table).
+    expect(target.querySelector('[data-testid="menu-insert-silence"] .shortcut')).toBeNull();
+    unmount(app);
+    target.remove();
+  });
+
+  it("Insert Silence… is enabled with a document open and no selection, disabled with none open", () => {
+    const { target, app } = mountMenu();
+    openMenu(target);
+    expect(
+      target.querySelector<HTMLButtonElement>('[data-testid="menu-insert-silence"]')?.disabled,
+    ).toBe(true);
+    target
+      .querySelector<HTMLElement>('[data-testid="edit-menu"]')
+      ?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    flushSync();
+    unmount(app);
+    target.remove();
+  });
+
+  it("Insert Silence… is enabled once a document is open, with no selection required", async () => {
+    await openFixtureDocument();
+    const { target, app } = mountMenu();
+    openMenu(target);
+    expect(
+      target.querySelector<HTMLButtonElement>('[data-testid="menu-insert-silence"]')?.disabled,
+    ).toBe(false);
+    unmount(app);
+    target.remove();
+  });
+
+  it("Insert Silence… is disabled while recording", async () => {
+    await openFixtureDocument();
+    applyRecordStateForTest({ recording: true });
+    const { target, app } = mountMenu();
+    openMenu(target);
+    expect(
+      target.querySelector<HTMLButtonElement>('[data-testid="menu-insert-silence"]')?.disabled,
+    ).toBe(true);
+    unmount(app);
+    target.remove();
+  });
+
+  it("clicking Insert Silence… opens the dialog", async () => {
+    await openFixtureDocument();
+    const { target, app } = mountMenu();
+    openMenu(target);
+    expect(insertSilenceState().dialogOpen).toBe(false);
+    target.querySelector<HTMLButtonElement>('[data-testid="menu-insert-silence"]')?.click();
+    flushSync();
+    expect(insertSilenceState().dialogOpen).toBe(true);
     unmount(app);
     target.remove();
   });

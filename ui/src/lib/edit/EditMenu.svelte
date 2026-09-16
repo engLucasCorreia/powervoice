@@ -11,6 +11,7 @@
   import { recordState } from "../state/record.svelte";
   import { hasClipboard, editState, silence } from "../state/edit.svelte";
   import { hasSelection } from "../state/selection.svelte";
+  import { openInsertSilenceDialog } from "../state/insertSilence.svelte";
   import type { MenuEntry } from "../ui/menuModel";
 
   /**
@@ -90,6 +91,14 @@
       disabled: !selected,
       testid: "menu-silence",
       onselect: () => void silence(),
+    },
+    {
+      kind: "item",
+      id: "insert-silence",
+      label: t("edit.insert_silence"),
+      disabled: !hasDoc || recording,
+      testid: "menu-insert-silence",
+      onselect: openInsertSilenceDialog,
     },
     { kind: "separator", id: "sep-select" },
     action("select-all", t("menu.edit.select_all"), "waveform.select_all", !hasDoc || recording),

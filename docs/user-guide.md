@@ -2,28 +2,63 @@
 
 PowerVoice is a focused editor for **simple voice-over work**: record mono voice, clean it up,
 shape it, hit a loudness target, and export. It edits **one mono audio file at a time** (like Adobe
-Audition's Waveform Editor) — there's no multitrack timeline.
+Audition's Waveform Editor) — there's no multitrack timeline. New to PowerVoice? [What is
+PowerVoice?](what-is-powervoice.md) is the two-minute pitch, and [How PowerVoice
+works](how-it-works.md) explains what happens to your sound as you use it. Words in *italics* or
+linked to the [glossary](glossary.md) get a plain-language explanation there.
+
+This guide is organised by task, roughly in the order you'll use them:
+
+[Guided tours](#guided-tours) · [Install](#install) · [Set up your microphone](#set-up-your-microphone) ·
+[First recording](#first-recording) · [Punch-in](#re-recording-part-of-a-take-punch-in) ·
+[Latency calibration](#latency-calibration) · [Markers](#markers) · [Edit and undo](#editing-and-undo) ·
+[Waveform and spectral views](#waveform-and-spectral-views) · [The effects rack](#cleaning-up-the-effects-rack) ·
+[Remove background noise](#remove-background-noise) · [Make your voice sound better](#make-your-voice-sound-better) ·
+[Rack presets](#rack-presets) · [Apply the rack (bake)](#apply-the-rack-bake) · [Plugins](#plugins) ·
+[Presets](#presets) · [Check your levels](#check-your-levels-analyzer-and-diagnostics) ·
+[Hit a loudness target](#hit-a-loudness-target) · [Export](#export) · [Themes](#themes) ·
+[Preferences](#preferences) · [Shortcuts](#shortcuts) · [Troubleshooting](#troubleshooting)
 
 ## Guided tours
 
 The first time PowerVoice starts it offers a two-minute **Welcome tour** that walks through choosing
 your devices, recording a practice take, navigating the take, markers, the effects rack, noise
 reduction, meters and loudness, and export. Replay it any time from **Help → Take the Tour**, or pick
-any tour from **Help → Tours**. A **?** in the Rack, Loudness, Noise Reduction, Punch & pre-roll and
-Plugin Manager headers starts a short tour of that panel. Use **→**/**Enter** and **←** to move,
-**Esc** to leave.
+any tour from **Help → Tours**: Welcome tour, Effects rack and presets, Noise print and reduction,
+Loudness, ACX and normalize, Punch-in, and Plugin Manager. A **?** in the Rack, Loudness, Noise
+Reduction, Punch & pre-roll and Plugin Manager headers starts a short tour of that panel. Use
+**→**/**Enter** and **←** to move, **Esc** to leave.
 
 ## Install
 
 See the [README](../README.md#download) for install instructions per platform, and
 [`docs/building.md`](building.md) if you're building from source.
 
+## Set up your microphone
+
+Click the **Audio devices…** button in the toolbar (the gear icon) to open **Audio Devices**:
+
+- **Host**: the audio system PowerVoice talks to (PipeWire, ALSA or JACK on Linux; WASAPI on
+  Windows; Core Audio on macOS). See [No audio devices show
+  up](#no-audio-devices-show-up--wrong-devices-listed-linux-pipewire-jack-alsa) if this list is
+  empty.
+- **Input device**, and its **input channel** if it has more than one (for example, channel 1 or 2
+  of a stereo audio interface) — this is your microphone.
+- **Output device** — your speakers or headphones, needed for monitoring and for punch-in's
+  pre-roll/post-roll playback.
+- **Sample rate** and **buffer size** for the chosen devices. A smaller buffer size lowers latency
+  (the delay between making a sound and hearing it through the computer) but asks more of your
+  computer; if you hear crackling, try a larger one.
+
+The list refreshes automatically when you plug or unplug a device. Record stays unavailable until
+an input device is chosen.
+
 ## First recording
 
 1. **File → New Recording…** Choose the sample rate/bit depth (default 48 kHz / 24-bit; internal
    processing is always 32-bit float regardless of what you pick here) and pick your **input
    device** (and input channel, e.g. channel 1 or 2 of a stereo interface) and **output device**
-   in Settings → Audio Devices if you haven't already.
+   in [Audio Devices](#set-up-your-microphone) if you haven't already.
 2. Click **Input** to arm — this starts the input meter and monitoring without recording yet.
    Choose a monitoring mode: **Off** / **Dry** (hear your raw input) / **Through rack** (hear it
    with the effects rack applied). Off is the default: monitoring through a rack adds the rack's
@@ -34,8 +69,8 @@ See the [README](../README.md#download) for install instructions per platform, a
    later.
 4. **File → Save** (**Ctrl/⌘+S**) writes the audio file plus a sidecar `name.wav.vo.json` next to
    it, holding your rack, markers, noise profile and view settings. Autosave/crash recovery runs
-   continuously in the background (File → Recovery & Storage… to see or recover an interrupted
-   session).
+   continuously in the background — see [Recovering after a crash or power
+   loss](#recovering-after-a-crash-or-power-loss).
 
 ### Re-recording part of a take (punch-in)
 
@@ -56,7 +91,7 @@ crossfade (default 10 ms) blends the new audio in at both edges.
   selection still works with only an input device, just without a lead-in.
 
 All of these live in the Record panel's **Punch & pre-roll** section (same settings also appear in
-**Preferences → Recording**), and are app-wide preferences, not saved per document.
+**Edit → Preferences → Recording**), and are app-wide preferences, not saved per document.
 
 ### Latency calibration
 
@@ -69,27 +104,115 @@ of those 5 measurements to agree before it accepts a result. Recalibrate if you 
 buffer size — the readout tells you when your current buffer size no longer matches the one you
 calibrated at.
 
+## Markers
+
+Markers are named bookmarks in your take — a retake, a cough, a chapter break — so you can find a
+moment again without scrubbing through the whole recording.
+
+- **M** drops a marker at the playhead (or **Edit → Markers → Add Marker**).
+- The **markers list** panel on the left shows every marker with its start time and duration;
+  clicking one jumps the playhead there. Double-click a marker's name to rename it.
+- **Ctrl/⌘+Alt+→** / **←** jump to the next/previous marker (also **Edit → Markers → Next/Previous
+  Marker**).
+- **Ctrl/⌘+0** deletes the selected marker(s) (also **Edit → Markers → Delete Selected Marker**).
+- Markers are saved in the sidecar and, on export, as WAV `cue`/`LIST adtl` chunks, so they travel
+  with the file into other software that reads them.
+
+## Editing and undo
+
+The usual clipboard operations work on the current selection: **Cut** (**Ctrl/⌘+X**), **Copy**
+(**Ctrl/⌘+C**), **Paste** (**Ctrl/⌘+V**), **Delete** (**Delete**), **Trim to Selection** (keep only
+the selection, **Ctrl/⌘+T**) and **Silence** (replace the selection with silence, keeping its
+length) — all in the **Edit** menu, and all destructive-but-undoable edits on your document (the
+effects rack itself is separate and non-destructive — see [the effects
+rack](#cleaning-up-the-effects-rack)).
+
+**Undo** (**Ctrl/⌘+Z**) and **Redo** (**Ctrl/⌘+Shift+Z**) step back and forward through every edit,
+with no limit other than free disk space — see [why undo never runs
+out](how-it-works.md#why-your-original-recording-is-never-damaged). Undoing a [baked
+rack](#apply-the-rack-bake) restores the rack you baked, as well as the audio.
+
+## Waveform and spectral views
+
+The main **waveform** view shows your take's shape over time; the **spectral view** (a
+*spectrogram* — a picture where height is pitch, left-to-right is time and brightness is loudness)
+shows its frequency content, which makes hum, clicks and breaths easy to spot. Toggle it with
+**Shift+D** or the Spectral button in the toolbar.
+
+- **Zoom in/out**: **=** / **-** (waveform), **Alt+=** / **Alt+-** (vertical, amplitude), **Alt+0**
+  resets vertical zoom. The toolbar's **Zoom to Selection** and **Zoom Full** buttons jump straight
+  to a range. You can also scroll with the mouse wheel and zoom with Ctrl + wheel.
+- **Select**: drag to select a range, **Ctrl/⌘+A** selects all, **Esc** clears the selection.
+  **←**/**→** nudge the cursor or selection, **Shift+←**/**Shift+→** extend it.
+- **Snap to zero crossing** (View menu, off by default): selection edges snap to the nearest point
+  where the waveform crosses silence, so cuts and edits never click.
+- **Time format**: View → Time Format shows the ruler and readouts as Timecode, Samples or
+  Seconds.
+- **Loop playback** (**Ctrl/⌘+L**, or View → Loop Playback) repeats the current selection
+  (10 ms or longer) instead of stopping at its end — handy for checking how a phrase or an edit
+  sounds. A loop doesn't reset the effects rack at the seam, so a reverb or delay tail from a
+  plugin carries across the repeat, the same as it would if you kept playing normally.
+
 ## Cleaning up: the effects rack
 
 The rack is a chain of **non-destructive** effects, processed in real time during playback,
-monitoring and export — nothing is baked into the file until you export. Add modules from the rack
-panel; drag to reorder; click an effect's bypass toggle to A/B it.
+monitoring and export — nothing is baked into the file until you export or use [Apply the rack
+(bake)](#apply-the-rack-bake). Add modules from the rack panel's **Add module** menu; drag a
+module by its grip to reorder it; click a module's bypass toggle to A/B it against the rest of the
+chain.
 
-Built-in modules: **Noise Gate**, **Noise Reduction** (spectral, needs a captured noise print —
-select 0.5–60 s of room tone/silence and use Capture Noise Print, provisionally **Shift+P**),
-**Parametric EQ** (HPF/LPF + low/high shelf + 5 peaking bands), **Dynamics** (auto-gate → expander →
-compressor → limiter, compressor on by default), and a **True-Peak Limiter** (a safety ceiling for
-loudness delivery).
+Built-in modules: **Noise Gate**, **Noise Reduction**, **Parametric EQ**, **Dynamics**, **Gain**,
+and a **True-Peak Limiter** (a safety ceiling for loudness delivery). **Third-party plugins** (CLAP,
+VST3, LV2, and REAPER's JSFX effects) show up in the same **Add module** menu, grouped by format —
+see [Plugins](#plugins).
 
-**Third-party plugins**: PowerVoice also supports plugins in CLAP, VST3, and LV2 formats, and
-REAPER's JSFX effects. Use the **Plugin Manager** or the **Add Module** menu's **Plugins** section to
-install and add them to your rack. If LV2 plugins aren't available, see
-[LV2 plugins are unavailable](#lv2-plugins-are-unavailable). For JSFX, see
-[Where JSFX effects come from](#where-jsfx-effects-come-from).
+### Remove background noise
+
+Every recording has some background hiss or hum, even a quiet room. PowerVoice removes it in two
+steps:
+
+1. Select **0.5–60 seconds of room tone** — a stretch with only the background noise and no
+   speech, ideally right before or after your take. Choose **Effects → Capture Noise Print**
+   (provisionally **Shift+P**). PowerVoice studies that noise's frequency makeup — its *noise
+   print* — the same way you'd note the constant hum of an air conditioner before deciding how much
+   to turn it down.
+2. Add **Noise Reduction** to the rack (Capture Noise Print does this for you if it isn't there
+   yet). It continuously subtracts a version of that noise print from the whole take. Its two main
+   controls are **reduction** (how many dB, at most, to remove) and **amount** (what percentage of
+   that reduction to apply) — start low and raise them while listening: too much makes a voice
+   sound thin or "watery" (an artifact of removing too much at once). Advanced controls (FFT size,
+   sensitivity, spectral/time smoothing) are there for stubborn noise but the defaults suit most
+   voice recordings.
+
+Noise Reduction adds a small, fixed delay to the signal (about 43 ms at its default setting) while
+it works — PowerVoice automatically keeps your video/picture, meters and export in sync with it, so
+you don't need to do anything about that delay yourself.
+
+### Make your voice sound better
+
+Two built-in modules shape the *tone* (which frequencies stand out) and *dynamics* (how loud vs
+quiet parts compare) of your voice:
+
+- **Parametric EQ** (equalizer) works like a set of very precise tone controls: a low-cut and
+  high-cut filter (to remove rumble below or hiss above the range of speech), a low shelf and high
+  shelf (turn a whole low or high region up or down), and five adjustable *peaking bands* that each
+  boost or cut a chosen frequency by a chosen amount, over a chosen width (its *Q*). The rack's EQ
+  graph shows the exact curve you're drawing, live, as you drag it. A little cut around 200–500 Hz
+  can reduce "boominess"; a little boost around 2–5 kHz can add clarity or "presence."
+- **Dynamics** evens out how loud and quiet parts of your voice are, in the style of Audition's
+  Dynamics panel: a **compressor** automatically turns down parts that go above a *threshold*, by
+  an amount set by its *ratio* (so a loud word doesn't jump out over a quiet one), and a
+  **limiter** acts as a hard ceiling that nothing can cross. Both report how much gain reduction
+  they're applying in real time, shown as a small meter in the rack.
+
+The [Spectrum Inspector and voice diagnostics](#check-your-levels-analyzer-and-diagnostics) can
+suggest specific EQ moves (for example, a de-esser frequency for harsh "s" sounds) that you can add
+to the EQ with one click.
 
 ### Rack presets
 
-Rather than build a chain from scratch, load a **rack preset** from the rack panel's preset menu:
+Rather than build a chain from scratch, load a **rack preset** from the rack panel's preset menu
+(**Effects → Rack Presets**):
 
 | Preset | What it's for | Chain (roughly) |
 |---|---|---|
@@ -99,35 +222,152 @@ Rather than build a chain from scratch, load a **rack preset** from the rack pan
 
 Loading a preset over a non-empty rack asks for confirmation first (rack edits aren't part of
 undo/redo in v1). Every built-in module also has its own presets (its own preset menu in its
-header), and you can save your own module/rack presets from the current settings.
+header) — see [Presets](#presets) for saving, renaming and sharing your own.
 
-## Exporting, and the ACX check
+### Apply the rack (bake)
+
+**Effects → Bake Rack** permanently applies the current rack to the selection (or the whole file)
+as one undoable edit, and then clears the rack. Use it when you want to lock in how something
+sounds — for example, before adding a different effect on top that should hear the *processed*
+signal rather than the original. Undo brings back both the original audio and the rack you baked.
+
+## Plugins
+
+PowerVoice hosts third-party effects in **CLAP**, **VST3** and **LV2** formats, plus REAPER's
+**JSFX** scripts. Every plugin runs in its own protected process — see [Why plugins run in their
+own "safety box"](how-it-works.md#why-plugins-run-in-their-own-safety-box) for why that means a
+misbehaving plugin can't take PowerVoice or your recording down with it. LV2 and JSFX are available
+on Linux and macOS only; LV2 additionally needs the system `lilv` library (see [LV2 plugins are
+unavailable](#lv2-plugins-are-unavailable) if it's missing).
+
+Add an installed plugin to the rack the same way as a built-in: **Add module**, under **Plugins
+(CLAP)**, **Plugins (VST3)**, **Plugins (LV2)** or **Plugins (JSFX)**.
+
+### The Plugin Manager
+
+Open it from **Effects → Manage Plugins…**. Two tabs:
+
+- **Plugins**: every plugin PowerVoice found, with its format, channel layout, parameter count and
+  **status** — OK, Disabled (hidden from Add module), Blocklisted (skipped because it crashed or
+  timed out while being scanned, or you blocked it), or Flagged (crashed while running, but still
+  usable). Search by name, vendor or path; **Rescan** picks up new or changed files, or scan
+  everything again from scratch.
+- **Folders**: where PowerVoice looks for plugins — the standard OS locations, plus any custom
+  folders you add.
+
+**Effects → Install Module…** copies a CLAP, VST3, LV2 or JSFX plugin file (or a PowerVoice
+`.voxmod` package) into your own plugin folder and scans it, so you don't have to find your
+system's plugin folders yourself.
+
+### If a plugin crashes
+
+A crash while a plugin is running doesn't take PowerVoice down: the affected rack slot mutes for a
+fraction of a second, is marked *Restarting*, and comes back automatically with its last settings.
+If it fails again right away, the slot shows *Failed* with a **Retry** button — the rest of the rack
+and your recording are unaffected the whole time. A runtime crash is recorded as a "flag" in the
+Plugin Manager (**Clear crash warning** dismisses it) but never blocks the plugin from being used
+again; only repeated failures *during a scan* add it to the blocklist, which you can undo with
+**Unblock and rescan**.
+
+Some plugins have their own graphical editor window — open it from the window icon (⊟) in the
+plugin's rack slot (Linux needs X11 or XWayland; not yet supported on Windows or macOS). If a
+plugin's window closes because it crashed, reopen it the same way once the plugin has restarted.
+
+## Presets
+
+Beyond the built-in [rack presets](#rack-presets), you can save, load, rename, delete, export and
+import presets for the **whole rack** or for **one module** from **Effects → Manage Presets…**
+(also reachable from a module's own preset menu, or the rack panel's). Its two tabs, **Rack
+presets** and **Module presets**, list the factory presets (marked *Factory*) followed by your own,
+alphabetically:
+
+- **Save as preset…** captures a module's or the whole rack's current settings under a name you
+  choose (a Noise Reduction preset can optionally include its captured noise print).
+- **Export…** / **Import…** write a preset to, or read one from, a file — the way to share a preset
+  with someone else, back one up, or move it between computers. Importing over a preset with the
+  same name asks before replacing it.
+- **Reset to Default** (a module's slot menu) puts every one of its parameters back to the
+  factory default without touching a captured noise print.
+
+## Check your levels: analyzer and diagnostics
+
+The dock along the bottom shows what you're hearing:
+
+- **Meters**: a peak/RMS output meter (post-rack) and, while recording, an input meter with a clip
+  indicator.
+- **Analyzer**: a live graph of which frequencies are currently in the sound, in three modes —
+  **Live** (right now), **Average** (analyze a whole selection or file, as the source or as
+  processed through the rack, to see its long-term tone), and **Compare** (freeze two curves, A and
+  B, and see the difference between them — handy for comparing before/after an EQ move, or the
+  source against the processed signal). **Peak hold** and labelled peaks help you read it; a
+  Fast/Medium/Slow response smooths how quickly it reacts.
+- **Voice diagnostics** (the Analyzer panel's Diagnostics toggle): plain readouts of pitch (F0),
+  tone balance (how much "mud" around 200–500 Hz, "presence" around 2–5 kHz, and "air" above
+  10 kHz), sibilance (harsh "s" sounds, 4–10 kHz), mains hum, rumble, noise floor and signal-to-noise
+  ratio — each with a short hint ("A bit boomy — try a gentle cut around 300 Hz") and, for several,
+  an **Add EQ band here** button that inserts a matching Parametric EQ move.
+- **Spectrum Inspector** (**View → Spectrum Inspector**): a larger, dedicated live spectrum view
+  with its own FFT size, window and response settings, for closer inspection than the compact
+  Analyzer panel — wheel to zoom, drag to pan, Shift-drag to zoom to a range, double-click to
+  reset.
+
+## Hit a loudness target
+
+The **Loudness** panel (dock) measures your take: click **Analyze** (as **Processed**, through the
+rack, or **Source**, the raw file) to get integrated loudness (**I**, in
+[LUFS](glossary.md#l)), the loudest short-term (**S-max**) and momentary (**M-max**) moments, the
+loudness range (**LRA**, in LU), sample peak and [true peak](glossary.md#t) (**TP**, in dBTP).
+
+- **Normalize** in the toolbar/Edit menu holds one-click favourites for peak (**−1**, **−0.1**,
+  **−3 dB**) and loudness (**−16**, **−19**, **−23 LUFS**) targets, plus a dialog for any other
+  target. Like every normalize, it's a destructive but fully undoable gain change to the selection
+  (or the whole file if nothing is selected).
+- **ACX Check** (dock panel) tests your file against Audible's three ACX submission rules, each
+  measured against the whole file or your selection:
+
+  | Rule | Limit |
+  |---|---|
+  | RMS | −23 … −18 dB |
+  | Peak | ≤ −3 dBFS |
+  | Noise floor (quietest 500 ms) | ≤ −60 dB |
+
+  A failing rule comes with a one-line hint (e.g. "RMS −27 dB is quieter than −23 dB: LUFS/RMS
+  normalize up.", or "Noise floor −52 dB exceeds −60 dB: capture a noise print and add Noise
+  Reduction."). The **Audiobook (ACX)** [rack preset](#rack-presets) already keeps peaks under the
+  ACX ceiling via its limiter.
+
+## Export
 
 **File → Export…** Choose:
 
 - **Format**: WAV (16/24/32-bit float), FLAC (16/24-bit — no 32-bit float FLAC), or MP3 (CBR/VBR,
-  needs a system LAME install — see [Troubleshooting](#troubleshooting) if it's greyed out with
-  "(needs libmp3lame)").
+  needs a system LAME install — see [MP3 export is greyed out](#mp3-export-is-greyed-out--needs-libmp3lame)
+  if it's greyed out with "(needs libmp3lame)").
 - **Range**: whole file or just the current selection.
 - **ACX preset**, if you want export settings that match Audible's ACX submission format.
 
 Exports always render through the full rack (the rack panel's "Listening only" badge on an A/B'd
-module is a reminder that only *exports* reflect the true, non-bypassed signal).
+module is a reminder that only *exports* reflect the true, non-bypassed signal) — see [why what
+you export is what you heard](how-it-works.md#the-journey-of-your-voice). Check [Hit a loudness
+target](#hit-a-loudness-target) before exporting if the file needs to pass an ACX submission.
 
-Before exporting, open the **ACX Check** panel to see whether the file would pass ACX's three
-numeric requirements, each measured against the whole file (or your selection):
+## Themes
 
-| Rule | Limit |
-|---|---|
-| RMS | −23 … −18 dB |
-| Peak | ≤ −3 dBFS |
-| Noise floor (quietest 500 ms) | ≤ −60 dB |
+**Edit → Preferences → Display & Appearance**, or **View → Theme**, offers four choices: **Dark**
+(the default), **Light** (for bright rooms), **High Contrast** (stronger text and lines, for
+accessibility), or **Match System** (follows your OS's light/dark setting, and switches to High
+Contrast automatically if your OS is set to prefer more contrast). A theme change applies at once,
+everywhere — the waveform, spectrogram, meters and analyzer included.
 
-A failing rule comes with a one-line hint (e.g. "RMS −27 dB is quieter than −23 dB: LUFS/RMS
-normalize up.", or "Noise floor −52 dB exceeds −60 dB: capture a noise print and add Noise
-Reduction."). One-click **Normalize to X dB** (peak) or **Normalize to X LUFS** favorites are
-available from the toolbar/Edit menu, or use the **Audiobook (ACX)** rack preset above, which
-already keeps peaks under the ACX ceiling via its limiter.
+## Preferences
+
+**Edit → Preferences** groups settings into five sections: **Recording** (pre-roll/post-roll
+lengths, punch crossfade, saved per-device-setup recording offsets from calibration), **Editing**
+(what happens when you open a file with more than one channel), **Display & Appearance** (theme),
+**Plugins** (the list of installed plugins, with a shortcut to the Plugin Manager) and **Advanced**
+(how much audio PowerVoice keeps in memory at once, and how often the playhead and meters refresh —
+60 Hz is smoother, 30 Hz uses less CPU). Each section, or everything at once, can be reset to
+defaults from its own **Reset to defaults…** button.
 
 ## Shortcuts
 
@@ -143,8 +383,9 @@ authoritative confirmation (T-701).
 
 ### No audio devices show up / wrong devices listed (Linux: PipeWire, JACK, ALSA)
 
-Settings → Audio Devices lists whatever your audio backend reports, refreshed automatically on
-hot-plug. On Linux, PowerVoice picks a backend at build time (via `cpal`) in this order:
+The [Audio Devices](#set-up-your-microphone) dialog lists whatever your audio backend reports,
+refreshed automatically on hot-plug. On Linux, PowerVoice picks a backend at build time (via
+`cpal`) in this order:
 
 1. **PipeWire**, if a PipeWire server is reachable (most current distros default to this — the
    product owner develops against PipeWire 1.6.8).
@@ -264,9 +505,11 @@ to Dry monitoring, or removing high-latency rack modules (Noise Reduction in par
 to ~50 ms; a *bypassed* module still holds its latency, so bypassing it doesn't help — remove it
 instead if you need the latency back).
 
-### A crash or power loss interrupted a recording
+### Recovering after a crash or power loss
 
 Open **File → Recovery & Storage…**. Interrupted takes are recovered from the crash-safe session
 journal; markers show where any dropouts or the interruption itself occurred. The dialog stays open
 until you've dealt with every recoverable session, so you can't accidentally lose one by dismissing
-it too fast.
+it too fast. See [why your original recording is never
+damaged](how-it-works.md#why-your-original-recording-is-never-damaged) for how this works under the
+hood.

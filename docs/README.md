@@ -8,7 +8,10 @@ export. Start with the [README](../README.md) for what it does and how to instal
 
 | Document | Purpose | Audience |
 |---|---|---|
+| [what-is-powervoice.md](what-is-powervoice.md) | What PowerVoice is, who it's for, how it compares to Adobe Audition, and what it deliberately doesn't do | Everyone, especially new/non-technical users |
+| [how-it-works.md](how-it-works.md) | How sound travels through PowerVoice, why your recording is never damaged, and why plugins run sandboxed — explained without code | Everyone |
 | [user-guide.md](user-guide.md) | How to use the app: first recording, punch-in, the rack, loudness and ACX, export, troubleshooting | Users |
+| [faq.md](faq.md) | Common questions and problems, answered in plain words | Users |
 | [shortcuts.md](shortcuts.md) | Every keyboard shortcut (generated from the shortcut registry) | Users |
 | [glossary.md](glossary.md) | Every term, plain-language line first, then the precise meaning | Everyone |
 | [building.md](building.md) | Building from source on Linux, Windows and macOS, and the optional libraries | Users building it themselves, developers |

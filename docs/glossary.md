@@ -34,6 +34,14 @@ Jump to: [A](#a) · [B](#b) · [C](#c) · [D](#d) · [E](#e) · [F](#f) · [G](#
 - `docs/adr/ADR-NNN-*.md`, accepted at the M0 checkpoint and amended as features landed. Index:
   [adr/README.md](adr/README.md).
 
+**Attack / release**
+- *Plain:* how quickly an effect reacts when a sound gets loud (attack) or quiet (release) again —
+  like how quickly you'd turn a volume knob down when someone starts shouting, and how quickly
+  you'd turn it back up once they stop.
+- Time constants on the Noise Gate, Dynamics (compressor/limiter) and Noise Reduction modules;
+  shorter times react faster but can "pump" audibly, longer times are smoother but slower to
+  respond. See [dsp.md](architecture/dsp.md#noise-gate).
+
 **Audio callback / audio thread**
 - *Plain:* the tiny piece of code the operating system calls hundreds of times a second to fetch
   the next sound to play or deliver the sound just recorded.
@@ -87,10 +95,26 @@ Jump to: [A](#a) · [B](#b) · [C](#c) · [D](#d) · [E](#e) · [F](#f) · [G](#
   packaging ABI for installable PowerVoice modules (ADR-006). See
   [plugins.md](architecture/plugins.md).
 
+**Clip / clipping**
+- *Plain:* what happens when a sound is too loud for the digital file to hold — the loudest peaks
+  get chopped flat instead of rounded, which sounds harsh or crackly.
+- Detected on the raw input signal at full scale (0 dBFS) by the input meter's clip indicator; see
+  [dsp.md](architecture/dsp.md#the-live-signal-chain). Prevented on export/output by the True-Peak
+  Limiter, which guarantees the signal never crosses its ceiling.
+
 **Composition root**
 - *Plain:* the place where the app's parts are plugged together at start-up.
 - `src-tauri/src/lib.rs::run` (the app) and `crates/cli` (the CLI): they build the module
   registry and the engine. See [overview.md](architecture/overview.md#composition-roots).
+
+**Compressor**
+- *Plain:* an effect that automatically turns down parts of your voice that get too loud, so quiet
+  and loud words end up closer in level — like a sound engineer riding a fader in real time. The
+  *knee* controls how gradually it kicks in around the threshold (a "soft knee" is gentler than a
+  hard cutoff).
+- Part of the Dynamics module: threshold, ratio, attack/release and knee parameters feed a gain
+  computer that reduces level above the threshold, plus optional makeup gain to bring the overall
+  level back up. See [dsp.md](architecture/dsp.md#dynamics).
 
 **Control thread**
 - *Plain:* the engine's "manager" thread that talks to the UI and the audio thread.
@@ -151,12 +175,30 @@ Jump to: [A](#a) · [B](#b) · [C](#c) · [D](#d) · [E](#e) · [F](#f) · [G](#
 - Data-transfer object: Rust structs in `src-tauri/src/ipc/*_dto.rs` deriving `ts_rs::TS`, from
   which `ui/src/lib/ipc/bindings.ts` is generated. See [ipc.md](architecture/ipc.md#shared-types-ts-rs).
 
+**Dynamics**
+- *Plain:* the built-in effect that evens out how loud and quiet parts of your voice are — a
+  compressor to narrow the gap, and a limiter as a hard ceiling nothing can cross.
+- `org.powervoice.dynamics`: peak/RMS detection into a compressor curve, then a limiter curve, with
+  ballistics (attack/release) and a gain-reduction meter. See
+  [Compressor](#c), [Limiter](#l) and [dsp.md](architecture/dsp.md#dynamics).
+
 ## E
 
 **Epoch**
 - *Plain:* a counter that tells the audio thread "the old audio in the queue is stale now".
 - Transport starts and seeks bump an epoch; the output callback drops reader packets from older
   epochs (`crates/engine/src/output.rs`).
+
+**EQ (equalizer) / EQ band**
+- *Plain:* tone controls for sound — like the bass/treble knobs on a stereo, but with precise
+  control over exactly which frequencies change and by how much. Each adjustable slice is a
+  *band*; its *Q* sets how wide or narrow the slice is (a low Q shapes a broad swath of tone, a
+  high Q targets one narrow frequency).
+- PowerVoice's Parametric EQ chains a high-pass and low-pass filter, a low shelf and a high shelf,
+  and five peaking bands, each with frequency, gain and Q; a live graph shows the exact combined
+  response as you adjust it. See [Make your voice sound
+  better](user-guide.md#make-your-voice-sound-better) and
+  [dsp.md](architecture/dsp.md#parametric-eq).
 
 **Export**
 - *Plain:* write a finished file (WAV, FLAC or MP3) with the effects applied.
@@ -189,6 +231,12 @@ Jump to: [A](#a) · [B](#b) · [C](#c) · [D](#d) · [E](#e) · [F](#f) · [G](#
   (tile in `tests/data/`, rewritten with `POWERVOICE_BLESS=1`).
 
 ## H
+
+**Headroom**
+- *Plain:* the safety margin between how loud something actually gets and the loudest a format can
+  hold — more headroom means less risk of clipping if something is briefly louder than expected.
+- E.g. the Audiobook (ACX) [rack preset](user-guide.md#rack-presets)'s limiter ceiling of
+  −3 dBTP leaves 3 dB of headroom below full scale (0 dBFS/dBTP).
 
 **Hot-plug**
 - *Plain:* plugging or unplugging a microphone or headphones while the app runs.
@@ -234,6 +282,20 @@ Jump to: [A](#a) · [B](#b) · [C](#c) · [D](#d) · [E](#e) · [F](#f) · [G](#
 - Each module reports `latency_samples()`; the chain sums them; the playhead, pre-roll and
   offline renders compensate. See [dsp.md](architecture/dsp.md#latency).
 
+**Limiter**
+- *Plain:* a hard ceiling on loudness — no matter how loud the sound going in gets, what comes out
+  never crosses the ceiling you set. A brick wall, not a slope.
+- The Dynamics module's built-in limiter stage, and the standalone **True-Peak Limiter** (which
+  measures peaks that fall *between* samples, oversampled 4×, so nothing sneaks over the ceiling on
+  playback). See [dsp.md](architecture/dsp.md#true-peak-limiter).
+
+**Loop playback**
+- *Plain:* replays the current selection over and over instead of stopping at its end, so you can
+  listen to a phrase or an edit repeatedly without re-selecting it each time.
+- `Ctrl/⌘+L`; a sample-exact wrap with no rack reset at the seam, so an effect's tail (e.g. a
+  plugin's reverb) carries across the repeat (A-023). See [Waveform and spectral
+  views](user-guide.md#waveform-and-spectral-views).
+
 **LTAS**
 - *Plain:* the average tone colour of a whole recording.
 - Long-term average spectrum (`vox_dsp::diagnostics::spectrum::Ltas`), computed by the Average
@@ -266,6 +328,13 @@ Jump to: [A](#a) · [B](#b) · [C](#c) · [D](#d) · [E](#e) · [F](#f) · [G](#
   shared playback rack. Default off.
 
 ## N
+
+**Noise floor**
+- *Plain:* how loud the background hiss or hum is in your quietest moments — the "silence" that's
+  never quite silent. A lower noise floor (a more negative dB number) means a quieter background.
+- ACX measures it as the level of the quietest 500 ms window in the file
+  (`vox_dsp::acx::evaluate`); it must be ≤ −60 dB to pass. See [Hit a loudness
+  target](user-guide.md#hit-a-loudness-target).
 
 **Noise print / noise reduction**
 - *Plain:* you teach the app what the background hiss sounds like, and it removes that sound.
@@ -356,6 +425,19 @@ Jump to: [A](#a) · [B](#b) · [C](#c) · [D](#d) · [E](#e) · [F](#f) · [G](#
 - *Plain:* a fixed-size circular queue with one writer and one reader, safe without locks.
 - `rtrb` rings between the control, reader, input and output threads.
 
+**RMS (root mean square)**
+- *Plain:* a way of measuring loudness that's closer to how our ears perceive it than a simple
+  peak reading — it looks at the average energy over a short window rather than just the single
+  loudest instant.
+- ACX's loudness rule is an RMS measurement (−23 … −18 dB); the Dynamics module can also detect on
+  RMS instead of peak. See [Hit a loudness target](user-guide.md#hit-a-loudness-target).
+
+**Room tone**
+- *Plain:* the sound of "nothing" in your recording space — the background hiss, hum or hiss of
+  air handling that's there even when nobody's talking.
+- What you select to [capture a noise print](user-guide.md#remove-background-noise): 0.5–60 s with
+  no speech in it, ideally recorded in the same room, at the same time, as your take.
+
 ## S
 
 **Sample rate / bit depth**
@@ -401,6 +483,13 @@ Jump to: [A](#a) · [B](#b) · [C](#c) · [D](#d) · [E](#e) · [F](#f) · [G](#
 - *Plain:* the live graph of which frequencies are in the sound you hear right now.
 - Post-rack tap → BH4 FFT → 1/24-octave bands → `VXSA` frames at up to 60 Hz.
 
+**Spectrum Inspector**
+- *Plain:* a bigger, more detailed version of the spectrum analyzer, for close inspection —
+  zoomable and pannable, with its own FFT size, window and response settings.
+- A dedicated `VXIS` binary stream (`analyzer_inspector_subscribe`), separate from the compact dock
+  analyzer. Open it from **View → Spectrum Inspector**. See [Check your
+  levels](user-guide.md#check-your-levels-analyzer-and-diagnostics).
+
 ## T
 
 **Take**
@@ -413,6 +502,12 @@ Jump to: [A](#a) · [B](#b) · [C](#c) · [D](#d) · [E](#e) · [F](#f) · [G](#
 - Binary frames on Tauri channels: `VXTM` (transport + meter), `VXMT` (module meters), `VXSA`
   (analyzer). See [ipc.md](architecture/ipc.md#binary-frames).
 
+**Theme**
+- *Plain:* the app's overall colour scheme — Dark, Light, High Contrast, or Match System (follows
+  your OS's own light/dark and contrast setting).
+- Token blocks in `ui/src/lib/theme/design-tokens.css`; applies live everywhere, including the
+  waveform, spectrogram, meters and analyzer. See [Themes](user-guide.md#themes).
+
 **Ticket**
 - *Plain:* one unit of work, with a clear definition of done.
 - `tickets/T-NNN-*.md` / `H-NN` / `S#-NN`, tracked in `tickets/BOARD.md`.
@@ -420,6 +515,13 @@ Jump to: [A](#a) · [B](#b) · [C](#c) · [D](#d) · [E](#e) · [F](#f) · [G](#
 **Tile (spectrogram tile)**
 - *Plain:* one small square of the spectrogram picture, computed separately so it can be cached.
 - 256 STFT frames × bins, content-keyed LRU cache (`vox_engine::spectro`).
+
+**Tour (guided tour)**
+- *Plain:* a short, interactive walkthrough that highlights parts of the app and explains what
+  they do, one step at a time.
+- `ui/src/lib/tour/`: the Welcome tour plus per-panel tours (Rack, Noise, Loudness, Punch-in,
+  Plugin Manager); progress is saved so a tour isn't offered twice unless it changes. See [Guided
+  tours](user-guide.md#guided-tours).
 
 **True peak**
 - *Plain:* the real loudest point of the sound, including peaks that fall between samples.
@@ -437,6 +539,14 @@ Jump to: [A](#a) · [B](#b) · [C](#c) · [D](#d) · [E](#e) · [F](#f) · [G](#
 - Unbounded stacks of snapshots in `vox_project::history`, limited only by the disk budget.
 
 ## V
+
+**Voice diagnostics**
+- *Plain:* plain-language readouts about your voice's sound — pitch, tone balance ("boomy",
+  "dull", "bright"), sibilance (harsh "s" sounds), hum, rumble and noise floor — each with a short
+  hint on what to do about it.
+- The Analyzer panel's Diagnostics toggle; live (a few times a second) or on an Average analysis.
+  Several hints offer an **Add EQ band here** shortcut into the Parametric EQ. See [Check your
+  levels](user-guide.md#check-your-levels-analyzer-and-diagnostics).
 
 **VST3 / VST2**
 - *Plain:* Steinberg's plugin formats; VST3 is supported, VST2 is not.

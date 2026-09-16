@@ -95,8 +95,16 @@ just build    # release build + Linux bundles (AppImage, .deb)
 - **Interface:** [Tauri 2](https://v2.tauri.app/) with a Svelte 5 / TypeScript UI. It uses WebGL
   for the waveform, spectrogram and analyzer, and types generated from the Rust side.
 
+**New here?** [`docs/what-is-powervoice.md`](docs/what-is-powervoice.md) is a two-minute,
+no-jargon introduction — what it's for, who it's for, and how it compares to Adobe Audition — and
+[`docs/how-it-works.md`](docs/how-it-works.md) explains what happens to your voice as you use the
+app, without any code.
+
 **Where to read more** — start at the [documentation hub](docs/README.md):
+- [`docs/what-is-powervoice.md`](docs/what-is-powervoice.md): the plain-language introduction.
+- [`docs/how-it-works.md`](docs/how-it-works.md): how sound travels through the app, without code.
 - [`docs/user-guide.md`](docs/user-guide.md): how to use the app.
+- [`docs/faq.md`](docs/faq.md): common questions and problems, answered simply.
 - [`docs/shortcuts.md`](docs/shortcuts.md): every keyboard shortcut.
 - [`docs/architecture/overview.md`](docs/architecture/overview.md): how PowerVoice is built, with diagrams.
 - [`docs/contributing.md`](docs/contributing.md): dev setup, tests, and how to add things.

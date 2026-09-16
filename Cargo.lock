@@ -5139,6 +5139,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "vox-dsp",
+ "vox-engine",
  "vox-module-api",
  "vox-modules",
  "vox-project",

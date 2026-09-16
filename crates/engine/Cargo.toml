@@ -10,6 +10,9 @@ default = ["backend-cpal"]
 # Real audio I/O through cpal (ADR-001 §3). Without it the crate builds and tests with no system
 # audio libraries, using only the fake backend (SPEC-000 AC-5).
 backend-cpal = ["dep:cpal"]
+# H-53 (T-304 follow-up): the loopback rig (`test_util`) — the `vox_module_api::test_util`
+# pattern applied to this crate, so src-tauri's own tests can use it too instead of a copy.
+test-util = ["dep:vox-module-api", "dep:vox-modules", "dep:vox-testkit"]
 
 [dependencies]
 serde.workspace = true
@@ -22,6 +25,10 @@ serde_json.workspace = true
 vox-rack = { path = "../rack" }
 vox-project = { path = "../project" }
 vox-dsp = { path = "../dsp" }
+# H-53: `test_util`'s loopback rig only (feature `test-util`).
+vox-module-api = { path = "../module-api", features = ["test-util"], optional = true }
+vox-modules = { path = "../modules", optional = true }
+vox-testkit = { path = "../testkit", optional = true }
 
 # Linux: PipeWire and JACK hosts in addition to ALSA (SPEC-001 §2.1). Needs libpipewire-0.3,
 # libjack and libclang (bindgen) at build time; ALSA headers are always required.
@@ -34,6 +41,9 @@ vox-modules = { path = "../modules" }
 serde_json.workspace = true
 # T-204: seeded noise for the spectrogram tile tests.
 vox-testkit = { path = "../testkit" }
+# Self dev-dependency (mirrors vox-module-api's own): the integration tests always see the
+# `test-util` feature, so `tests/punch.rs` can use `vox_engine::test_util`'s shared loopback rig.
+vox-engine = { path = ".", features = ["test-util"] }
 
 [[example]]
 name = "list_devices"

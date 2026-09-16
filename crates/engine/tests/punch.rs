@@ -2,64 +2,29 @@
 //! backend — sample-exact alignment of a punch with a known (hidden) latency and offset, free-start
 //! Insert, what the talent hears, stopping in each phase, phase events, and a loopback calibration
 //! run. Every input and output callback runs under `test_util::no_alloc`.
+//!
+//! H-53: the loopback rig itself (`Rig`, `rig`/`rig_with`/`rig_full`/`talent_rig`, `prefs`,
+//! `dac_key`/`mic_key`, `noise`, `RATE`/`L`) lives in `vox_engine::test_util` (feature
+//! `test-util`), shared with `src-tauri`'s own calibration test instead of copied.
 
 vox_module_api::install_test_allocator!();
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use vox_engine::backend::fake::{CallbackSizes, FakeBackend, FakeDevice, FakeDirection, Loopback};
+use vox_engine::backend::fake::{CallbackSizes, FakeDevice, FakeDirection, Loopback};
 use vox_engine::record::{
-    CalibrationError, CalibrationStatus, CancelReason, MonitorMode, RecordPhase, RecordPhaseInfo,
-    RecordingResult,
+    CalibrationError, CalibrationStatus, CancelReason, MonitorMode, RecordPhase,
 };
-use vox_engine::record_op::{CursorRecordMode, RecordOpKind, RecordPlan, RecordPrefs};
-use vox_engine::{
-    DeviceKey, DevicePrefs, Direction, EngineConfig, EngineEvent, HostId, ManualEngine,
-    PlaybackDoc, TransportCommand,
+use vox_engine::record_op::{CursorRecordMode, RecordOpKind, RecordPrefs};
+use vox_engine::test_util::{
+    L, RATE, Rig, dac_key, mic_key, noise, prefs, rig, rig_full, talent_rig,
 };
-use vox_module_api::test_util::{alloc_checks_active, no_alloc};
-use vox_project::{
-    FixedFreeSpace, HistoryStep, PUNCH_LABEL_KEY, Session, SessionConfig, StoreOptions, TakeMode,
-    TakeParams, TakeWriterOptions,
-};
-use vox_rack::Registry;
-use vox_testkit::prng::Pcg32;
+use vox_engine::{HostId, TransportCommand};
+use vox_project::PUNCH_LABEL_KEY;
 
 const MS: u64 = 1_000_000;
-const RATE: u32 = 48_000;
-/// A 10 s document (the §5 fixture's punch range, shorter tail).
-const L: usize = 480_000;
 const S: u64 = 240_000;
 const E: u64 = 384_000;
-
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new(tag: &str) -> Self {
-        static N: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "vox-engine-punch-{tag}-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&path);
-        std::fs::create_dir_all(&path).unwrap();
-        TempDir(path)
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn noise(seed: u64, n: usize) -> Vec<f32> {
-    let mut rng = Pcg32::new(seed, 7);
-    (0..n).map(|_| (rng.next_signed() * 0.3) as f32).collect()
-}
 
 /// Deterministic mic input: a pure function of the input frame index.
 fn src(frame: u64) -> f32 {
@@ -68,274 +33,6 @@ fn src(frame: u64) -> f32 {
     z = z.wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z ^= z >> 29;
     ((z >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 0.8
-}
-
-fn dac_key() -> DeviceKey {
-    DeviceKey::new(HostId::Alsa, "DAC")
-}
-
-fn mic_key() -> DeviceKey {
-    DeviceKey::new(HostId::Alsa, "Mic")
-}
-
-struct Rig {
-    fake: FakeBackend,
-    eng: ManualEngine,
-    phases: Arc<Mutex<Vec<(RecordPhaseInfo, u64)>>>,
-    windows: Arc<Mutex<Vec<(u32, u64)>>>,
-    done: Arc<Mutex<Option<RecordingResult>>>,
-    session: Session,
-    a: Vec<f32>,
-    /// Fake time the input stream opened (its frame 0).
-    t_open: u64,
-    _dir: TempDir,
-}
-
-/// The §5 fake backend: one clock, reported input latency 5 ms and output latency 7 ms, random
-/// input callback sizes; a 10 s noise document; empty rack; monitoring Off.
-fn rig(mic_source: Option<fn(u64) -> f32>, loopback: Option<Loopback>) -> Rig {
-    rig_with(noise(1, L), mic_source, loopback, 0.0)
-}
-
-/// [`rig`] with the document `a` and the microphone's clock skew (ppm, H-21).
-fn rig_with(
-    a: Vec<f32>,
-    mic_source: Option<fn(u64) -> f32>,
-    loopback: Option<Loopback>,
-    mic_skew_ppm: f64,
-) -> Rig {
-    let empty = vox_rack::RackModel { slots: Vec::new() };
-    rig_full(a, mic_source, loopback, mic_skew_ppm, empty)
-}
-
-/// `TestDelay(480)`: a pure-delay rack module reporting 10 ms of latency (AC-6, T-401).
-struct DelayFactory(vox_module_api::ModuleDescriptor);
-
-impl vox_module_api::ModuleFactory for DelayFactory {
-    fn descriptor(&self) -> &vox_module_api::ModuleDescriptor {
-        &self.0
-    }
-    fn create(&self) -> Result<Box<dyn vox_module_api::Module>, vox_module_api::ModuleError> {
-        Ok(Box::new(vox_module_api::test_util::TestDelay::new(480)))
-    }
-}
-
-/// [`rig_with`] playing through `rack` (the registry also holds `TestDelay(480)`).
-fn rig_full(
-    a: Vec<f32>,
-    mic_source: Option<fn(u64) -> f32>,
-    loopback: Option<Loopback>,
-    mic_skew_ppm: f64,
-    rack: vox_rack::RackModel,
-) -> Rig {
-    assert!(alloc_checks_active());
-    let fake = FakeBackend::new(7);
-    fake.plug(
-        HostId::Alsa,
-        FakeDevice::new("DAC").with_output(
-            FakeDirection::new(2, &[48_000], 48_000)
-                .default_buffer(256)
-                .latency_ns(7 * MS)
-                .record_output(),
-        ),
-    );
-    let mut mic = FakeDirection::new(1, &[48_000], 48_000)
-        .callback_sizes(CallbackSizes::Random { min: 32, max: 512 })
-        .latency_ns(5 * MS)
-        .skew_ppm(mic_skew_ppm);
-    if let Some(s) = mic_source {
-        mic = mic.source(move |f, _, _| s(f));
-    }
-    fake.plug(HostId::Alsa, FakeDevice::new("Mic").with_input(mic));
-    fake.set_loopback(loopback);
-    fake.set_rt_guard(|f| match no_alloc(f) {
-        Ok(()) => 0,
-        Err(n) => n,
-    });
-    let delay: Arc<dyn vox_module_api::ModuleFactory> = Arc::new(DelayFactory(
-        vox_module_api::Module::descriptor(&vox_module_api::test_util::TestDelay::new(480)).clone(),
-    ));
-    let registry = Arc::new(
-        Registry::with_factories(vox_modules::builtin_factories().into_iter().chain([delay]))
-            .unwrap(),
-    );
-    let mut cfg = EngineConfig::new(Arc::new(fake.clone()), registry);
-    cfg.rack = rack;
-    cfg.prefs = DevicePrefs {
-        input_device: Some("Mic".to_owned()),
-        input_channel: 1,
-        ..DevicePrefs::default()
-    };
-    let phases = Arc::new(Mutex::new(Vec::new()));
-    let windows = Arc::new(Mutex::new(Vec::new()));
-    let (ph, win, clock) = (phases.clone(), windows.clone(), fake.clone());
-    cfg.events = Arc::new(move |e| match e {
-        EngineEvent::RecordPhase(info) => ph.lock().unwrap().push((info, clock.now_ns())),
-        EngineEvent::RecordWindow { take, k_start } => win.lock().unwrap().push((take, k_start)),
-        _ => {}
-    });
-    let clock = fake.clone();
-    cfg.clock = Arc::new(move || clock.now_ns());
-    let dir = TempDir::new("rig");
-    cfg.disk_space = Arc::new(FixedFreeSpace::new(100 << 30));
-    cfg.record_volume = dir.0.clone();
-    let mut eng = ManualEngine::new(cfg);
-    eng.poll_devices();
-    let mut session = Session::create(
-        &dir.0,
-        SessionConfig {
-            sample_rate_hz: RATE,
-            source: None,
-            store: StoreOptions::with_memory_budget(128 << 20),
-        },
-    )
-    .unwrap();
-    let mut writer = session.chunk_writer();
-    writer.append(&a).unwrap();
-    let audio = writer.finish().unwrap();
-    session.set_floor(&audio, Vec::new()).unwrap();
-    eng.set_document(Some(PlaybackDoc {
-        store: session.store().clone(),
-        snapshot: session.current(),
-    }));
-    Rig {
-        fake,
-        eng,
-        phases,
-        windows,
-        done: Arc::new(Mutex::new(None)),
-        session,
-        a,
-        t_open: 0,
-        _dir: dir,
-    }
-}
-
-fn prefs() -> RecordPrefs {
-    RecordPrefs {
-        preroll_s: 1.0,
-        postroll_s: 0.5,
-        ..RecordPrefs::default()
-    }
-}
-
-impl Rig {
-    fn run_ms(&mut self, ms: u64) {
-        for _ in 0..ms {
-            self.fake.advance_by(MS);
-            self.eng.tick();
-            // The app's job (DocumentService): journal each opened window.
-            let opened: Vec<(u32, u64)> = std::mem::take(&mut *self.windows.lock().unwrap());
-            for (take, k) in opened {
-                self.session
-                    .note_take_window(vox_project::TakeId(take), k)
-                    .unwrap();
-            }
-        }
-    }
-
-    fn arm(&mut self) {
-        self.t_open = self.fake.now_ns();
-        let st = self.eng.set_armed(true);
-        assert!(st.input_open, "{st:?}");
-    }
-
-    /// Record pressed with `selection`: resolve, begin the matching take, start.
-    fn start(&mut self, selection: Option<(u64, u64)>, prefs: RecordPrefs) -> RecordPlan {
-        let plan = self.eng.record_prepare(selection, prefs).unwrap();
-        let mode = match plan.kind {
-            RecordOpKind::Punch => TakeMode::Punch {
-                start_samples: plan.at_samples,
-                end_samples: plan.end_samples.unwrap(),
-            },
-            RecordOpKind::Insert => TakeMode::Insert {
-                at_samples: plan.at_samples,
-            },
-            RecordOpKind::Overwrite => TakeMode::Overwrite {
-                at_samples: plan.at_samples,
-            },
-            RecordOpKind::New => TakeMode::New,
-        };
-        let capture = self
-            .session
-            .begin_take_with(
-                mode,
-                TakeParams {
-                    xfade_samples: plan.xfade_samples,
-                    offset_ns: plan.offset_ns,
-                    aligned: plan.aligned,
-                },
-                TakeWriterOptions::default(),
-            )
-            .unwrap();
-        let done = self.done.clone();
-        self.eng
-            .record_start_op(
-                plan,
-                capture,
-                Box::new(move |r| *done.lock().unwrap() = Some(r)),
-            )
-            .unwrap();
-        plan
-    }
-
-    fn result(&mut self) -> RecordingResult {
-        for _ in 0..20_000 {
-            if let Some(r) = self.done.lock().unwrap().take() {
-                return r;
-            }
-            self.run_ms(1);
-        }
-        panic!("the operation did not finish");
-    }
-
-    /// What the app does with the result: commit the window, or cancel.
-    fn commit(&mut self, r: &RecordingResult) -> Option<HistoryStep> {
-        let op = r.op.expect("an operation result");
-        match op.window {
-            Some(window) => self
-                .session
-                .commit_take_window(&r.finished, window, &[])
-                .unwrap(),
-            None => {
-                self.session.cancel_take(r.finished.take).unwrap();
-                None
-            }
-        }
-    }
-
-    fn doc(&self) -> Vec<f32> {
-        let snap = self.session.current();
-        let mut out = vec![0.0; snap.len_samples as usize];
-        self.session.store().read(&snap, 0, &mut out).unwrap();
-        out
-    }
-
-    fn output_stream(&self) -> vox_engine::backend::StreamId {
-        self.fake
-            .streams()
-            .iter()
-            .rev()
-            .find(|s| s.info.direction == Direction::Output)
-            .map(|s| s.info.id)
-            .unwrap()
-    }
-
-    fn output(&self) -> Vec<f32> {
-        self.fake
-            .recorded_output(self.output_stream())
-            .unwrap()
-            .samples
-    }
-
-    /// Output frame index where document position `q` (in an unfaded, audible stretch) is
-    /// heard — located by an exact match of 64 samples.
-    fn heard_frame(&self, out: &[f32], q: usize) -> usize {
-        let pat = &self.a[q..q + 64];
-        out.windows(64)
-            .position(|w| w.iter().zip(pat).all(|(x, y)| x.to_bits() == y.to_bits()))
-            .expect("document position not heard")
-    }
 }
 
 fn assert_bits(got: &[f32], want: &[f32], what: &str) {
@@ -725,41 +422,6 @@ fn calibration_measures_the_unreported_residual_and_verify_confirms_it() {
 
 // --- H-21: device loss per phase, Record while playing, heard positions for markers -------------
 
-impl Rig {
-    fn input_stream(&self) -> vox_engine::backend::StreamId {
-        self.fake
-            .streams()
-            .iter()
-            .rev()
-            .find(|s| s.info.direction == Direction::Input)
-            .map(|s| s.info.id)
-            .unwrap()
-    }
-
-    /// The document position truly heard at app time `t_ns` (an audible, unfaded stretch near
-    /// `near`): the output frame playing at `t_ns`, matched against the document.
-    fn true_heard(&self, t_ns: u64, near: u64) -> u64 {
-        let id = self.output_stream();
-        let out = self.output();
-        let mut g = out.len() - 64;
-        while self.fake.frame_time_ns(id, g as u64).unwrap() > t_ns {
-            g -= 1;
-        }
-        let pat = &out[g..g + 32];
-        let lo = near.saturating_sub(4_000) as usize;
-        let hi = (near as usize + 4_000).min(self.a.len() - 32);
-        (lo..hi)
-            .find(|&q| {
-                self.a[q..q + 32]
-                    .iter()
-                    .zip(pat)
-                    .all(|(x, y)| x.to_bits() == y.to_bits())
-            })
-            .map(|q| q as u64)
-            .expect("the heard audio matches the document near the expected position")
-    }
-}
-
 fn xfade(f: f32, g: f32, i: usize, len: usize) -> f32 {
     let theta = std::f64::consts::FRAC_PI_2 * (i as f64 + 0.5) / len as f64;
     (theta.cos() * f64::from(f) + theta.sin() * f64::from(g)) as f32
@@ -1074,19 +736,6 @@ fn ac10_the_heard_position_is_within_10_ms_in_each_phase() {
 }
 
 // --- H-21: talent-source exactness (SPEC-022 §4.8 `AlignedTalent`) ------------------------------
-
-/// A rig whose microphone carries the perfectly timed talent `x` (and nothing else).
-fn talent_rig(a: Vec<f32>, x: &[f32], mic_skew_ppm: f64) -> Rig {
-    let r = rig_with(a, None, None, mic_skew_ppm);
-    r.fake
-        .set_talent(Some(vox_engine::backend::fake::AlignedTalent {
-            output: dac_key(),
-            input: mic_key(),
-            reference: Arc::from(r.a.clone()),
-            script: Arc::from(x.to_vec()),
-        }));
-    r
-}
 
 /// The shift `d` (`A′[q'] = X[q' − d]`) near `q`: the first 16-sample stretch at or after `q`
 /// that matches `x` shifted by `|d| ≤ 40` (a clock slip inside a stretch just moves on).

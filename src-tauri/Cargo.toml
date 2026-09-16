@@ -57,6 +57,9 @@ vox-testkit = { path = "../crates/testkit" }
 hound = { workspace = true }
 # S4-04: builds a test `RackModel` slot directly (`ModuleRef`/`ModuleState`) in `export`'s tests.
 vox-module-api = { path = "../crates/module-api", features = ["test-util"] }
+# H-53: the T-304 loopback rig (`vox_engine::test_util`), for calibration.rs's success-path test —
+# same feature-gated pattern as vox-module-api's own `test-util` above, not a copy of the rig.
+vox-engine = { path = "../crates/engine", features = ["test-util"] }
 
 [features]
 # Dev-only platform spike (T-007 / ADR-009): renderer + IPC throughput measurements. Off by

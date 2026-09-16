@@ -223,9 +223,11 @@ impl Inner {
 mod tests {
     use std::sync::Mutex as StdMutex;
 
-    use vox_engine::backend::fake::FakeBackend;
-    use vox_engine::{Engine, EngineConfig};
+    use vox_engine::backend::fake::{FakeBackend, FakeDriver, Loopback};
+    use vox_engine::{DevicePrefs, Engine, EngineConfig};
     use vox_rack::Registry;
+
+    use crate::settings::{RecordOffsetEntry, RecordOffsetSource, Settings};
 
     use super::*;
 
@@ -303,6 +305,175 @@ mod tests {
                     fraction: 0.0
                 },
             ]
+        );
+    }
+
+    // --- H-53: the success path, end to end through a real engine -------------------------------
+
+    /// A live engine (fake `"DAC"`/`"Mic"` loopback devices) for the success-path test below —
+    /// mirrors `nr_capture.rs`'s `live_engine_with_nr_slot` / `export.rs`'s
+    /// `live_engine_with_gain_minus_6_db`: a real threaded [`Engine`], kept alive with its own
+    /// `FakeDriver` (real time), because `Inner::watch`'s worker thread polls the engine handle
+    /// over real time too (unlike `vox_engine::test_util::Rig`'s hand-ticked `ManualEngine`, which
+    /// has no handle for a job service to poll). The loopback fixture (-20 dB, a 240-sample/5 ms
+    /// unreported residual, -40 dBFS noise) is the engine-level success test's own fixture
+    /// (`crates/engine/tests/punch.rs::calibration_measures_the_unreported_residual_and_verify_confirms_it`,
+    /// AC-16/AC-18), reused here via the shared `test_util::plug_loopback_devices` (H-53) instead
+    /// of a copy.
+    fn live_loopback_engine() -> (Engine, EngineHandle, FakeDriver) {
+        let fake = FakeBackend::new(3);
+        let mut lb = Loopback::new(
+            vox_engine::test_util::dac_key(),
+            vox_engine::test_util::mic_key(),
+        );
+        lb.gain_db = -20.0;
+        lb.residual_ns = 5_000_000; // 5 ms = 240 samples at 48 kHz
+        lb.noise = Some((3, -40.0));
+        vox_engine::test_util::plug_loopback_devices(&fake, None, Some(lb), 0.0);
+        let driver = fake.spawn_driver(Duration::from_millis(1));
+        let registry =
+            Arc::new(Registry::with_factories(vox_modules::builtin_factories()).unwrap());
+        let mut cfg = EngineConfig::new(Arc::new(fake), registry);
+        cfg.prefs = DevicePrefs {
+            input_device: Some("Mic".to_owned()),
+            input_channel: 1,
+            ..DevicePrefs::default()
+        };
+        let engine = Engine::start(cfg).unwrap();
+        let handle = engine.handle();
+        (engine, handle, driver)
+    }
+
+    /// `crate::recording::device_setup`, retried against the same transient device-poll window as
+    /// `nr_capture.rs`'s `retry_prepare` (the fake output/input open asynchronously).
+    fn retry_device_setup(handle: &EngineHandle) -> crate::recording::DeviceSetup {
+        for _ in 0..500 {
+            if let Some(setup) = crate::recording::device_setup(handle) {
+                return setup;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("the fake devices never resolved a device setup");
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum RunEvent {
+        Progress { state: JobState, fraction: f32 },
+        Result(CalibrationResultDto),
+        Notice(String),
+    }
+
+    /// Collects `events` until a terminal progress event lands (or a generous real-time timeout —
+    /// a full run is about 10 s: 5 sweeps plus spacing, SPEC-022 §2.14/§4.7).
+    fn run_to_terminal(events: &StdMutex<Vec<RunEvent>>) -> Vec<RunEvent> {
+        for _ in 0..600 {
+            {
+                let got = events.lock().unwrap();
+                if got.iter().any(|e| {
+                    matches!(
+                        e,
+                        RunEvent::Progress {
+                            state: JobState::Done | JobState::Failed | JobState::Cancelled,
+                            ..
+                        }
+                    )
+                }) {
+                    return got.clone();
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("the calibration run never reached a terminal progress event");
+    }
+
+    /// H-53 (SPEC-022 §2.14, AC-16/AC-18 at the job-service layer): a real engine's accepted
+    /// calibration run posts its `Result` before the terminal `Done` progress event — already
+    /// correctly ordered by inspection per the `watch` comment above, this is the missing test —
+    /// with a plausible measured offset; applying it the way the wizard's Apply button does
+    /// (`record_offset_set`'s own pieces, `device_setup` + `upsert_record_offset` — src-tauri is a
+    /// thin command layer, so the business logic is what's tested, not the `#[tauri::command]`
+    /// itself) lands the offset in Settings for the current device setup, readable back through
+    /// `record_offset_for`/`current_offset_ms` (SPEC-022 §2.13).
+    #[test]
+    #[allow(clippy::float_cmp)] // exact round-tripped value, not a tolerance comparison
+    fn a_successful_run_reports_the_result_before_done_and_the_offset_reaches_settings() {
+        let (_engine, handle, _driver) = live_loopback_engine();
+        let setup = retry_device_setup(&handle);
+
+        let events: Arc<StdMutex<Vec<RunEvent>>> = Arc::new(StdMutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        let emit: CalibrationEmitter = Arc::new(move |event| {
+            let e = match event {
+                CalibrationEvent::Progress(dto) => RunEvent::Progress {
+                    state: dto.state,
+                    fraction: dto.fraction,
+                },
+                CalibrationEvent::Result(r) => RunEvent::Result(r),
+                CalibrationEvent::Notice(n) => RunEvent::Notice(n.key),
+            };
+            sink.lock().unwrap().push(e);
+        });
+        let service = CalibrationService::new(handle.clone(), emit);
+        service.run(None).expect("a calibration run starts");
+
+        let got = run_to_terminal(&events);
+        let done = got
+            .iter()
+            .position(|e| {
+                matches!(
+                    e,
+                    RunEvent::Progress {
+                        state: JobState::Done,
+                        ..
+                    }
+                )
+            })
+            .unwrap_or_else(|| panic!("the run did not finish as Done: {got:?}"));
+        let result_idx = got
+            .iter()
+            .position(|e| matches!(e, RunEvent::Result(_)))
+            .unwrap_or_else(|| panic!("no Result event: {got:?}"));
+        assert!(
+            result_idx < done,
+            "Result must be posted before the terminal Done: {got:?}"
+        );
+
+        let RunEvent::Result(result) = &got[result_idx] else {
+            unreachable!()
+        };
+        assert!(result.accepted, "{result:?}");
+        assert!(
+            result.offset_ms > 0.0 && result.offset_ms < 20.0,
+            "a plausible measured offset (~5 ms expected): {result:?}"
+        );
+
+        // What the wizard's Apply button does (`record_offset_set`), using its own pieces
+        // directly rather than the tauri command itself (CLAUDE.md: src-tauri is a thin command
+        // layer with no business logic to bypass).
+        let mut settings = Settings::default();
+        crate::settings::upsert_record_offset(
+            &mut settings.record_offsets,
+            RecordOffsetEntry {
+                host: setup.host.clone(),
+                input_device: setup.input_device.clone(),
+                output_device: setup.output_device.clone(),
+                device_rate_hz: setup.device_rate_hz,
+                offset_ms: result.offset_ms,
+                source: RecordOffsetSource::Calibrated,
+                updated_unix_ms: 1,
+                confidence: Some(result.confidence),
+                buffer_frames: setup.buffer_frames,
+            },
+        );
+
+        let entry = crate::recording::record_offset_for(&setup, &settings.record_offsets)
+            .expect("the measured offset reaches Settings for this device setup");
+        assert_eq!(entry.offset_ms, result.offset_ms);
+        assert_eq!(entry.source, RecordOffsetSource::Calibrated);
+        assert_eq!(
+            crate::recording::current_offset_ms(&handle, &settings),
+            result.offset_ms,
+            "the record panel's readout sees it too"
         );
     }
 }

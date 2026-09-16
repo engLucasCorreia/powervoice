@@ -57,6 +57,10 @@ mod rt;
 pub mod spectro;
 pub mod telemetry;
 pub mod transport;
+// H-53 (T-304 follow-up): the loopback rig, shared with `src-tauri`'s tests instead of copied
+// (the `vox_module_api::test_util` pattern).
+#[cfg(feature = "test-util")]
+pub mod test_util;
 
 pub use analyzer::{
     AnalyzerFrame, AnalyzerResponse, AnalyzerSink, InspectorConfig, InspectorFrame, InspectorSink,

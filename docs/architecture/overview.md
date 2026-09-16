@@ -171,8 +171,11 @@ flowchart TD
   powervoice_sandbox --> vox_sandbox_ipc
   powervoice_sandbox --> vox_ysfx_sys
   vox_engine --> vox_dsp
+  vox_engine --> vox_module_api
+  vox_engine --> vox_modules
   vox_engine --> vox_project
   vox_engine --> vox_rack
+  vox_engine --> vox_testkit
   vox_io --> vox_dsp
   vox_module_clap --> vox_module_api
   vox_modules --> vox_dsp
@@ -208,7 +211,7 @@ flowchart TD
 | `powervoice-sandbox` | [`crates/sandbox`](../../crates/sandbox) | lib, bin | `vox-clap-abi`, `vox-lv2-abi`, `vox-module-api`, `vox-modules`, `vox-sandbox-ipc`, `vox-ysfx-sys` | `vox-engine`, `vox-plugin-host`, `vox-presets`, `vox-project`, `vox-rack`, `vox-test-clap`, `vox-test-lv2`, `vox-test-vst3`, `vox-testkit`, `vox-voxmod-gain` |
 | `vox-clap-abi` | [`crates/clap-abi`](../../crates/clap-abi) | lib | none | none |
 | `vox-dsp` | [`crates/dsp`](../../crates/dsp) | lib | none | `vox-testkit` |
-| `vox-engine` | [`crates/engine`](../../crates/engine) | lib | `vox-dsp`, `vox-project`, `vox-rack` | `vox-module-api`, `vox-modules`, `vox-testkit` |
+| `vox-engine` | [`crates/engine`](../../crates/engine) | lib | `vox-dsp`, `vox-module-api`, `vox-modules`, `vox-project`, `vox-rack`, `vox-testkit` | none |
 | `vox-io` | [`crates/io`](../../crates/io) | lib | `vox-dsp` | `vox-testkit` |
 | `vox-lv2-abi` | [`crates/lv2-abi`](../../crates/lv2-abi) | lib | none | none |
 | `vox-module-api` | [`crates/module-api`](../../crates/module-api) | lib | none | none |

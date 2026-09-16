@@ -138,6 +138,55 @@ impl SlidingRms {
     }
 }
 
+/// Exact look-ahead delay line on the audio path (SPEC-016 §4.9): the sample returned is the
+/// one pushed `len` samples earlier, bit-identical. `len = 0` is a pass-through.
+///
+/// The buffer is sized at construction; [`push`](Self::push) never allocates.
+#[derive(Clone, Debug)]
+pub struct DelayLine {
+    buf: Box<[f32]>,
+    pos: usize,
+}
+
+impl DelayLine {
+    /// A cleared line of `len` samples (`0` = pass-through).
+    pub fn new(len: usize) -> Self {
+        Self {
+            buf: vec![0.0; len].into_boxed_slice(),
+            pos: 0,
+        }
+    }
+
+    /// Delay in samples.
+    pub fn len(&self) -> usize {
+        self.buf.len()
+    }
+
+    /// True for a pass-through line (delay 0).
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+
+    /// Zeroes the line (reset / activate).
+    pub fn clear(&mut self) {
+        self.buf.fill(0.0);
+        self.pos = 0;
+    }
+
+    /// Pushes one sample and returns the one from `len` samples ago (0 while the line fills).
+    pub fn push(&mut self, x: f32) -> f32 {
+        if self.buf.is_empty() {
+            return x;
+        }
+        let y = std::mem::replace(&mut self.buf[self.pos], x);
+        self.pos += 1;
+        if self.pos == self.buf.len() {
+            self.pos = 0;
+        }
+        y
+    }
+}
+
 /// Mean square → RMS level in dB (`10·log10`), clamped to [`LEVEL_FLOOR_DBFS`].
 pub fn mean_square_to_db(ms: f64) -> f64 {
     if ms > 0.0 {
@@ -190,6 +239,29 @@ mod tests {
         d.reset();
         assert_eq!(d.max().to_bits(), 0f64.to_bits());
         assert_eq!(d.push(0.1).to_bits(), 0.1f64.to_bits());
+    }
+
+    #[test]
+    fn delay_line_is_exact_and_clears() {
+        let mut d = DelayLine::new(0);
+        assert!(d.is_empty());
+        assert_eq!(
+            d.push(0.25).to_bits(),
+            0.25f32.to_bits(),
+            "len 0 passes through"
+        );
+        for len in [1usize, 3, 240] {
+            let mut d = DelayLine::new(len);
+            assert_eq!(d.len(), len);
+            let x: Vec<f32> = (0..1000).map(|i| (i as f32) * 1.000_001).collect();
+            for (i, &v) in x.iter().enumerate() {
+                let got = d.push(v);
+                let want = if i >= len { x[i - len] } else { 0.0 };
+                assert_eq!(got.to_bits(), want.to_bits(), "len {len} sample {i}");
+            }
+            d.clear();
+            assert_eq!(d.push(1.0).to_bits(), 0f32.to_bits());
+        }
     }
 
     #[test]

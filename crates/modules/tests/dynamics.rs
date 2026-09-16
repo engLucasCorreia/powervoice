@@ -1,7 +1,12 @@
-//! S3-02 Dynamics (compressor + limiter; SPEC-016 subset): schema and ModuleTestHost (AC-1),
-//! compressor static curves (AC-2/AC-3), limiter steady state (AC-6), time constants (AC-8),
-//! disabled sections inert / all-off passthrough (AC-10/AC-11), enable crossfades (AC-12),
-//! telemetry (AC-14), §4.3 zipper (AC-15), realtime = offline bit-identical (AC-16).
+//! Dynamics (SPEC-016): schema and ModuleTestHost (AC-1), compressor static curves (AC-2/AC-3),
+//! expander static curve (AC-4), AutoGate static behaviour and hysteresis (AC-5), limiter steady
+//! state (AC-6), time constants (AC-8), AutoGate shapes and hold (AC-9), disabled sections inert /
+//! all-off passthrough (AC-10/AC-11), enable crossfades (AC-12), look-ahead latency and restart
+//! (AC-13), telemetry (AC-14), §4.3 zipper (AC-15), realtime = offline bit-identical (AC-16),
+//! silence and denormals (AC-18).
+//!
+//! H-58 (Dynamics part 2) made the AutoGate, the Expander and the look-ahead live; the golden
+//! signal checks of the two new sections run at 44.1 and 48 kHz.
 
 #![allow(clippy::float_cmp, clippy::needless_range_loop)] // exact values, indexed by sample time
 
@@ -10,10 +15,12 @@ mod common;
 use std::sync::Arc;
 
 use common::*;
+use vox_module_api::test_util::no_alloc;
 use vox_module_api::test_util::{ModuleTestHost, TestRng, ZIPPER_LEN, zipper_signal};
 use vox_module_api::{
-    Module, ModuleFactory, ParamFlags, ParamId, ProcessMode, Taper, TelemetryKind, features,
-    telemetry,
+    DEFAULT_EVENT_CAPACITY, HostRequest, Module, ModuleFactory, OutputEvents, ParamEvent,
+    ParamFlags, ParamId, ProcessContext, ProcessMode, Tail, Taper, TelemetryKind, Transport,
+    features, telemetry,
 };
 use vox_modules::{Dynamics, DynamicsFactory, builtin_factories};
 
@@ -21,6 +28,8 @@ vox_module_api::install_test_allocator!();
 
 const SR: f64 = 48_000.0;
 const W_PK: f64 = 240.0;
+/// Golden-signal rates (SPEC-016 §2.7).
+const RATES: [f64; 2] = [44_100.0, 48_000.0];
 const SINE_PEAK_TO_RMS_DB: f64 = 3.010_299_956_639_812;
 
 fn make() -> Box<dyn Module> {
@@ -29,6 +38,24 @@ fn make() -> Box<dyn Module> {
 
 fn dynamics(settings: &[(&str, f64)]) -> Box<dyn Module> {
     activated(make, settings, SR)
+}
+
+/// `max(1, round(ms · fs / 1000))` — the SPEC-016 §4.2 window/count conversion.
+fn samples_of(ms: f64, fs: f64) -> usize {
+    ((ms * fs / 1000.0).round() as usize).max(1)
+}
+
+/// SPEC-016 §4.4 expander curve, written independently of `vox_dsp`.
+fn g_exp(x: f64, t: f64, r: f64, w: f64) -> f64 {
+    let d = x - t;
+    let g = if w > 0.0 && 2.0 * d.abs() <= w {
+        -(r - 1.0) * (d - w / 2.0).powi(2) / (2.0 * w)
+    } else if d < 0.0 {
+        (r - 1.0) * d
+    } else {
+        0.0
+    };
+    g.max(-120.0)
 }
 
 /// SPEC-016 §4.4 compressor curve, written independently of `vox_dsp`.
@@ -132,6 +159,16 @@ fn schema_identity_and_registration() {
         ("detection", 0.0, 1.0, 1.0, 20.0),
         ("knee_db", 0.0, 20.0, 6.0, 20.0),
         ("lookahead_ms", 0.0, 20.0, 0.0, 0.0),
+        ("autogate_enabled", 0.0, 1.0, 0.0, 20.0),
+        ("autogate_threshold_db", -80.0, 0.0, -50.0, 0.0),
+        ("autogate_attack_ms", 0.1, 100.0, 2.0, 0.0),
+        ("autogate_hold_ms", 0.1, 1000.0, 50.0, 0.0),
+        ("autogate_release_ms", 1.0, 2000.0, 100.0, 0.0),
+        ("expander_enabled", 0.0, 1.0, 0.0, 20.0),
+        ("expander_threshold_db", -80.0, 0.0, -45.0, 20.0),
+        ("expander_ratio", 1.0, 30.0, 2.0, 20.0),
+        ("expander_attack_ms", 0.1, 100.0, 2.0, 0.0),
+        ("expander_release_ms", 1.0, 2000.0, 100.0, 0.0),
         ("compressor_enabled", 0.0, 1.0, 1.0, 20.0),
         ("compressor_threshold_db", -60.0, 0.0, -20.0, 20.0),
         ("compressor_ratio", 1.0, 30.0, 3.0, 20.0),
@@ -155,11 +192,10 @@ fn schema_identity_and_registration() {
         if let Taper::Db { neg_inf_at_min } = p.taper {
             assert!(!neg_inf_at_min, "{}", p.key);
         }
-        let hidden = p.flags.contains(ParamFlags::HIDDEN);
-        assert_eq!(
-            hidden,
-            Dynamics::NOT_YET_AVAILABLE.contains(&p.id),
-            "{} hidden",
+        // H-58: every parameter is live, so none is hidden any more.
+        assert!(
+            !p.flags.contains(ParamFlags::HIDDEN),
+            "{} must not be hidden",
             p.key
         );
     }
@@ -197,6 +233,36 @@ fn schema_identity_and_registration() {
     ModuleTestHost::from_factory(Arc::new(DynamicsFactory::new()))
         .check_schema()
         .unwrap();
+}
+
+#[test]
+fn state_round_trips_bit_identically_with_a_non_zero_lookahead() {
+    let settings = [
+        ("lookahead_ms", 7.0),
+        ("autogate_enabled", 1.0),
+        ("autogate_threshold_db", -37.5),
+        ("autogate_hold_ms", 123.4),
+        ("expander_enabled", 1.0),
+        ("expander_ratio", 6.5),
+        ("compressor_makeup_db", 3.5),
+    ];
+    let m = dynamics(&settings);
+    assert_eq!(m.latency_samples(), 336, "7 ms at 48 kHz");
+    let state = m.save_state().unwrap();
+    let mut other = make();
+    other.load_state(&state).unwrap();
+    let again = other.save_state().unwrap();
+    assert_eq!(state.format_version, again.format_version);
+    for (k, v) in &state.params {
+        assert_eq!(
+            v.to_bits(),
+            again.params[k].to_bits(),
+            "{k} did not round-trip"
+        );
+    }
+    for (key, value) in settings {
+        assert_eq!(state.params[key].to_bits(), value.to_bits(), "{key}");
+    }
 }
 
 #[test]
@@ -303,6 +369,177 @@ fn compressor_static_curve_rms_and_makeup() {
             "makeup at {level}: {:.4}",
             b - a
         );
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// AC-4: expander static curve (Peak and RMS)
+// ---------------------------------------------------------------------------------------------
+
+/// Settled gain of a steady 997 Hz sine through the expander alone, measured over the last
+/// 250 ms of 500 ms. AC-4 fixes no time constants; the test uses **equal** 20 ms attack and
+/// release: the deepest reduction it checks is 120 dB, which the default 100 ms release would
+/// still be approaching after 500 ms, and equal constants keep the branching smoother from
+/// rectifying the RMS window's ±0.013 dB ripple into a bias (which `R − 1 = 29` would magnify).
+fn expander_gain_db_measured(settings: &[(&str, f64)], level_dbfs: f64, fs: f64) -> f64 {
+    let n = (0.5 * fs) as usize;
+    let x = sine(997.0, level_dbfs, n, fs);
+    let y = render(
+        &mut *activated(make, settings, fs),
+        &x,
+        &[],
+        Blocks::Fixed(4096),
+    );
+    to_db(peak(&y[n / 2..]) / peak(&x[n / 2..]))
+}
+
+#[test]
+fn expander_static_curve() {
+    let mut worst: f64 = 0.0;
+    let mut points = 0usize;
+    for (detection, offset) in [(0.0, 0.0), (1.0, SINE_PEAK_TO_RMS_DB)] {
+        for t in [-50.0, -30.0] {
+            for r in [2.0, 4.0, 30.0] {
+                for w in [0.0, 6.0] {
+                    let settings = [
+                        ("detection", detection),
+                        ("knee_db", w),
+                        ("compressor_enabled", 0.0),
+                        ("expander_enabled", 1.0),
+                        ("expander_threshold_db", t),
+                        ("expander_ratio", r),
+                        ("expander_attack_ms", 20.0),
+                        ("expander_release_ms", 20.0),
+                    ];
+                    for level in -90..=0 {
+                        let level = f64::from(level);
+                        let want = g_exp(level - offset, t, r, w);
+                        if level + want < -120.0 {
+                            continue; // the AC only claims outputs at or above −120 dBFS
+                        }
+                        let got = expander_gain_db_measured(&settings, level, SR);
+                        let err = (got - want).abs();
+                        assert!(
+                            err <= 0.1,
+                            "detection {detection} T {t} R {r} W {w} in {level} dBFS: \
+                             gain {got:.4} dB, expected {want:.4}"
+                        );
+                        // Above the knee the section must be transparent.
+                        if level - offset >= t + w / 2.0 {
+                            assert!(got.abs() <= 0.01, "unity above T + W/2: {got:.4} dB");
+                        }
+                        worst = worst.max(err);
+                        points += 1;
+                    }
+                }
+            }
+        }
+    }
+    println!("AC-4 expander: worst static-curve error {worst:.4} dB ({points} points)");
+}
+
+#[test]
+fn expander_static_curve_at_44_1_khz() {
+    // Golden signal at the second supported rate: one representative setting per branch.
+    let settings = [
+        ("compressor_enabled", 0.0),
+        ("expander_enabled", 1.0),
+        ("expander_threshold_db", -40.0),
+        ("expander_ratio", 4.0),
+        ("expander_attack_ms", 20.0),
+        ("expander_release_ms", 20.0),
+        ("knee_db", 6.0),
+        ("detection", 0.0),
+    ];
+    for fs in RATES {
+        for level in [-70.0, -55.0, -43.0, -40.0, -37.0, -20.0] {
+            let got = expander_gain_db_measured(&settings, level, fs);
+            let want = g_exp(level, -40.0, 4.0, 6.0);
+            assert!(
+                (got - want).abs() <= 0.1,
+                "{fs} Hz, {level} dBFS: {got:.4} vs {want:.4}"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// AC-5: AutoGate static behaviour and hysteresis
+// ---------------------------------------------------------------------------------------------
+
+/// The AutoGate alone (every other section off).
+fn autogate(threshold_db: f64, extra: &[(&str, f64)], fs: f64) -> Box<dyn Module> {
+    let mut s = vec![
+        ("compressor_enabled", 0.0),
+        ("autogate_enabled", 1.0),
+        ("autogate_threshold_db", threshold_db),
+    ];
+    s.extend_from_slice(extra);
+    activated(make, &s, fs)
+}
+
+#[test]
+fn autogate_opens_holds_and_closes_with_hysteresis() {
+    for fs in RATES {
+        for t in [-40.0, -60.0, -20.0] {
+            let burst = (0.3 * fs) as usize;
+            let attack = samples_of(2.0, fs);
+            let w_pk = samples_of(5.0, fs);
+
+            // Bursts 0.5 dB above the threshold open it; after the attack the output is the input.
+            let x = sine_segments(997.0, &[(t + 0.5, burst), (f64::NEG_INFINITY, burst)], fs);
+            let mut m = autogate(t, &[], fs);
+            let tlm = telemetry(&*m).unwrap();
+            let y = render(&mut *m, &x, &[], Blocks::Fixed(1024));
+            // The sliding peak needs a quarter period to see the sine's amplitude; 5 ms covers it.
+            let open_from = attack + w_pk;
+            assert_eq!(
+                bit_equal(&y[open_from..burst], &x[open_from..burst]),
+                None,
+                "{fs} Hz T {t}: an open gate must pass the input bit-exactly"
+            );
+            assert_eq!(
+                read_all(&*tlm)[Dynamics::TELEMETRY_AUTOGATE_OPEN],
+                1.0,
+                "{fs} Hz T {t}: lamp"
+            );
+
+            // Bursts 0.5 dB below never open it: exactly 0.0 from reset, lamp off.
+            let x = sine(997.0, t - 0.5, burst, fs);
+            let mut m = autogate(t, &[], fs);
+            let tlm = telemetry(&*m).unwrap();
+            let y = render(&mut *m, &x, &[], Blocks::Fixed(1024));
+            assert!(
+                y.iter().all(|&v| v == 0.0),
+                "{fs} Hz T {t}: a closed gate must output exactly 0.0"
+            );
+            assert_eq!(
+                read_all(&*tlm)[Dynamics::TELEMETRY_AUTOGATE_OPEN],
+                0.0,
+                "{fs} Hz T {t}: lamp off"
+            );
+
+            // Opened at T + 10, a tone at T − 2.5 (above T − 3) keeps it open for 10 s.
+            let hold = (10.0 * fs) as usize;
+            let x = sine_segments(997.0, &[(t + 10.0, burst), (t - 2.5, hold)], fs);
+            let y = render(&mut *autogate(t, &[], fs), &x, &[], Blocks::Fixed(4096));
+            assert_eq!(
+                bit_equal(&y[burst + attack..], &x[burst + attack..]),
+                None,
+                "{fs} Hz T {t}: hysteresis must hold the gate open"
+            );
+
+            // A tone at T − 3.5 closes it: exactly 0.0 within W_pk + hold + 14 τ_R + 1.
+            let tail = (2.0 * fs) as usize;
+            let x = sine_segments(997.0, &[(t + 10.0, burst), (t - 3.5, tail)], fs);
+            let y = render(&mut *autogate(t, &[], fs), &x, &[], Blocks::Fixed(4096));
+            let silent_from = y.iter().rposition(|&v| v != 0.0).expect("signal") + 1;
+            let limit = burst + w_pk + samples_of(50.0, fs) + (14.0 * 0.1 * fs) as usize + 1;
+            assert!(
+                silent_from <= limit,
+                "{fs} Hz T {t}: silent at {silent_from}, limit {limit}"
+            );
+        }
     }
 }
 
@@ -439,6 +676,164 @@ fn compressor_and_limiter_time_constants() {
     println!("AC-8 time constants:\n  {}", report.join("\n  "));
 }
 
+#[test]
+fn expander_time_constants() {
+    let mut report = Vec::new();
+    let base = [
+        ("detection", 0.0),
+        ("knee_db", 0.0),
+        ("compressor_enabled", 0.0),
+        ("expander_enabled", 1.0),
+        ("expander_threshold_db", -40.0),
+        ("expander_ratio", 2.0),
+    ];
+    // Attack = the level rising (−60 → −30): the gain climbs from −20 dB to 0. The first second
+    // settles the gain on −20 dB with the 100 ms release.
+    for tau in [0.5, 10.0, 100.0] {
+        let mut s = base.to_vec();
+        s.push(("expander_attack_ms", tau));
+        s.push(("expander_release_ms", 100.0));
+        let x = dc_segments(&[(-60.0, 48_000), (-30.0, 48_000)]);
+        let n = tau_samples(&gain_trace(&s, &x, &[]), 48_000, -20.0, 0.0);
+        let e = check_tau(&format!("expander attack {tau} ms"), n, tau * SR / 1000.0);
+        report.push(format!(
+            "exp attack {tau} ms: {n} smp ({:+.2} %)",
+            e * 100.0
+        ));
+    }
+    // Release = the level falling (−30 → −60): the peak window holds for W_pk first.
+    for tau in [10.0, 100.0, 1000.0] {
+        let mut s = base.to_vec();
+        s.push(("expander_attack_ms", 0.1));
+        s.push(("expander_release_ms", tau));
+        let x = dc_segments(&[(-30.0, 14_400), (-60.0, 120_000)]);
+        let n = tau_samples(&gain_trace(&s, &x, &[]), 14_400, 0.0, -20.0);
+        let want = W_PK + tau * SR / 1000.0;
+        let e = check_tau(&format!("expander release {tau} ms"), n, want);
+        report.push(format!(
+            "exp release {tau} ms: {n} smp vs W_pk+τ {want} ({:+.2} %)",
+            e * 100.0
+        ));
+    }
+    println!("AC-8 expander time constants:\n  {}", report.join("\n  "));
+}
+
+// ---------------------------------------------------------------------------------------------
+// AC-9: AutoGate opening shape, hold and release
+// ---------------------------------------------------------------------------------------------
+
+/// Linear gain per sample of the AutoGate alone on a DC signal (`y / x`).
+fn gate_gain_trace(settings: &[(&str, f64)], x: &[f32], fs: f64) -> Vec<f64> {
+    let mut s = vec![("compressor_enabled", 0.0), ("autogate_enabled", 1.0)];
+    s.extend_from_slice(settings);
+    let y = render(&mut *activated(make, &s, fs), x, &[], Blocks::Fixed(4096));
+    x.iter()
+        .zip(&y)
+        .map(|(a, b)| f64::from(*b) / f64::from(*a))
+        .collect()
+}
+
+#[test]
+fn autogate_opening_is_a_raised_cosine_of_exact_length() {
+    for fs in RATES {
+        for attack_ms in [0.1, 2.0, 20.0, 100.0] {
+            let a = samples_of(attack_ms, fs);
+            let n = a + (0.2 * fs) as usize;
+            let x = dc_segments(&[(-20.0, n)]);
+            let g = gate_gain_trace(
+                &[
+                    ("autogate_threshold_db", -40.0),
+                    ("autogate_attack_ms", attack_ms),
+                ],
+                &x,
+                fs,
+            );
+            // DC: the sliding peak reads −20 dBFS at the very first sample, so p = 1 there.
+            for p in 1..=a {
+                let want = (1.0 - (std::f64::consts::PI * p as f64 / a as f64).cos()) / 2.0;
+                assert!(
+                    (g[p - 1] - want).abs() <= 1e-6,
+                    "{fs} Hz attack {attack_ms} ms, p {p}: {} vs {want}",
+                    g[p - 1]
+                );
+            }
+            assert_eq!(
+                g[a - 1],
+                1.0,
+                "{fs} Hz attack {attack_ms} ms: exactly 1 at A"
+            );
+        }
+    }
+}
+
+#[test]
+fn autogate_release_starts_after_the_peak_window_and_the_hold() {
+    let mut report = Vec::new();
+    for fs in RATES {
+        let w_pk = samples_of(5.0, fs);
+        for hold_ms in [0.1, 10.0, 50.0, 500.0] {
+            let h = (hold_ms * fs / 1000.0).round() as usize;
+            let burst = (0.5 * fs) as usize;
+            let tail = h + w_pk + (1.0 * fs) as usize;
+            let s = [
+                ("autogate_threshold_db", -40.0),
+                ("autogate_attack_ms", 1.0),
+                ("autogate_hold_ms", hold_ms),
+                ("autogate_release_ms", 100.0),
+            ];
+            // A DC burst, then DC below the close threshold (silence would carry no gain to
+            // read): e = the last burst sample.
+            let x = dc_segments(&[(-20.0, burst), (-50.0, tail)]);
+            let g = gate_gain_trace(&s, &x, fs);
+            let e = burst - 1;
+            let start = (burst..g.len())
+                .find(|&i| g[i] < 1.0)
+                .expect("the gate releases");
+            let want = e + w_pk + h;
+            assert!(
+                start.abs_diff(want) <= 1,
+                "{fs} Hz hold {hold_ms} ms: release at {start}, expected {want}"
+            );
+            // One-pole release with 63.2 % at τ_R.
+            let tau = (0..g.len() - start)
+                .find(|&i| g[start + i] <= 1.0 - TAU_FRACTION)
+                .expect("63.2 %")
+                + 1;
+            let expected = 0.1 * fs;
+            assert!(
+                (tau as f64 - expected).abs() <= (0.02 * expected).max(1.0),
+                "{fs} Hz hold {hold_ms} ms: τ_R {tau} samples, expected {expected}"
+            );
+            report.push(format!(
+                "{fs} Hz hold {hold_ms} ms: release at e+{}, τ_R {tau}",
+                start - e
+            ));
+        }
+        // With a 997 Hz burst instead of DC the release start is within ±1 ms.
+        let burst = (0.5 * fs) as usize;
+        let tail = (0.5 * fs) as usize;
+        let x = sine_segments(997.0, &[(-20.0, burst), (-50.0, tail)], fs);
+        let mut s = vec![
+            ("compressor_enabled", 0.0),
+            ("autogate_enabled", 1.0),
+            ("autogate_threshold_db", -40.0),
+            ("autogate_hold_ms", 10.0),
+            ("autogate_release_ms", 100.0),
+        ];
+        s.push(("autogate_attack_ms", 1.0));
+        let y = render(&mut *activated(make, &s, fs), &x, &[], Blocks::Fixed(4096));
+        let start = (burst..y.len())
+            .find(|&i| x[i] != 0.0 && (f64::from(y[i]) / f64::from(x[i])) < 1.0 - 1e-9)
+            .expect("the gate releases");
+        let want = burst - 1 + w_pk + samples_of(10.0, fs);
+        assert!(
+            start.abs_diff(want) as f64 <= fs / 1000.0,
+            "{fs} Hz tone: release at {start}, expected {want}"
+        );
+    }
+    println!("AC-9 AutoGate hold:\n  {}", report.join("\n  "));
+}
+
 // ---------------------------------------------------------------------------------------------
 // AC-10 / AC-11: disabled sections are inert; all off = passthrough
 // ---------------------------------------------------------------------------------------------
@@ -493,22 +888,20 @@ fn burst_signal(seed: u64, n: usize) -> Vec<f32> {
 #[test]
 fn disabled_sections_are_inert() {
     let x = burst_signal(7, 33_600);
-    let sections: [(&str, &[&'static str], bool); 4] = [
-        ("compressor_enabled", &COMP_KEYS, false),
-        ("limiter_enabled", &LIM_KEYS, false),
-        ("autogate_enabled", &AG_KEYS, true),
-        ("expander_enabled", &EX_KEYS, true),
+    let sections: [(&str, &[&'static str]); 4] = [
+        ("autogate_enabled", &AG_KEYS),
+        ("expander_enabled", &EX_KEYS),
+        ("compressor_enabled", &COMP_KEYS),
+        ("limiter_enabled", &LIM_KEYS),
     ];
-    for (si, &(enable, keys, stub)) in sections.iter().enumerate() {
+    for (si, &(enable, keys)) in sections.iter().enumerate() {
         let mut rng = TestRng::new(0xAC10 + si as u64);
-        // The other sections at seeded random settings, the live ones enabled.
+        // The other sections at seeded random settings, all of them enabled.
         let mut others = random_values(&mut rng, &GLOBAL_KEYS);
-        for (other_enable, other_keys, _) in &sections {
+        for (other_enable, other_keys) in &sections {
             if *other_enable != enable {
                 others.extend(random_values(&mut rng, other_keys));
-                if !stub || *other_enable == "compressor_enabled" {
-                    others.push((other_enable, 1.0));
-                }
+                others.push((other_enable, 1.0));
             }
         }
         let mut reference = others.clone();
@@ -522,9 +915,7 @@ fn disabled_sections_are_inert() {
         for set in 0..100u64 {
             let mut s = others.clone();
             s.extend(random_values(&mut rng, keys));
-            // A stub section is inert even when switched on (not yet available).
-            let on = if stub && rng.chance(0.5) { 1.0 } else { 0.0 };
-            s.push((enable, on));
+            s.push((enable, 0.0));
             let blocks = if set % 10 == 0 {
                 Blocks::Fixed(4096)
             } else {
@@ -543,30 +934,53 @@ fn disabled_sections_are_inert() {
     }
 }
 
+/// `x` delayed by `la` samples (zeros before it).
+fn delayed(x: &[f32], la: usize) -> Vec<f32> {
+    let mut y = vec![0.0f32; x.len()];
+    y[la..].copy_from_slice(&x[..x.len() - la]);
+    y
+}
+
 #[test]
 fn all_sections_off_is_a_bit_exact_passthrough() {
     let signals = [white(0xAC11, 1.0, 48_000), burst_signal(3, 33_600)];
     let mut rng = TestRng::new(0xAC11);
     for set in 0..20u64 {
-        let mut s = Vec::new();
-        for keys in [&GLOBAL_KEYS[..], &COMP_KEYS, &LIM_KEYS, &AG_KEYS, &EX_KEYS] {
-            s.extend(random_values(&mut rng, keys));
-        }
-        s.push(("compressor_enabled", 0.0));
-        s.push(("limiter_enabled", 0.0));
-        s.push(("autogate_enabled", 1.0));
-        s.push(("expander_enabled", 1.0));
-        for x in &signals {
-            let y = render(
-                &mut *dynamics(&s),
-                x,
-                &[],
-                Blocks::Random {
-                    seed: set,
-                    max: 1024,
-                },
-            );
-            assert_eq!(bit_equal(&y, x), None, "set {set}: {s:?}");
+        for lookahead_ms in [0.0, 5.0, 20.0] {
+            let mut s = Vec::new();
+            for keys in [&GLOBAL_KEYS[..], &COMP_KEYS, &LIM_KEYS, &AG_KEYS, &EX_KEYS] {
+                s.extend(random_values(&mut rng, keys));
+            }
+            s.retain(|(k, _)| *k != "lookahead_ms");
+            s.push(("lookahead_ms", lookahead_ms));
+            for enable in [
+                "compressor_enabled",
+                "limiter_enabled",
+                "autogate_enabled",
+                "expander_enabled",
+            ] {
+                s.push((enable, 0.0));
+            }
+            let la = (lookahead_ms * SR / 1000.0).round() as usize;
+            let mut m = dynamics(&s);
+            assert_eq!(m.latency_samples() as usize, la, "{lookahead_ms} ms");
+            for x in &signals {
+                let y = render(
+                    &mut *m,
+                    x,
+                    &[],
+                    Blocks::Random {
+                        seed: set,
+                        max: 1024,
+                    },
+                );
+                assert_eq!(
+                    bit_equal(&y, &delayed(x, la)),
+                    None,
+                    "set {set}, look-ahead {lookahead_ms} ms: {s:?}"
+                );
+                m.reset();
+            }
         }
     }
 }
@@ -618,6 +1032,136 @@ fn enable_toggles_crossfade_linearly() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// AC-13: look-ahead — latency, restart request, pre-applied gain
+// ---------------------------------------------------------------------------------------------
+
+/// Renders `x` in fixed blocks, returning the output and the number of blocks in which the module
+/// asked for a restart (`ctx.requested(HostRequest::Restart)`).
+fn render_counting_restarts(
+    m: &mut dyn Module,
+    x: &[f32],
+    changes: &[Change],
+    block: usize,
+) -> (Vec<f32>, usize) {
+    let mut y = vec![0.0f32; x.len()];
+    let mut out_events = OutputEvents::with_capacity(DEFAULT_EVENT_CAPACITY);
+    let mut events: Vec<ParamEvent> = Vec::with_capacity(changes.len().max(1));
+    let (mut pos, mut next, mut restarts) = (0usize, 0usize, 0usize);
+    while pos < x.len() {
+        let n = block.min(x.len() - pos);
+        events.clear();
+        while let Some(&(at, id, value)) = changes.get(next)
+            && at < pos + n
+        {
+            events.push(ParamEvent {
+                offset: (at - pos) as u32,
+                id,
+                value,
+            });
+            next += 1;
+        }
+        out_events.clear();
+        let mut ctx = ProcessContext::new(
+            n as u32,
+            pos as u64,
+            Transport {
+                playing: true,
+                position_samples: Some(pos as u64),
+            },
+            &events,
+            &mut out_events,
+        );
+        let inputs = [&x[pos..pos + n]];
+        let mut outputs = [&mut y[pos..pos + n]];
+        no_alloc(|| m.process(&mut ctx, &inputs, &mut outputs)).expect("process() allocated");
+        restarts += usize::from(ctx.requested(HostRequest::Restart));
+        pos += n;
+    }
+    (y, restarts)
+}
+
+#[test]
+fn lookahead_latency_table() {
+    for fs in [44_100.0, 48_000.0, 96_000.0] {
+        for step in 0..=20u32 {
+            let ms = f64::from(step);
+            let m = activated(make, &[("lookahead_ms", ms)], fs);
+            let want = (ms * fs / 1000.0).round() as u32;
+            assert_eq!(m.latency_samples(), want, "{fs} Hz, {ms} ms");
+            assert_eq!(m.tail(), Tail::Samples(u64::from(want)), "{fs} Hz, {ms} ms");
+        }
+    }
+}
+
+#[test]
+fn a_lookahead_event_requests_one_restart_and_does_not_change_the_output() {
+    let x = burst_signal(0xAC13, 48_000);
+    let s = [
+        ("lookahead_ms", 5.0),
+        ("compressor_enabled", 1.0),
+        ("limiter_enabled", 1.0),
+    ];
+    let (want, none) = render_counting_restarts(&mut *dynamics(&s), &x, &[], 512);
+    assert_eq!(none, 0, "no event, no restart request");
+
+    let changes = [(12_345usize, Dynamics::LOOKAHEAD_MS, 12.0)];
+    let (got, restarts) = render_counting_restarts(&mut *dynamics(&s), &x, &changes, 512);
+    assert_eq!(restarts, 1, "exactly one restart request per changed value");
+    assert_eq!(
+        bit_equal(&got, &want),
+        None,
+        "the running instance is unchanged"
+    );
+    // The mirror reports the new target at once, and the state stores it.
+    let mut m = dynamics(&s);
+    let (_, _) = render_counting_restarts(&mut *m, &x, &changes, 512);
+    assert_eq!(m.param_value(Dynamics::LOOKAHEAD_MS), Some(12.0));
+    assert_eq!(m.latency_samples(), 240, "latency is fixed while active");
+    assert_eq!(
+        m.save_state().unwrap().params["lookahead_ms"],
+        12.0,
+        "save_state stores the target"
+    );
+
+    // Back to the active value: nothing more is asked for.
+    let changes = [
+        (1_000usize, Dynamics::LOOKAHEAD_MS, 12.0),
+        (2_000, Dynamics::LOOKAHEAD_MS, 5.0),
+        (3_000, Dynamics::LOOKAHEAD_MS, 12.0),
+    ];
+    let (_, restarts) = render_counting_restarts(&mut *dynamics(&s), &x, &changes, 512);
+    assert_eq!(restarts, 2, "one request per changed value");
+}
+
+#[test]
+fn lookahead_applies_the_reduction_before_the_transient() {
+    // Look-ahead 5 ms with a 0.5 ms attack = 10 τ: ≥ 99.99 % of the target is already applied at
+    // the first output sample of the step (latency-aligned).
+    let la = 240usize;
+    let s = [
+        ("detection", 0.0),
+        ("knee_db", 0.0),
+        ("lookahead_ms", 5.0),
+        ("compressor_threshold_db", -20.0),
+        ("compressor_ratio", 4.0),
+        ("compressor_attack_ms", 0.5),
+    ];
+    let step = 24_000usize;
+    let x = dc_segments(&[(-40.0, step), (-10.0, 24_000)]);
+    let mut m = dynamics(&s);
+    assert_eq!(m.latency_samples() as usize, la);
+    let y = render(&mut *m, &x, &[], Blocks::Fixed(4096));
+    // Output sample `step + la` carries input sample `step`, the first sample of the step.
+    let g = to_db(f64::from(y[step + la]) / f64::from(x[step]));
+    let target = -7.5;
+    assert!(
+        g / target >= 0.9999,
+        "gain {g:.6} dB is only {:.5} of the target {target} dB",
+        g / target
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -714,6 +1258,97 @@ fn telemetry_matches_measured_contributions() {
     assert!(read_all(&*t)[COMP] < -5.0);
     m.reset();
     assert_eq!(read_all(&*t), [0.0, 0.0, 0.0, 0.0, 0.0, -100.0, 0.0]);
+}
+
+#[test]
+fn autogate_and_expander_telemetry() {
+    const AG: usize = Dynamics::TELEMETRY_GR_AUTOGATE;
+    const EX: usize = Dynamics::TELEMETRY_GR_EXPANDER;
+    const TOTAL: usize = Dynamics::TELEMETRY_GR_TOTAL;
+    const LAMP: usize = Dynamics::TELEMETRY_AUTOGATE_OPEN;
+    let near = |a: f32, b: f64| (f64::from(a) - b).abs() <= 0.1;
+
+    // Expander alone: the channel equals the measured contribution.
+    let exp = [
+        ("detection", 0.0),
+        ("knee_db", 0.0),
+        ("compressor_enabled", 0.0),
+        ("expander_enabled", 1.0),
+        ("expander_threshold_db", -30.0),
+        ("expander_ratio", 3.0),
+        ("expander_release_ms", 20.0),
+    ];
+    for level in [-40.0, -35.0, -20.0] {
+        let (g, t) = steady_telemetry(&exp, level);
+        assert!(near(t[EX], g) && near(t[TOTAL], g), "{level}: {g} vs {t:?}");
+        assert_eq!((t[AG], t[LAMP]), (0.0, 0.0));
+    }
+
+    // AutoGate open: 0 dB and the lamp lit. Closed: the channel pins at the −60 dB floor.
+    let gate = [
+        ("compressor_enabled", 0.0),
+        ("autogate_enabled", 1.0),
+        ("autogate_threshold_db", -40.0),
+    ];
+    let (g, t) = steady_telemetry(&gate, -20.0);
+    assert!(
+        g.abs() <= 0.01 && t[AG] == 0.0 && t[LAMP] == 1.0,
+        "{g} {t:?}"
+    );
+    let (_, t) = steady_telemetry(&gate, -50.0);
+    assert_eq!((t[AG], t[TOTAL], t[LAMP]), (-60.0, -60.0, 0.0), "{t:?}");
+
+    // Both plus the compressor: total = Σ sections.
+    let mut both = exp.to_vec();
+    both.extend([
+        ("autogate_enabled", 1.0),
+        ("autogate_threshold_db", -60.0),
+        ("compressor_enabled", 1.0),
+        ("compressor_threshold_db", -40.0),
+        ("compressor_ratio", 2.0),
+    ]);
+    let (g, t) = steady_telemetry(&both, -35.0);
+    assert!(t[AG] == 0.0 && t[LAMP] == 1.0, "{t:?}");
+    assert!(
+        near(
+            t[TOTAL],
+            f64::from(t[EX]) + f64::from(t[Dynamics::TELEMETRY_GR_COMPRESSOR])
+        ),
+        "{t:?}"
+    );
+    assert!(near(t[TOTAL], g), "total {t:?} vs measured {g}");
+}
+
+#[test]
+fn a_short_gain_reduction_dip_survives_until_the_next_read() {
+    // A 5 ms dip to −12 dB GR between two reads 16.7 ms apart (Hold::Min).
+    const LIM: usize = Dynamics::TELEMETRY_GR_LIMITER;
+    let s = [
+        ("compressor_enabled", 0.0),
+        ("limiter_enabled", 1.0),
+        ("limiter_threshold_db", -20.0),
+        ("limiter_attack_ms", 0.1),
+        ("limiter_release_ms", 1.0),
+    ];
+    let quiet = 4_800usize;
+    let dip = 240usize; // 5 ms
+    let x = dc_segments(&[(-30.0, quiet), (-8.0, dip), (-30.0, 4_800)]);
+    let mut m = dynamics(&s);
+    let t = telemetry(&*m).unwrap();
+    // 200-sample process blocks, one read every 4 blocks (800 samples = 16.7 ms).
+    let mut reads: Vec<f32> = Vec::new();
+    let mut blocks = 0usize;
+    render_observed(&mut *m, &x, &[], Blocks::Fixed(200), |_, _| {
+        blocks += 1;
+        if blocks.is_multiple_of(4) {
+            reads.push(read_all(&*t)[LIM]);
+        }
+    });
+    let worst = reads.iter().fold(0.0f32, |a, &b| a.min(b));
+    assert!(
+        worst <= -11.9,
+        "the deepest reported reduction was {worst} dB (reads {reads:?})"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -884,4 +1519,122 @@ fn zipper_enables_and_detection() {
     let lim = [("compressor_enabled", 0.0), ("limiter_threshold_db", -30.0)];
     assert_zipper(make, &lim, Dynamics::LIMITER_ENABLED, &x);
     assert_zipper(make, &comp, Dynamics::DETECTION, &x);
+}
+
+#[test]
+fn zipper_expander_threshold_and_ratio() {
+    let x = sine(997.0, -30.0, ZIPPER_LEN, SR);
+    let s = [("compressor_enabled", 0.0), ("expander_enabled", 1.0)];
+    assert_zipper(make, &s, Dynamics::EXPANDER_THRESHOLD_DB, &x);
+    let s = [
+        ("compressor_enabled", 0.0),
+        ("expander_enabled", 1.0),
+        ("expander_threshold_db", -20.0),
+    ];
+    assert_zipper(make, &s, Dynamics::EXPANDER_RATIO, &x);
+}
+
+#[test]
+fn zipper_expander_attack_and_release() {
+    let x = am_tone(-32.0, -20.0, ZIPPER_LEN);
+    let s = [
+        ("compressor_enabled", 0.0),
+        ("expander_enabled", 1.0),
+        ("expander_threshold_db", -26.0),
+        ("expander_ratio", 4.0),
+    ];
+    assert_zipper(make, &s, Dynamics::EXPANDER_ATTACK_MS, &x);
+    assert_zipper(make, &s, Dynamics::EXPANDER_RELEASE_MS, &x);
+}
+
+#[test]
+fn zipper_autogate_threshold() {
+    let x = sine(997.0, -40.0, ZIPPER_LEN, SR);
+    let s = [("compressor_enabled", 0.0), ("autogate_enabled", 1.0)];
+    assert_zipper(make, &s, Dynamics::AUTOGATE_THRESHOLD_DB, &x);
+}
+
+#[test]
+fn zipper_autogate_attack_release_and_hold() {
+    let x = keyed_tone(ZIPPER_LEN);
+    let s = [
+        ("compressor_enabled", 0.0),
+        ("autogate_enabled", 1.0),
+        ("autogate_threshold_db", -40.0),
+        ("autogate_hold_ms", 0.1),
+    ];
+    assert_zipper(make, &s, Dynamics::AUTOGATE_ATTACK_MS, &x);
+    assert_zipper(make, &s, Dynamics::AUTOGATE_RELEASE_MS, &x);
+    let s = [
+        ("compressor_enabled", 0.0),
+        ("autogate_enabled", 1.0),
+        ("autogate_threshold_db", -40.0),
+        ("autogate_release_ms", 5.0),
+    ];
+    assert_zipper(make, &s, Dynamics::AUTOGATE_HOLD_MS, &x);
+}
+
+#[test]
+fn zipper_autogate_and_expander_enables() {
+    let x = zipper_signal();
+    let ag = [
+        ("compressor_enabled", 0.0),
+        ("autogate_threshold_db", -10.0),
+    ];
+    assert_zipper(make, &ag, Dynamics::AUTOGATE_ENABLED, &x);
+    let ex = [
+        ("compressor_enabled", 0.0),
+        ("expander_threshold_db", -10.0),
+        ("expander_ratio", 4.0),
+    ];
+    assert_zipper(make, &ex, Dynamics::EXPANDER_ENABLED, &x);
+}
+
+// ---------------------------------------------------------------------------------------------
+// AC-18: silence and denormals
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn silence_after_a_loud_passage_is_exactly_zero() {
+    // FTZ/DAZ is not enabled in tests (SPEC-016 §4.13: the snaps, not the host guard, carry the
+    // denormal safety). All sections on, look-ahead 5 ms.
+    let s = [
+        ("lookahead_ms", 5.0),
+        ("detection", 1.0),
+        ("autogate_enabled", 1.0),
+        ("autogate_threshold_db", -50.0),
+        ("expander_enabled", 1.0),
+        ("expander_threshold_db", -45.0),
+        ("compressor_enabled", 1.0),
+        ("limiter_enabled", 1.0),
+    ];
+    let la = 240usize;
+    let loud = 48_000usize;
+    let silence = 10 * 48_000usize;
+    let mut x = white(0xAC18, 1.0, loud);
+    x.extend(std::iter::repeat_n(0.0f32, silence));
+    let y = render(
+        &mut *dynamics(&s),
+        &x,
+        &[],
+        Blocks::Random {
+            seed: 0xAC18,
+            max: 1024,
+        },
+    );
+    for (i, &v) in y.iter().enumerate().skip(loud + la) {
+        assert_eq!(v, 0.0, "sample {i} after the input went silent is {v}");
+    }
+    assert!(
+        y.iter().all(|v| v.is_finite() && !v.is_subnormal()),
+        "no subnormal or non-finite output sample"
+    );
+    // The module recovers: a fresh burst after the silence is processed normally.
+    let after = render(
+        &mut *dynamics(&s),
+        &white(0xAC18 ^ 7, 0.5, 4_800),
+        &[],
+        Blocks::Fixed(512),
+    );
+    assert!(peak(&after) > 0.0 && after.iter().all(|v| v.is_finite()));
 }

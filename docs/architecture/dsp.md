@@ -283,16 +283,21 @@ flowchart LR
 | `limiter_enabled` | on/off | | off | |
 | `limiter_threshold_db` | dBFS | −30 … 0 | −1 | |
 | `limiter_attack_ms` / `_release_ms` | ms | 0.1 … 50 / 1 … 2000 | 1 / 100 | |
-| `lookahead_ms`, `autogate_*` (5), `expander_*` (5) | | | | **hidden, not implemented yet** |
+| `autogate_enabled` | on/off | | off | opens at T, closes 3 dB below it after `hold` |
+| `autogate_threshold_db` | dBFS | −80 … 0 | −50 | |
+| `autogate_attack_ms` / `_hold_ms` / `_release_ms` | ms | 0.1 … 100 / 0.1 … 1000 / 1 … 2000 | 2 / 50 / 100 | raised-cosine open, exponential close |
+| `expander_enabled` | on/off | | off | |
+| `expander_threshold_db` | dBFS | −80 … 0 | −45 | |
+| `expander_ratio` | ratio | 1 … 30 | 2 | ramped as `R − 1` |
+| `expander_attack_ms` / `_release_ms` | ms | 0.1 … 100 / 1 … 2000 | 2 / 100 | |
+| `lookahead_ms` | ms | 0 … 20, step 1 | 0 | the module's latency; a change requests `Restart` |
 
-Telemetry: `gr_total_db` (shown in the slot header), per-section gain reduction, input level.
-Latency 0.
+Telemetry: `gr_total_db` (shown in the slot header), per-section gain reduction, input level and
+the AutoGate's open lamp. Latency = the look-ahead in samples.
 
-> **Code vs SPEC-016.** The spec describes four sections (AutoGate → Expander → Compressor →
-> Limiter) and look-ahead. The code implements the Compressor and Limiter; the AutoGate, Expander
-> and look-ahead parameters exist with permanent ids but are hidden and inert
-> (`Dynamics::NOT_YET_AVAILABLE`), and their telemetry channels are always 0. No `TransferCurve`
-> extension exists yet.
+> **Code vs SPEC-016.** All four sections and the look-ahead are live (H-58). Still missing: the
+> `TransferCurve` extension (§4.11) and therefore the custom panel with its transfer graph, the
+> `VXTC`/`VXMT` frames and `set_param_plain` (T-403/T-410 remainder).
 
 ## True-Peak Limiter
 

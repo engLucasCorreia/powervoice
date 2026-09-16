@@ -96,7 +96,10 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-62 | Sandbox event-ring overflow is silent (H-55 open question): `HostEnd::push_event` / the proxy drop events when the ring is full (counted in `events_dropped`, never surfaced) — another timing-dependent divergence under heavy automation; surface it as a notice/slot status and test it | S | todo |
 | H-56 | Insert silence + cross-document clipboard (T-302 remainder, SPEC-008) | S | in progress |
 | H-57 | Markers: kinds in the core model, drag, region→selection (T-303 remainder, SPEC-009) | S | in progress |
-| H-58 | Dynamics part 2: activate Expander + AutoGate, real look-ahead latency (T-407 remainder, SPEC-016 part 2) | O | in progress |
+| H-58 | Dynamics part 2: activate Expander + AutoGate, real look-ahead latency (T-407 remainder, SPEC-016 part 2) | O | done |
+| H-63 | `TransferCurve` module-api extension (H-58): the last blocker for SPEC-016 AC-17's transfer graph, SPEC-013's gate UI and T-410's custom Dynamics panel + VXMT telemetry | O | todo |
+| H-64 | Marker follow-ups (H-57): auto-scroll while dragging past the canvas edge (SPEC-009 §2.5 `drag_autoscroll_rate`), SPEC-009 §2.13 case 3 — a WAV cue set differing from the sidecar should win with a notice (credited to T-306 but unimplemented), and the deferred panel work (filter, sort, virtualization, Delete All/Filtered, rename shortcut) | S | todo |
+| H-65 | Close SPEC-016 AC-18 properly (H-58): a `#[doc(hidden)]`/cfg(test) state accessor on Dynamics (and NoiseGate) so the 120 s silence test can assert no subnormals in the module state, not just in the output | S | todo |
 | H-59 | Engine/recording/IPC/UI hardening audit (T-105/T-106/T-108/T-109 remainder): matrix vs SPEC-001/002/003 + ADR-003, fill real gaps | O | todo |
 | H-60 | Save pipeline / peaks / waveform renderer audit (T-201/T-203/T-205 remainder): matrix vs SPEC-005/006/009/018, fill real gaps | S | todo |
 | H-61 | Windows + macOS installers from CI (T-705 remainder), labelled unverified | S | todo |

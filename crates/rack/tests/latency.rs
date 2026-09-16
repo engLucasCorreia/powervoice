@@ -9,11 +9,14 @@
 mod common;
 
 use common::*;
+use std::sync::Arc;
 use vox_module_api::test_util::{
     TestRestart, ZIPPER_CHANGE_AT, ZIPPER_LEVEL_DBFS, ZipperWindow, analyze_zipper, zipper_signal,
 };
-use vox_rack::RackNotice;
+
+use vox_module_api::ModuleFactory;
 use vox_rack::offline::render;
+use vox_rack::{RackNotice, Registry};
 
 vox_module_api::install_test_allocator!();
 
@@ -288,4 +291,107 @@ fn each_latency_change_reaches_the_readout_within_100_ms() {
     assert!(p240 <= 60_000 + MS100, "240 at {p240}");
     assert_eq!(d.live.latency_samples(), 240);
     assert_eq!(d.host.total_latency_samples(), 240);
+}
+
+// ---------------------------------------------------------------------------------------------
+// H-58: a Dynamics look-ahead change (SPEC-016 §2.4, §4.9) through the rack.
+
+/// SPEC-016 AC-13 in the rack (SPEC-012 §2.5, AC-8): changing `lookahead_ms` on a real Dynamics
+/// slot restarts it behind the 15 ms crossfade — the rack latency follows within 100 ms, the
+/// output converges on the input delayed by the new latency, and the transition is click-free
+/// (§4.3, no sample step above a crossfade's).
+#[test]
+fn a_dynamics_lookahead_change_restarts_cleanly_and_moves_the_latency() {
+    let registry = Arc::new(
+        Registry::with_factories([
+            Arc::new(vox_modules::DynamicsFactory::new()) as Arc<dyn ModuleFactory>
+        ])
+        .expect("registry"),
+    );
+    // Every section off: the slot is a pure latency (AC-11), so the transition is visible alone.
+    let m = model(vec![slot(
+        vox_modules::Dynamics::ID,
+        &[("compressor_enabled", 0.0)],
+    )]);
+    let x = zipper_signal();
+    let s = ZIPPER_CHANGE_AT;
+    let mut d = Driver::with_registry(registry, &m, 58, x.len());
+    assert_eq!(
+        d.host.total_latency_samples(),
+        0,
+        "look-ahead 0 adds nothing"
+    );
+
+    d.run_until(&x, s);
+    d.host
+        .set_param(0, vox_modules::Dynamics::LOOKAHEAD_MS, 10.0)
+        .unwrap();
+    const LA: usize = 480; // 10 ms at 48 kHz
+    let mut settled_at = None;
+    while d.pos < x.len() {
+        let next = (d.pos + 480).min(x.len());
+        d.run_until(&x, next);
+        let done = d.host.swaps_in_flight() == 0
+            && d.live.latency_samples() == LA as u32
+            && d.host.total_latency_samples() == LA as u32;
+        if done && settled_at.is_none() {
+            settled_at = Some(d.pos);
+        } else if !done {
+            settled_at = None;
+        }
+    }
+    for _ in 0..4 {
+        d.tick();
+    }
+    let settled_at = settled_at.expect("the rack settles on the new latency");
+    assert!(settled_at < s + 48_000, "settled at {settled_at}");
+    assert_eq!(d.host.slot_info(0).unwrap().latency_samples, LA as u32);
+
+    // The readout follows within 100 ms of the command (plus the hold + crossfade of the swap).
+    let reported = d
+        .notices
+        .iter()
+        .find_map(|(p, n)| {
+            (*n == RackNotice::LatencyChanged {
+                total_samples: LA as u32,
+            })
+            .then_some(*p)
+        })
+        .expect("a LatencyChanged notice");
+    assert!(
+        reported <= s + MS100 + LA + XF,
+        "latency reported at {reported}, command at {s}"
+    );
+
+    // Click-free: §4.3 over the transition and no sample step above a crossfade's.
+    let t_s_ms = (settled_at - s) as f64 * 1000.0 / SR;
+    let r = analyze_zipper(&d.out, 0, SR, ZipperWindow::step(s, t_s_ms)).unwrap();
+    println!("H-58 look-ahead change: {r}");
+    assert!(r.pass, "{r}");
+    let (at, step) = d
+        .out
+        .windows(2)
+        .enumerate()
+        .map(|(i, w)| (i, (w[1] - w[0]).abs()))
+        .fold((0, 0.0f32), |a, b| if b.1 > a.1 { b } else { a });
+    assert!(
+        step <= max_step(),
+        "step {step} at {at} above {}",
+        max_step()
+    );
+    // Never silent, and converged on the input delayed by the new latency.
+    assert!(
+        !d.out[s..]
+            .windows(3)
+            .any(|w| w.iter().all(|v| v.abs() < 1e-6)),
+        "silent gap"
+    );
+    for n in settled_at..x.len() {
+        assert!(
+            (d.out[n] - x[n - LA]).abs() <= 1e-6,
+            "sample {n}: {} vs {}",
+            d.out[n],
+            x[n - LA]
+        );
+    }
 }

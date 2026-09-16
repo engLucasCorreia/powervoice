@@ -21,6 +21,8 @@
   §4.3, §4.11) **does not exist** in `module-api` (`ExtensionId`/`Extension` have no such variant) —
   see SPEC-016's own status note. Every acceptance criterion, UI section and wire format below that
   depends on look-ahead or `TransferCurve` describes the T-408/T-410 target, not current behaviour.
+  (H-58 made SPEC-016's own look-ahead live — `vox_dsp::dynamics::detector::DelayLine` and the
+  `W_pk + la` peak window are ready for T-408 to reuse here.)
 
 ## 1. Purpose
 Between phrases a voice-over take carries room tone, computer fans, traffic rumble and breaths. A

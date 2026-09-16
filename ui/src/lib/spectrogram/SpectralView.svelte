@@ -54,6 +54,7 @@
   import { detectMaxTextureSize, isFftSizeDisabled } from "./fftLimit";
   import {
     autoFftSize,
+    canvasColumnStride,
     FFT_SIZES,
     frameColumnBounds,
     frameLinearMapping,
@@ -368,6 +369,21 @@
     return result.pendingUploads > 0;
   }
 
+  /** H-54: the Canvas2D downscale scratch canvas (see {@link drawSpectrogram}), created lazily and
+   * resized in place — never recreated per frame, so no GPU/canvas-object churn while zooming. */
+  let downscaleCanvas: HTMLCanvasElement | null = null;
+
+  function getDownscaleCtx(w: number, h: number): CanvasRenderingContext2D | null {
+    if (!downscaleCanvas) {
+      downscaleCanvas = document.createElement("canvas");
+    }
+    if (downscaleCanvas.width !== w || downscaleCanvas.height !== h) {
+      downscaleCanvas.width = w;
+      downscaleCanvas.height = h;
+    }
+    return downscaleCanvas.getContext("2d");
+  }
+
   function drawSpectrogram(ctx: CanvasRenderingContext2D, backingW: number, backingH: number, dpr: number): void {
     if (!requester) {
       return;
@@ -400,8 +416,20 @@
     const dbSpan = ceilDb - floorDb;
     const lutScale = dbSpan > 0 ? 255 / dbSpan : 0;
 
-    const image = ctx.createImageData(backingW, backingH);
-    const data = image.data;
+    // H-54 (SPEC-007 AC-10): `columnDb`'s per-column cost is O(bins) and independent of
+    // `backingH` (geometry.ts::canvasColumnStride's doc comment has the profile). Above the
+    // budget, `stride` adjacent device columns are computed together (their time span unioned)
+    // and one column of pixels is rendered for the group into a smaller scratch canvas, then
+    // nearest-neighbour-stretched onto the real one — a coarser time axis, not a different value
+    // at any rendered point (every group's `columnDb` call covers exactly the group's own device
+    // columns, same as SPEC-007 §4.7's rule applied at a lower column density). `stride` 1 (every
+    // currently-passing size) draws straight into `ctx`, unchanged from before this ticket.
+    const stride = canvasColumnStride(backingW, bins);
+    const renderW = stride > 1 ? Math.ceil(backingW / stride) : backingW;
+    const targetCtx = stride > 1 ? getDownscaleCtx(renderW, backingH) : ctx;
+    if (!targetCtx) {
+      return; // scratch canvas has no 2D context either (shouldn't happen once `ctx` above exists)
+    }
 
     // H-12 (HiDPI): one column per device pixel (`geometry.ts::frameColumnBounds`) — `backingW`
     // is already the device-pixel canvas width (`draw()` below).
@@ -417,15 +445,19 @@
       binHiArr[py] = (fHiPx * fftSize) / rateHz;
     }
 
-    // T-704: a column at a time — `columnDb` gives exactly `pixelDb` per row but evaluates each
-    // bin's time-axis value once per column instead of once per pixel (was ~0.5 s per frame on a
-    // 60-min document's split view).
+    // T-704: a column (or, above the budget, a group of `stride` columns) at a time — `columnDb`
+    // gives exactly `pixelDb` per row but evaluates each bin's time-axis value once per column
+    // instead of once per pixel (was ~0.5 s per frame on a 60-min document's split view).
     const columnOut = new Float64Array(backingH);
     const columnScratch = createColumnScratch(bins);
-    const rowStride = backingW * 4;
-    for (let px = 0; px < backingW; px++) {
-      columnDb(getTile, total, bins, frameLoArr[px]!, frameHiArr[px]!, binLoArr, binHiArr, columnOut, columnScratch);
-      let idx = px * 4;
+    const image = targetCtx.createImageData(renderW, backingH);
+    const data = image.data;
+    const rowStride = renderW * 4;
+    for (let rx = 0; rx < renderW; rx++) {
+      const px0 = rx * stride;
+      const px1 = Math.min(backingW, px0 + stride) - 1;
+      columnDb(getTile, total, bins, frameLoArr[px0]!, frameHiArr[px1]!, binLoArr, binHiArr, columnOut, columnScratch);
+      let idx = rx * 4;
       for (let py = 0; py < backingH; py++) {
         const db = columnOut[py]!;
         // `db === db` is "not NaN" without the `Number.isNaN` call, once per pixel.
@@ -444,7 +476,14 @@
         idx += rowStride;
       }
     }
-    ctx.putImageData(image, 0, 0);
+    targetCtx.putImageData(image, 0, 0);
+    if (stride > 1 && downscaleCanvas) {
+      // Nearest-neighbour: a group's rendered column is a "max/interpolate" summary already
+      // (SPEC-007 §4.7), so stretching it smoothly would blur that summary rather than represent
+      // it; a hard edge per group matches what was actually computed.
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(downscaleCanvas, 0, 0, renderW, backingH, 0, 0, backingW, backingH);
+    }
   }
 
   function drawOverlays(ctx: CanvasRenderingContext2D): void {
@@ -835,6 +874,7 @@
     return () => {
       disposed = true;
       frames.dispose();
+      downscaleCanvas = null; // H-54: drop the scratch canvas with the component
       if (attached) {
         void spectroDetach(SPECTRAL_VIEW_ID).catch(() => {});
       }

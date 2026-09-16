@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  CANVAS2D_COLUMN_BIN_BUDGET,
   FFT_SIZES,
   MAX_TILES_PER_REQUEST,
   TILE_FRAMES,
   autoFftSize,
+  canvasColumnStride,
   frameCenterSample,
   frameColumnBounds,
   frameLinearMapping,
@@ -99,6 +101,31 @@ describe("spectrogram geometry (SPEC-007 §2.6, §4.3)", () => {
 
     // A later column starts where the document position has advanced accordingly.
     expect(dpr2.lo[10]).toBeCloseTo((startSample + 5 * samplesPerPixel) / hop, 10);
+  });
+
+  it("canvasColumnStride is 1 below the budget and grows just enough to stay under it (H-54)", () => {
+    // The passing 1280×720 case (680×219-ish device pane, FFT Auto 2048 → 1025 bins) stays full
+    // resolution: well under budget.
+    expect(canvasColumnStride(680, 1025)).toBe(1);
+    // Right at the budget: still stride 1 (the guard is "above", not "at or above").
+    expect(canvasColumnStride(CANVAS2D_COLUMN_BIN_BUDGET / 1025, 1025)).toBe(1);
+    // One unit over budget rounds up to stride 2.
+    expect(canvasColumnStride(CANVAS2D_COLUMN_BIN_BUDGET / 1025 + 1, 1025)).toBe(2);
+    // The failing 2126×850 case (1526×219 device pane, 1025 bins) is reduced, not left at 1.
+    const failingStride = canvasColumnStride(1526, 1025);
+    expect(failingStride).toBeGreaterThan(1);
+    // Grouping backingWidthPx device columns into stride-sized groups always covers every column
+    // (the last group may be a partial, smaller group) and never groups more than `stride`.
+    for (const [backingWidthPx, bins] of [[1526, 1025], [2126, 2049], [90, 129]] as const) {
+      const stride = canvasColumnStride(backingWidthPx, bins);
+      const groups = Math.ceil(backingWidthPx / stride);
+      expect(groups * stride).toBeGreaterThanOrEqual(backingWidthPx);
+      expect((groups - 1) * stride).toBeLessThan(backingWidthPx);
+    }
+    // Degenerate inputs never return a non-positive or non-finite stride.
+    expect(canvasColumnStride(0, 1025)).toBe(1);
+    expect(canvasColumnStride(1526, 0)).toBe(1);
+    expect(canvasColumnStride(-10, 1025)).toBe(1);
   });
 });
 

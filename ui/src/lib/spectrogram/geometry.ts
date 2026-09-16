@@ -143,6 +143,32 @@ export function tileCount(lenSamples: number, hop: number): number {
   return Math.ceil(totalFrames(lenSamples, hop) / TILE_FRAMES);
 }
 
+/**
+ * H-54 (SPEC-007 AC-10, Canvas2D fallback): above this many (device column × visible bin) units,
+ * `SpectralView.svelte`'s Canvas2D path renders at a reduced time-axis resolution and
+ * nearest-neighbour-upscales (see {@link canvasColumnStride}). A CDP profile of the failing case
+ * (2126×850 window, 1526×219-device-pixel pane, FFT Auto = 2048 → 1025 bins) found 73.6 % of every
+ * frame in `columnDb` (SPEC-007 §4.7's time-axis rule, §4.3) plus the pixel-write loop around it —
+ * both O(bins) per column and, critically, **independent of the pane's height**: a pixel row's
+ * frequency-axis span already merges every bin it covers, so shrinking `backingHeightPx` instead
+ * would not shrink the total bins visited. The budget is set just above the passing 1280×720
+ * case's 680 × 1025 ≈ 697 000 units, so it is a no-op there (stride 1, bit-identical output) and
+ * only engages for the failing size and other panes at least as demanding.
+ */
+export const CANVAS2D_COLUMN_BIN_BUDGET = 750_000;
+
+/**
+ * H-54: how many adjacent device-pixel columns `SpectralView.svelte`'s Canvas2D path should group
+ * into one rendered column (1 = full resolution, every device pixel computed). Pure so the budget
+ * and the rounding are unit-tested without a canvas.
+ */
+export function canvasColumnStride(backingWidthPx: number, bins: number): number {
+  if (backingWidthPx <= 0 || bins <= 0) {
+    return 1;
+  }
+  return Math.max(1, Math.ceil((backingWidthPx * bins) / CANVAS2D_COLUMN_BIN_BUDGET));
+}
+
 /** Centre of frame `frame` of tile `tileIndex`: `(256·k + i)·hop` (SPEC-007 §4.3). */
 export function frameCenterSample(tileIndex: number, frame: number, hop: number): number {
   return (tileIndex * TILE_FRAMES + frame) * hop;

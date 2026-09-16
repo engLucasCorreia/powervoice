@@ -12,7 +12,10 @@
   import { dispatchAction } from "../shortcuts";
   import { shortcutLabelForAction } from "../shortcuts/shortcutLabel";
   import type { DefaultFormatDto } from "../ipc/bindings";
-  import { Button, EmptyState } from "../ui";
+  import { Button, EmptyState, Menu, type PopoverAnchor } from "../ui";
+  import type { MenuEntry } from "../ui/menuModel";
+  import { hasClipboard, silence } from "../state/edit.svelte";
+  import { openInsertSilenceDialog } from "../state/insertSilence.svelte";
   import {
     beginDrag,
     beginHandleDrag,
@@ -175,6 +178,9 @@
 
   let containerEl: HTMLDivElement | undefined = $state();
   let canvasEl: HTMLCanvasElement | undefined = $state();
+  /** H-66: the waveform's right-click menu — opened at the pointer (or under the canvas container
+   * when opened from the keyboard, like the Record context menu, H-26). */
+  let contextMenuAnchor = $state<PopoverAnchor | null>(null);
   let viewportPx = $state(0);
   let heightPx = $state(200);
   let fittedForAudio = $state<string | null>(null);
@@ -251,6 +257,12 @@
   const isImporting = $derived(importJob !== null && importJob.state === "running");
   const isOpen = $derived(hasDocument(doc.current) || isImporting);
   const isRecording = $derived(rec.state.recording);
+  // H-66 (SPEC-008 §2.11): the right-click menu's enablement must exactly match `EditMenu.svelte`'s
+  // — a document open, a non-empty selection, and not while recording (`error.not_while_recording`
+  // covers "or a document job", since the job's own modal dialog owns the window meanwhile).
+  const hasDoc = $derived(hasDocument(doc.current));
+  const editSelected = $derived(hasSelection() && !isRecording);
+  const editPasteEnabled = $derived(hasClipboard() && !isRecording);
   /** H-07: a new recording into an empty document (its take isn't committed until Stop). */
   const liveNewTake = $derived(isRecording && lenSamples === 0);
   /** H-21: a running record operation on a document with audio (`null`: none). */
@@ -1265,12 +1277,78 @@
     });
   }
 
+  /** H-66 (SPEC-008 §2.11): an item that runs a keymap action, with its shortcut chip — same
+   * routing (`dispatchAction`) and same labels/shortcuts as `EditMenu.svelte`'s equivalent row, so
+   * the two menus can never drift apart. */
+  function editMenuAction(
+    id: string,
+    label: string,
+    actionId: Parameters<typeof dispatchAction>[0],
+    disabled: boolean,
+  ): MenuEntry {
+    return {
+      kind: "item",
+      id,
+      label,
+      shortcut: shortcutLabelForAction(actionId),
+      disabled,
+      testid: `waveform-menu-${id}`,
+      onselect: () => dispatchAction(actionId),
+    };
+  }
+
+  /** H-66 (SPEC-008 §2.11): Cut, Copy, Paste, Delete, Trim, Silence, Insert Silence — the same
+   * seven ops as the Edit menu, same order, same enablement (`editSelected`/`editPasteEnabled`/
+   * `hasDoc` above mirror `EditMenu.svelte` exactly). Silence and Insert Silence have no keymap
+   * binding (menu-only, `registry.ts`), so they call the store directly like the Edit menu does. */
+  const contextMenuItems = $derived<MenuEntry[]>([
+    editMenuAction("cut", t("edit.cut"), "edit.cut", !editSelected),
+    editMenuAction("copy", t("edit.copy"), "edit.copy", !editSelected),
+    editMenuAction("paste", t("edit.paste"), "edit.paste", !editPasteEnabled),
+    editMenuAction("delete", t("edit.delete"), "edit.delete", !editSelected),
+    editMenuAction("trim", t("edit.trim"), "edit.trim", !editSelected),
+    {
+      kind: "item",
+      id: "silence",
+      label: t("edit.silence"),
+      disabled: !editSelected,
+      testid: "waveform-menu-silence",
+      onselect: () => void silence(),
+    },
+    {
+      kind: "item",
+      id: "insert-silence",
+      label: t("edit.insert_silence"),
+      disabled: !hasDoc || isRecording,
+      testid: "waveform-menu-insert-silence",
+      onselect: openInsertSilenceDialog,
+    },
+  ]);
+
+  /** H-66 (SPEC-008 §2.11, H-26): opens the right-click menu at the pointer, or under the canvas
+   * container when opened from the keyboard (the context-menu key / Shift+F10 fire a `contextmenu`
+   * event with `clientX`/`clientY` at 0,0 — same detection the Record context menu uses). Never
+   * touches the selection or a marker drag: `onPointerDown` above already ignores non-primary
+   * buttons, so no drag/handle-drag/marker-drag can have started for this gesture. */
+  function onWaveformContextMenu(event: MouseEvent): void {
+    event.preventDefault();
+    if (!isOpen) {
+      return;
+    }
+    const fromKeyboard = event.clientX === 0 && event.clientY === 0;
+    contextMenuAnchor =
+      fromKeyboard && containerEl ? containerEl : { x: event.clientX, y: event.clientY };
+  }
+
   /** Mousedown (SPEC-006 §2.9): a hit on an existing selection's handle starts a handle drag;
    * Shift+click extends the far selection edge on pointerup; a plain mousedown starts a
    * live-updating click-drag (`state/selection.svelte.ts`), which a plain click (no movement)
    * undoes on pointerup by clearing the selection and seeking instead. */
   function onPointerDown(event: PointerEvent): void {
-    if (!isOpen) {
+    // H-66: only the primary button drives selection/handle/marker drags — a right-click (or a
+    // secondary-button press) must reach `onWaveformContextMenu` untouched, leaving the selection
+    // and any marker exactly where they were.
+    if (!isOpen || event.button !== 0) {
       return;
     }
     pointerDownClientX = event.clientX;
@@ -1521,10 +1599,17 @@
           <span class="tick" data-align={tick.align} style={`top: ${tick.y}px`}>{tick.label}</span>
         {/each}
       </div>
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <!-- H-66: `role="application"` + `tabindex="0"` (same device SpectrumPlot.svelte uses for its
+           canvas) makes this a real keyboard focus target, so the context-menu key/Shift+F10 fire a
+           native `contextmenu` event here instead of wherever focus happened to be — Svelte's a11y
+           list doesn't count "application" as interactive, hence the ignores. -->
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
       <div
         class="canvas-container"
         class:resize-cursor={nearHandle}
+        role="application"
+        tabindex="0"
+        aria-label={t("waveform.canvas_label")}
         bind:this={containerEl}
         onwheel={onWheel}
         onpointerdown={onPointerDown}
@@ -1532,6 +1617,7 @@
         onpointerup={onPointerUp}
         onpointerleave={onPointerLeave}
         ondblclick={onDoubleClick}
+        oncontextmenu={onWaveformContextMenu}
       >
         <canvas
           bind:this={canvasEl}
@@ -1545,6 +1631,14 @@
           <div class="zero-line" data-testid="waveform-zero-line" style={`top: ${zeroLineY}px`}></div>
         </div>
       </div>
+      <Menu
+        open={contextMenuAnchor !== null}
+        anchor={contextMenuAnchor}
+        items={contextMenuItems}
+        label={t("menu.edit")}
+        testid="waveform-context-menu"
+        onclose={() => (contextMenuAnchor = null)}
+      />
     </div>
   {:else}
     <!-- H-25: no document yet — an invitation to act, not a grey sentence. Same actions as

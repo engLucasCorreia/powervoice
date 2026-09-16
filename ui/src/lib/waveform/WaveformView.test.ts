@@ -3,10 +3,13 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { VXTM_FLAGS, type TelemetryFrame } from "../ipc/telemetry";
-import { clearActionHandlers } from "../shortcuts";
+import { clearActionHandlers, registerAction } from "../shortcuts";
+import type { ActionId } from "../shortcuts/actions";
 import { initDocument, openDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import { clearNotices } from "../state/notices.svelte";
-import { initRecord, onInputTelemetry, resetRecordForTest } from "../state/record.svelte";
+import { resetEditForTest } from "../state/edit.svelte";
+import { resetInsertSilenceForTest } from "../state/insertSilence.svelte";
+import { applyRecordStateForTest, initRecord, onInputTelemetry, resetRecordForTest } from "../state/record.svelte";
 import { resetSelectionForTest, selectionState, setSelectionFromResult } from "../state/selection.svelte";
 import { loadSettings, resetSettingsStateForTest } from "../state/settings.svelte";
 import { resetTransportForTest, transportState } from "../state/transport.svelte";
@@ -1219,5 +1222,293 @@ describe("WaveformView zoom commands (H-35)", () => {
 
     unmount(app);
     target.remove();
+  });
+});
+
+// H-66 (SPEC-008 §2.11): the waveform's right-click menu — same seven ops/enablement as
+// EditMenu.svelte, opened at the pointer or (keyboard) under the canvas container, never
+// disturbing the selection or a marker drag.
+describe("WaveformView right-click menu (H-66)", () => {
+  const widthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+
+  function stubWidth(px: number): void {
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get: () => px,
+    });
+  }
+
+  afterEach(() => {
+    resetMarkersForTest();
+    resetEditForTest();
+    resetInsertSilenceForTest();
+    if (widthDescriptor) {
+      Object.defineProperty(HTMLElement.prototype, "clientWidth", widthDescriptor);
+    }
+  });
+
+  const OP_IDS = ["cut", "copy", "paste", "delete", "trim", "silence", "insert-silence"];
+
+  function marker(id: number, pos: number, len = 0): MarkerDto {
+    return { id, pos_samples: pos, len_samples: len, name: `m${id}`, kind: "user" };
+  }
+
+  async function openFixtureDocument(
+    lenSamples: number,
+    markers: MarkerDto[] = [],
+  ): Promise<() => unknown[]> {
+    const fixture = docDto({ len_samples: lenSamples });
+    const setRangeCalls: unknown[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "document_open") {
+        return fixture;
+      }
+      if (cmd === "peaks_get") {
+        return headerOnlyVxpk();
+      }
+      if (cmd === "markers_get") {
+        return markers;
+      }
+      if (cmd === "marker_set_range") {
+        setRangeCalls.push(args);
+        return null;
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    await openDocument("/home/user/take.wav");
+    await initMarkers();
+    return () => setRangeCalls;
+  }
+
+  function mountView(): { target: HTMLElement; app: ReturnType<typeof mount>; container: HTMLElement } {
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(WaveformView, { target });
+    flushSync();
+    const container = target.querySelector('[data-testid="waveform-canvas"]')!
+      .parentElement as HTMLElement;
+    return { target, app, container };
+  }
+
+  function openContextMenu(container: HTMLElement, clientX = 40, clientY = 20): void {
+    container.dispatchEvent(
+      new MouseEvent("contextmenu", { clientX, clientY, bubbles: true, cancelable: true }),
+    );
+    flushSync();
+  }
+
+  it("has no document, no canvas, nothing to right-click — the empty state shows instead", () => {
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(WaveformView, { target });
+    flushSync();
+    expect(target.querySelector('[data-testid="waveform-empty"]')).not.toBeNull();
+    expect(target.querySelector('[data-testid="waveform-context-menu"]')).toBeNull();
+    unmount(app);
+    target.remove();
+  });
+
+  it("opens the seven SPEC-008 §2.11 ops, same order/labels/shortcuts as the Edit menu", async () => {
+    stubWidth(800);
+    await openFixtureDocument(8_000);
+    const { target, app, container } = mountView();
+
+    openContextMenu(container);
+    expect(target.querySelector('[data-testid="waveform-context-menu"]')).not.toBeNull();
+    for (const id of OP_IDS) {
+      expect(
+        target.querySelector(`[data-testid="waveform-menu-${id}"]`),
+        id,
+      ).not.toBeNull();
+    }
+    expect(target.querySelector('[data-testid="waveform-menu-cut"] .shortcut')?.textContent).toBe(
+      "Ctrl+X",
+    );
+    expect(target.querySelector('[data-testid="waveform-menu-trim"] .shortcut')?.textContent).toBe(
+      "Ctrl+T",
+    );
+    // Silence/Insert Silence have no default binding (menu only, SPEC-008 §2.11 table).
+    expect(target.querySelector('[data-testid="waveform-menu-silence"] .shortcut')).toBeNull();
+    expect(target.querySelector('[data-testid="waveform-menu-insert-silence"] .shortcut')).toBeNull();
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Cut/Copy/Paste/Delete/Trim/Silence are disabled with no selection and an empty clipboard; Insert Silence is enabled", async () => {
+    stubWidth(800);
+    await openFixtureDocument(8_000);
+    const { target, app, container } = mountView();
+
+    openContextMenu(container);
+    for (const id of ["cut", "copy", "paste", "delete", "trim", "silence"]) {
+      expect(
+        target.querySelector<HTMLButtonElement>(`[data-testid="waveform-menu-${id}"]`)?.disabled,
+        id,
+      ).toBe(true);
+    }
+    expect(
+      target.querySelector<HTMLButtonElement>('[data-testid="waveform-menu-insert-silence"]')
+        ?.disabled,
+    ).toBe(false);
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Cut/Copy/Delete/Trim/Silence become enabled with a non-empty selection", async () => {
+    stubWidth(800);
+    await openFixtureDocument(8_000);
+    setSelectionFromResult([0, 100]);
+    const { target, app, container } = mountView();
+
+    openContextMenu(container);
+    for (const id of ["cut", "copy", "delete", "trim", "silence"]) {
+      expect(
+        target.querySelector<HTMLButtonElement>(`[data-testid="waveform-menu-${id}"]`)?.disabled,
+        id,
+      ).toBe(false);
+    }
+    // Paste still needs a non-empty clipboard, which a selection alone doesn't provide.
+    expect(
+      target.querySelector<HTMLButtonElement>('[data-testid="waveform-menu-paste"]')?.disabled,
+    ).toBe(true);
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("disables all seven while recording, even with a selection (SPEC-008 §2.2)", async () => {
+    stubWidth(800);
+    await openFixtureDocument(8_000);
+    setSelectionFromResult([0, 100]);
+    applyRecordStateForTest({ recording: true });
+    const { target, app, container } = mountView();
+
+    openContextMenu(container);
+    for (const id of OP_IDS) {
+      expect(
+        target.querySelector<HTMLButtonElement>(`[data-testid="waveform-menu-${id}"]`)?.disabled,
+        id,
+      ).toBe(true);
+    }
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("every item dispatches the same keymap action as its Edit-menu equivalent", async () => {
+    stubWidth(800);
+    await openFixtureDocument(8_000);
+    setSelectionFromResult([0, 100]);
+    const { target, app, container } = mountView();
+
+    const cases: Array<[string, ActionId]> = [
+      ["waveform-menu-cut", "edit.cut"],
+      ["waveform-menu-copy", "edit.copy"],
+      ["waveform-menu-delete", "edit.delete"],
+      ["waveform-menu-trim", "edit.trim"],
+    ];
+    for (const [testid, action] of cases) {
+      const handler = vi.fn();
+      const unregister = registerAction(action, handler);
+      openContextMenu(container);
+      target.querySelector<HTMLButtonElement>(`[data-testid="${testid}"]`)!.click();
+      expect(handler, `${testid} -> ${action}`).toHaveBeenCalledOnce();
+      unregister();
+    }
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("opens at the pointer's client coordinates on a mouse right-click", async () => {
+    stubWidth(800);
+    await openFixtureDocument(8_000);
+    const { target, app, container } = mountView();
+
+    openContextMenu(container, 123, 45);
+    const menu = target.querySelector<HTMLElement>('[data-testid="waveform-context-menu"]');
+    expect(menu).not.toBeNull();
+    // Popover positions a point anchor's left/top to (roughly) the pointer (`placement.ts`
+    // flip/shift only kicks in near the viewport edge) — not zero, i.e. not the empty-anchor
+    // fallback and not left at the container's own origin.
+    expect(menu?.style.left).not.toBe("0px");
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("opens under the canvas container when the browser fires contextmenu from the keyboard (clientX/Y 0,0)", async () => {
+    stubWidth(800);
+    await openFixtureDocument(8_000);
+    const { target, app, container } = mountView();
+
+    openContextMenu(container, 0, 0);
+    expect(target.querySelector('[data-testid="waveform-context-menu"]')).not.toBeNull();
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Escape closes the menu", async () => {
+    stubWidth(800);
+    await openFixtureDocument(8_000);
+    const { target, app, container } = mountView();
+
+    openContextMenu(container);
+    expect(target.querySelector('[data-testid="waveform-context-menu"]')).not.toBeNull();
+    target
+      .querySelector('[data-testid="waveform-context-menu"]')!
+      .dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    flushSync();
+    expect(target.querySelector('[data-testid="waveform-context-menu"]')).toBeNull();
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("a right-click (and a right-button drag) leaves the selection untouched", async () => {
+    stubWidth(800);
+    await openFixtureDocument(8_000);
+    setSelectionFromResult([0, 100]);
+    const { app, container } = mountView();
+
+    container.dispatchEvent(
+      new PointerEvent("pointerdown", { button: 2, clientX: 10, clientY: 20, bubbles: true }),
+    );
+    container.dispatchEvent(
+      new PointerEvent("pointermove", { button: 2, clientX: 300, clientY: 20, bubbles: true }),
+    );
+    container.dispatchEvent(
+      new PointerEvent("pointerup", { button: 2, clientX: 300, clientY: 20, bubbles: true }),
+    );
+    flushSync();
+
+    expect(selectionState().current).toEqual({ startSample: 0, endSample: 100 });
+
+    unmount(app);
+  });
+
+  it("right-clicking (and dragging) a marker's flag does not move it or start a drag (H-57)", async () => {
+    stubWidth(800);
+    // The flag sits at px 100 (1 000 samples / 10 samples-per-px, SPEC-006 zoom-full math).
+    const getCalls = await openFixtureDocument(8_000, [marker(1, 1_000)]);
+    const { app, container } = mountView();
+
+    container.dispatchEvent(
+      new PointerEvent("pointerdown", { button: 2, clientX: 100, clientY: 0, bubbles: true }),
+    );
+    container.dispatchEvent(
+      new PointerEvent("pointermove", { button: 2, clientX: 150, clientY: 0, bubbles: true }),
+    );
+    container.dispatchEvent(
+      new PointerEvent("pointerup", { button: 2, clientX: 150, clientY: 0, bubbles: true }),
+    );
+    flushSync();
+
+    expect(getCalls()).toEqual([]);
+
+    unmount(app);
   });
 });

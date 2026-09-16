@@ -3024,8 +3024,13 @@ impl DocumentService {
 
     /// Copies `[start, end)` into the clipboard. Not an edit: no commit, no transport stop, no
     /// `rev`/`audio_rev` change — refused while recording all the same (SPEC-008 §2.2: the
-    /// selection can cover live, uncommitted audio during a take).
+    /// selection can cover live, uncommitted audio during a take). H-66: gated against a running
+    /// normalize/paste job like its six siblings — it still overwrites the clipboard, which a
+    /// concurrent paste job may be reading.
     pub fn edit_copy(&self, start: u64, end: u64) -> Result<EditResult, IpcError> {
+        if self.is_normalize_busy() || self.is_paste_busy() {
+            return Err(document_busy());
+        }
         let guard = self.0.open.lock().unwrap();
         let doc = guard.as_ref().ok_or_else(no_document)?;
         if doc.session.is_recording() {
@@ -6079,6 +6084,11 @@ mod tests {
             service.edit_cut(0, 10).unwrap_err().key,
             "error.document_busy"
         );
+        // H-66: edit_copy is gated like its siblings.
+        assert_eq!(
+            service.edit_copy(0, 10).unwrap_err().key,
+            "error.document_busy"
+        );
         assert_eq!(
             service
                 .edit_insert_silence(PasteTarget::Cursor(0), 10)
@@ -6471,6 +6481,10 @@ mod tests {
         };
         assert_eq!(err.code, IpcErrorCode::Busy);
         let err = service.edit_delete(0, 10).unwrap_err();
+        assert_eq!(err.code, IpcErrorCode::Busy);
+        // H-66: edit_copy is gated like its siblings — it would otherwise clobber the clipboard a
+        // concurrent job may be reading.
+        let err = service.edit_copy(0, 10).unwrap_err();
         assert_eq!(err.code, IpcErrorCode::Busy);
         let err = service.history_undo().unwrap_err();
         assert_eq!(err.code, IpcErrorCode::Busy);

@@ -11,7 +11,7 @@ import { registerAction } from "../shortcuts";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { pushNotice } from "../state/notices.svelte";
 import { recordState } from "../state/record.svelte";
-import { hasSelection, selectionState } from "../state/selection.svelte";
+import { clearSelection, hasSelection, selectionState, setSelectionFromResult } from "../state/selection.svelte";
 import {
   extrapolatedHeardPositionAt,
   extrapolatedPositionAt,
@@ -179,14 +179,32 @@ export async function deleteSelectedMarker(): Promise<void> {
   }
 }
 
-/** A row click, or a flag click on the waveform: selects and jumps (SPEC-009 §2.8's essential
- * subset — a region's range isn't turned into a time selection here, deferred). */
+/** Navigation (Ctrl+Alt+→/←): selects and moves the cursor/seeks, but never touches the time
+ * selection (SPEC-009 §2.7: "this is not an activation"). */
 export function jumpToMarker(id: number): void {
   const marker = markers.find((m) => m.id === id);
   if (!marker) {
     return;
   }
   selectedId = id;
+  void seek(marker.pos_samples);
+}
+
+/** A row click, or a flag click on the waveform (H-57, SPEC-009 §2.8): activates the marker —
+ * a region sets the time selection to exactly its range `[pos, pos + len)`; a point or dropout
+ * clears the time selection. Either way the cursor moves to `pos` (stopped) or playback seeks
+ * there (playing, SPEC-003 §2.1). */
+export function activateMarker(id: number): void {
+  const marker = markers.find((m) => m.id === id);
+  if (!marker) {
+    return;
+  }
+  selectedId = id;
+  if (marker.len_samples > 0) {
+    setSelectionFromResult([marker.pos_samples, marker.pos_samples + marker.len_samples]);
+  } else {
+    clearSelection();
+  }
   void seek(marker.pos_samples);
 }
 

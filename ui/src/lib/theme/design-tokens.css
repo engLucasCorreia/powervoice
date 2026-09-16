@@ -114,6 +114,7 @@
   --wave-selection-handle: #4da3ff;
   --wave-marker: #35c46a;
   --wave-marker-region: rgba(53, 196, 106, 0.18);
+  --wave-marker-dropout: #e0a030;
   --wave-ruler-text: #9a9da4;
   --wave-ruler-grid: #34373d;
   --wave-zero-line: #454850;
@@ -248,6 +249,7 @@
   --wave-selection-handle: #1f6fe0;
   --wave-marker: #178a49;
   --wave-marker-region: rgba(23, 138, 73, 0.12);
+  --wave-marker-dropout: #9c5f0a;
   --wave-ruler-text: #5f6671;
   --wave-ruler-grid: #d3d7de;
   --wave-zero-line: #aab1bb;
@@ -378,6 +380,7 @@
   --wave-selection-handle: #8cc8ff;
   --wave-marker: #4be08a;
   --wave-marker-region: rgba(75, 224, 138, 0.22);
+  --wave-marker-dropout: #ffcf5c;
   --wave-ruler-text: #e2e5ea;
   --wave-ruler-grid: #7b828d;
   --wave-zero-line: #9aa1ab;

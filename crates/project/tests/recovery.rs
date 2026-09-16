@@ -335,8 +335,12 @@ fn interrupted_take_recovers_markers_pressed_during_it() {
     capture.sync().unwrap();
     // Two markers pressed during the take: one inside it, one past its end (clamped, like a
     // marker pressed right as the take ends and extrapolated a touch too far).
-    s.note_take_marker(take_id, Marker::new(MarkerId(1), 40_000, 0, "m1"))
-        .unwrap();
+    s.note_take_marker(
+        take_id,
+        // H-57: a non-`User` kind must survive the `take_marker` journal record too.
+        Marker::new(MarkerId(1), 40_000, 0, "m1").with_kind(vox_project::MarkerKind::Dropout),
+    )
+    .unwrap();
     s.note_take_marker(take_id, Marker::new(MarkerId(2), 999_999, 0, "m2"))
         .unwrap();
     let session_dir = s.dir().to_path_buf();
@@ -353,6 +357,11 @@ fn interrupted_take_recovers_markers_pressed_during_it() {
     assert_eq!(markers.len(), 2);
     assert_eq!(markers[0].pos_samples, 40_000);
     assert_eq!(&*markers[0].name, "m1");
+    assert_eq!(
+        markers[0].kind,
+        vox_project::MarkerKind::Dropout,
+        "H-57: kind survives recovery"
+    );
     // Clamped to the end of the committed audio (120 000 samples, take starts at 0).
     assert_eq!(markers[1].pos_samples, 120_000);
     assert_eq!(&*markers[1].name, "m2");

@@ -98,7 +98,7 @@ describe("opLayout (H-21, SPEC-022 §2.11)", () => {
 
   it("moves existing markers after `at` with the Insert take, but not markers added during it", () => {
     const layout: OpLayout = { insert: true, at: 100, punchEnd: null, takeLen: 50 };
-    const m = (id: number, pos: number, len = 0): MarkerDto => ({ id, pos_samples: pos, len_samples: len, name: "m" });
+    const m = (id: number, pos: number, len = 0): MarkerDto => ({ id, pos_samples: pos, len_samples: len, name: "m", kind: "user" });
     const out = opMarkers(layout, [m(1, 10), m(2, 100), m(3, 90, 20), m(4, 120)], (id) => id === 4);
     expect(out.map((x) => [x.id, x.pos_samples, x.len_samples])).toEqual([
       [1, 10, 0],

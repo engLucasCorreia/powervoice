@@ -57,7 +57,7 @@ describe("markers during a take or record operation (H-21, SPEC-022 AC-10)", () 
       if (cmd === "transport_get") return STOPPED;
       if (cmd === "marker_add") {
         calls.push(args as { posSamples: number; lenSamples: number });
-        return { id: 7, pos_samples: 120_480, len_samples: 0, name: "Marker 01" } satisfies MarkerDto;
+        return { id: 7, pos_samples: 120_480, len_samples: 0, name: "Marker 01", kind: "user" } satisfies MarkerDto;
       }
       return null;
     });
@@ -83,7 +83,7 @@ describe("markers during a take or record operation (H-21, SPEC-022 AC-10)", () 
   it("outside a take, markers are not take markers", async () => {
     mockIPC((cmd) => {
       if (cmd === "marker_add") {
-        return { id: 3, pos_samples: 0, len_samples: 0, name: "Marker 01" } satisfies MarkerDto;
+        return { id: 3, pos_samples: 0, len_samples: 0, name: "Marker 01", kind: "user" } satisfies MarkerDto;
       }
       return null;
     });

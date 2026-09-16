@@ -14,7 +14,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::fs_util::{from_hex, sync_dir, to_hex, write_all_at};
 use crate::history::{Edit, EditOp, Entry, History, LabelParams, MarkerMapping, MarkerOp};
-use crate::snapshot::{DocSnapshot, Marker, MarkerId, Piece, Source};
+use crate::snapshot::{DocSnapshot, Marker, MarkerId, MarkerKind, Piece, Source};
 use crate::store::{ChunkId, ChunkLocation};
 use crate::{ProjectError, Result};
 
@@ -95,27 +95,37 @@ impl PieceRecord {
     }
 }
 
-/// A marker.
+/// A marker. `kind` defaults to `"user"` on read (`#[serde(default)]`) so journals written before
+/// H-57 (SPEC-009 §2.1's `kind` field) still replay: every marker they recorded was a `User`
+/// marker (dropout markers didn't carry a real `kind` yet either).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MarkerRecord {
     pub id: u64,
     pub pos: u64,
     pub len: u64,
     pub name: String,
+    #[serde(default = "MarkerRecord::default_kind")]
+    pub kind: String,
 }
 
 impl MarkerRecord {
+    fn default_kind() -> String {
+        MarkerKind::default().as_str().to_string()
+    }
+
     pub fn from_marker(m: &Marker) -> Self {
         MarkerRecord {
             id: m.id.0,
             pos: m.pos_samples,
             len: m.len_samples,
             name: m.name.to_string(),
+            kind: m.kind.as_str().to_string(),
         }
     }
 
     pub fn to_marker(&self) -> Marker {
         Marker::new(MarkerId(self.id), self.pos, self.len, self.name.as_str())
+            .with_kind(MarkerKind::parse(&self.kind))
     }
 }
 
@@ -871,6 +881,25 @@ mod tests {
             edit_line.contains("\"mapping\":\"identity\""),
             "{edit_line}"
         );
+    }
+
+    /// H-57 (SPEC-009 §2.1): a `MarkerRecord` line written before this ticket (no `kind` field)
+    /// still parses — `#[serde(default)]` gives it `kind: "user"` — so old journals replay.
+    #[test]
+    fn marker_record_without_a_kind_field_defaults_to_user() {
+        let json = r#"{"id":1,"pos":10,"len":0,"name":"Marker 01"}"#;
+        let record: MarkerRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(record.kind, "user");
+        assert_eq!(record.to_marker().kind, MarkerKind::User);
+    }
+
+    #[test]
+    fn marker_record_round_trips_a_non_user_kind() {
+        let marker =
+            Marker::new(MarkerId(4), 144_000, 0, "Dropout 10 ms").with_kind(MarkerKind::Dropout);
+        let record = MarkerRecord::from_marker(&marker);
+        assert_eq!(record.kind, "dropout");
+        assert_eq!(record.to_marker(), marker);
     }
 
     /// SPEC-004 §4 fault injection (parser part): truncation at every byte offset inside the last

@@ -457,10 +457,16 @@ export type LoudnessReportDto = { job_id: number, integrated_lufs: number, max_m
 export type LoudnessSourceDto = "processed" | "source";
 
 /**
- * S2-03: one marker (SPEC-009 §2.1's essential subset — no `kind`), as `markers_get` reports the
- * list and `marker_add` reports the created marker.
+ * One marker (SPEC-009 §2.1), as `markers_get` reports the list and `marker_add` reports the
+ * created marker. `kind` is set at creation and never changes (rename/move don't touch it).
  */
-export type MarkerDto = { id: number, pos_samples: number, len_samples: number, name: string, };
+export type MarkerDto = { id: number, pos_samples: number, len_samples: number, name: string, kind: MarkerKindDto, };
+
+/**
+ * SPEC-009 §2.1: `kind` — `dropout` markers are placed only by the recorder; `other` is an
+ * unrecognized sidecar kind (SPEC-018 §2.7) the UI treats like a user marker.
+ */
+export type MarkerKindDto = "user" | "dropout" | "other";
 
 /**
  * S2-03: `marker_set_range`'s undo label (SPEC-009 §2.5) — Start keeps `len` (`Move`), End/

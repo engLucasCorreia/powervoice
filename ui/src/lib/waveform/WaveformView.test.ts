@@ -11,6 +11,8 @@ import { resetSelectionForTest, selectionState, setSelectionFromResult } from ".
 import { loadSettings, resetSettingsStateForTest } from "../state/settings.svelte";
 import { resetTransportForTest, transportState } from "../state/transport.svelte";
 import { docDto, recordStateDto, settingsFixture } from "../test/fixtures";
+import { initMarkers, resetMarkersForTest } from "../markers/markers.svelte";
+import type { MarkerDto } from "../ipc/bindings";
 import { RAW_SPP } from "./coords";
 import { VXPK_FLAGS } from "./vxpk";
 import WaveformView from "./WaveformView.svelte";
@@ -536,6 +538,137 @@ describe("WaveformView selection (S2-01)", () => {
     unmount(app);
     target.remove();
   });
+});
+
+// H-57, SPEC-009 §2.5: dragging a marker's flag on the waveform. Same fixture geometry as the
+// selection describe block above (8 000 samples / 800 px = 10 samples/px, startSample 0), so
+// `clientX` is the in-canvas pixel and `sample = round(clientX * 10)`.
+describe("WaveformView marker drag (H-57, SPEC-009 §2.5)", () => {
+  const widthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+
+  function stubWidth(px: number): void {
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get: () => px,
+    });
+  }
+
+  afterEach(() => {
+    resetMarkersForTest();
+    if (widthDescriptor) {
+      Object.defineProperty(HTMLElement.prototype, "clientWidth", widthDescriptor);
+    }
+  });
+
+  function marker(id: number, pos: number, len = 0): MarkerDto {
+    return { id, pos_samples: pos, len_samples: len, name: `m${id}`, kind: "user" };
+  }
+
+  async function openFixtureWithMarkers(lenSamples: number, markers: MarkerDto[]): Promise<() => void> {
+    const fixture = docDto({ len_samples: lenSamples });
+    const setRangeCalls: unknown[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "document_open") {
+        return fixture;
+      }
+      if (cmd === "peaks_get") {
+        const buf = new ArrayBuffer(48);
+        const dv = new DataView(buf);
+        dv.setUint8(0, 0x56);
+        dv.setUint8(1, 0x58);
+        dv.setUint8(2, 0x50);
+        dv.setUint8(3, 0x4b);
+        dv.setUint16(4, 1, true);
+        dv.setUint16(6, 48, true);
+        return buf;
+      }
+      if (cmd === "markers_get") {
+        return markers;
+      }
+      if (cmd === "marker_set_range") {
+        setRangeCalls.push(args);
+        return null;
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    await openDocument("/home/user/take.wav");
+    await initMarkers();
+    return () => setRangeCalls;
+  }
+
+  it("dragging a point marker's flag past the threshold commits one marker_set_range (move)", async () => {
+    stubWidth(800);
+    const getCalls = await openFixtureWithMarkers(8_000, [marker(1, 1_000)]);
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(WaveformView, { target });
+    flushSync();
+
+    const container = target.querySelector('[data-testid="waveform-canvas"]')!
+      .parentElement as HTMLElement;
+    // The flag sits at px 100 (1 000 samples / 10 samples-per-px). Drag it to px 150 (1 500).
+    container.dispatchEvent(new PointerEvent("pointerdown", { clientX: 100, clientY: 0, bubbles: true }));
+    container.dispatchEvent(new PointerEvent("pointermove", { clientX: 150, clientY: 0, bubbles: true }));
+    container.dispatchEvent(new PointerEvent("pointerup", { clientX: 150, clientY: 0, bubbles: true }));
+    flushSync();
+
+    expect(getCalls()).toEqual([{ id: 1, posSamples: 1_500, lenSamples: 0, kind: "move" }]);
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("releasing before the drag threshold is a click: no marker_set_range, and it activates the marker", async () => {
+    stubWidth(800);
+    const getCalls = await openFixtureWithMarkers(8_000, [marker(1, 1_000, 500)]);
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(WaveformView, { target });
+    flushSync();
+    selectAllOfDocument();
+
+    const container = target.querySelector('[data-testid="waveform-canvas"]')!
+      .parentElement as HTMLElement;
+    container.dispatchEvent(new PointerEvent("pointerdown", { clientX: 100, clientY: 0, bubbles: true }));
+    container.dispatchEvent(new PointerEvent("pointerup", { clientX: 101, clientY: 0, bubbles: true }));
+    flushSync();
+
+    expect(getCalls()).toEqual([]);
+    // Activation: a region marker's range replaces the pre-existing selection.
+    expect(selectionState().current).toEqual({ startSample: 1_000, endSample: 1_500 });
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Esc mid-drag cancels: no marker_set_range is issued", async () => {
+    stubWidth(800);
+    const getCalls = await openFixtureWithMarkers(8_000, [marker(1, 1_000)]);
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(WaveformView, { target });
+    flushSync();
+
+    const container = target.querySelector('[data-testid="waveform-canvas"]')!
+      .parentElement as HTMLElement;
+    container.dispatchEvent(new PointerEvent("pointerdown", { clientX: 100, clientY: 0, bubbles: true }));
+    container.dispatchEvent(new PointerEvent("pointermove", { clientX: 150, clientY: 0, bubbles: true }));
+    flushSync();
+
+    const { dispatchAction } = await import("../shortcuts");
+    dispatchAction("waveform.deselect");
+    container.dispatchEvent(new PointerEvent("pointerup", { clientX: 150, clientY: 0, bubbles: true }));
+    flushSync();
+
+    expect(getCalls()).toEqual([]);
+
+    unmount(app);
+    target.remove();
+  });
+
+  function selectAllOfDocument(): void {
+    setSelectionFromResult([0, 8_000]);
+  }
 });
 
 // T-701/A-020: keyboard nudge (Left/Right Arrow) and extend (Shift+Left/Right Arrow).

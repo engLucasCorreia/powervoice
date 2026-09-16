@@ -95,7 +95,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-55 | Packaged-module determinism failure on CI: `voxmod.rs::the_module_test_host_suite_passes_through_the_adapter` — two instances of the packaged Gain differ at sample 10558 on GitHub's 2-core runner, passes locally (5/5, incl. single-threaded and under load); CI run 35064469629 | O | done |
 | H-62 | Sandbox event-ring overflow is silent (H-55 open question): `HostEnd::push_event` / the proxy drop events when the ring is full (counted in `events_dropped`, never surfaced) — another timing-dependent divergence under heavy automation; surface it as a notice/slot status and test it | S | todo |
 | H-56 | Insert silence + cross-document clipboard (T-302 remainder, SPEC-008) | S | in progress |
-| H-57 | Markers: kinds in the core model, drag, region→selection (T-303 remainder, SPEC-009) | S | in progress |
+| H-57 | Markers: kinds in the core model, drag, region→selection (T-303 remainder, SPEC-009) | S | done |
 | H-58 | Dynamics part 2: activate Expander + AutoGate, real look-ahead latency (T-407 remainder, SPEC-016 part 2) | O | done |
 | H-63 | `TransferCurve` module-api extension (H-58): the last blocker for SPEC-016 AC-17's transfer graph, SPEC-013's gate UI and T-410's custom Dynamics panel + VXMT telemetry | O | todo |
 | H-64 | Marker follow-ups (H-57): auto-scroll while dragging past the canvas edge (SPEC-009 §2.5 `drag_autoscroll_rate`), SPEC-009 §2.13 case 3 — a WAV cue set differing from the sidecar should win with a notice (credited to T-306 but unimplemented), and the deferred panel work (filter, sort, virtualization, Delete All/Filtered, rename shortcut) | S | todo |

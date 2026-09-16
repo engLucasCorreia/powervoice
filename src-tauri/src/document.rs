@@ -16,7 +16,7 @@ use vox_engine::spectro::SpectroService;
 use vox_engine::{EngineHandle, PlaybackDoc, RackCommand, TransportCommand};
 use vox_project::{
     CancelToken, DocumentIdentity, Edit, EditTarget, FinishedTake, ImportProbe,
-    LufsNormalizeOutcome, Marker, MarkerId, MarkerItemModel, MarkerMetaTable, MarkerOp,
+    LufsNormalizeOutcome, Marker, MarkerId, MarkerItemModel, MarkerKind, MarkerMetaTable, MarkerOp,
     NormalizeLufsPlan, NormalizeOutcome, NormalizePeakPlan, OversInfo, Piece, ProjectError, Range,
     RangeError, SaveFormatModel, Session, SessionConfig, SidecarNotice, SnapshotReader,
     StoreOptions, TakeCapture, TakeId, TakeMode, TakeWriterOptions, WrittenAudio, document_crc32,
@@ -388,14 +388,34 @@ pub struct NormalizeLufsEditResult {
     pub notice: Option<NormalizeLufsNotice>,
 }
 
-/// S2-03: one marker (SPEC-009 §2.1's essential subset — no `kind`, deferred with dropout
-/// markers/recording), as `markers_get`/`marker_add` report it to the UI.
+/// SPEC-009 §2.1: `kind` as `markers_get`/`marker_add` report it to the UI — `"user"`,
+/// `"dropout"` or `"other"` (an unrecognized sidecar kind, SPEC-018 §2.7; the UI treats it like a
+/// user marker, so there's no need to carry the actual string across IPC).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkerKindInfo {
+    User,
+    Dropout,
+    Other,
+}
+
+impl From<&MarkerKind> for MarkerKindInfo {
+    fn from(kind: &MarkerKind) -> Self {
+        match kind {
+            MarkerKind::User => MarkerKindInfo::User,
+            MarkerKind::Dropout => MarkerKindInfo::Dropout,
+            MarkerKind::Other(_) => MarkerKindInfo::Other,
+        }
+    }
+}
+
+/// One marker (SPEC-009 §2.1), as `markers_get`/`marker_add` report it to the UI.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MarkerInfo {
     pub id: u64,
     pub pos_samples: u64,
     pub len_samples: u64,
     pub name: String,
+    pub kind: MarkerKindInfo,
 }
 
 impl From<&Marker> for MarkerInfo {
@@ -405,6 +425,7 @@ impl From<&Marker> for MarkerInfo {
             pos_samples: m.pos_samples,
             len_samples: m.len_samples,
             name: m.name.to_string(),
+            kind: MarkerKindInfo::from(&m.kind),
         }
     }
 }
@@ -894,9 +915,9 @@ fn save_format_model(
     }
 }
 
-/// The `markers.items` a save/digest would use right now: the live markers, with each one's
-/// sidecar `kind`/extra carried through [`SidecarState::marker_meta`] (module scope note,
-/// `vox_project::sidecar`).
+/// The `markers.items` a save/digest would use right now: the live markers (`kind` comes from
+/// each `Marker` itself, H-57), with each one's unrecognized sidecar `extra` fields carried
+/// through [`SidecarState::marker_meta`] (module scope note, `vox_project::sidecar`).
 fn current_marker_items(doc: &OpenDocument) -> Vec<MarkerItemModel> {
     doc.sidecar
         .marker_meta
@@ -2105,6 +2126,7 @@ impl DocumentService {
                     dropout_marker_len(d.len_samples),
                     dropout_marker_name(d.len_samples, rate_hz),
                 )
+                .with_kind(MarkerKind::Dropout)
             })
             .collect();
         let mut outcome = doc.session.commit_take(finished, &markers);
@@ -2278,6 +2300,7 @@ impl DocumentService {
                     dropout_marker_len(d.len_samples),
                     dropout_marker_name(d.len_samples, rate_hz),
                 )
+                .with_kind(MarkerKind::Dropout)
             })
             .collect();
         let mut outcome = doc.session.commit_take_window(finished, (ws, we), &markers);
@@ -4625,11 +4648,39 @@ mod tests {
         assert_eq!(markers[0].pos_samples, 1_000);
         assert_eq!(markers[0].len_samples, 480);
         assert_eq!(markers[0].name, "Dropout 10 ms");
+        assert_eq!(
+            markers[0].kind,
+            MarkerKindInfo::Dropout,
+            "H-57: real kind field"
+        );
         assert_eq!(markers[1].pos_samples, 5_000);
         assert_eq!(markers[1].len_samples, 24);
         assert_eq!(markers[1].name, "Dropout 1 ms", "rounds to the nearest ms");
+        assert_eq!(markers[1].kind, MarkerKindInfo::Dropout);
 
-        // One undo entry removes the take and both dropout markers together.
+        // AC-19: a dropout marker can be renamed/moved like any marker and keeps its kind.
+        let id = markers[0].id;
+        service.marker_rename(id, "Renamed").unwrap();
+        service
+            .marker_set_range(id, 2_000, 480, MarkerRangeEditKind::Move)
+            .unwrap();
+        let renamed = service
+            .markers_get()
+            .into_iter()
+            .find(|m| m.id == id)
+            .unwrap();
+        assert_eq!(renamed.name, "Renamed");
+        assert_eq!(renamed.pos_samples, 2_000);
+        assert_eq!(
+            renamed.kind,
+            MarkerKindInfo::Dropout,
+            "kind survives rename/move"
+        );
+
+        // One undo entry removes the take and both dropout markers together (the rename/move
+        // above are separate entries, undone first).
+        service.history_undo().unwrap();
+        service.history_undo().unwrap();
         let history = service.history_state();
         assert!(history.can_undo);
         assert_eq!(history.undo_label.as_deref(), Some("history.record"));
@@ -5726,9 +5777,15 @@ mod tests {
         assert_eq!((markers[0].pos_samples, markers[0].len_samples), (0, 0));
         assert_eq!(markers[0].name, "Intro");
         assert_eq!(
+            markers[0].kind,
+            MarkerKindInfo::User,
+            "H-57: kind round-trips too"
+        );
+        assert_eq!(
             (markers[1].pos_samples, markers[1].len_samples),
             (48_000, 9_600)
         );
+        assert_eq!(markers[1].kind, MarkerKindInfo::User);
     }
 
     // --- T-306: sidecar round trip, identity, sidecar-only saves, notices --------------------

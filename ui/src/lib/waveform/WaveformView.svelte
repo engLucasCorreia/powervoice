@@ -5,8 +5,8 @@
   import { peaksGet } from "../ipc/commands";
   import { recordPeaksGet } from "../ipc/record_commands";
   import { registerAction } from "../shortcuts";
-  import type { MarkerDto } from "../ipc/bindings";
-  import { isTakeMarker, markersState } from "../markers/markers.svelte";
+  import type { MarkerDto, MarkerRangeKindDto } from "../ipc/bindings";
+  import { activateMarker, isTakeMarker, markersState, setMarkerRange } from "../markers/markers.svelte";
   import { openNewRecordingPrompt, recordState } from "../state/record.svelte";
   import { settingsState } from "../state/settings.svelte";
   import { dispatchAction } from "../shortcuts";
@@ -39,6 +39,18 @@
   } from "../state/waveformView.svelte";
   import { amplitudeTicksDbfs, centerlineY } from "./amplitudeAxis";
   import { extendSelectionEdge, hitTestHandle, normalizeSelection, nudgeSelectionRange } from "./selection";
+  import {
+    DRAG_THRESHOLD_PX as MARKER_DRAG_THRESHOLD_PX,
+    dragPointMarker,
+    dragRegionEnd,
+    dragRegionStart,
+    dragRegionWhole,
+    FLAG_HIT_HEIGHT_PX,
+    hitTestMarkerFlag,
+    markerMagnetTargets,
+    snapToMarkerMagnet,
+    type MarkerFlagEdge,
+  } from "./markerDrag";
   import { snapSampleToZeroCrossing } from "./zeroCrossing";
   import { fitGutterLabels } from "../ui/axisLabels";
   import {
@@ -179,6 +191,20 @@
   /** T-206 (SPEC-006 §2.10): invalidates a stale async zero-crossing snap result — e.g. a new
    * drag starts, or the selection is cleared, before the previous drag's snap resolves. */
   let selectionSnapSeq = 0;
+  /** H-57 (SPEC-009 §2.5): the in-progress marker drag, or `null`. `grabOffsetSamples` is the
+   * grabbed edge's sample minus the pointer's sample at grab time, so every later frame recomputes
+   * an *absolute* target (`sampleAtClientX(now) + grabOffsetSamples`) instead of accumulating
+   * deltas — no drift at any zoom. `moved` flips once the pointer has moved
+   * `DRAG_THRESHOLD_PX`; before that, release is a click (activates the marker, SPEC-009 §2.5). */
+  let markerDrag = $state<{
+    id: number;
+    edge: MarkerFlagEdge;
+    wholeRegion: boolean;
+    grabOffsetSamples: number;
+    original: { pos_samples: number; len_samples: number };
+    preview: { pos_samples: number; len_samples: number };
+    moved: boolean;
+  } | null>(null);
   /** H-07: the last `record_peaks_get` response applied (`null`: none polled yet). */
   let liveBuckets = $state<Array<[number, number]>>([]);
   let liveStartSample = $state(0);
@@ -455,6 +481,7 @@
     void [canvasEl, viewportPx, heightPx, isOpen, lenSamples, rateHz, startSample, samplesPerPixel];
     void [vzoom.current, liveNewTake, liveBuckets, liveStartSample, liveSpb, rec.elapsedSamples, layout];
     void [markers.list, selection.current, transport.state.loop_range, transport.playheadSamples];
+    void [markerDrag];
     void [doc.current.audio_rev, themeState().revision];
     frames.invalidate();
   });
@@ -535,7 +562,7 @@
       } else if (state?.partial) {
         overlay.rect(0, 0, viewportPx, heightPx, themeColors().wave.pending.rgba);
       }
-      overlay.append(overlayBatch(markers.list));
+      overlay.append(overlayBatch(markersForDraw()));
     }
 
     renderer.draw({
@@ -653,7 +680,7 @@
     }
     drawSelection(ctx);
     drawLoop(ctx);
-    drawMarkers(ctx);
+    drawMarkers(ctx, markersForDraw());
     drawPlayhead(ctx, centerY);
     ctx.restore();
   }
@@ -956,6 +983,99 @@
     return clientX - containerEl.getBoundingClientRect().left;
   }
 
+  /** The device-pixel y of `clientY` inside the canvas container (H-57's flag hit-testing),
+   * or `null` if it isn't mounted. */
+  function pyAtClientY(clientY: number): number | null {
+    if (!containerEl) {
+      return null;
+    }
+    return clientY - containerEl.getBoundingClientRect().top;
+  }
+
+  /** Hit-tests a pointerdown against every marker's flag (SPEC-009 §2.5) — takes priority over
+   * the selection handle/plain-drag hit-testing below (only inside the flag's own hit box). */
+  function flagHitAtClient(clientX: number, clientY: number): ReturnType<typeof hitTestMarkerFlag> {
+    const px = pxAtClientX(clientX);
+    const py = pyAtClientY(clientY);
+    if (px === null || py === null) {
+      return null;
+    }
+    return hitTestMarkerFlag(px, py, markers.list, startSample, samplesPerPixel);
+  }
+
+  /** The marker list as it should be drawn (H-57): the dragged marker's committed position is
+   * replaced by its live preview once the drag has moved past the click threshold — the document
+   * itself never changes mid-drag (SPEC-009 §2.5: "only the UI draws the marker at its preview
+   * position"). */
+  function markersForDraw(): MarkerDto[] {
+    const drag = markerDrag;
+    if (!drag || !drag.moved) {
+      return markers.list;
+    }
+    return markers.list.map((m) =>
+      m.id === drag.id ? { ...m, pos_samples: drag.preview.pos_samples, len_samples: drag.preview.len_samples } : m,
+    );
+  }
+
+  /** Recomputes the drag preview from the pointer's current position (H-57, SPEC-009 §2.5): an
+   * *absolute* target every time (`sampleAtClientX` + the grab offset), never an accumulated
+   * delta, so there is no drift at any zoom. Applies the magnet (cursor/selection/other markers'
+   * edges within `MARKER_MAGNET_PX`) unless Alt is held, then the shape-specific clamp. Never
+   * reads audio samples — SPEC-009 §2.5: markers have no zero-crossing snap. */
+  function updateMarkerDragPreview(event: PointerEvent): void {
+    const drag = markerDrag;
+    if (!drag) {
+      return;
+    }
+    const pointerSample = sampleAtClientX(event.clientX);
+    if (pointerSample === null) {
+      return;
+    }
+    const raw = pointerSample + drag.grabOffsetSamples;
+    const cursorSample = transport.state.playing ? null : transport.playheadSamples;
+    const targets = markerMagnetTargets(drag.id, markers.list, cursorSample, selection.current);
+    const snapped = event.altKey ? raw : snapToMarkerMagnet(raw, targets, samplesPerPixel);
+    let preview: { pos_samples: number; len_samples: number };
+    if (drag.edge === "point") {
+      preview = dragPointMarker(snapped, lenSamples);
+    } else if (drag.wholeRegion) {
+      preview = dragRegionWhole(snapped, drag.original, drag.edge, lenSamples);
+    } else if (drag.edge === "start") {
+      preview = dragRegionStart(snapped, drag.original.pos_samples + drag.original.len_samples);
+    } else {
+      preview = dragRegionEnd(snapped, drag.original.pos_samples, lenSamples);
+    }
+    markerDrag = { ...drag, preview };
+  }
+
+  /** Esc mid-drag (SPEC-009 §2.5): cancels without committing anything. */
+  function cancelMarkerDrag(): void {
+    markerDrag = null;
+  }
+
+  /** Pointerup on a marker drag (SPEC-009 §2.5): a release before the drag threshold is a click
+   * (activates the marker, §2.8); past it, commits one undo entry — `history.marker_move` for a
+   * point drag or a Shift-drag of a region, `history.marker_resize` for a single-edge region
+   * drag — unless the preview equals the original position ("releasing at the original position
+   * commits nothing"). */
+  function finishMarkerDrag(): void {
+    const drag = markerDrag;
+    markerDrag = null;
+    if (!drag) {
+      return;
+    }
+    if (!drag.moved) {
+      activateMarker(drag.id);
+      return;
+    }
+    const { pos_samples, len_samples } = drag.preview;
+    if (pos_samples === drag.original.pos_samples && len_samples === drag.original.len_samples) {
+      return;
+    }
+    const kind: MarkerRangeKindDto = drag.edge === "point" || drag.wholeRegion ? "move" : "resize";
+    void setMarkerRange(drag.id, pos_samples, len_samples, kind);
+  }
+
   /** Hit-tests `clientX` against the current selection's two handles (SPEC-006 §2.9). `null`
    * with no selection, while locked (T-304), or when the pointer isn't within the hit width. */
   function handleHitAtClientX(clientX: number): "start" | "end" | null {
@@ -1052,6 +1172,26 @@
     pointerDownSample = sampleAtClientX(event.clientX);
     dragging = false;
     handleDragActive = false;
+    markerDrag = null;
+    // H-57 (SPEC-009 §2.5): a flag hit takes priority over the selection handle/plain-drag
+    // hit-testing below, and works during recording too (only the drag itself is disabled then).
+    const flagHit = recordState().state.recording ? null : flagHitAtClient(event.clientX, event.clientY);
+    if (flagHit && pointerDownSample !== null) {
+      const marker = markers.list.find((m) => m.id === flagHit.id);
+      if (marker) {
+        const grabbedSample = flagHit.edge === "end" ? marker.pos_samples + marker.len_samples : marker.pos_samples;
+        markerDrag = {
+          id: marker.id,
+          edge: flagHit.edge,
+          wholeRegion: event.shiftKey && flagHit.edge !== "point",
+          grabOffsetSamples: grabbedSample - pointerDownSample,
+          original: { pos_samples: marker.pos_samples, len_samples: marker.len_samples },
+          preview: { pos_samples: marker.pos_samples, len_samples: marker.len_samples },
+          moved: false,
+        };
+      }
+      return;
+    }
     if (event.shiftKey || pointerDownSample === null) {
       return;
     }
@@ -1070,6 +1210,15 @@
    * drag or a plain click-drag, whichever `onPointerDown` started; otherwise just updates the
    * hover cursor (SPEC-006 §2.9: "hovering within 6 px of a boundary shows a resize cursor"). */
   function onPointerMove(event: PointerEvent): void {
+    if (markerDrag) {
+      if (!markerDrag.moved && pointerDownClientX !== null && Math.abs(event.clientX - pointerDownClientX) >= MARKER_DRAG_THRESHOLD_PX) {
+        markerDrag = { ...markerDrag, moved: true };
+      }
+      if (markerDrag.moved) {
+        updateMarkerDragPreview(event);
+      }
+      return;
+    }
     if (handleDragActive) {
       const sample = sampleAtClientX(event.clientX);
       if (sample !== null) {
@@ -1097,6 +1246,13 @@
   }
 
   function onPointerUp(event: PointerEvent): void {
+    if (markerDrag) {
+      pointerDownClientX = null;
+      pointerDownSample = null;
+      pointerDownShiftKey = false;
+      finishMarkerDrag();
+      return;
+    }
     const wasDragging = dragging;
     const wasHandleDrag = handleDragActive;
     const shiftKey = pointerDownShiftKey;
@@ -1225,7 +1381,15 @@
           selectAllOf(lenSamples);
         }
       }),
-      registerAction("waveform.deselect", () => clearSelection()),
+      // H-57 (SPEC-009 §2.5): Esc cancels an in-progress marker drag instead of clearing the
+      // time selection — the drag hasn't committed anything for Esc to "undo" either way.
+      registerAction("waveform.deselect", () => {
+        if (markerDrag) {
+          cancelMarkerDrag();
+          return;
+        }
+        clearSelection();
+      }),
       registerAction("selection.nudge_left", () => nudgeKeyboard(-1)),
       registerAction("selection.nudge_right", () => nudgeKeyboard(1)),
       registerAction("selection.extend_left", () => extendKeyboard(-1)),

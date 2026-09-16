@@ -8,15 +8,12 @@
 //! and from the `rack` Value with `rack`'s own serde, and `src-tauri` does the same for `view`
 //! (a UI-typed DTO), so this crate never depends on `rack` (ADR-001 rule 4).
 //!
-//! **Scope note (D-022 vertical slice, T-306 report):** [`Marker`] has no `kind` field yet
-//! (S2-03 scope) and markers carry no per-item "extra" JSON of their own. [`MarkerMetaTable`]
-//! bridges that gap *outside* the core marker model: it remembers each marker id's sidecar
-//! `kind` and unknown fields for the lifetime of the open document, so a marker that came from a
-//! sidecar with `"kind": "dropout"` (or an unknown future kind, or extra per-item JSON) round-trips
-//! unless the marker itself is deleted — without teaching `vox_project::Marker` a `kind` field.
-//! This is enough for the digest/`sidecar_dirty` invariant ("opening a file never sets `*` by
-//! itself", SPEC-018 §2.5) to hold, but a marker added after open, then given a non-"user" kind by
-//! some future feature, has nowhere to record that except through this table.
+//! **Marker `kind` (H-57, SPEC-009 §2.1):** [`Marker`] itself carries `kind` (a real field, not a
+//! side table) — see [`crate::MarkerKind`]. [`MarkerMetaTable`] now bridges only what `Marker`
+//! still has nowhere to hold: unknown per-item JSON fields a sidecar's `markers.items[]` entry
+//! carried (SPEC-018 §2.6.3/§2.7). It remembers each marker id's `extra` map for the lifetime of
+//! the open document, so a marker that came from a sidecar with unrecognized per-item fields
+//! round-trips them unless the marker itself is deleted.
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -95,8 +92,9 @@ pub struct DocumentModel {
     pub extra: Map<String, Value>,
 }
 
-/// One `markers.items[]` entry (SPEC-018 §2.6.3). `kind` and `extra` are round-tripped through
-/// [`MarkerMetaTable`], not through `vox_project::Marker` itself (module scope note).
+/// One `markers.items[]` entry (SPEC-018 §2.6.3). `kind` is `vox_project::Marker::kind`'s wire
+/// string (H-57, SPEC-009 §2.1); `extra` (unknown per-item fields) round-trips through
+/// [`MarkerMetaTable`] instead, since `Marker` has nowhere to hold it (module scope note).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MarkerItemModel {
     pub id: u64,
@@ -110,7 +108,7 @@ pub struct MarkerItemModel {
 }
 
 fn default_marker_kind() -> String {
-    "user".to_string()
+    crate::MarkerKind::default().as_str().to_string()
 }
 
 /// `markers` (SPEC-018 §2.6.3).
@@ -146,14 +144,13 @@ pub struct SidecarDoc {
     pub extra: Map<String, Value>,
 }
 
-// --- Marker per-item kind/extra bridge (module scope note) --------------------------------------
+// --- Marker per-item extra bridge (module scope note) -------------------------------------------
 
-/// A marker id's sidecar `kind` and unknown per-item fields, kept alive across edits within one
-/// open document so a save doesn't downgrade every marker to `kind: "user"` and drop fields it
-/// doesn't understand (SPEC-018 §2.6.3/§2.7).
+/// A marker id's unknown per-item fields, kept alive across edits within one open document so a
+/// save doesn't drop fields this build doesn't understand (SPEC-018 §2.6.3/§2.7). `kind` (H-57)
+/// now lives on `vox_project::Marker` itself and is read from there, not from this table.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MarkerMeta {
-    pub kind: String,
     pub extra: Map<String, Value>,
 }
 
@@ -182,7 +179,6 @@ impl MarkerMetaTable {
             map.insert(
                 item.id,
                 MarkerMeta {
-                    kind: item.kind.clone(),
                     extra: item.extra.clone(),
                 },
             );
@@ -190,17 +186,15 @@ impl MarkerMetaTable {
         Self(map)
     }
 
-    /// `id`'s remembered kind/extra, or the default (`"user"`, no extra) for a marker this table
-    /// has never seen (e.g. added after open).
+    /// `id`'s remembered `extra`, or none for a marker this table has never seen (e.g. added
+    /// after open).
     pub fn meta_for(&self, id: u64) -> MarkerMeta {
-        self.0.get(&id).cloned().unwrap_or_else(|| MarkerMeta {
-            kind: default_marker_kind(),
-            extra: Map::new(),
-        })
+        self.0.get(&id).cloned().unwrap_or_default()
     }
 
     /// Builds the `markers.items` this table + the live `markers` would write (SPEC-018 §2.6.3
-    /// canonical order: sorted by position, ties keep their relative order).
+    /// canonical order: sorted by position, ties keep their relative order). `kind` comes from
+    /// each live [`Marker`] itself (H-57); `extra` from this table.
     pub fn build_items(&self, markers: &[Marker]) -> Vec<MarkerItemModel> {
         let mut items: Vec<MarkerItemModel> = markers
             .iter()
@@ -211,7 +205,7 @@ impl MarkerMetaTable {
                     pos_samples: m.pos_samples,
                     len_samples: m.len_samples,
                     name: m.name.to_string(),
-                    kind: meta.kind,
+                    kind: m.kind.as_str().to_string(),
                     extra: meta.extra,
                 }
             })
@@ -600,8 +594,8 @@ fn normalize_marker_name(name: &str) -> String {
     trimmed[..cut].to_owned()
 }
 
-/// [`MarkerItemModel`] -> a live [`Marker`] (kind/extra are dropped here — they live in
-/// [`MarkerMetaTable`] instead, module scope note).
+/// [`MarkerItemModel`] -> a live [`Marker`] (H-57: `kind` comes along; `extra` is dropped here —
+/// it lives in [`MarkerMetaTable`] instead, module scope note).
 pub fn marker_from_item(item: &MarkerItemModel) -> Marker {
     Marker::new(
         MarkerId(item.id),
@@ -609,6 +603,7 @@ pub fn marker_from_item(item: &MarkerItemModel) -> Marker {
         item.len_samples,
         item.name.as_str(),
     )
+    .with_kind(crate::MarkerKind::parse(&item.kind))
 }
 
 // --- Write (SPEC-018 §2.3, §2.6.6, §2.8, §2.9) ----------------------------------------------------
@@ -1498,7 +1493,7 @@ mod tests {
     // --- MarkerMetaTable ------------------------------------------------------------------------
 
     #[test]
-    fn marker_meta_table_preserves_kind_and_extra_across_rename_and_move_and_drops_on_delete() {
+    fn marker_meta_table_preserves_extra_across_rename_and_move_and_drops_on_delete() {
         let items = vec![MarkerItemModel {
             id: 4,
             pos_samples: 144_000,
@@ -1513,8 +1508,10 @@ mod tests {
         }];
         let table = MarkerMetaTable::from_items(&items);
 
-        // Renamed and moved: kind/extra follow the id.
-        let renamed = Marker::new(MarkerId(4), 200_000, 0, "Renamed");
+        // Renamed and moved: `extra` follows the id; `kind` (H-57) now comes from the live
+        // `Marker` itself, so the caller must carry it over (here via `marker_from_item`).
+        let renamed = marker_from_item(&items[0]).with_kind(crate::MarkerKind::Dropout);
+        let renamed = Marker::new(renamed.id, 200_000, 0, "Renamed").with_kind(renamed.kind);
         let built = table.build_items(&[renamed]);
         assert_eq!(built.len(), 1);
         assert_eq!(built[0].kind, "dropout");
@@ -1525,7 +1522,8 @@ mod tests {
         assert_eq!(built[0].name, "Renamed");
         assert_eq!(built[0].pos_samples, 200_000);
 
-        // A newly added marker (id not in the table) defaults to "user", no extra.
+        // A newly added marker (id not in the table) has no remembered extra, and (being built
+        // with `Marker::new`) is `kind: "user"`.
         let added = Marker::new(MarkerId(9), 0, 0, "New");
         let built = table.build_items(&[added]);
         assert_eq!(built[0].kind, "user");
@@ -1538,20 +1536,23 @@ mod tests {
     }
 
     #[test]
-    fn unknown_marker_kind_round_trips_as_a_user_marker_behavior_wise() {
-        // "chapter" is not a recognized kind, but SPEC-018 §2.7 says it's kept verbatim; the UI
-        // treats it as a user marker (that's a UI concern, not tested here — this just confirms
-        // the sidecar layer keeps the string).
-        let items = vec![MarkerItemModel {
+    fn unknown_marker_kind_round_trips_verbatim_via_marker_kind_other() {
+        // "chapter" is not a recognized kind, but SPEC-018 §2.7 says it's kept verbatim
+        // (`MarkerKind::Other`); the UI treats an unrecognized kind as a user marker behavior-
+        // wise (a UI concern, not tested here — this confirms the sidecar layer keeps the string
+        // through `Marker` itself, not a side table, since H-57).
+        let item = MarkerItemModel {
             id: 7,
             pos_samples: 0,
             len_samples: 0,
             name: "Ch1".into(),
             kind: "chapter".into(),
             extra: Map::new(),
-        }];
-        let table = MarkerMetaTable::from_items(&items);
-        let built = table.build_items(&[Marker::new(MarkerId(7), 0, 0, "Ch1")]);
+        };
+        let marker = marker_from_item(&item);
+        assert_eq!(marker.kind, crate::MarkerKind::Other("chapter".into()));
+        let table = MarkerMetaTable::new();
+        let built = table.build_items(&[marker]);
         assert_eq!(built[0].kind, "chapter");
     }
 

@@ -421,9 +421,10 @@ function recordFixture(options: PreviewOptions): RecordStateDto {
 }
 
 const MARKERS: MarkerDto[] = [
-  { id: 1, pos_samples: 4 * PREVIEW_RATE_HZ, len_samples: 0, name: "Chapter 3 — The Lighthouse" },
-  { id: 2, pos_samples: 31 * PREVIEW_RATE_HZ, len_samples: 3 * PREVIEW_RATE_HZ, name: "Retake: breath" },
-  { id: 3, pos_samples: 62 * PREVIEW_RATE_HZ, len_samples: 0, name: "Scene break" },
+  { id: 1, pos_samples: 4 * PREVIEW_RATE_HZ, len_samples: 0, name: "Chapter 3 — The Lighthouse", kind: "user" },
+  { id: 2, pos_samples: 31 * PREVIEW_RATE_HZ, len_samples: 3 * PREVIEW_RATE_HZ, name: "Retake: breath", kind: "user" },
+  { id: 3, pos_samples: 62 * PREVIEW_RATE_HZ, len_samples: 0, name: "Scene break", kind: "user" },
+  { id: 4, pos_samples: 45 * PREVIEW_RATE_HZ, len_samples: 0, name: "Dropout 8 ms", kind: "dropout" },
 ];
 
 const text = (value: string) => ({ text: value, key: null });

@@ -87,7 +87,7 @@ pub use sidecar::{
     SidecarLoad, SidecarNotice, WriteInput, document_crc32, marker_from_item, read_sidecar,
     sidecar_path_for, write_sidecar,
 };
-pub use snapshot::{DocSnapshot, Marker, MarkerId, Piece, Source};
+pub use snapshot::{DocSnapshot, Marker, MarkerId, MarkerKind, Piece, Source};
 pub use store::{
     CancelToken, ChunkId, ChunkLocation, ChunkPeaks, ChunkStore, ChunkWriter, MemoryReservation,
     StoreOptions, WriterProgress, WrittenAudio,

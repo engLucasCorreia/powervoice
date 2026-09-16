@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::document::{
-    ClipboardInfo, DocumentInfo, EditResult, HistoryState, MarkerInfo, MarkerRangeEditKind,
-    PasteTarget, SpectralViewInfo, WaveformViewInfo,
+    ClipboardInfo, DocumentInfo, EditResult, HistoryState, MarkerInfo, MarkerKindInfo,
+    MarkerRangeEditKind, PasteTarget, SpectralViewInfo, WaveformViewInfo,
 };
 
 /// `document_changed` event payload, and the result of `document_open`/`document_save`/
@@ -264,8 +264,29 @@ impl From<ClipboardInfo> for ClipboardChangedDto {
     }
 }
 
-/// S2-03: one marker (SPEC-009 §2.1's essential subset — no `kind`), as `markers_get` reports the
-/// list and `marker_add` reports the created marker.
+/// SPEC-009 §2.1: `kind` — `dropout` markers are placed only by the recorder; `other` is an
+/// unrecognized sidecar kind (SPEC-018 §2.7) the UI treats like a user marker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum MarkerKindDto {
+    User,
+    Dropout,
+    Other,
+}
+
+impl From<MarkerKindInfo> for MarkerKindDto {
+    fn from(kind: MarkerKindInfo) -> Self {
+        match kind {
+            MarkerKindInfo::User => MarkerKindDto::User,
+            MarkerKindInfo::Dropout => MarkerKindDto::Dropout,
+            MarkerKindInfo::Other => MarkerKindDto::Other,
+        }
+    }
+}
+
+/// One marker (SPEC-009 §2.1), as `markers_get` reports the list and `marker_add` reports the
+/// created marker. `kind` is set at creation and never changes (rename/move don't touch it).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "bindings.ts")]
 pub struct MarkerDto {
@@ -273,6 +294,7 @@ pub struct MarkerDto {
     pub pos_samples: u64,
     pub len_samples: u64,
     pub name: String,
+    pub kind: MarkerKindDto,
 }
 
 impl From<MarkerInfo> for MarkerDto {
@@ -282,6 +304,7 @@ impl From<MarkerInfo> for MarkerDto {
             pos_samples: m.pos_samples,
             len_samples: m.len_samples,
             name: m.name,
+            kind: m.kind.into(),
         }
     }
 }

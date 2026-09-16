@@ -107,6 +107,40 @@ pub(crate) fn push_piece(out: &mut Vec<Piece>, piece: Piece) {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MarkerId(pub u64);
 
+/// SPEC-009 §2.1: a marker's kind, set at creation and never changed by the user in v1.
+/// `Other` exists only so that a kind string this build doesn't recognize (a newer sidecar,
+/// SPEC-018 §2.7) round-trips unchanged instead of being coerced to `User`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum MarkerKind {
+    #[default]
+    User,
+    /// Created only by the recorder (SPEC-002 §2.4) when a take fills a gap with silence.
+    Dropout,
+    /// An unrecognized kind string, preserved verbatim (SPEC-018 §2.7).
+    Other(Arc<str>),
+}
+
+impl MarkerKind {
+    /// The sidecar/wire string for this kind (SPEC-018 §2.6.3's `markers.items[].kind`).
+    pub fn as_str(&self) -> &str {
+        match self {
+            MarkerKind::User => "user",
+            MarkerKind::Dropout => "dropout",
+            MarkerKind::Other(s) => s,
+        }
+    }
+
+    /// Parses a sidecar/wire kind string (SPEC-018 §2.7: anything unrecognized is kept
+    /// verbatim as [`MarkerKind::Other`]).
+    pub fn parse(s: &str) -> MarkerKind {
+        match s {
+            "user" => MarkerKind::User,
+            "dropout" => MarkerKind::Dropout,
+            other => MarkerKind::Other(other.into()),
+        }
+    }
+}
+
 /// A point (`len_samples == 0`) or range marker in document time.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Marker {
@@ -114,10 +148,14 @@ pub struct Marker {
     pub pos_samples: u64,
     pub len_samples: u64,
     pub name: Arc<str>,
+    /// SPEC-009 §2.1 (structural delta, ADR-004 §3 amendment): `User` unless set otherwise at
+    /// creation ([`Marker::with_kind`]) — `Marker::new` always builds a `User` marker.
+    pub kind: MarkerKind,
 }
 
 impl Marker {
-    /// A marker at `pos_samples` spanning `len_samples`.
+    /// A `kind: User` marker at `pos_samples` spanning `len_samples`. Use [`Marker::with_kind`]
+    /// for any other kind (e.g. the recorder's dropout markers).
     pub fn new(
         id: MarkerId,
         pos_samples: u64,
@@ -129,7 +167,14 @@ impl Marker {
             pos_samples,
             len_samples,
             name: name.into(),
+            kind: MarkerKind::default(),
         }
+    }
+
+    /// `self` with `kind` set (builder-style, for callers that construct a non-`User` marker).
+    pub fn with_kind(mut self, kind: MarkerKind) -> Marker {
+        self.kind = kind;
+        self
     }
 
     /// Exclusive end position.
@@ -439,5 +484,29 @@ mod tests {
         assert_eq!(one(50, 200, 0), (50, 0), "covered by a deletion → point");
         assert_eq!(one(150, 100, 0), (100, 50), "partial deletion shrinks it");
         assert_eq!(one(50, 100, 0), (50, 50), "deletion of its head");
+    }
+
+    // --- H-57: MarkerKind (SPEC-009 §2.1) --------------------------------------------------------
+
+    #[test]
+    fn marker_new_defaults_to_user_kind() {
+        let m = Marker::new(MarkerId(1), 0, 0, "m");
+        assert_eq!(m.kind, MarkerKind::User);
+        assert_eq!(m.kind.as_str(), "user");
+    }
+
+    #[test]
+    fn with_kind_sets_the_kind_and_parse_round_trips_known_and_unknown_strings() {
+        let m = Marker::new(MarkerId(1), 0, 0, "m").with_kind(MarkerKind::Dropout);
+        assert_eq!(m.kind, MarkerKind::Dropout);
+        assert_eq!(m.kind.as_str(), "dropout");
+
+        assert_eq!(MarkerKind::parse("user"), MarkerKind::User);
+        assert_eq!(MarkerKind::parse("dropout"), MarkerKind::Dropout);
+        assert_eq!(
+            MarkerKind::parse("chapter"),
+            MarkerKind::Other("chapter".into())
+        );
+        assert_eq!(MarkerKind::parse("chapter").as_str(), "chapter");
     }
 }

@@ -446,3 +446,29 @@ profile, exactly what §1 rules out for this multi-GB recovery/scratch data. Thi
   `old` exists; no-op when neither exists; no-op and non-destructive when both exist; no-op when
   `old == new` (the Linux/macOS case, guarding against a self-rename). A further test pins
   `default_sessions_dir` to `data_local_dir()`, not `data_dir()`, directly.
+
+## Amendment 9 — H-57: `Marker.kind` lands as a real field (SPEC-009 §2.1), 2026-09-16
+Amendment 2 described this and marked it "Implemented in T-303", but T-303 only bridged `kind`
+outside the core model (`vox_project::sidecar::MarkerMetaTable`, keyed by marker id) because
+teaching `Marker` the field was out of that ticket's scope; a marker added mid-session had nowhere
+to record a non-`user` kind until a save/reopen round trip. H-57 (the T-303 remainder ticket)
+finishes it:
+
+- `Marker` gains `pub kind: MarkerKind` for real, where `MarkerKind` is `{ User, Dropout,
+  Other(Arc<str>) }` — **`Other(Arc<str>)`, not Amendment 2's `Unknown(String)`**: SPEC-009 §2.1
+  spells out the field this way (an `Arc<str>` matches `Marker.name`'s own representation, and
+  `Marker` is `Clone`d on every marker-only edit — ADR-004 §3 — so an `Arc` avoids re-allocating an
+  unrecognized kind string on every clone). `Marker::new` always builds `User`; `Marker::with_kind`
+  is the builder for anything else (the recorder's dropout markers, and a sidecar/WAV item's
+  parsed kind on open).
+- `MarkerOp::Move`/`Rename` mutate `pos_samples`/`len_samples`/`name` in place and never touch
+  `kind` (SPEC-009 §2.1: "set at creation and never changed by the user in v1"). `MarkerOp::Add`
+  clones the whole `Marker`, so `kind` rides along with no journal/history change needed.
+  `MarkerRecord` (the journal's marker shape) gains an additive `kind: String`
+  (`#[serde(default)]` = `"user"`), so journals written before this ticket still replay.
+  `sidecar::MarkerItemModel.kind` (already a `String`, SPEC-018 §2.6.3) is now `Marker.kind`'s
+  wire form directly; `MarkerMetaTable` (still needed) now carries only each marker id's
+  unrecognized sidecar `extra` fields, not `kind`.
+- The IPC `MarkerDto` gains `kind: "user" | "dropout" | "other"` (an unrecognized sidecar kind
+  reports as `"other"` — the UI treats it like a user marker behavior-wise, per SPEC-018 §2.7, so
+  the actual unrecognized string never needs to cross the IPC boundary).

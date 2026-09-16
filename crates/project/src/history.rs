@@ -711,6 +711,44 @@ mod tests {
     }
 
     #[test]
+    fn marker_op_move_and_rename_preserve_kind() {
+        // H-57 regression: `MarkerOp::Move`/`Rename` mutate fields of the stored `Marker` in
+        // place and must never reset `kind` back to `User`.
+        let mut h = History::new(DocSnapshot::empty(48_000));
+        h.apply(&Edit::new("history.record").replace(0, 0, audio(100)))
+            .unwrap();
+        h.apply(&Edit::new("history.marker_add").marker(MarkerOp::Add(
+            Marker::new(MarkerId(1), 10, 0, "d").with_kind(crate::MarkerKind::Dropout),
+        )))
+        .unwrap();
+        assert_eq!(
+            h.current().marker(MarkerId(1)).unwrap().kind,
+            crate::MarkerKind::Dropout
+        );
+        h.apply(
+            &Edit::new("history.marker_rename").marker(MarkerOp::Rename {
+                id: MarkerId(1),
+                name: "renamed".into(),
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            h.current().marker(MarkerId(1)).unwrap().kind,
+            crate::MarkerKind::Dropout
+        );
+        h.apply(&Edit::new("history.marker_move").marker(MarkerOp::Move {
+            id: MarkerId(1),
+            pos_samples: 20,
+            len_samples: 5,
+        }))
+        .unwrap();
+        assert_eq!(
+            h.current().marker(MarkerId(1)).unwrap().kind,
+            crate::MarkerKind::Dropout
+        );
+    }
+
+    #[test]
     fn dirty_follows_the_saved_state() {
         let mut h = History::new(DocSnapshot::empty(48_000));
         assert!(!h.is_dirty());

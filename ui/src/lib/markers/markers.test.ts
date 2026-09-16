@@ -8,6 +8,7 @@ import { resetSelectionForTest, selectAllOf } from "../state/selection.svelte";
 import { resetTransportForTest } from "../state/transport.svelte";
 import { docDto, transportStateDto } from "../test/fixtures";
 import {
+  activateMarker,
   addMarker,
   deleteSelectedMarker,
   goToNextMarker,
@@ -20,6 +21,7 @@ import {
   selectMarker,
   setMarkerRange,
 } from "./markers.svelte";
+import { selectionState } from "../state/selection.svelte";
 
 /**
  * Markers store tests (S2-03, SPEC-009 essential subset, Vitest + mockIPC — the S2-03 ticket's
@@ -38,8 +40,8 @@ afterEach(() => {
 
 const DOC_CHANGED = docDto({ path: "/tmp/take.wav" });
 
-function marker(id: number, pos: number, len = 0, name = `m${id}`): MarkerDto {
-  return { id, pos_samples: pos, len_samples: len, name };
+function marker(id: number, pos: number, len = 0, name = `m${id}`, kind: MarkerDto["kind"] = "user"): MarkerDto {
+  return { id, pos_samples: pos, len_samples: len, name, kind };
 }
 
 describe("markers store (S2-03)", () => {
@@ -158,6 +160,40 @@ describe("markers store (S2-03)", () => {
     jumpToMarker(1);
     expect(markersState().selectedId).toBe(1);
     expect(seeks).toEqual([{ positionSamples: 12_345 }]);
+  });
+
+  it("activateMarker on a region sets the time selection to its exact range (H-57, SPEC-009 §2.8)", async () => {
+    const seeks: unknown[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "markers_get") return [marker(1, 100_000, 20_000, "R")];
+      if (cmd === "transport_seek") {
+        seeks.push(args);
+        return transportStateDto({ playhead_samples: 100_000, doc_len_samples: 480_000, can_play: true });
+      }
+      return null;
+    });
+    const stop = await initMarkers();
+    selectAllOf(480_000); // a pre-existing selection must be replaced, not merged
+    activateMarker(1);
+    expect(markersState().selectedId).toBe(1);
+    expect(selectionState().current).toEqual({ startSample: 100_000, endSample: 120_000 });
+    expect(seeks).toEqual([{ positionSamples: 100_000 }]);
+    stop();
+  });
+
+  it("activateMarker on a point clears the time selection", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "markers_get") return [marker(2, 40_000, 0, "P")];
+      if (cmd === "transport_seek") {
+        return transportStateDto({ playhead_samples: 40_000, doc_len_samples: 480_000, can_play: true });
+      }
+      return null;
+    });
+    const stop = await initMarkers();
+    selectAllOf(480_000);
+    activateMarker(2);
+    expect(selectionState().current).toBeNull();
+    stop();
   });
 
   it("goToNextMarker/goToPreviousMarker pick the nearest marker past/before the cursor, stopped", async () => {

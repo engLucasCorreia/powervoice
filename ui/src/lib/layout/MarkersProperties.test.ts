@@ -24,7 +24,7 @@ async function settle(): Promise<void> {
 
 describe("MarkersProperties marker times follow time_ruler_format (T-206, SPEC-006 §2.5)", () => {
   it("switches marker position/length text between timecode/samples/seconds", async () => {
-    const marker: MarkerDto = { id: 1, pos_samples: 48_000, len_samples: 24_000, name: "m1" };
+    const marker: MarkerDto = { id: 1, pos_samples: 48_000, len_samples: 24_000, name: "m1", kind: "user" };
     mockIPC((cmd) => {
       if (cmd === "document_open") {
         return docDto({ sample_rate_hz: 48_000, len_samples: 480_000 });

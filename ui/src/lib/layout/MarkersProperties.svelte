@@ -1,12 +1,13 @@
 <script lang="ts">
   import { documentState, hasDocument } from "../document/document.svelte";
   import { t } from "../i18n";
+  import type { MarkerDto } from "../ipc/bindings";
   import { shortcutLabelForAction } from "../shortcuts/shortcutLabel";
   import { EmptyState, IconButton, PanelHeader } from "../ui";
   import {
+    activateMarker,
     addMarker,
     deleteSelectedMarker,
-    jumpToMarker,
     markersState,
     renameMarker,
     selectMarker,
@@ -16,10 +17,12 @@
 
   /**
    * Markers panel (S2-03, SPEC-009 §2.8 essential subset): a flat, position-sorted list — click
-   * a row to select and jump, double-click (or the rename input's Enter) to rename, the header's
-   * + adds at the heard position/cursor/selection (same as M), Delete removes the selection.
-   * Sorting/filtering, multi-select, virtualization and marker `kind` are deferred (ticket "Out"
-   * list) — this panel is not built for 10 000 markers yet.
+   * a row **activates** it (H-57, §2.8: a region sets the time selection to its range; a point
+   * or dropout clears the selection — both move the cursor/seek to `pos`), double-click (or the
+   * rename input's Enter) to rename, the header's + adds at the heard position/cursor/selection
+   * (same as M), Delete removes the selection. Each row shows a Type colour dot (H-57, §2.1:
+   * Point/Region/Dropout). Sorting/filtering, multi-select and virtualization are deferred
+   * (ticket "Out" list) — this panel is not built for 10 000 markers yet.
    */
 
   const doc = documentState();
@@ -64,7 +67,19 @@
 
   function onRowClick(id: number): void {
     selectMarker(id);
-    jumpToMarker(id);
+    activateMarker(id);
+  }
+
+  /** SPEC-009 §2.1: the Type a marker shows — Dropout wins over Region/Point regardless of
+   * `len_samples` (dropout markers are points in v1, but the rule is written this way in the
+   * spec so a future non-point dropout still reads "Dropout"). */
+  function markerTypeKey(
+    marker: MarkerDto,
+  ): "markers.panel.type_dropout" | "markers.panel.type_region" | "markers.panel.type_point" {
+    if (marker.kind === "dropout") {
+      return "markers.panel.type_dropout";
+    }
+    return marker.len_samples > 0 ? "markers.panel.type_region" : "markers.panel.type_point";
   }
 
   /** A "focus this element on mount" action (the rename input, so typing starts immediately). */
@@ -130,6 +145,11 @@
                 onclick={() => onRowClick(marker.id)}
                 ondblclick={() => startRename(marker.id, marker.name)}
               >
+                <span
+                  class="marker-type-dot"
+                  data-kind={marker.kind === "dropout" ? "dropout" : marker.len_samples > 0 ? "region" : "point"}
+                  title={t(markerTypeKey(marker))}
+                ></span>
                 <span class="marker-name">{marker.name}</span>
                 <span class="marker-time">
                   {formatDocumentTime(marker.pos_samples, rateHz, timeFormat.current)}
@@ -216,6 +236,26 @@
   .marker-row:focus-visible {
     outline: var(--pv-focus-width) solid var(--pv-focus-ring);
     outline-offset: -2px;
+  }
+
+  /* SPEC-009 §2.8: the Type column's colour chip (`--wave-marker`/`--wave-marker-region`/
+     `--wave-marker-dropout`, SPEC-006 §2.12). */
+  .marker-type-dot {
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: var(--pv-radius-full);
+    background: var(--wave-marker);
+  }
+
+  .marker-type-dot[data-kind="region"] {
+    background: var(--wave-marker-region);
+    outline: 1px solid var(--wave-marker);
+    outline-offset: -1px;
+  }
+
+  .marker-type-dot[data-kind="dropout"] {
+    background: var(--wave-marker-dropout);
   }
 
   .marker-name {

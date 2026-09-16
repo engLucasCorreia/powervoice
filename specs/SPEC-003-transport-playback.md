@@ -172,7 +172,9 @@ Shift+Space = Record without the same caveat, since recording's shortcut is equa
   invoked (button or, once confirmed, its shortcut), then the playhead is set to sample 0 exactly; if
   playback was in progress it continues playing from 0 without a stop/start gap perceptible as a
   separate Play press (i.e., it behaves as one seek, per §4).
-- **AC-4 (loop selection).** Given a time selection [S, E) and loop enabled with an empty (unity)
+- **AC-4 (loop selection).** *(Amendment 1 supersedes this AC's rack-reset clause: the seam is
+  seamless with no rack reset — H-37/A-023. The rest of the AC stands.)* Given a time selection
+  [S, E) and loop enabled with an empty (unity)
   rack, when playback runs for at least 3 loop passes, then the rendered output is **sample-exact**
   equal (max abs difference ≤ 1e-6) to the concatenation source[S..E) ‖ source[S..E) ‖ … — no
   dropped, duplicated or gap samples at any seam, and the sample after E − 1 is S. (Any click at the

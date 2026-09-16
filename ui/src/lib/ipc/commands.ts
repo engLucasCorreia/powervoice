@@ -96,6 +96,15 @@ export async function devicesSelect(prefs: DevicePrefsDto): Promise<DevicesDto> 
   return invoke<DevicesDto>("devices_select" satisfies CommandName, { prefs });
 }
 
+/**
+ * H-59 (SPEC-001 §2.1): the Rescan button — a fresh enumeration off the UI thread, plus another
+ * reopen attempt for a device parked as lost (§2.4). The fresh list lands through
+ * `devices_changed`; the resolved value is the view as it stood when the request was accepted.
+ */
+export async function devicesRescan(): Promise<DevicesDto> {
+  return invoke<DevicesDto>("devices_rescan" satisfies CommandName);
+}
+
 /** S1-01: current transport state. */
 export async function transportGet(): Promise<TransportStateDto> {
   return invoke<TransportStateDto>("transport_get" satisfies CommandName);

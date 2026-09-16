@@ -361,3 +361,54 @@ supersedes Amendment 1's `VXSA` table.**
   `Settings.telemetry_rate_hz` (60 or 30) gates how often `VXTM`, `VXMT` and `VXSA` publish (every
   tick or every other tick) and re-derives the analyzer's averaging constants. It applies at start-up
   and live when the setting changes.
+
+## Amendment 6 — H-59 audit: the contract as implemented (2026-09-16)
+H-59 audited every row of §1 and §2 against the code. Everything below was already shipped and
+working; this amendment records it, because an ADR that says something the code does not do is
+worse than no ADR. The three *behaviour* changes H-59 made are marked **new**.
+
+- **`VXRP` was never implemented, and is withdrawn.** Live recording peaks are a **polling
+  command**, `record_peaks_get` (`src-tauri/src/ipc/record_commands.rs`), answering with the
+  `VXPK` framing (`vox_project::encode_vxpk`) rather than a streamed `Channel` frame. The UI asks
+  for the take's peaks at its own pace, which needs no second frame format, no subscription
+  lifecycle and no per-frame `take_id`/`FINAL` bookkeeping. §1's "Live recording peaks | Channel |
+  `VXRP` | 30 Hz" row is superseded by "command → `ipc::Response`, `VXPK`, on demand". A future
+  ticket that wants push delivery should add `VXRP` back with a fresh decision, not treat it as
+  already-agreed.
+- **`peaks_progress` was never implemented, and is withdrawn.** Import progress travels on the one
+  job channel as `job_progress { kind: Import }` (ADR-003 Amendment 3's rule: a long job adds a
+  `JobKind`, it does not invent an event).
+- **Events, complete list.** §1's table named a subset. The `notice`-class events actually
+  declared in `src-tauri/src/ipc/events.rs` are: `notice`, `transport_state`, `devices_changed`,
+  `rack_changed`, `param_changed`, `rack_latency`, `record_state`, `document_changed`,
+  `history_state`, `clipboard_changed`, `job_progress`, `loudness_report`, `normalize_result`,
+  `recent_files_changed`, `record_phase`, `record_finished`, `calibration_result`,
+  `import_started`, `plugin_scan_progress`, `spectrum_report`. `ipc_events!` +
+  `event_names_match_event_name_variants` keeps that list and the generated `EventName` union in
+  step; adding an event to the macro is what makes it real.
+- **Binary decoders do not live in one `ui/src/lib/ipc/binary.ts`.** §2's wording predates the
+  implementation: each frame has its own decoder next to its consumer (`waveform/vxpk.ts`,
+  `spectrogram/vxst.ts`, `ipc/telemetry.ts`, `ipc/moduleTelemetry.ts`, `ipc/analyzer.ts`), each
+  applying the same little-endian `DataView` + `header_len` convention. The convention is the
+  contract, not the file.
+- **Golden fixtures (§4). new** Every binary frame now has a Rust-generated fixture decoded and
+  asserted by a vitest test: `vxst_fixture.ts`, `vxtm_fixture.ts`, `vxmt_fixture.ts`,
+  `vxsa_fixture.ts`, and, added by H-59, **`vxpk_fixture.ts`** (`export_bindings_vxpk_fixture` in
+  `src-tauri/src/ipc/document_dto.rs`, decoded by `ui/src/lib/waveform/vxpkFixture.test.ts`).
+  Until H-59, `VXPK` — the highest-traffic frame — had Rust and TS tests that each built their own
+  bytes from the table above, so a drift on either side could not be caught.
+- **`audio_rev` staleness dropping** applies to the frames that carry document *content*: `VXPK`
+  (`waveform/peaksRequester.ts`) and `VXST` (`spectrogram/spectroRequester.ts`) both drop a
+  response whose `audio_rev` is not current. `VXTM` carries `audio_rev` for diagnostics but is
+  **not** dropped on a mismatch: its content (meters, transport flags, the playhead anchor) is not
+  document-derived, the anchor is clamped to the current length on every read, and a destructive
+  edit stops playback before the swap anyway (SPEC-003 AC-8). Dropping telemetry frames on a
+  revision mismatch would freeze the meters for a tick after every edit and during a take, when
+  the engine's document and the UI's disagree by design.
+- **`Notice.auto_dismiss_ms`. new** An optional field on the `notice` payload: a banner that
+  dismisses itself after that many ms. SPEC-001 §2.3's "reconnected" banner sets it (4 s) — it
+  replaces the "disconnected" banner sharing its `id` and then goes away, which a plain banner
+  (stays until dismissed) and a toast (never replaces anything) could not express together.
+- **`devices_rescan`. new** SPEC-001 §2.1's Rescan button: a fresh enumeration off the UI thread
+  plus another reopen attempt for a device parked as lost (§2.4). Returns `DevicesDto`; the fresh
+  enumeration lands through `devices_changed`.

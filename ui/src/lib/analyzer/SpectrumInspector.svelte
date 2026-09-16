@@ -246,6 +246,7 @@
         persistent: false,
         id: null,
         cleared: false,
+    auto_dismiss_ms: null,
       };
       pushNotice(n);
     } catch (err) {

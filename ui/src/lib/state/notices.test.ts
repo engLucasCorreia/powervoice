@@ -1,6 +1,6 @@
 import { emit } from "@tauri-apps/api/event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Notice } from "../ipc/bindings";
 import { clearNotices, initNotices, noticesState, pushNotice } from "./notices.svelte";
 
@@ -21,6 +21,7 @@ describe("initNotices (S2-02: the shared `notice` event -> the toast/banner stor
       persistent: false,
       id: null,
       cleared: false,
+      auto_dismiss_ms: null,
     };
     await emit("notice", notice);
 
@@ -40,6 +41,7 @@ describe("pushNotice with cleared: true (H-17: e.g. the disk-almost-full banner)
       persistent: true,
       id: "disk_almost_full",
       cleared: false,
+      auto_dismiss_ms: null,
     });
     expect(noticesState().banners).toHaveLength(1);
 
@@ -50,8 +52,56 @@ describe("pushNotice with cleared: true (H-17: e.g. the disk-almost-full banner)
       persistent: true,
       id: "disk_almost_full",
       cleared: true,
+      auto_dismiss_ms: null,
     });
     expect(noticesState().banners).toHaveLength(0);
     expect(noticesState().toasts).toHaveLength(0);
+  });
+});
+
+describe("pushNotice with auto_dismiss_ms (H-59, SPEC-001 §2.3)", () => {
+  const banner = (key: string, autoDismissMs: number | null): Notice => ({
+    level: "info",
+    key,
+    params: {},
+    persistent: true,
+    id: "device:output",
+    cleared: false,
+    auto_dismiss_ms: autoDismissMs,
+  });
+
+  it("dismisses the reconnected banner on its own, while the lost banner stays", () => {
+    vi.useFakeTimers();
+    try {
+      pushNotice(banner("notice.device.lost.output.playback_stopped", null));
+      vi.advanceTimersByTime(60_000);
+      expect(noticesState().banners).toHaveLength(1);
+
+      // The reconnect replaces the lost banner in place, then goes away by itself.
+      pushNotice(banner("notice.device.reconnected.output", 4000));
+      expect(noticesState().banners).toHaveLength(1);
+      expect(noticesState().banners[0]?.key).toBe("notice.device.reconnected.output");
+      vi.advanceTimersByTime(3999);
+      expect(noticesState().banners).toHaveLength(1);
+      vi.advanceTimersByTime(1);
+      expect(noticesState().banners).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never lets an expiring banner's timer sweep away a newer banner reusing its id", () => {
+    vi.useFakeTimers();
+    try {
+      pushNotice(banner("notice.device.reconnected.output", 4000));
+      // The device drops again before the reconnect banner expired: that banner must stay.
+      vi.advanceTimersByTime(3000);
+      pushNotice(banner("notice.device.lost.output.playback_stopped", null));
+      vi.advanceTimersByTime(60_000);
+      expect(noticesState().banners).toHaveLength(1);
+      expect(noticesState().banners[0]?.key).toBe("notice.device.lost.output.playback_stopped");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

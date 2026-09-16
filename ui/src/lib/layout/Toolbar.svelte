@@ -1,5 +1,6 @@
 <script lang="ts">
   import AudioDevicesDialog from "../devices/AudioDevicesDialog.svelte";
+  import DeviceStatusButton from "../devices/DeviceStatusButton.svelte";
   import { documentState, hasDocument } from "../document/document.svelte";
   import { t } from "../i18n";
   import { dispatchAction } from "../shortcuts";
@@ -132,13 +133,7 @@
   <span class="spacer"></span>
   <div class="group">
     <NormalizeToolbarButtons />
-    <IconButton
-      icon="settings"
-      label={t("devices.open")}
-      testid="open-audio-devices"
-      data-tour="devices"
-      onclick={() => (devicesOpen = true)}
-    />
+    <DeviceStatusButton onopen={() => (devicesOpen = true)} />
   </div>
 </header>
 {#if devicesOpen}

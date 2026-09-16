@@ -187,6 +187,41 @@ fn dir_str(d: Direction) -> &'static str {
     }
 }
 
+/// SPEC-001 §2.3: how long the "reconnected" banner stays before it dismisses itself.
+const RECONNECTED_BANNER_MS: u32 = 4_000;
+
+/// H-59: the device-lost banner says what actually stopped (SPEC-001 §2.4, SPEC-002 AC-14/AC-16).
+/// The engine already computes the flags; before H-59 every loss read "playback stopped", so a
+/// user who lost only the *output* mid-take could not tell that the take was still running.
+///
+/// Every arm is a literal key, so `tests/i18n_audit.rs` checks all six against `en.json` — a
+/// `format!` template would only be skipped as an unresolvable pattern.
+fn device_lost_key(
+    direction: Direction,
+    recording_stopped: bool,
+    playback_stopped: bool,
+    recording_continues: bool,
+) -> &'static str {
+    match (
+        direction,
+        recording_stopped,
+        recording_continues,
+        playback_stopped,
+    ) {
+        // What happened to the recording outranks what happened to playback.
+        (Direction::Input, true, _, _) => "notice.device.lost.input.recording_stopped",
+        (Direction::Output, true, _, _) => "notice.device.lost.output.recording_stopped",
+        // SPEC-001 §2.4's exception: only the output went away, so the take keeps running.
+        (Direction::Input, _, true, _) => "notice.device.lost.input.recording_continues",
+        (Direction::Output, _, true, _) => "notice.device.lost.output.recording_continues",
+        (Direction::Input, _, _, true) => "notice.device.lost.input.playback_stopped",
+        (Direction::Output, _, _, true) => "notice.device.lost.output.playback_stopped",
+        // Nothing was interrupted: no claim about playback or recording at all.
+        (Direction::Input, ..) => "notice.device.lost.input",
+        (Direction::Output, ..) => "notice.device.lost.output",
+    }
+}
+
 /// Device notice → i18n notice (SPEC-001 §2.2–§2.4). Lost/reconnected share one banner id per
 /// direction, so "reconnected" replaces "disconnected".
 pub fn notice_from_device(n: &DeviceNotice) -> Notice {
@@ -236,11 +271,20 @@ pub fn notice_from_device(n: &DeviceNotice) -> Notice {
                 .with_param("using", using.as_str())
         }
         DeviceNotice::DeviceLost {
-            direction, device, ..
+            direction,
+            device,
+            recording_stopped,
+            playback_stopped,
+            recording_continues,
         } => Notice::banner(
             Error,
             format!("device:{}", dir_str(*direction)),
-            format!("notice.device.lost.{}", dir_str(*direction)),
+            device_lost_key(
+                *direction,
+                *recording_stopped,
+                *playback_stopped,
+                *recording_continues,
+            ),
         )
         .with_param("device", device),
         DeviceNotice::DeviceReconnected { direction, device } => Notice::banner(
@@ -248,6 +292,9 @@ pub fn notice_from_device(n: &DeviceNotice) -> Notice {
             format!("device:{}", dir_str(*direction)),
             format!("notice.device.reconnected.{}", dir_str(*direction)),
         )
+        // SPEC-001 §2.3: the reconnected banner replaces the lost one and auto-dismisses after
+        // ~4 s (the lost banner itself stays until dismissed or replaced).
+        .auto_dismiss_after_ms(RECONNECTED_BANNER_MS)
         .with_param("device", device),
         DeviceNotice::BackendError { device, .. } => {
             Notice::toast(Warning, "notice.device.backend_error").with_param("device", device)
@@ -311,7 +358,55 @@ mod tests {
         });
         assert!(lost.persistent && back.persistent);
         assert_eq!(lost.id, back.id);
-        assert_eq!(lost.key, "notice.device.lost.output");
+        assert_eq!(lost.key, "notice.device.lost.output.playback_stopped");
+        // SPEC-001 §2.3: the reconnected banner replaces the lost one, then goes away on its own.
+        assert_eq!(back.auto_dismiss_ms, Some(RECONNECTED_BANNER_MS));
+        assert_eq!(lost.auto_dismiss_ms, None, "the lost banner stays");
+    }
+
+    /// H-59 (SPEC-001 §2.4, SPEC-002 AC-14/AC-16): the device-lost banner says what actually
+    /// stopped. Before H-59 every loss read "playback stopped", so a user who lost only the
+    /// output mid-take could not tell that the take itself was still running.
+    #[test]
+    fn the_device_lost_banner_says_what_stopped() {
+        let lost = |direction, recording_stopped, playback_stopped, recording_continues| {
+            notice_from_device(&DeviceNotice::DeviceLost {
+                direction,
+                device: "DAC".into(),
+                recording_stopped,
+                playback_stopped,
+                recording_continues,
+            })
+            .key
+        };
+        // Output lost while recording (§2.4's exception): the take goes on.
+        assert_eq!(
+            lost(Direction::Output, false, false, true),
+            "notice.device.lost.output.recording_continues"
+        );
+        // Input lost while recording: the take stopped and was kept.
+        assert_eq!(
+            lost(Direction::Input, true, false, false),
+            "notice.device.lost.input.recording_stopped"
+        );
+        // What stopped the recording outranks what stopped playback.
+        assert_eq!(
+            lost(Direction::Input, true, true, false),
+            "notice.device.lost.input.recording_stopped"
+        );
+        assert_eq!(
+            lost(Direction::Output, false, true, false),
+            "notice.device.lost.output.playback_stopped"
+        );
+        // Nothing was interrupted: no claim about playback or recording at all.
+        assert_eq!(
+            lost(Direction::Output, false, false, false),
+            "notice.device.lost.output"
+        );
+        assert_eq!(
+            lost(Direction::Input, false, false, false),
+            "notice.device.lost.input"
+        );
     }
 
     /// Writes the golden `VXTM` frame for the TS decoder test (ADR-003 §4: generated by the

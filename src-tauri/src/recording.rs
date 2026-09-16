@@ -264,6 +264,16 @@ fn on_take_finished(inner: &Inner, result: RecordingResult) {
             ),
         );
     }
+    if result.reason == StopReason::InputLost {
+        // H-59, SPEC-002 §2.6/AC-14: the device-lost banner (SPEC-001 §2.3) says the input went
+        // away; this says how much of the take survived it, like Overflow/DiskFull above.
+        notice(
+            Notice::toast(NoticeLevel::Error, "notice.record.input_lost").with_param(
+                "duration",
+                duration_text(result.finished.wav_samples, result.sample_rate_hz),
+            ),
+        );
+    }
     if result.reason == StopReason::DiskFull {
         // H-11, SPEC-002 §2.5, AC-13: free space fell below the hard floor; say what was kept.
         notice(

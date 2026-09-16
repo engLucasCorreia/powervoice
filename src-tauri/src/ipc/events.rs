@@ -56,6 +56,11 @@ pub struct Notice {
     /// ignored). Only meaningful with `id: Some(..)`.
     #[serde(default)]
     pub cleared: bool,
+    /// H-59: a banner that dismisses itself after this many ms (SPEC-001 §2.3's "reconnected"
+    /// banner, which replaces the lost one and then goes away on its own). `None`: the banner
+    /// stays until dismissed or replaced. Ignored for toasts, which already auto-dismiss.
+    #[serde(default)]
+    pub auto_dismiss_ms: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -76,6 +81,7 @@ impl Notice {
             persistent: false,
             id: None,
             cleared: false,
+            auto_dismiss_ms: None,
         }
     }
 
@@ -87,6 +93,7 @@ impl Notice {
             persistent: true,
             id: Some(id.into()),
             cleared: false,
+            auto_dismiss_ms: None,
         }
     }
 
@@ -100,7 +107,15 @@ impl Notice {
             persistent: true,
             id: Some(id.into()),
             cleared: true,
+            auto_dismiss_ms: None,
         }
+    }
+
+    /// H-59: makes a banner dismiss itself after `ms` (SPEC-001 §2.3).
+    #[must_use]
+    pub fn auto_dismiss_after_ms(mut self, ms: u32) -> Self {
+        self.auto_dismiss_ms = Some(ms);
+        self
     }
 
     #[must_use]

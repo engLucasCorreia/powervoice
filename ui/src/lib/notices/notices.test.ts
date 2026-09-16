@@ -59,6 +59,7 @@ describe("IpcError -> toast", () => {
       persistent: true,
       id: "device:output",
       cleared: false,
+    auto_dismiss_ms: null,
     });
     pushNotice({
       level: "info",
@@ -67,6 +68,7 @@ describe("IpcError -> toast", () => {
       persistent: true,
       id: "device:output",
       cleared: false,
+    auto_dismiss_ms: null,
     });
 
     const target = document.createElement("div");

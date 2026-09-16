@@ -353,3 +353,75 @@ describe("animation frames only while something moves (H-43)", () => {
     }
   });
 });
+
+/**
+ * H-59: ADR-003 §3's clock-sync *cadence* — five `clock_now_ns` calls, then again every 30 s.
+ * `transport/playhead.test.ts` covers `ClockSync`'s min-RTT/offset arithmetic; nothing covered
+ * the wiring that actually drives it, so a lost `setInterval` or a changed sample count would
+ * have gone unnoticed.
+ */
+describe("initTransport clock sync (ADR-003 §3)", () => {
+  it("calls clock_now_ns five times at startup and again every 30 s", async () => {
+    vi.useFakeTimers();
+    try {
+      let clockCalls = 0;
+      mockIPC((cmd) => {
+        if (cmd === "clock_now_ns") {
+          clockCalls += 1;
+          return performance.now() * 1e6;
+        }
+        if (cmd === "transport_get") return TRANSPORT_GET;
+        return null;
+      });
+
+      const stop = await initTransport();
+      expect(clockCalls).toBe(5);
+
+      // Nothing before the interval elapses.
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(clockCalls).toBe(5);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(clockCalls).toBe(10);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(clockCalls).toBe(15);
+
+      // The teardown clears the interval: no further syncs.
+      stop();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(clockCalls).toBe(15);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps running when a clock sync fails", async () => {
+    vi.useFakeTimers();
+    try {
+      let fail = true;
+      let clockCalls = 0;
+      mockIPC((cmd) => {
+        if (cmd === "clock_now_ns") {
+          clockCalls += 1;
+          if (fail) {
+            throw { code: "internal", key: "error.internal", params: {} };
+          }
+          return performance.now() * 1e6;
+        }
+        if (cmd === "transport_get") return TRANSPORT_GET;
+        return null;
+      });
+
+      const stop = await initTransport();
+      // The first failing call aborts that sync attempt; the periodic one still retries.
+      expect(clockCalls).toBeGreaterThanOrEqual(1);
+      fail = false;
+      const before = clockCalls;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(clockCalls).toBe(before + 5);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

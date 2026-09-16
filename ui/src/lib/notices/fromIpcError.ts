@@ -13,5 +13,6 @@ export function noticeFromIpcError(error: IpcError): Notice {
     persistent: false,
     id: null,
     cleared: false,
+    auto_dismiss_ms: null,
   };
 }

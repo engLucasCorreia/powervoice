@@ -1381,3 +1381,87 @@ fn kill_9_mid_take_recovers_every_appended_sample() {
         .expect("the take start is in the source");
     assert_eq!(locate(&take, 0, k), k, "bit-identical to the source");
 }
+
+/// A 2-channel mic carrying `signals` per channel, for input-meter tests (SPEC-002 AC-1).
+fn mic_signals(signals: Vec<Signal>) -> FakeDevice {
+    FakeDevice::new("Mic").with_input(
+        FakeDirection::new(2, &[48_000], 48_000)
+            .callback_sizes(CallbackSizes::FULL_RANDOM)
+            .latency_ns(5 * MS)
+            .signals(signals),
+    )
+}
+
+// `-inf` is exact, so comparing against it is not the approximate-equality mistake the lint is
+// about (the same reason `telemetry.rs`'s own meter tests do it).
+#[allow(clippy::float_cmp)]
+/// SPEC-002 AC-1: the input meter's accuracy as the UI actually receives it — in the `VXTM`
+/// frames, not just in `InputMeter`'s own unit test. A 997 Hz sine at −12.00 dBFS peak on the
+/// selected channel reads −12.00 ± 0.05 dB peak / −15.01 ± 0.05 dB RMS in every frame after the
+/// first 300 ms; digital silence reads `-inf` for both (JSON `null`).
+#[test]
+fn ac1_input_meter_reports_peak_and_rms_within_tolerance() {
+    // −12 dBFS peak.
+    let amplitude = 10f32.powf(-12.0 / 20.0);
+    let mut r = rig_with_mic(
+        mic_signals(vec![
+            Signal::Silence,
+            Signal::Sine {
+                freq_hz: 997.0,
+                amplitude,
+            },
+        ]),
+        false,
+        Some(2),
+    );
+    r.run_ms(20);
+    r.arm();
+    r.run_ms(1000);
+
+    let frames = r.frames.lock().unwrap().clone();
+    // One control tick per millisecond of fake time in this rig, so frames past 300 are past the
+    // meter's settling window.
+    let settled: Vec<_> = frames.iter().skip(320).collect();
+    assert!(settled.len() > 100, "{} frames", settled.len());
+    for f in &settled {
+        assert!(
+            (f.in_peak_dbfs - (-12.00)).abs() <= 0.05,
+            "peak {} dBFS",
+            f.in_peak_dbfs
+        );
+        assert!(
+            (f.in_rms_dbfs - (-15.01)).abs() <= 0.05,
+            "rms {} dBFS",
+            f.in_rms_dbfs
+        );
+    }
+    assert_eq!(r.fake.rt_violations(), 0);
+
+    // The unselected channel carries the tone, so selecting channel 1 must read digital silence.
+    let mut quiet = rig_with_mic(
+        mic_signals(vec![
+            Signal::Silence,
+            Signal::Sine {
+                freq_hz: 997.0,
+                amplitude,
+            },
+        ]),
+        false,
+        Some(1),
+    );
+    quiet.run_ms(20);
+    quiet.arm();
+    quiet.run_ms(500);
+    let f = quiet.last_frame();
+    assert!(
+        f.in_peak_dbfs == f32::NEG_INFINITY,
+        "peak on a silent channel: {}",
+        f.in_peak_dbfs
+    );
+    assert!(
+        f.in_rms_dbfs == f32::NEG_INFINITY,
+        "rms on a silent channel: {}",
+        f.in_rms_dbfs
+    );
+    assert_eq!(quiet.fake.rt_violations(), 0);
+}

@@ -3,10 +3,10 @@
   import { onMount } from "svelte";
   import { t, tDynamic } from "../i18n";
   import type { DevicePrefsDto, DevicesDto, EventName, IpcError } from "../ipc/bindings";
-  import { devicesList, devicesSelect } from "../ipc/commands";
+  import { devicesList, devicesRescan, devicesSelect } from "../ipc/commands";
   import { noticeFromIpcError } from "../notices/fromIpcError";
   import { pushNotice } from "../state/notices.svelte";
-  import { Dialog } from "../ui";
+  import { Button, Dialog } from "../ui";
 
   /**
    * Settings → Audio Devices (SPEC-001 §2.1, minimal S1-01 form): host, output, input, sample
@@ -67,6 +67,22 @@
     busy = true;
     try {
       view = await devicesSelect({ ...view.prefs, ...patch });
+    } catch (err) {
+      report(err);
+    } finally {
+      busy = false;
+    }
+  }
+
+  /**
+   * H-59 (SPEC-001 §2.1): manual re-enumeration, in addition to the ~1 s background poll. It is
+   * also the only way to give a device that was lost while still listed (a transient backend
+   * error, already retried once) another reopen attempt (§2.4).
+   */
+  async function rescan(): Promise<void> {
+    busy = true;
+    try {
+      view = await devicesRescan();
     } catch (err) {
       report(err);
     } finally {
@@ -204,6 +220,11 @@
     <div class="statuses">
       <p class="status" data-testid="devices-status" data-status={view.output_status}>{status}</p>
       <p class="status" data-testid="devices-input-status" data-status={view.input_status}>{inputStatus}</p>
+      <div class="rescan">
+        <Button size="sm" icon="refresh" testid="devices-rescan" disabled={busy} onclick={() => void rescan()}>
+          {t("devices.rescan")}
+        </Button>
+      </div>
     </div>
   {:else}
     <p>{t("devices.loading")}</p>
@@ -225,6 +246,12 @@
 
   .form-grid select {
     min-width: 0;
+  }
+
+  .rescan {
+    display: flex;
+    justify-content: flex-start;
+    margin-top: var(--pv-space-1);
   }
 
   .statuses {

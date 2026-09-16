@@ -450,7 +450,7 @@
       onKindDecided: (kind, reason) => {
         if (kind === "canvas2d" && reason === "unavailable") {
           queueMicrotask(() =>
-            pushNotice({ level: "info", key: "notice.renderer.fallback_waveform", params: {}, persistent: false, id: null, cleared: false }),
+            pushNotice({ level: "info", key: "notice.renderer.fallback_waveform", params: {}, persistent: false, id: null, cleared: false, auto_dismiss_ms: null }),
           );
         }
       },
@@ -459,7 +459,7 @@
         glRenderer = null;
         frames.invalidate(); // redraw with the Canvas2D fallback
         queueMicrotask(() =>
-          pushNotice({ level: "warning", key: "notice.renderer.context_lost_waveform", params: {}, persistent: false, id: null, cleared: false }),
+          pushNotice({ level: "warning", key: "notice.renderer.context_lost_waveform", params: {}, persistent: false, id: null, cleared: false, auto_dismiss_ms: null }),
         );
       },
     });

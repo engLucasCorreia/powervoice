@@ -67,6 +67,19 @@ pub async fn devices_select(
     Ok(DevicesDto::from(&view))
 }
 
+/// H-59 (SPEC-001 §2.1): the Settings "Rescan" button — a fresh enumeration off the UI thread,
+/// plus another reopen attempt for a device parked as lost (§2.4). Returns the view as it stands
+/// when the request is accepted; the fresh enumeration lands through `devices_changed`.
+#[tauri::command]
+pub async fn devices_rescan(engine: State<'_, AudioEngine>) -> Result<DevicesDto, IpcError> {
+    let handle = engine.handle().clone();
+    let view = tauri::async_runtime::spawn_blocking(move || handle.rescan_devices())
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?
+        .ok_or_else(engine_stopped)?;
+    Ok(DevicesDto::from(&view))
+}
+
 /// Current transport state.
 #[tauri::command]
 pub async fn transport_get(engine: State<'_, AudioEngine>) -> Result<TransportStateDto, IpcError> {

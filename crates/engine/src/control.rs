@@ -1260,13 +1260,51 @@ impl Control {
         }
     }
 
+    /// H-59 (SPEC-001 §2.1 "Rescan"): manual re-enumeration. Lost devices get another reopen
+    /// attempt (`DeviceEvent::Rescan` clears the one-shot `retried` latch), then a fresh
+    /// enumeration runs — off the UI thread on the poll thread, inline in manual mode.
+    pub(crate) fn rescan_devices(&mut self) -> DevicesView {
+        self.device_event(DeviceEvent::Rescan);
+        match &self.poll {
+            PollLink::Thread(t) => t.rescan(),
+            PollLink::Manual(_) => self.poll_devices_with(Enumerate::Fresh),
+            PollLink::None => {}
+        }
+        // A poll pass only reports *diffs*, so a device that never left the list produces no
+        // event at all — and that is exactly the case a manual rescan exists for (a stream lost
+        // to a transient backend error, already past its one automatic retry). Feed the current
+        // presence explicitly so the state machine gets its `Poll` and issues the reopen.
+        if let Some(present) = self.output_present() {
+            self.device_event(DeviceEvent::Poll {
+                dir: Direction::Output,
+                present,
+            });
+        }
+        if let Some(present) = self.input_present() {
+            self.device_event(DeviceEvent::Poll {
+                dir: Direction::Input,
+                present,
+            });
+        }
+        let view = self.devices_view();
+        (self.events)(EngineEvent::Devices(view.clone()));
+        self.emit_state_if_changed();
+        self.update_monitor();
+        self.emit_record_if_changed();
+        view
+    }
+
     /// Manual mode: one device-poll pass (hosts + devices), like the poll thread's.
     pub(crate) fn poll_devices(&mut self) {
+        self.poll_devices_with(Enumerate::Cached);
+    }
+
+    fn poll_devices_with(&mut self, mode: Enumerate) {
         let available = self.backend.hosts();
         let default = choose_default_host(&available);
         self.on_poll(PollEvent::Hosts { available, default });
         let diffs = match &mut self.poll {
-            PollLink::Manual(Some(w)) => w.pass(self.backend.as_ref(), Enumerate::Cached).0,
+            PollLink::Manual(Some(w)) => w.pass(self.backend.as_ref(), mode).0,
             _ => return,
         };
         for d in diffs {

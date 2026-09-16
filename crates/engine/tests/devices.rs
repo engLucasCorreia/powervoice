@@ -1284,3 +1284,64 @@ fn fake_dropout_is_ignored_for_outputs_and_jitter_only_delays_callbacks() {
     );
     assert_eq!(fake.rt_violations(), 0);
 }
+
+/// H-59 (SPEC-001 §2.1 "Rescan", §2.4): a device lost to a backend error while it stays *listed*
+/// is parked after one reopen attempt — the ~1 s background poll reports only diffs, so nothing
+/// ever asks for it again and, before H-59, the user had no way to retry short of restarting the
+/// app. `rescan_devices()` clears that one-shot latch and re-drives the state machine.
+#[test]
+fn rescan_reopens_a_device_parked_after_its_automatic_retry() {
+    let fake = FakeBackend::new(21);
+    fake.plug(HOST, FakeDevice::new("Speakers").with_output(out_dir()));
+    guarded(&fake);
+    let registry =
+        Arc::new(vox_rack::Registry::with_factories(vox_modules::builtin_factories()).unwrap());
+    let mut cfg = vox_engine::EngineConfig::new(Arc::new(fake.clone()), registry);
+    cfg.prefs = DevicePrefs {
+        output_device: Some("Speakers".into()),
+        ..DevicePrefs::default()
+    };
+    let clock = fake.clone();
+    cfg.clock = Arc::new(move || clock.now_ns());
+    let mut eng = vox_engine::ManualEngine::new(cfg);
+    eng.poll_devices();
+    assert_eq!(
+        eng.devices().output_status,
+        DeviceStatus::Healthy,
+        "the device opens to start with"
+    );
+
+    // The backend starts refusing to open it and the open stream reports the loss. The device is
+    // never unplugged, so it stays listed throughout.
+    let stream = fake
+        .stream_for(&key("Speakers"), Direction::Output)
+        .expect("output stream open");
+    fake.fail_opens(
+        &key("Speakers"),
+        Some(BackendError::DeviceBusy(key("Speakers"))),
+    );
+    fake.lose_stream(stream);
+    eng.tick();
+    assert_eq!(eng.devices().output_status, DeviceStatus::Lost);
+
+    // A rescan while the device is still broken spends the one reopen attempt it is granted.
+    assert_eq!(eng.rescan_devices().output_status, DeviceStatus::Lost);
+
+    // The device heals, but it never went absent, so polling produces no diff and no event.
+    fake.fail_opens(&key("Speakers"), None);
+    for _ in 0..4 {
+        eng.tick();
+        eng.poll_devices();
+    }
+    assert_eq!(
+        eng.devices().output_status,
+        DeviceStatus::Lost,
+        "polling alone never retries a device that was never reported absent"
+    );
+
+    // Rescan: the latch is cleared, the stream reopens with its previous settings.
+    let view = eng.rescan_devices();
+    assert_eq!(view.output_status, DeviceStatus::Healthy);
+    assert_eq!(view.output_device.as_deref(), Some("Speakers"));
+    assert_eq!(fake.rt_violations(), 0);
+}

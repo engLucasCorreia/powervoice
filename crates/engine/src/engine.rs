@@ -269,6 +269,13 @@ impl EngineHandle {
         self.call(move |c| c.select_devices(prefs))
     }
 
+    /// H-59 (SPEC-001 §2.1 "Rescan"): manual re-enumeration, and another reopen attempt for a
+    /// device parked as lost. The fresh enumeration itself runs on the device-poll thread, so
+    /// the returned view can still predate it; the `devices_changed` event carries the result.
+    pub fn rescan_devices(&self) -> Option<DevicesView> {
+        self.call(Control::rescan_devices)
+    }
+
     /// Installs (or removes) the 60 Hz telemetry sink.
     pub fn set_telemetry_sink(&self, sink: Option<TelemetrySink>) {
         let _ = self.call(move |c| c.set_telemetry_sink(sink));
@@ -594,6 +601,12 @@ impl ManualEngine {
     /// See [`EngineHandle::select_devices`].
     pub fn select_devices(&mut self, prefs: DevicePrefs) -> DevicesView {
         self.control.select_devices(prefs)
+    }
+
+    /// See [`EngineHandle::rescan_devices`] (manual mode enumerates inline, so the returned view
+    /// already reflects the fresh pass).
+    pub fn rescan_devices(&mut self) -> DevicesView {
+        self.control.rescan_devices()
     }
 
     /// See [`EngineHandle::set_telemetry_sink`].

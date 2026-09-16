@@ -8,12 +8,12 @@
     openMenu,
     toggleMenu,
     type MenuId,
-  } from "./menubar.svelte";
+  } from "./menu.svelte";
   import { splitMnemonic } from "./mnemonic";
 
   /**
    * One menu-bar menu (H-26): the trigger (`role="menuitem"` in the `menubar`, mnemonic letter
-   * underlined) plus the shared `Menu`. Which menu is open lives in `menubar.svelte.ts`; this
+   * underlined) plus the shared `Menu`. Which menu is open lives in `menu.svelte.ts`; this
    * wires the WAI-ARIA menubar keys — ↓/Enter/Space open on the first item, ↑ on the last, ←/→
    * move between the bar's menus (from the trigger or from inside an open menu) — and, while one
    * menu is open, hovering another trigger switches to it. The five feature menus only build

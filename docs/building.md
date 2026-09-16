@@ -134,19 +134,22 @@ locally, you're free to install what's missing yourself:
 
 ## Windows
 
-> **H-61: CI attempts a Windows installer on every tagged release, but as of H-61 it does not
-> produce one — and even if it did, it would be unverified: never run by the maintainer.**
-> `.github/workflows/release.yml`'s `windows` job builds on GitHub's `windows-latest` runner and,
-> if it succeeds, attaches its MSI/NSIS installer to the release clearly labelled unverified (see
-> the README's Download section). It's `continue-on-error: true` so a failure never blocks the
-> Linux release. **Currently it always fails** at the UI's `npm run build` step, before any
-> installer is produced: NTFS is case-insensitive by default, and two `ui/src/lib/**` modules
-> (`menu/menubar.svelte.ts`, `help/shortcutsDialog.svelte.ts`) collide there with a same-named
+> **H-61 found, H-69 fixed: CI attempts a Windows installer on every tagged release, and even
+> when it succeeds it is unverified: never run by the maintainer.** `.github/workflows/release.yml`'s
+> `windows` job builds on GitHub's `windows-latest` runner and, if it succeeds, attaches its
+> MSI/NSIS installer to the release clearly labelled unverified (see the README's Download
+> section). It's `continue-on-error: true` so a failure never blocks the Linux release. **H-61
+> found it always failed** at the UI's `npm run build` step, before any installer was produced:
+> NTFS is case-insensitive by default, and two `ui/src/lib/**` rune modules
+> (`menu/menubar.svelte.ts`, `help/shortcutsDialog.svelte.ts`) collided there with a same-named
 > `.svelte` component in the same directory (`MenuBar.svelte`, `ShortcutsDialog.svelte`), so the
-> bundler resolves imports of the module to the component instead and every named export the
-> component doesn't have becomes a build error. This is a pre-existing UI bug, unrelated to
-> packaging, and out of this ticket's scope to fix (see MEMORY.md's H-61 entry) — it also breaks
-> the `macos` job below the same way, since APFS is case-insensitive by default too.
+> bundler resolved imports of the module to the component instead and every named export the
+> component doesn't have became a build error — it broke the `macos` job below the same way,
+> since APFS is case-insensitive by default too. **H-69 renamed the two modules** (to
+> `menu/menu.svelte.ts` and `help/shortcuts.svelte.ts`, neither of which collides with any
+> sibling case-insensitively) and added a `just check` guard (`scripts/check_case_collisions.py`)
+> that fails the build if any two tracked paths would ever collide like this again. See
+> MEMORY.md's H-61 and H-69 entries for how far the Windows/macOS jobs get now.
 
 1. Install the [Rust MSVC toolchain](https://rustup.rs/) (`stable-x86_64-pc-windows-msvc`).
 2. Install the [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
@@ -175,15 +178,16 @@ absent; nothing else is affected.
 
 ## macOS
 
-> **H-61: CI attempts a macOS `.app`/`.dmg` on every tagged release, but as of H-61 it does not
-> produce one — and even if it did, it would be unverified: never run by the maintainer.**
-> `.github/workflows/release.yml`'s `macos` job builds on GitHub's `macos-latest` runner (Apple
-> Silicon; a single-architecture build, not a universal binary — no Intel Mac build is produced)
-> and, if it succeeds, attaches the `.dmg` to the release clearly labelled unverified (see the
-> README's Download section). It's `continue-on-error: true` so a failure never blocks the Linux
-> release. **Currently it always fails** at the UI's `npm run build` step, before any installer is
-> produced — the same pre-existing case-insensitive-filesystem bug described in the Windows section
-> above (APFS is case-insensitive by default too); see MEMORY.md's H-61 entry.
+> **H-61 found, H-69 fixed: CI attempts a macOS `.app`/`.dmg` on every tagged release, and even
+> when it succeeds it is unverified: never run by the maintainer.** `.github/workflows/release.yml`'s
+> `macos` job builds on GitHub's `macos-latest` runner (Apple Silicon; a single-architecture
+> build, not a universal binary — no Intel Mac build is produced) and, if it succeeds, attaches
+> the `.dmg` to the release clearly labelled unverified (see the README's Download section). It's
+> `continue-on-error: true` so a failure never blocks the Linux release. **H-61 found it always
+> failed** at the UI's `npm run build` step, before any installer was produced — the same
+> case-insensitive-filesystem module collision described in the Windows section above (APFS is
+> case-insensitive by default too), which **H-69 fixed**; see MEMORY.md's H-61 and H-69 entries
+> for how far this job gets now.
 
 1. Install [Xcode Command Line Tools](https://developer.apple.com/xcode/resources/): `xcode-select --install`.
 2. Install Rust via [rustup](https://rustup.rs/) (`stable-x86_64-apple-darwin` and/or

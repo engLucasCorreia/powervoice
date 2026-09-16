@@ -1,11 +1,11 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
-import { resetMenuBarForTest } from "../menu/menubar.svelte";
+import { resetMenuBarForTest } from "../menu/menu.svelte";
 import { resetTourForTest, tourState } from "../tour/tour.svelte";
 import { TOUR_IDS } from "../tour/tours";
 import { aboutState, resetAboutForTest } from "./about.svelte";
 import HelpMenu from "./HelpMenu.svelte";
-import { resetShortcutsDialogForTest, shortcutsDialogState } from "./shortcutsDialog.svelte";
+import { resetShortcutsDialogForTest, shortcutsDialogState } from "./shortcuts.svelte";
 
 afterEach(() => {
   resetMenuBarForTest();

@@ -5,7 +5,7 @@ import { resetDocumentStateForTest, openDocument } from "../document/document.sv
 import { clearActionHandlers, registerAction } from "../shortcuts";
 import type { ActionId } from "../shortcuts/actions";
 import { resetMarkersForTest, selectMarker } from "../markers/markers.svelte";
-import { resetMenuBarForTest } from "../menu/menubar.svelte";
+import { resetMenuBarForTest } from "../menu/menu.svelte";
 import { resetEditForTest } from "../state/edit.svelte";
 import { insertSilenceState, resetInsertSilenceForTest } from "../state/insertSilence.svelte";
 import { applyRecordStateForTest, resetRecordForTest } from "../state/record.svelte";

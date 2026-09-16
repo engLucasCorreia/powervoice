@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { isPlatformMac, SHORTCUTS } from "../shortcuts/registry";
 import { shortcutRows } from "../shortcuts/shortcutLabel";
 import ShortcutsDialog from "./ShortcutsDialog.svelte";
-import { openShortcutsDialog, resetShortcutsDialogForTest } from "./shortcutsDialog.svelte";
+import { openShortcutsDialog, resetShortcutsDialogForTest } from "./shortcuts.svelte";
 
 afterEach(() => {
   resetShortcutsDialogForTest();

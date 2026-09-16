@@ -5,7 +5,7 @@ import { applyAnalyzerPrefs, resetAnalyzerForTest } from "../analyzer/analyzer.s
 import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import type { Settings } from "../ipc/bindings";
 import { clearActionHandlers, registerAction } from "../shortcuts";
-import { resetMenuBarForTest } from "../menu/menubar.svelte";
+import { resetMenuBarForTest } from "../menu/menu.svelte";
 import { rendererPref, resetRendererPrefForTest } from "../state/rendererPref.svelte";
 import { resetSelectionForTest, setSelectionFromResult } from "../state/selection.svelte";
 import { loadSettings, resetSettingsStateForTest, settingsState } from "../state/settings.svelte";

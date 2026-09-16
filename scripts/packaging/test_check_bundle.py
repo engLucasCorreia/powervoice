@@ -89,6 +89,77 @@ class CheckTreeTests(unittest.TestCase):
             self.assertEqual(len(errors), 1)
 
 
+def make_macos_tree(root: Path, *, app: bool, sandbox: bool) -> None:
+    bin_dir = root / "Contents" / "MacOS"
+    bin_dir.mkdir(parents=True)
+    if app:
+        (bin_dir / check_bundle.APP_BINARY).write_bytes(b"#!/bin/sh\n")
+    if sandbox:
+        (bin_dir / check_bundle.SANDBOX_BINARY).write_bytes(b"#!/bin/sh\n")
+
+
+class FindMacosBinDirTests(unittest.TestCase):
+    def test_direct_app_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "PowerVoice.app"
+            make_macos_tree(root, app=True, sandbox=True)
+            self.assertEqual(check_bundle.find_macos_bin_dir(root), root / "Contents" / "MacOS")
+
+    def test_one_level_wrapped(self) -> None:
+        # e.g. a mounted .dmg's root, holding the .app alongside other volume contents.
+        with tempfile.TemporaryDirectory() as tmp:
+            mount_root = Path(tmp)
+            app_root = mount_root / "PowerVoice.app"
+            make_macos_tree(app_root, app=True, sandbox=True)
+            found = check_bundle.find_macos_bin_dir(mount_root)
+            self.assertEqual(found, app_root / "Contents" / "MacOS")
+
+    def test_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertIsNone(check_bundle.find_macos_bin_dir(root))
+
+
+class CheckMacosTreeTests(unittest.TestCase):
+    def test_both_present_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "PowerVoice.app"
+            make_macos_tree(root, app=True, sandbox=True)
+            self.assertEqual(check_bundle.check_macos_tree(root), [])
+
+    def test_missing_sandbox_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "PowerVoice.app"
+            make_macos_tree(root, app=True, sandbox=False)
+            errors = check_bundle.check_macos_tree(root)
+            self.assertEqual(len(errors), 1)
+            self.assertIn(check_bundle.SANDBOX_BINARY, errors[0])
+
+    def test_no_contents_macos_at_all_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "PowerVoice.app"
+            root.mkdir()
+            errors = check_bundle.check_macos_tree(root)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("Contents/MacOS", errors[0])
+
+
+class CheckBundleFileMacosAppTests(unittest.TestCase):
+    def test_app_directory_checked_in_place_no_extraction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app_root = Path(tmp) / "PowerVoice.app"
+            make_macos_tree(app_root, app=True, sandbox=True)
+            self.assertEqual(check_bundle.check_bundle_file(app_root), [])
+
+    def test_app_directory_missing_sandbox_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app_root = Path(tmp) / "PowerVoice.app"
+            make_macos_tree(app_root, app=True, sandbox=False)
+            errors = check_bundle.check_bundle_file(app_root)
+            self.assertEqual(len(errors), 1)
+            self.assertIn(check_bundle.SANDBOX_BINARY, errors[0])
+
+
 class FindBundlesTests(unittest.TestCase):
     def test_finds_deb_and_appimage_under_any_profile_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -105,6 +176,22 @@ class FindBundlesTests(unittest.TestCase):
             self.assertEqual(
                 sorted(p.name for p in found),
                 ["PowerVoice_0.1.0_amd64.AppImage", "PowerVoice_0.1.0_amd64.deb"],
+            )
+
+    def test_finds_macos_app_and_dmg_under_any_profile_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            app_dir = target / "release" / "bundle" / "macos"
+            dmg_dir = target / "release" / "bundle" / "dmg"
+            app_dir.mkdir(parents=True)
+            dmg_dir.mkdir(parents=True)
+            (app_dir / "PowerVoice.app").mkdir()
+            (dmg_dir / "PowerVoice_0.1.0_aarch64.dmg").write_bytes(b"")
+
+            found = check_bundle.find_bundles(target)
+            self.assertEqual(
+                sorted(p.name for p in found),
+                ["PowerVoice.app", "PowerVoice_0.1.0_aarch64.dmg"],
             )
 
     def test_empty_when_nothing_built(self) -> None:

@@ -1,9 +1,20 @@
-# Builds the Linux packages (AppImage + .deb) and publishes them as a GitHub pre-release when a
+# Builds installers for all three desktop OSes and publishes them as a GitHub pre-release when a
 # `v*` tag is pushed (or on a manual run). The plugin sandbox (`powervoice-sandbox`) is built
 # first and bundled next to the app as a Tauri external binary; the app looks for it beside its
 # own executable (vox_plugin_host::SandboxOptions::beside_current_exe). H-45: `just build` does
-# the same locally, through the same scripts/packaging/{build_sandbox,tauri_build}.sh — one
-# source of truth for how the sandbox gets staged and bundled.
+# the same locally on Linux, through the same scripts/packaging/{build_sandbox,tauri_build}.sh —
+# one source of truth for how the sandbox gets staged and bundled; the `windows`/`macos` jobs
+# below run the identical two scripts under `bash` (Git-for-Windows bash on the Windows runner
+# image, the system bash on macOS), so there's still one source of truth across all three OSes.
+#
+# H-61: the `windows`/`macos` jobs are new and have never been run by the maintainer (the product
+# owner only develops/tests on Linux — PROMPT.md §2). They're `continue-on-error: true` at the job
+# level so a failure there never blocks the Linux release, and `needs: linux` so they only attach
+# their bundles to a release the Linux job has already published — a windows/macos failure can
+# therefore never even delay, let alone block, the Linux release. No code signing or notarization
+# on either platform (out of scope for H-61): Windows builds are unsigned (SmartScreen will warn)
+# and macOS builds are unsigned/unnotarized (Gatekeeper will refuse to open them without a
+# right-click -> Open or clearing the quarantine attribute) - see docs/building.md.
 name: Release
 
 on:
@@ -54,6 +65,11 @@ jobs:
         with:
           prerelease: true
           generate_release_notes: true
+          body: |
+            Linux packages below are built and tested by the maintainer (Arch, PipeWire). Windows
+            and macOS installers, if this release has any, are **unverified — never run by the
+            maintainer** (see the Windows/macOS jobs of this workflow run for what happened); use
+            them at your own risk and please report what you find.
           files: |
             target/release/bundle/appimage/*.AppImage
             target/release/bundle/deb/*.deb
@@ -66,3 +82,99 @@ jobs:
           path: |
             target/release/bundle/appimage/*.AppImage
             target/release/bundle/deb/*.deb
+
+  windows:
+    needs: linux
+    runs-on: windows-latest
+    continue-on-error: true # H-61: never run before; a failure here must not block the Linux release.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install UI dependencies
+        run: npm ci --prefix ui
+
+      # `windows-latest`'s default shell is PowerShell; both scripts are bash (Git for Windows,
+      # preinstalled on the runner image, provides it) so the local/CI staging logic stays
+      # identical across OSes (see the file header comment above).
+      - name: Build the plugin sandbox
+        shell: bash
+        run: scripts/packaging/build_sandbox.sh
+
+      - name: Build MSI and NSIS installers
+        shell: bash
+        run: scripts/packaging/tauri_build.sh --bundles msi,nsis
+
+      - name: Verify the sandbox is bundled
+        shell: bash
+        run: python3 scripts/packaging/check_bundle_windows.py
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          files: |
+            target/release/bundle/msi/*.msi
+            target/release/bundle/nsis/*.exe
+
+      - name: Keep the packages (manual runs)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: powervoice-windows
+          path: |
+            target/release/bundle/msi/*.msi
+            target/release/bundle/nsis/*.exe
+
+  macos:
+    needs: linux
+    runs-on: macos-latest
+    continue-on-error: true # H-61: never run before; a failure here must not block the Linux release.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install UI dependencies
+        run: npm ci --prefix ui
+
+      - name: Build the plugin sandbox
+        run: scripts/packaging/build_sandbox.sh
+
+      - name: Build .app and .dmg
+        run: scripts/packaging/tauri_build.sh --bundles app,dmg
+
+      - name: Verify the sandbox is bundled
+        run: python3 scripts/packaging/check_bundle.py
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          files: |
+            target/release/bundle/dmg/*.dmg
+
+      - name: Keep the packages (manual runs)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: powervoice-macos
+          path: |
+            target/release/bundle/dmg/*.dmg

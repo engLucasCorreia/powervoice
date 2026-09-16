@@ -1,23 +1,30 @@
 #!/usr/bin/env python3
-"""Fails if a built `.deb` or AppImage lacks the plugin sandbox (H-45 packaging check).
+"""Fails if a built Linux/macOS bundle lacks the plugin sandbox (H-45 packaging check; H-61 added
+the macOS half — Windows has its own sibling script, `check_bundle_windows.py`, since MSI/NSIS
+need Windows-only tools to open).
 
 The app finds the sandbox beside its own executable
-(`vox_plugin_host::SandboxOptions::beside_current_exe`), so every `.deb`/AppImage this project
-ships must contain `usr/bin/powervoice-sandbox` next to `usr/bin/powervoice-app`. Nothing enforced
-that before H-45 — a local `just build` silently produced a bundle plugins couldn't load into.
+(`vox_plugin_host::SandboxOptions::beside_current_exe`), so every bundle this project ships must
+contain `powervoice-sandbox` next to `powervoice-app` (`usr/bin/` in a `.deb`/AppImage,
+`Contents/MacOS/` in a macOS `.app`/`.dmg`). Nothing enforced that before H-45 — a local
+`just build` silently produced a bundle plugins couldn't load into.
 
 Usage:
     python3 scripts/packaging/check_bundle.py [path-to-bundle ...]
 
-With no arguments, checks every `*.deb` and `*.AppImage` under `target/*/bundle/` (i.e. whatever
-`just build` / `scripts/packaging/tauri_build.sh` most recently produced). Exits non-zero, with
-the offending file(s), on any failure.
+With no arguments, checks every `*.deb`, `*.AppImage`, `*.app` and `*.dmg` under `target/*/bundle/`
+(i.e. whatever `just build` / `scripts/packaging/tauri_build.sh` most recently produced). Exits
+non-zero, with the offending file(s), on any failure.
 
 No extra dependencies: `.deb` archives (an `ar` archive of `debian-binary`, `control.tar.*` and
 `data.tar.*`) are unpacked with a small pure-Python `ar` reader plus the stdlib `tarfile` (falling
 back to the `zstd` CLI for `data.tar.zst`, which newer `dpkg`/bundlers default to and stdlib
 `tarfile` can't read); AppImages extract themselves via their own `--appimage-extract` (no FUSE
-needed, unlike actually running one).
+needed, unlike actually running one); a macOS `.app` is already a plain directory tree, no
+extraction needed; a `.dmg` is mounted read-only with the macOS-only `hdiutil` (so the `.dmg`
+branch only actually runs on a macOS host, same as the AppImage branch only really exercises
+`--appimage-extract` on Linux — `just check`'s unit tests only cover the pure tree-checking logic
+against fake trees, on any OS).
 """
 
 from __future__ import annotations
@@ -75,7 +82,41 @@ def check_tree(root: Path) -> list[str]:
     return check_usr_bin(usr_bin)
 
 
-# --- extraction: real .deb / AppImage archives -> a tree check_tree() can look at ----------------
+def find_macos_bin_dir(root: Path) -> Path | None:
+    """Locates `Contents/MacOS` in a macOS `.app` bundle (H-61).
+
+    `root` is normally the `.app` directory itself; also tolerates one level of wrapping (e.g. a
+    `.dmg`'s mount point, which holds the `.app` alongside a `.background`/`Applications` symlink)
+    the same way `find_usr_bin` tolerates a stray AppImage wrapping directory.
+    """
+    direct = root / "Contents" / "MacOS"
+    if direct.is_dir():
+        return direct
+    for candidate in sorted(root.glob("*.app/Contents/MacOS")):
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def check_macos_bin_dir(bin_dir: Path) -> list[str]:
+    """Checks that both binaries are present in `Contents/MacOS` (no `.exe`-style suffix on macOS)."""
+    errors = []
+    for name in (APP_BINARY, SANDBOX_BINARY):
+        path = bin_dir / name
+        if not path.is_file():
+            errors.append(f"missing {bin_dir}/{name}")
+    return errors
+
+
+def check_macos_tree(root: Path) -> list[str]:
+    """Checks an already-extracted macOS bundle tree (a `.app` directory, or a mounted `.dmg`)."""
+    bin_dir = find_macos_bin_dir(root)
+    if bin_dir is None:
+        return [f"no Contents/MacOS directory found under {root}"]
+    return check_macos_bin_dir(bin_dir)
+
+
+# --- extraction: real .deb / AppImage / .dmg archives -> a tree check_tree() can look at ---------
 
 
 def _read_ar_members(data: bytes) -> dict[str, bytes]:
@@ -154,8 +195,37 @@ def extract_appimage(appimage_path: Path, dest: Path) -> None:
         shutil.copytree(squashfs_root, dest)
 
 
+def extract_dmg(dmg_path: Path, dest: Path) -> None:
+    """Mounts a `.dmg` read-only via macOS's `hdiutil` and copies the `.app` it contains.
+
+    macOS-only (there's no pure-Python or cross-platform way to open a `.dmg`) — like
+    `extract_appimage` really only runs for real on the OS that produced the bundle.
+    """
+    if shutil.which("hdiutil") is None:
+        raise BundleError(f"{dmg_path}: needs macOS's 'hdiutil' to mount, and it isn't on PATH")
+    with tempfile.TemporaryDirectory() as mount_dir:
+        proc = subprocess.run(
+            ["hdiutil", "attach", "-nobrowse", "-readonly", "-mountpoint", mount_dir, str(dmg_path)],
+            capture_output=True,
+        )
+        if proc.returncode != 0:
+            raise BundleError(f"{dmg_path}: hdiutil attach failed: {proc.stderr.decode(errors='replace')}")
+        try:
+            apps = sorted(Path(mount_dir).glob("*.app"))
+            if not apps:
+                raise BundleError(f"{dmg_path}: no .app found inside the mounted image")
+            shutil.copytree(apps[0], dest)
+        finally:
+            subprocess.run(["hdiutil", "detach", mount_dir, "-quiet"], capture_output=True)
+
+
 def check_bundle_file(path: Path) -> list[str]:
-    """Extracts `path` (a `.deb` or `.AppImage`) and checks it, prefixing any error with `path`."""
+    """Extracts `path` (a `.deb`, `.AppImage`, `.app` or `.dmg`) and checks it, prefixing any
+    error with `path`."""
+    if path.name.endswith(".app") and path.is_dir():
+        # Already a plain directory tree - nothing to extract.
+        return [f"{path}: {e}" for e in check_macos_tree(path)]
+
     with tempfile.TemporaryDirectory() as tmp:
         dest = Path(tmp) / "extracted"
         try:
@@ -163,8 +233,11 @@ def check_bundle_file(path: Path) -> list[str]:
                 extract_deb(path, dest)
             elif path.name.endswith(".AppImage"):
                 extract_appimage(path, dest)
+            elif path.name.endswith(".dmg"):
+                extract_dmg(path, dest)
+                return [f"{path}: {e}" for e in check_macos_tree(dest)]
             else:
-                return [f"{path}: unrecognized bundle type (expected .deb or .AppImage)"]
+                return [f"{path}: unrecognized bundle type (expected .deb, .AppImage, .app or .dmg)"]
         except BundleError as exc:
             return [f"{path}: {exc}"]
         return [f"{path}: {e}" for e in check_tree(dest)]
@@ -173,13 +246,18 @@ def check_bundle_file(path: Path) -> list[str]:
 def find_bundles(target_dir: Path) -> list[Path]:
     debs = sorted(target_dir.glob("*/bundle/deb/*.deb"))
     appimages = sorted(target_dir.glob("*/bundle/appimage/*.AppImage"))
-    return debs + appimages
+    apps = sorted(target_dir.glob("*/bundle/macos/*.app"))
+    dmgs = sorted(target_dir.glob("*/bundle/dmg/*.dmg"))
+    return debs + appimages + apps + dmgs
 
 
 def main() -> int:
     paths = [Path(p) for p in sys.argv[1:]] or find_bundles(REPO_ROOT / "target")
     if not paths:
-        print("no .deb or .AppImage bundles found under target/*/bundle/ — run `just build` first.")
+        print(
+            "no .deb, .AppImage, .app or .dmg bundles found under target/*/bundle/ — "
+            "run `just build` first."
+        )
         return 1
 
     all_errors: list[str] = []

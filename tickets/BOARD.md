@@ -93,6 +93,12 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-53 | Calibration success-path test (H-50): no automated test covers a successful loopback calibration — port the private `Rig`/`Loopback` rig from `crates/engine/tests/punch.rs` into shared test support so `src-tauri/src/calibration.rs` can assert Result-before-Done end to end | S | done |
 | H-54 | The last failing performance row: `frame_spectral_canvas2d_2126x850_p95_ms` 21.2 ms vs SPEC-007 AC-10's ≤ 16.7 ms — the Canvas2D (software) split view at a large window during a continuous zoom+scroll sweep. Either optimise further (the WebGL2 path passes everywhere) or amend AC-10 to scope the 60 fps target per renderer/window size, with the owner's 2126×850 window in mind | S | todo |
 | H-55 | Packaged-module determinism failure on CI: `voxmod.rs::the_module_test_host_suite_passes_through_the_adapter` — two instances of the packaged Gain differ at sample 10558 on GitHub's 2-core runner, passes locally (5/5, incl. single-threaded and under load); CI run 35064469629 | O | in progress |
+| H-56 | Insert silence + cross-document clipboard (T-302 remainder, SPEC-008) | S | in progress |
+| H-57 | Markers: kinds in the core model, drag, region→selection (T-303 remainder, SPEC-009) | S | in progress |
+| H-58 | Dynamics part 2: activate Expander + AutoGate, real look-ahead latency (T-407 remainder, SPEC-016 part 2) | O | in progress |
+| H-59 | Engine/recording/IPC/UI hardening audit (T-105/T-106/T-108/T-109 remainder): matrix vs SPEC-001/002/003 + ADR-003, fill real gaps | O | todo |
+| H-60 | Save pipeline / peaks / waveform renderer audit (T-201/T-203/T-205 remainder): matrix vs SPEC-005/006/009/018, fill real gaps | S | todo |
+| H-61 | Windows + macOS installers from CI (T-705 remainder), labelled unverified | S | todo |
 | H-50 | Test robustness: de-flake `src-tauri normalize::tests::start_peak_job_runs_end_to_end_and_reports_done_with_a_result` (waits for Done then asserts the Result event emitted after it — poll instead), re-check the output-callback worst case on an idle machine (T-704/H-43 open question) | S | done |
 | H-51 | Doc/code truth gaps found by T-706: refresh ADR-001 §2/§4, ADR-002 §1 (no rayon pool, 60 Hz telemetry, 65536 monitor ring), ADR-004 §1/ADR-001 §6 (sessions use ProjectDirs data_dir = Windows roaming, modules use app_local_data_dir — decide and align), ADR-008 §5/§8 superseded lines; document or fix hidden SPEC-016/SPEC-013 params (AutoGate/Expander/look-ahead inert), the output-meter vs analyzer-tap dry-monitor difference, stale src-tauri comments | S | done |
 | H-18 | Shared test factories for DTOs (`ui/src/lib/test/fixtures.ts` + Rust builders) so a new DTO field touches one helper, not 20 test literals (merge-friction fix) | H | done |
@@ -122,22 +128,22 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-102 | Devices: enumeration, channel deinterleave, hot-plug polling, device lost | W1 | O | M0 | done |
 | T-103 | Rack core: module registry, chain swap/retire, host bypass/crossfade, dual-mono shim, param routing + same-offset/id event coalescing, latency sum, Gain, offline render, `cli render --rack` | W1 | O | M0 | done |
 | T-104 | App infra: tracing log, typed errors→toasts/banners, panic hook, settings, stores, keymap registry, WebKit DMA-BUF default | W1 | S | M0 | done |
-| T-105 | Engine core: control thread, RT callbacks, transport (Stop→play start), reader/prefetch, resampling, heard clock, 60 Hz telemetry | W2 | O | T-101, T-102, T-103 | → S1-01 (subset), rest hardening |
-| T-106 | Recording: crash-safe WAV, peaks stream, take → undoable edit | W3 | O | T-105 | → S1-04 (subset), rest hardening |
+| T-105 | Engine core: control thread, RT callbacks, transport (Stop→play start), reader/prefetch, resampling, heard clock, 60 Hz telemetry | W2 | O | T-101, T-102, T-103 | → S1-01 (subset), rest hardening → remainder ticketed as H-59 |
+| T-106 | Recording: crash-safe WAV, peaks stream, take → undoable edit | W3 | O | T-105 | → S1-04 (subset), rest hardening → remainder ticketed as H-59 |
 | T-107 | Monitoring off/dry/through-rack, drift-corrected in→out ring | W3 | O | T-105 | done |
-| T-108 | IPC layer: M1 commands/events, VXTM/VXRP channels, binary decoders + golden fixtures, clock sync | W3 | S | T-104, T-105 | → S1-01/S1-03 (subset), rest hardening |
+| T-108 | IPC layer: M1 commands/events, VXTM/VXRP channels, binary decoders + golden fixtures, clock sync | W3 | S | T-104, T-105 | → S1-01/S1-03 (subset), rest hardening → remainder ticketed as H-59 |
 | T-110 | Bench harness (divan, callback-time histogram) | W3 | S | T-105 | done |
-| T-109 | UI: device settings, transport bar, meter bridge, live recording waveform | W4 | S | T-106, T-107, T-108 | → S1-01/S1-04 (subset), rest hardening |
+| T-109 | UI: device settings, transport bar, meter bridge, live recording waveform | W4 | S | T-106, T-107, T-108 | → S1-01/S1-04 (subset), rest hardening → remainder ticketed as H-59 |
 
 ## M2 — Editor view
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
 | T-200 | M2 spec wave: SPEC-005 formats, SPEC-006 waveform view, SPEC-007 spectral & analyzer | W0 | O/S | M0 | done |
-| T-201 | Save pipeline: WAV writer 16/24/32f, TPDF dither, clip policy, cue/adtl markers, atomic save job, FLAC encode | W1 | S+OR | M1 | → S1-02/S1-03 (WAV subset), rest hardening |
+| T-201 | Save pipeline: WAV writer 16/24/32f, TPDF dither, clip policy, cue/adtl markers, atomic save job, FLAC encode | W1 | S+OR | M1 | → S1-02/S1-03 (WAV subset), rest hardening → remainder ticketed as H-60 |
 | T-202 | Import pipeline: symphonia decode (WAV variants, FLAC, MP3, M4A, Ogg), downmix, session import job, CLI convert/markers | W1 | S+OR | M1 | done (import job UI + channel-choice dialog → T-209) |
-| T-203 | Per-chunk peak pyramid + binary IPC | W1 | S+OR | M1 | → S1-02/S1-03 (subset), rest hardening |
+| T-203 | Per-chunk peak pyramid + binary IPC | W1 | S+OR | M1 | → S1-02/S1-03 (subset), rest hardening → remainder ticketed as H-60 |
 | T-204 | STFT spectrogram tile service | W1 | O | M1 | done |
-| T-205 | Waveform renderer: zoom/scroll, amplitude zoom, rulers, extrapolated playhead | W2 | S | T-203 | → S1-03 (Canvas2D subset), rest hardening |
+| T-205 | Waveform renderer: zoom/scroll, amplitude zoom, rulers, extrapolated playhead | W2 | S | T-203 | → S1-03 (Canvas2D subset), rest hardening → remainder ticketed as H-60 |
 | T-206 | Selection model, time formats, zero-crossing snap | W3 | S | T-205 | done |
 | T-207 | Spectrogram renderer, log/linear, split view | W3 | S | T-204, T-205 | done |
 | T-208 | Live output analyzer: post-rack tap, FFT worker, 1/24-oct bands, VXSA, bottom-dock UI | W3 | S+OR | T-205 | done (follow-ups → H-16) |
@@ -148,8 +154,8 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 |---|---|---|---|---|---|
 | T-300 | M3 spec wave: SPEC-008, SPEC-009, SPEC-010, SPEC-018, SPEC-022 | W0 | O | M0, SPEC-005 | done |
 | T-301 | Undo/redo, resident memory budget, edit journal, crash recovery | W1 | O | M2 | done (follow-ups → H-17) |
-| T-302 | Cut/copy/paste/delete, trim, silence, insert silence, clipboard | W2 | S+OR | T-301 | → S2-01 (done); rest: insert silence, cross-document clipboard |
-| T-303 | Markers: kinds, add/region, rename, drag, delete, navigation, Markers panel | W2 | S | T-301 | → S2-03 (done); rest: marker kind in the core model, drag, region→selection |
+| T-302 | Cut/copy/paste/delete, trim, silence, insert silence, clipboard | W2 | S+OR | T-301 | → S2-01 (done); rest: insert silence, cross-document clipboard → remainder ticketed as H-56 |
+| T-303 | Markers: kinds, add/region, rename, drag, delete, navigation, Markers panel | W2 | S | T-301 | → S2-03 (done); rest: marker kind in the core model, drag, region→selection → remainder ticketed as H-57 |
 | T-304 | Record at cursor (Insert/Overwrite) + punch-in + latency offset & calibration | W2 | O | T-301 | done (follow-ups → H-21) |
 | T-305 | Peak normalize favorites | W2 | S+OR | T-301 | done (via S2-02 + H-09) |
 | T-306 | Sidecar `.vo.json`, identity check, sidecar-only saves, recent files, second-instance warning | W3 | S+OR | T-302, T-303 | done (follow-ups → H-12, H-15, T-303) |
@@ -164,7 +170,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-404 | True-peak limiter | W1 | O | M3 | done (via S3-05 + H-03) |
 | T-405 | Rack panel + generic parameter UI | W2 | S | T-401 | done (via S3-01) |
 | T-406 | Module & rack presets | W2 | S | T-401 | done (rename/overwrite UX → H-22) |
-| T-407 | Dynamics B: expander + AutoGate | W2 | O | T-403 | → S3-02 (params implemented); rest: verify SPEC-016 part-2 ACs |
+| T-407 | Dynamics B: expander + AutoGate | W2 | O | T-403 | → S3-02 (params implemented); rest: verify SPEC-016 part-2 ACs → remainder ticketed as H-58 |
 | T-408 | Noise gate (shared envelope/hysteresis) | W3 | O | T-407 | done (via S3-02) |
 | T-409 | EQ graph UI (analyzer + ResponseCurve) | W3 | S | T-402, T-405, T-208 | → S3-07 (done); rest: analyzer overlay, keyboard nodes, expanded view |
 | T-410 | Dynamics UI + gain-reduction meter (Telemetry) | W3 | S | T-405, T-407 | → H-03 (GR meters done); rest: VXTC transfer curve + dynamics graph UI |

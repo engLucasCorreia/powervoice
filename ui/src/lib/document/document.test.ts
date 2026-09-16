@@ -8,15 +8,19 @@ import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 import {
   applyImportJobProgress,
   applyImportStarted,
+  applySaveJobProgress,
   cancelImportJob,
   cancelSaveAsPrompt,
+  cancelSaveJob,
   confirmSaveAsPrompt,
   dismissImportJob,
+  dismissSaveJob,
   documentState,
   openDocument,
   openSaveAsPrompt,
   requestOpen,
   requestSave,
+  requestSaveAs,
   resetDocumentStateForTest,
   resolveChannelChoicePrompt,
   resolveClipPrompt,
@@ -691,6 +695,69 @@ describe("T-209: import job progress (SPEC-005 §2.3)", () => {
     cancelImportJob();
     await new Promise((r) => setTimeout(r, 0));
     expect(called).toBe(false);
+  });
+});
+
+describe("H-70: save job progress (SPEC-005 §2.7/§4.10)", () => {
+  it("applySaveJobProgress tracks kind 'save' only", () => {
+    const other: JobProgressDto = { job_id: 1, kind: "import", state: "running", fraction: 0.4 };
+    applySaveJobProgress(other);
+    expect(documentState().saveJob).toBeNull();
+
+    const started: JobProgressDto = { job_id: 5, kind: "save", state: "running", fraction: 0 };
+    applySaveJobProgress(started);
+    expect(documentState().saveJob).toEqual({ jobId: 5, fraction: 0, state: "running" });
+
+    const progressed: JobProgressDto = { job_id: 5, kind: "save", state: "running", fraction: 0.7 };
+    applySaveJobProgress(progressed);
+    expect(documentState().saveJob?.fraction).toBe(0.7);
+
+    const done: JobProgressDto = { job_id: 5, kind: "save", state: "done", fraction: 1 };
+    applySaveJobProgress(done);
+    expect(documentState().saveJob?.state).toBe("done");
+
+    dismissSaveJob();
+    expect(documentState().saveJob).toBeNull();
+  });
+
+  it("cancelSaveJob calls document_save_cancel with the running job's id", async () => {
+    const calls: unknown[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "document_save_cancel") {
+        calls.push(args);
+        return undefined;
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    applySaveJobProgress({ job_id: 4, kind: "save", state: "running", fraction: 0.3 });
+    cancelSaveJob();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).toEqual([{ jobId: 4 }]);
+  });
+
+  it("cancelSaveJob is a no-op once the job has already finished", async () => {
+    let called = false;
+    mockIPC((cmd) => {
+      called = true;
+      throw new Error(`unexpected command: ${cmd}`);
+    });
+    applySaveJobProgress({ job_id: 4, kind: "save", state: "failed", fraction: 0 });
+    cancelSaveJob();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(called).toBe(false);
+  });
+
+  it("requestSave and requestSaveAs are no-ops while a save is already running", async () => {
+    let called = false;
+    mockIPC(() => {
+      called = true;
+      throw new Error("a running save must not be raced");
+    });
+    applySaveJobProgress({ job_id: 6, kind: "save", state: "running", fraction: 0.1 });
+    await requestSave();
+    requestSaveAs();
+    expect(called).toBe(false);
+    expect(documentState().saveAsPrompt).toBeNull();
   });
 });
 

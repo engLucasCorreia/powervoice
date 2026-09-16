@@ -521,6 +521,11 @@ export async function documentSaveAs(
   });
 }
 
+/** H-70 (SPEC-005 §4.10): cancels a running Save/Save As job. Best-effort. */
+export async function documentSaveCancel(jobId: number): Promise<void> {
+  return invoke<void>("document_save_cancel" satisfies CommandName, { jobId });
+}
+
 /**
  * T-306 (SPEC-018 §2.6.5): records the spectral pane's current settings for the next save
  * (fire-and-forget — a view-only change never marks the document modified).

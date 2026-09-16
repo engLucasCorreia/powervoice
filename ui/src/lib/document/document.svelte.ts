@@ -19,6 +19,7 @@ import {
   documentOpenCancel,
   documentSave,
   documentSaveAs,
+  documentSaveCancel,
 } from "../ipc/commands";
 import { registerAction } from "../shortcuts";
 import { noticeFromIpcError } from "../notices/fromIpcError";
@@ -156,6 +157,18 @@ export interface ImportJobState {
   lenSamples: number | null;
 }
 
+/** H-70 (SPEC-005 §2.7/§4.10): Save/Save As's job progress — `saveDocument`/`saveDocumentAs`
+ * already await the command's own result (`document_changed`, or the thrown `IpcError`); this is
+ * only for the shared progress dialog and its Cancel (`document_save_cancel`). Only one Save/Save
+ * As job ever runs at a time (the backend's own busy flag, `error.save.in_progress`), so unlike
+ * `ImportJobState` this doesn't need "early progress before the job id is known" buffering — the
+ * first `job_progress` (`Running`, `fraction: 0`) the backend emits already carries it. */
+export interface SaveJobState {
+  jobId: number;
+  fraction: number;
+  state: "running" | "done" | "cancelled" | "failed";
+}
+
 let doc = $state<DocumentDto>({ ...EMPTY });
 let unsavedPrompt = $state<UnsavedPrompt | null>(null);
 let saveAsPrompt = $state<SaveAsPrompt | null>(null);
@@ -163,6 +176,7 @@ let confirmPrompt = $state<PendingConfirmPrompt | null>(null);
 let channelChoicePrompt = $state<PendingChannelChoicePrompt | null>(null);
 let clipPrompt = $state<PendingClipPrompt | null>(null);
 let importJob = $state<ImportJobState | null>(null);
+let saveJob = $state<SaveJobState | null>(null);
 let unlistenImportProgress: (() => void) | null = null;
 
 /** T-306: `dirty || sidecar_dirty` — the title's `*` and every unsaved-changes prompt fire on
@@ -180,6 +194,7 @@ export function documentState(): {
   readonly channelChoicePrompt: ChannelChoicePrompt | null;
   readonly clipPrompt: ClipPrompt | null;
   readonly importJob: ImportJobState | null;
+  readonly saveJob: SaveJobState | null;
 } {
   return {
     get current() {
@@ -202,6 +217,9 @@ export function documentState(): {
     },
     get importJob() {
       return importJob;
+    },
+    get saveJob() {
+      return saveJob;
     },
   };
 }
@@ -373,9 +391,10 @@ function isMultichannelSourceError(err: unknown): err is IpcError & { params: { 
   );
 }
 
-/** T-209/H-20: ensures the `job_progress` (kind `import`) and `import_started` listeners are
- * attached, so `importJob` tracks an import started by this or another call (mirrors
- * `state/normalize.svelte.ts`'s `ensureListening`). */
+/** T-209/H-20/H-70: ensures the `job_progress` (kind `import` and, H-70, `save`) and
+ * `import_started` listeners are attached, so `importJob`/`saveJob` track a job started by this
+ * or another call (mirrors `state/normalize.svelte.ts`'s `ensureListening`). One `listen` call
+ * for both job kinds — each apply function filters on `payload.kind` itself. */
 async function ensureImportProgressListening(): Promise<void> {
   if (unlistenImportProgress) {
     return;
@@ -383,7 +402,10 @@ async function ensureImportProgressListening(): Promise<void> {
   try {
     const unlistenProgress = await listen<JobProgressDto>(
       "job_progress" satisfies EventName,
-      (event) => applyImportJobProgress(event.payload),
+      (event) => {
+        applyImportJobProgress(event.payload);
+        applySaveJobProgress(event.payload);
+      },
     );
     const unlistenStarted = await listen<ImportStartedDto>(
       "import_started" satisfies EventName,
@@ -454,6 +476,31 @@ export function cancelImportJob(): void {
   if (importJob && importJob.state === "running") {
     void documentOpenCancel(importJob.jobId).catch(report);
   }
+}
+
+/** H-70 (SPEC-005 §4.10): applies one `job_progress` event to the save job store (kind `save`
+ * only) — pure, so it's directly testable (mirrors `applyImportJobProgress`/
+ * `state/bake.svelte.ts`'s `applyBakeJobProgress`). Only one Save/Save As job ever runs at a
+ * time, so this always takes the event at face value rather than checking a previously known job
+ * id (there's nothing to buffer: the first event this store ever sees for a save *is* its start,
+ * `document_save`/`document_save_as` themselves emit it before the write begins). */
+export function applySaveJobProgress(payload: JobProgressDto): void {
+  if (payload.kind !== "save") {
+    return;
+  }
+  saveJob = { jobId: payload.job_id, fraction: payload.fraction, state: payload.state };
+}
+
+/** Cancels the running Save/Save As job (`document_save_cancel`, best-effort). */
+export function cancelSaveJob(): void {
+  if (saveJob && saveJob.state === "running") {
+    void documentSaveCancel(saveJob.jobId).catch(report);
+  }
+}
+
+/** Dismisses a finished save job's progress dialog (Done/Cancelled/Failed). */
+export function dismissSaveJob(): void {
+  saveJob = null;
 }
 
 /** Dismisses a finished import job's progress panel (Done/Cancelled/Failed). */
@@ -718,8 +765,15 @@ export async function confirmSaveAsPrompt(
 }
 
 /** File → Save (Ctrl+S): saves in place, or opens Save As when there's no bound path yet or the
- * document was opened from a compressed source (SPEC-005 §2.6: Save acts as Save As). */
+ * document was opened from a compressed source (SPEC-005 §2.6: Save acts as Save As).
+ *
+ * H-70 (SPEC-005 §2.7 "Job behavior"): "Save and Save As are disabled while a save runs" — a
+ * no-op here too, not just in the menu, so the keyboard shortcut can't race a running job (the
+ * backend's own busy flag would just refuse it with a toast). */
 export async function requestSave(): Promise<void> {
+  if (saveJob?.state === "running") {
+    return;
+  }
   if (!doc.path || isLossySourcePath(doc.path)) {
     openSaveAsPrompt();
     return;
@@ -727,8 +781,12 @@ export async function requestSave(): Promise<void> {
   await saveDocument();
 }
 
-/** File → Save As… (Ctrl+Shift+S): always opens the bit-depth prompt. */
+/** File → Save As… (Ctrl+Shift+S): always opens the bit-depth prompt. See {@link requestSave}'s
+ * doc comment for why this is a no-op while a save is already running. */
 export function requestSaveAs(): void {
+  if (saveJob?.state === "running") {
+    return;
+  }
   openSaveAsPrompt();
 }
 
@@ -828,6 +886,7 @@ export function resetDocumentStateForTest(): void {
   channelChoicePrompt = null;
   clipPrompt = null;
   importJob = null;
+  saveJob = null;
   try {
     unlistenImportProgress?.();
   } catch {

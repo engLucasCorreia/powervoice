@@ -9,7 +9,7 @@ import { applyRecordStateForTest, recordState, resetRecordForTest } from "../sta
 import { docDto } from "../test/fixtures";
 import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 import DocumentMenu from "./DocumentMenu.svelte";
-import { openDocument, resetDocumentStateForTest } from "./document.svelte";
+import { applySaveJobProgress, openDocument, resetDocumentStateForTest } from "./document.svelte";
 import { resetRecentFilesForTest } from "./recentFiles.svelte";
 
 afterEach(() => {
@@ -96,6 +96,31 @@ describe("DocumentMenu / File menu (H-19)", () => {
       expect(target.querySelector<HTMLButtonElement>(`[data-testid="${id}"]`)?.disabled).toBe(
         false,
       );
+    }
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("H-70 (SPEC-005 §2.7): disables Save/Save As and shows 'Saving…' while a save job runs", async () => {
+    const fixture = docDto({ dirty: true });
+    mockIPC((cmd) => {
+      if (cmd === "document_open") {
+        return fixture;
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    await openDocument("/home/user/take.wav");
+    applySaveJobProgress({ job_id: 1, kind: "save", state: "running", fraction: 0.3 });
+
+    const { target, app } = mountMenu();
+    openMenu(target);
+
+    for (const id of ["menu-save", "menu-save-as"]) {
+      expect(target.querySelector<HTMLButtonElement>(`[data-testid="${id}"]`)?.disabled, id).toBe(
+        true,
+      );
+      expect(target.querySelector(`[data-testid="${id}"]`)?.textContent).toContain("Saving…");
     }
 
     unmount(app);

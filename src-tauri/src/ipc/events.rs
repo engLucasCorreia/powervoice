@@ -219,6 +219,10 @@ pub enum JobKind {
     /// own job, cancelled by `edit_paste_cancel`. Its finished edit result is `edit_paste`'s own
     /// return value (mirrors `Import`), not a separate event.
     Paste,
+    /// H-70 (SPEC-005 §2.7/§4.10): Save/Save As (`document_save`/`document_save_as`) — cancelled
+    /// by `document_save_cancel`. Mirrors `Import`: the finished document arrives as the
+    /// awaited command's own return value (and `document_changed`), not repeated here.
+    Save,
 }
 
 /// `job_progress`'s lifecycle. `Running` fractions are monotonically non-decreasing in `[0, 1]`;

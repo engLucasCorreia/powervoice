@@ -13,7 +13,12 @@
   import RecentMissingDialog from "./lib/document/RecentMissingDialog.svelte";
   import SaveAsDialog from "./lib/document/SaveAsDialog.svelte";
   import UnsavedChangesDialog from "./lib/document/UnsavedChangesDialog.svelte";
-  import { initDocument } from "./lib/document/document.svelte";
+  import {
+    cancelSaveJob,
+    dismissSaveJob,
+    documentState,
+    initDocument,
+  } from "./lib/document/document.svelte";
   import { initRecentFiles } from "./lib/document/recentFiles.svelte";
   import EditMenu from "./lib/edit/EditMenu.svelte";
   import InsertSilenceDialog from "./lib/edit/InsertSilenceDialog.svelte";
@@ -101,6 +106,8 @@
   const layout = layoutState();
   /** H-56 (SPEC-008 §2.6.1): the cross-document paste job's progress dialog. */
   const edit = editState();
+  /** H-70 (SPEC-005 §4.10): the Save/Save As job's progress dialog. */
+  const doc = documentState();
 
   let mainAreaEl: HTMLElement | undefined = $state();
   let mainAreaWidthPx = $state(0);
@@ -510,6 +517,13 @@
   testidPrefix="paste-progress"
   onCancel={cancelPasteJob}
   onDismiss={dismissPasteJob}
+/>
+<NormalizeProgressDialog
+  job={doc.saveJob}
+  titleKey="job.save"
+  testidPrefix="save-progress"
+  onCancel={cancelSaveJob}
+  onDismiss={dismissSaveJob}
 />
 <ExportDialog />
 <NewRecordingDialog />

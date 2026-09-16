@@ -44,6 +44,12 @@ impl SampleSource for SnapshotReader {
 /// that one block, not by the document's length — a 60-minute mono recording no longer needs
 /// ~691 MB of `Vec<f32>` to save.
 ///
+/// H-70 (SPEC-005 §4.10): `cancel` is checked once per block — cancelling aborts the temp file
+/// (same path a real I/O failure already took) and returns [`ProjectError::Cancelled`], so the
+/// target is left untouched. `on_progress` receives a fraction in `[0.0, 1.0]`, called once with
+/// `0.0` before the first block (a deterministic mid-job hook, MEMORY H-30) and `1.0` once the
+/// file (audio + markers) is fully written.
+///
 /// The multichannel-source/clip-prompt dialogs are deferred (S1-02 ticket scope) — the caller
 /// checks the document peak pyramid for overs before calling this, if it wants that prompt.
 pub fn save_snapshot_wav(
@@ -52,8 +58,10 @@ pub fn save_snapshot_wav(
     bits: vox_io::BitDepth,
     dither: vox_io::DitherMode,
     markers: &[Marker],
+    cancel: &CancelToken,
+    on_progress: impl FnMut(f32),
 ) -> Result<vox_io::WriteReport> {
-    save_snapshot_wav_streaming(reader, path, bits, dither, markers)
+    save_snapshot_wav_streaming(reader, path, bits, dither, markers, cancel, on_progress)
 }
 
 fn save_snapshot_wav_streaming<R: SampleSource>(
@@ -62,7 +70,10 @@ fn save_snapshot_wav_streaming<R: SampleSource>(
     bits: vox_io::BitDepth,
     dither: vox_io::DitherMode,
     markers: &[Marker],
+    cancel: &CancelToken,
+    mut on_progress: impl FnMut(f32),
 ) -> Result<vox_io::WriteReport> {
+    on_progress(0.0);
     let len = source.len_samples();
     let rate = source.sample_rate_hz();
     let mut writer = vox_io::WavStreamWriter::create(path, rate, bits, dither)?;
@@ -71,18 +82,25 @@ fn save_snapshot_wav_streaming<R: SampleSource>(
     let mut pos = 0u64;
     let stream_result: Result<()> = (|| {
         while pos < len {
+            if cancel.is_cancelled() {
+                return Err(ProjectError::Cancelled);
+            }
             let n = source.read(pos, &mut buf)?;
             if n == 0 {
                 break;
             }
             writer.write_block(&buf[..n])?;
             pos += n as u64;
+            on_progress((pos as f64 / len as f64) as f32);
         }
         Ok(())
     })();
     if let Err(e) = stream_result {
         writer.abort();
         return Err(e);
+    }
+    if len == 0 {
+        on_progress(1.0);
     }
 
     // `markers` (`DocSnapshot::markers`) is already in canonical, position-sorted order, which
@@ -96,7 +114,9 @@ fn save_snapshot_wav_streaming<R: SampleSource>(
             name: m.name.to_string(),
         })
         .collect();
-    Ok(writer.finish(&wav_markers)?)
+    let report = writer.finish(&wav_markers)?;
+    on_progress(1.0);
+    Ok(report)
 }
 
 /// SPEC-005 §2.7 pre-flight step 2 (`wav_max_bytes`, AC-18): would writing `len_samples` mono
@@ -187,24 +207,42 @@ pub fn overs_check(
 /// (`vox_io::write_flac` takes a whole buffer, matching the export path's existing constraint,
 /// MEMORY.md H-02) — acceptable for mono voice-over documents; streaming FLAC encoding is a
 /// follow-up if a very long document makes this a problem in practice.
+///
+/// H-70: `cancel` is checked once per buffered block, before any file is created — no temp file
+/// to abort on cancellation there. Once buffering finishes, `vox_io::write_flac` (encode, verify,
+/// atomic rename) runs as one call with no further cancellation point, mirroring every other
+/// job's "best-effort, within one block" cancel contract. `on_progress` reports the buffering
+/// phase over `[0.0, 0.5)` and jumps to `1.0` once the encoder has written and verified the file.
 pub fn save_snapshot_flac(
     reader: &mut SnapshotReader,
     path: impl AsRef<std::path::Path>,
     bits: vox_io::FlacBitDepth,
     dither: vox_io::DitherMode,
+    cancel: &CancelToken,
+    mut on_progress: impl FnMut(f32),
 ) -> Result<vox_io::WriteReport> {
+    on_progress(0.0);
     let len = reader.len_samples();
     let rate = reader.snapshot().sample_rate_hz;
     let mut samples = vec![0.0f32; len as usize];
     let mut pos = 0u64;
     while pos < len {
+        if cancel.is_cancelled() {
+            return Err(ProjectError::Cancelled);
+        }
         let n = reader.read(pos, &mut samples[pos as usize..])?;
         if n == 0 {
             break;
         }
         pos += n as u64;
+        on_progress(0.5 * (pos as f64 / len as f64) as f32);
     }
-    Ok(vox_io::write_flac(path, rate, bits, dither, &samples)?)
+    if cancel.is_cancelled() {
+        return Err(ProjectError::Cancelled);
+    }
+    let report = vox_io::write_flac(path, rate, bits, dither, &samples)?;
+    on_progress(1.0);
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -246,6 +284,8 @@ mod tests {
             vox_io::BitDepth::Int16,
             vox_io::DitherMode::None,
             &[],
+            &CancelToken::new(),
+            |_| {},
         )
         .unwrap();
 
@@ -257,6 +297,8 @@ mod tests {
             vox_io::BitDepth::Int16,
             vox_io::DitherMode::Tpdf,
             &[],
+            &CancelToken::new(),
+            |_| {},
         )
         .unwrap();
 
@@ -295,15 +337,24 @@ mod tests {
 
         let mut reader = SnapshotReader::new(Arc::clone(&store), Arc::clone(&snapshot));
         let out_path = dir.join("out.wav");
+        let mut progress = Vec::new();
         let report = save_snapshot_wav(
             &mut reader,
             &out_path,
             vox_io::BitDepth::Float32,
             vox_io::DitherMode::Tpdf,
             &[],
+            &CancelToken::new(),
+            |fraction| progress.push(fraction),
         )
         .unwrap();
         assert_eq!(report.clipped_samples, 0);
+
+        // H-70: `on_progress` starts at 0.0 (a deterministic mid-job hook, MEMORY H-30), is
+        // monotonically non-decreasing, and ends at 1.0.
+        assert_eq!(progress.first().copied(), Some(0.0));
+        assert_eq!(progress.last().copied(), Some(1.0));
+        assert!(progress.is_sorted());
 
         let (decoded, info) = vox_testkit::wav::read_wav_file(&out_path).unwrap();
         assert_eq!(info.sample_rate, 48_000);
@@ -336,6 +387,8 @@ mod tests {
             vox_io::BitDepth::Int16,
             vox_io::DitherMode::Tpdf,
             &snapshot.markers,
+            &CancelToken::new(),
+            |_| {},
         )
         .unwrap();
 
@@ -405,12 +458,15 @@ mod tests {
         };
         let dir = tmp_dir("streamed-bounded");
         let out_path = dir.join("out.wav");
+        let mut progress = Vec::new();
         save_snapshot_wav_streaming(
             &mut source,
             &out_path,
             vox_io::BitDepth::Int16,
             vox_io::DitherMode::Tpdf,
             &[],
+            &CancelToken::new(),
+            |fraction| progress.push(fraction),
         )
         .unwrap();
 
@@ -418,6 +474,12 @@ mod tests {
             !source.calls.is_empty(),
             "the save must actually read the source"
         );
+        // H-70: one progress call per block, plus the leading 0.0 and the trailing 1.0 (after
+        // `finish` writes the header/markers).
+        assert_eq!(progress.len(), source.calls.len() + 2);
+        assert_eq!(progress.first().copied(), Some(0.0));
+        assert_eq!(progress.last().copied(), Some(1.0));
+        assert!(progress.is_sorted());
         for &(_, requested) in &source.calls {
             assert!(
                 requested <= CHUNK_SAMPLES,
@@ -458,6 +520,8 @@ mod tests {
             vox_io::BitDepth::Float32,
             vox_io::DitherMode::Tpdf,
             &[],
+            &CancelToken::new(),
+            |_| {},
         )
         .unwrap();
 
@@ -501,6 +565,8 @@ mod tests {
             vox_io::BitDepth::Int16,
             vox_io::DitherMode::Tpdf,
             &snapshot.markers,
+            &CancelToken::new(),
+            |_| {},
         )
         .unwrap();
 
@@ -634,15 +700,80 @@ mod tests {
         let mut reader = SnapshotReader::new(Arc::clone(&store), Arc::clone(&snapshot));
 
         let out_path = dir.join("out.flac");
+        let mut progress = Vec::new();
         let report = save_snapshot_flac(
             &mut reader,
             &out_path,
             vox_io::FlacBitDepth::Int16,
             vox_io::DitherMode::Tpdf,
+            &CancelToken::new(),
+            |fraction| progress.push(fraction),
         )
         .unwrap();
         assert_eq!(report.clipped_samples, 0);
         assert!(out_path.exists());
+        assert_eq!(progress.first().copied(), Some(0.0));
+        assert_eq!(progress.last().copied(), Some(1.0));
+        assert!(progress.is_sorted());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- H-70: cancellation --------------------------------------------------------------
+
+    /// A cancelled WAV save leaves no target file (the temp file is aborted, same path a real
+    /// I/O failure already took).
+    #[test]
+    fn save_snapshot_wav_cancelled_mid_write_leaves_no_target_file() {
+        let dir = tmp_dir("cancel-wav");
+        let store = ChunkStore::create(&dir, 0, StoreOptions::with_memory_budget(64 * 1024 * 1024))
+            .unwrap();
+        let samples = noise(4, CHUNK_SAMPLES * 3);
+        let snapshot = snapshot_of(&store, &samples);
+        let mut reader = SnapshotReader::new(Arc::clone(&store), Arc::clone(&snapshot));
+
+        let out_path = dir.join("out.wav");
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let err = save_snapshot_wav(
+            &mut reader,
+            &out_path,
+            vox_io::BitDepth::Int16,
+            vox_io::DitherMode::Tpdf,
+            &[],
+            &cancel,
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(matches!(err, ProjectError::Cancelled));
+        assert!(!out_path.exists(), "no target file after a cancelled save");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A cancel signalled partway through the buffering phase stops a FLAC save before the
+    /// encoder ever runs — no file at all, not even a temp one.
+    #[test]
+    fn save_snapshot_flac_cancelled_during_buffering_leaves_no_target_file() {
+        let dir = tmp_dir("cancel-flac");
+        let store = ChunkStore::create(&dir, 0, StoreOptions::with_memory_budget(64 * 1024 * 1024))
+            .unwrap();
+        let samples = vox_testkit::signal::sine(997.0, -6.0, 1.0, 48_000).unwrap();
+        let snapshot = snapshot_of(&store, &samples);
+        let mut reader = SnapshotReader::new(Arc::clone(&store), Arc::clone(&snapshot));
+
+        let out_path = dir.join("out.flac");
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let err = save_snapshot_flac(
+            &mut reader,
+            &out_path,
+            vox_io::FlacBitDepth::Int16,
+            vox_io::DitherMode::Tpdf,
+            &cancel,
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(matches!(err, ProjectError::Cancelled));
+        assert!(!out_path.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

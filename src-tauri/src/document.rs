@@ -588,6 +588,19 @@ struct Inner {
     /// clobbered by that load. `ipc::rack_commands` refuses rack edits while this is set
     /// (`error.bake.busy`); a plain normalize job never touches the rack, so it doesn't set it.
     bake_running: Mutex<bool>,
+    /// H-70 (SPEC-005 §2.7/§4.10, AC-15): `true` while a Save/Save As job is writing —
+    /// deliberately separate from `normalize_busy`/`bake_running`: "editing and playback
+    /// continue" while a save runs (§2.7 "Job behavior"), so this gates only a second concurrent
+    /// Save/Save As (`error.save.in_progress`), never an edit. Checked-and-set inside
+    /// [`DocumentService::begin_save`]/[`Self::begin_save_as`]; cleared, always, by
+    /// [`Self::finish_save`]/[`Self::finish_save_as`].
+    save_running: Mutex<bool>,
+    /// H-70: cancel tokens of a running Save/Save As job, keyed by the id
+    /// `document_save_cancel` names (mirrors `import_jobs`). At most one entry at a time
+    /// (`save_running` gates a second job), kept as a map anyway for the same "a stale cancel is
+    /// a harmless no-op" contract every other job's cancel command has.
+    save_jobs: Mutex<HashMap<u32, CancelToken>>,
+    next_save_job: AtomicU32,
     /// H-30 (SPEC-007 §4.1): the spectrogram tile service, wired once by the composition root
     /// (`set_spectro`) so a full save/save-as can hold `SpectroService::begin_background_job()`
     /// while it writes — the same guard export/bake hold. `OnceLock` rather than a constructor
@@ -723,6 +736,11 @@ fn clipboard_empty() -> IpcError {
 /// SPEC-010 §2.1: a normalize job (H-09) is already running.
 fn document_busy() -> IpcError {
     IpcError::document_busy()
+}
+
+/// SPEC-005 §2.7/AC-15 (H-70): a Save/Save As job is already running.
+fn save_in_progress_error() -> IpcError {
+    IpcError::new(IpcErrorCode::Busy, "error.save.in_progress")
 }
 
 /// SPEC-009 §4.2: a marker command named an id that doesn't exist (any more).
@@ -941,6 +959,57 @@ fn too_large_for_wav_error() -> IpcError {
         IpcErrorCode::InvalidArgument,
         "error.save.too_large_for_wav",
     )
+}
+
+/// SPEC-005 §2.7 pre-flight step 1 (H-70): "free space ≥ estimated file size + 64 MiB", checked
+/// before any byte is written. The estimate is deliberately conservative — uncompressed bytes at
+/// the target bit depth, even for FLAC, which is never larger than that in practice (AC-16: a
+/// 16-bit FLAC of typical content is ≤ 50 % of the equivalent WAV) — the same "never
+/// under-report" spirit `wav_size_exceeds_limit` uses, since this only needs to prove there's
+/// room, not to predict the encoder's exact output size.
+const SAVE_FREE_SPACE_MARGIN_BYTES: u64 = 64 * 1024 * 1024;
+
+fn estimated_save_output_bytes(len_samples: u64, bits: BitDepth) -> u64 {
+    let bytes_per_sample: u64 = match bits {
+        BitDepth::Bit16 => 2,
+        BitDepth::Bit24 => 3,
+        BitDepth::Bit32Float => 4,
+    };
+    len_samples.saturating_mul(bytes_per_sample)
+}
+
+/// H-70 (SPEC-005 §2.7 error list): the same `error.save.disk_full` a real out-of-space write
+/// failure gets ([`io_save_error`]) — from the user's point of view "the disk can't hold this
+/// file" is the same failure whether it's caught before or during the write.
+fn disk_full_preflight_error() -> IpcError {
+    IpcError::new(IpcErrorCode::Io, "error.save.disk_full")
+}
+
+/// SPEC-005 §2.7 pre-flight step 1 (H-70; H-11's `FreeSpaceProvider`, reused rather than a new
+/// mechanism): refuses before any byte is written when the target volume can't hold the
+/// estimated output plus [`SAVE_FREE_SPACE_MARGIN_BYTES`]. Queries the target folder (falling
+/// back to `path` itself for the pathological empty-parent case `check_folder_writable` also
+/// guards); a provider error never blocks the save on its own (mirrors `DocumentService::
+/// housekeeping`'s `free_bytes(...).unwrap_or(u64::MAX)`) — the real write still surfaces a
+/// concrete I/O error if something is actually wrong.
+fn check_free_space(
+    doc: &OpenDocument,
+    bits: BitDepth,
+    path: &Path,
+    free: &dyn vox_project::FreeSpaceProvider,
+) -> Result<(), IpcError> {
+    let len_samples = doc.session.current().len_samples;
+    let needed =
+        estimated_save_output_bytes(len_samples, bits).saturating_add(SAVE_FREE_SPACE_MARGIN_BYTES);
+    let probe_dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(path);
+    let free_bytes = free.free_bytes(probe_dir).unwrap_or(u64::MAX);
+    if free_bytes < needed {
+        return Err(disk_full_preflight_error());
+    }
+    Ok(())
 }
 
 /// SPEC-005 §2.7 pre-flight step 2 (H-60, `wav_max_bytes`): refuses before any byte is written,
@@ -1307,6 +1376,9 @@ impl DocumentService {
             normalize_busy: Mutex::new(false),
             paste_busy: Mutex::new(false),
             bake_running: Mutex::new(false),
+            save_running: Mutex::new(false),
+            save_jobs: Mutex::new(HashMap::new()),
+            next_save_job: AtomicU32::new(1),
             spectro: OnceLock::new(),
             pending_sidecar_notice: Mutex::new(Vec::new()),
             memory_budget_bytes: AtomicU64::new(StoreOptions::default().memory_budget_bytes),
@@ -1740,6 +1812,37 @@ impl DocumentService {
         self.0.import_jobs.lock().unwrap().remove(&job_id);
     }
 
+    /// H-70 (SPEC-005 §4.10): registers a new Save/Save As job's cancel token before the write
+    /// starts, so `document_save_cancel(job_id)` can reach it from another command invocation
+    /// while this one runs on its own blocking thread (mirrors `start_import_job`). Called only
+    /// after [`Self::begin_save`]/[`Self::begin_save_as`] has already validated the request and
+    /// set the busy flag — this call itself never fails.
+    pub fn register_save_job(&self) -> (u32, CancelToken) {
+        let job_id = self.0.next_save_job.fetch_add(1, Ordering::Relaxed);
+        let cancel = CancelToken::new();
+        self.0
+            .save_jobs
+            .lock()
+            .unwrap()
+            .insert(job_id, cancel.clone());
+        (job_id, cancel)
+    }
+
+    /// `document_save_cancel`: best-effort, like every other job's cancel — a no-op for an
+    /// unknown or already-finished job id.
+    pub fn cancel_save_job(&self, job_id: u32) {
+        if let Some(cancel) = self.0.save_jobs.lock().unwrap().get(&job_id) {
+            cancel.cancel();
+        }
+    }
+
+    /// Unregisters a finished (done/cancelled/failed) Save/Save As job's cancel token. Does
+    /// *not* clear the busy flag — [`Self::finish_save`]/[`Self::finish_save_as`] do that, always,
+    /// once the write itself (not just the id bookkeeping) is done.
+    pub fn unregister_save_job(&self, job_id: u32) {
+        self.0.save_jobs.lock().unwrap().remove(&job_id);
+    }
+
     /// Imports `path` as a new session (SPEC-005 §2.2-2.4, T-202 `vox_project::import_file`) and
     /// makes it the engine's playback document. Any format `vox_io::decode` supports opens (WAV
     /// incl. the tolerated variants, FLAC, MP3, M4A AAC-LC, Ogg Vorbis); multichannel input
@@ -2018,21 +2121,46 @@ impl DocumentService {
         confirm_clip: bool,
         confirm_multichannel: bool,
     ) -> Result<DocumentInfo, IpcError> {
-        // T-901: state a plugin window changed outside the plugin's parameters reaches the rack's
-        // committed blobs before the sidecar is written (round trips off the document lock).
-        self.0.engine.rack_capture_plugin_states();
-        let mut guard = self.0.open.lock().unwrap();
-        let doc = guard.as_mut().ok_or_else(no_document)?;
+        self.begin_save(
+            overwrite,
+            confirm_clip,
+            confirm_multichannel,
+            &vox_project::SystemFreeSpace,
+        )?;
+        self.finish_save(&CancelToken::new(), |_| {})
+    }
+
+    /// H-70 (SPEC-005 §4.10): the validating half of [`Self::save`] — every pre-flight check
+    /// (§2.7's ordered checklist) runs here, against the doc lock held only briefly, so a
+    /// rejection (busy, untitled, changed-on-disk, permission, disk-full, too-large-for-WAV, or a
+    /// clip/multichannel confirmation) never emits a job/progress event at all — exactly like
+    /// `BakeService::start_job` never spawning a job for `error.bake.rack_inactive`. Only once
+    /// every check passes does this set the busy flag (`error.save.in_progress` for a second
+    /// caller); [`Self::finish_save`] always clears it, whatever the write's outcome. `free` is
+    /// H-11's `FreeSpaceProvider` (real callers pass `SystemFreeSpace`; tests, `FixedFreeSpace`).
+    pub fn begin_save(
+        &self,
+        overwrite: bool,
+        confirm_clip: bool,
+        confirm_multichannel: bool,
+        free: &dyn vox_project::FreeSpaceProvider,
+    ) -> Result<(), IpcError> {
+        let mut busy = self.0.save_running.lock().unwrap();
+        if *busy {
+            return Err(save_in_progress_error());
+        }
+        let guard = self.0.open.lock().unwrap();
+        let doc = guard.as_ref().ok_or_else(no_document)?;
         let path = doc.path.clone().ok_or_else(untitled)?;
         let container = doc.save_container;
         let bits = doc.save_bits;
-        let dither = doc.save_dither;
         if !overwrite && changed_on_disk(doc, &path) {
             return Err(changed_on_disk_error(&path));
         }
         // H-15 (SPEC-018 §2.9): a read-only folder is refused here, before the audio or the
         // sidecar is touched — full and sidecar-only saves alike (`needs_full` isn't decided yet).
         check_folder_writable(&path)?;
+        check_free_space(doc, bits, &path, free)?;
         check_wav_size(doc, container, bits)?;
         if !confirm_clip && let Some(overs) = check_overs(doc, bits)? {
             return Err(clip_confirmation_error(overs));
@@ -2040,17 +2168,55 @@ impl DocumentService {
         if !confirm_multichannel && doc.source_channels > 1 && !doc.multichannel_warned {
             return Err(multichannel_confirmation_error(&path));
         }
-        // SPEC-007 §4.1 (H-30): tiles use at most half of the workers while a save writes, like
-        // export/bake.
-        let background = self.0.spectro.get().map(|s| s.begin_background_job());
-        let notices = save_to(doc, &self.0.engine, &path, container, bits, dither);
-        drop(background);
-        for notice in notices? {
-            self.push_sidecar_notice(notice);
-        }
-        doc.multichannel_warned = true;
-        doc.recovered = false;
-        Ok(info_of(&self.0.engine, guard.as_ref()))
+        *busy = true;
+        Ok(())
+    }
+
+    /// H-70: the writing half of [`Self::save`] — [`Self::begin_save`] must have succeeded
+    /// first (its pre-flight already resolved every confirmation, so any error from here on is a
+    /// real job failure or cancellation, never `NeedsConfirmation`). `cancel` is checked inside
+    /// the write loop (best-effort, like every other job); `on_progress` reports `[0.0, 1.0]`.
+    /// Always clears the busy flag, whatever the outcome.
+    pub fn finish_save(
+        &self,
+        cancel: &CancelToken,
+        mut on_progress: impl FnMut(f32),
+    ) -> Result<DocumentInfo, IpcError> {
+        // T-901: state a plugin window changed outside the plugin's parameters reaches the rack's
+        // committed blobs before the sidecar is written (round trips off the document lock).
+        self.0.engine.rack_capture_plugin_states();
+        let mut guard = self.0.open.lock().unwrap();
+        let result = (|| -> Result<DocumentInfo, IpcError> {
+            let doc = guard.as_mut().ok_or_else(no_document)?;
+            let path = doc.path.clone().ok_or_else(untitled)?;
+            let container = doc.save_container;
+            let bits = doc.save_bits;
+            let dither = doc.save_dither;
+            // SPEC-007 §4.1 (H-30): tiles use at most half of the workers while a save writes,
+            // like export/bake.
+            let background = self.0.spectro.get().map(|s| s.begin_background_job());
+            let notices = save_to(
+                doc,
+                &self.0.engine,
+                &path,
+                container,
+                bits,
+                dither,
+                cancel,
+                &mut on_progress,
+            );
+            drop(background);
+            for notice in notices? {
+                self.push_sidecar_notice(notice);
+            }
+            let doc = guard.as_mut().ok_or_else(no_document)?;
+            doc.multichannel_warned = true;
+            doc.recovered = false;
+            Ok(info_of(&self.0.engine, guard.as_ref()))
+        })();
+        drop(guard);
+        *self.0.save_running.lock().unwrap() = false;
+        result
     }
 
     /// Writes the current revision to `path` in `container` at `bits`/`dither` (always a full
@@ -2068,18 +2234,41 @@ impl DocumentService {
         confirm_clip: bool,
         confirm_multichannel: bool,
     ) -> Result<DocumentInfo, IpcError> {
+        self.begin_save_as(
+            path,
+            container,
+            bits,
+            confirm_clip,
+            confirm_multichannel,
+            &vox_project::SystemFreeSpace,
+        )?;
+        self.finish_save_as(path, container, bits, dither, &CancelToken::new(), |_| {})
+    }
+
+    /// H-70: the validating half of [`Self::save_as`] — see [`Self::begin_save`]'s doc comment;
+    /// same contract, checked against the requested `path`/`container`/`bits` (an arbitrary new
+    /// target a native file dialog can't guarantee is writable, and a format change can newly
+    /// trip the WAV size limit — H-60's "keep `save`/`save_as` pre-flight checklists in sync").
+    pub fn begin_save_as(
+        &self,
+        path: &Path,
+        container: SaveContainer,
+        bits: BitDepth,
+        confirm_clip: bool,
+        confirm_multichannel: bool,
+        free: &dyn vox_project::FreeSpaceProvider,
+    ) -> Result<(), IpcError> {
         if container == SaveContainer::Flac && bits == BitDepth::Bit32Float {
             return Err(invalid_flac_bit_depth());
         }
-        // T-901: see `save`.
-        self.0.engine.rack_capture_plugin_states();
-        let mut guard = self.0.open.lock().unwrap();
-        let doc = guard.as_mut().ok_or_else(no_document)?;
-        // H-60 (SPEC-005 §2.7 pre-flight): `save` already checked these; `save_as` targets an
-        // arbitrary new path (a native file dialog can't guarantee it's writable, and a Save As
-        // format change can newly trip the WAV size limit), so it must check them too, before
-        // any byte is written.
+        let mut busy = self.0.save_running.lock().unwrap();
+        if *busy {
+            return Err(save_in_progress_error());
+        }
+        let guard = self.0.open.lock().unwrap();
+        let doc = guard.as_ref().ok_or_else(no_document)?;
         check_folder_writable(path)?;
+        check_free_space(doc, bits, path, free)?;
         check_wav_size(doc, container, bits)?;
         if !confirm_clip && let Some(overs) = check_overs(doc, bits)? {
             return Err(clip_confirmation_error(overs));
@@ -2087,25 +2276,60 @@ impl DocumentService {
         if !confirm_multichannel && doc.source_channels > 1 && !doc.multichannel_warned {
             return Err(multichannel_confirmation_error(path));
         }
-        // Force a full save: a different path (or, potentially, format) is never a sidecar-only
-        // write. Bumping the recorded audio_rev back one guarantees `save_to`'s "audio changed"
-        // check fires even when Save As targets the very same content just saved in place.
-        doc.sidecar.last_saved_audio_rev = doc.sidecar.last_saved_audio_rev.wrapping_sub(1);
-        // SPEC-007 §4.1 (H-30): tiles use at most half of the workers while a save writes, like
-        // export/bake.
-        let background = self.0.spectro.get().map(|s| s.begin_background_job());
-        let notices = save_to(doc, &self.0.engine, path, container, bits, dither);
-        drop(background);
-        for notice in notices? {
-            self.push_sidecar_notice(notice);
-        }
-        doc.path = Some(path.to_path_buf());
-        doc.save_bits = bits;
-        doc.save_container = container;
-        doc.save_dither = dither;
-        doc.multichannel_warned = true;
-        doc.recovered = false;
-        Ok(info_of(&self.0.engine, guard.as_ref()))
+        *busy = true;
+        Ok(())
+    }
+
+    /// H-70: the writing half of [`Self::save_as`] — see [`Self::finish_save`]'s doc comment;
+    /// [`Self::begin_save_as`] must have succeeded first. Always clears the busy flag.
+    pub fn finish_save_as(
+        &self,
+        path: &Path,
+        container: SaveContainer,
+        bits: BitDepth,
+        dither: SaveDitherPref,
+        cancel: &CancelToken,
+        mut on_progress: impl FnMut(f32),
+    ) -> Result<DocumentInfo, IpcError> {
+        // T-901: see `finish_save`.
+        self.0.engine.rack_capture_plugin_states();
+        let mut guard = self.0.open.lock().unwrap();
+        let result = (|| -> Result<DocumentInfo, IpcError> {
+            let doc = guard.as_mut().ok_or_else(no_document)?;
+            // Force a full save: a different path (or, potentially, format) is never a
+            // sidecar-only write. Bumping the recorded audio_rev back one guarantees `save_to`'s
+            // "audio changed" check fires even when Save As targets the very same content just
+            // saved in place.
+            doc.sidecar.last_saved_audio_rev = doc.sidecar.last_saved_audio_rev.wrapping_sub(1);
+            // SPEC-007 §4.1 (H-30): tiles use at most half of the workers while a save writes,
+            // like export/bake.
+            let background = self.0.spectro.get().map(|s| s.begin_background_job());
+            let notices = save_to(
+                doc,
+                &self.0.engine,
+                path,
+                container,
+                bits,
+                dither,
+                cancel,
+                &mut on_progress,
+            );
+            drop(background);
+            for notice in notices? {
+                self.push_sidecar_notice(notice);
+            }
+            let doc = guard.as_mut().ok_or_else(no_document)?;
+            doc.path = Some(path.to_path_buf());
+            doc.save_bits = bits;
+            doc.save_container = container;
+            doc.save_dither = dither;
+            doc.multichannel_warned = true;
+            doc.recovered = false;
+            Ok(info_of(&self.0.engine, guard.as_ref()))
+        })();
+        drop(guard);
+        *self.0.save_running.lock().unwrap() = false;
+        result
     }
 
     /// `(audio_rev, sample_rate_hz, buckets)` for `[start, start + count)` at `spp` (S1-02
@@ -2183,6 +2407,14 @@ impl DocumentService {
     /// them.
     pub fn is_bake_running(&self) -> bool {
         *self.0.bake_running.lock().unwrap()
+    }
+
+    /// H-70 (SPEC-005 §2.7/§4.10, AC-15): `true` while a Save/Save As job
+    /// (`begin_save`/`begin_save_as` .. `finish_save`/`finish_save_as`) is writing. Unlike
+    /// `is_bake_running`/`is_normalize_busy`, nothing gates edits on this — Save/Save As are the
+    /// one job kind the spec keeps editing and playback running during.
+    pub fn is_save_running(&self) -> bool {
+        *self.0.save_running.lock().unwrap()
     }
 
     /// H-30 (SPEC-007 §4.1): wires the spectrogram tile service so `save`/`save_as` can hold
@@ -3466,6 +3698,7 @@ fn flac_bits(bits: BitDepth) -> vox_io::FlacBitDepth {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn save_to(
     doc: &mut OpenDocument,
     engine: &EngineHandle,
@@ -3473,6 +3706,8 @@ fn save_to(
     container: SaveContainer,
     bits: BitDepth,
     dither: SaveDitherPref,
+    cancel: &CancelToken,
+    on_progress: &mut dyn FnMut(f32),
 ) -> Result<Vec<SidecarNoticeInfo>, IpcError> {
     let snapshot = doc.session.current();
     let save_format = save_format_model(container, bits, dither);
@@ -3502,6 +3737,8 @@ fn save_to(
                     bits.into(),
                     dither.into(),
                     &wav_markers,
+                    cancel,
+                    &mut *on_progress,
                 )
                 .map_err(|err| match err {
                     ProjectError::Wav(io_err) => io_save_error(io_err),
@@ -3509,14 +3746,24 @@ fn save_to(
                 })?;
             }
             SaveContainer::Flac => {
-                save_snapshot_flac(&mut reader, path, flac_bits(bits), dither.into()).map_err(
-                    |err| match err {
-                        ProjectError::Wav(io_err) => io_save_error(io_err),
-                        other => document_error(other),
-                    },
-                )?;
+                save_snapshot_flac(
+                    &mut reader,
+                    path,
+                    flac_bits(bits),
+                    dither.into(),
+                    cancel,
+                    &mut *on_progress,
+                )
+                .map_err(|err| match err {
+                    ProjectError::Wav(io_err) => io_save_error(io_err),
+                    other => document_error(other),
+                })?;
             }
         }
+    } else {
+        // H-70: a sidecar-only save (SPEC-018 §2.3) still reports a job — the write is
+        // effectively instant, so it just jumps straight to done.
+        on_progress(1.0);
     }
 
     // T-209: SPEC-005 §2.9's "other containers" — FLAC carries no markers.
@@ -7254,6 +7501,198 @@ mod tests {
             std::io::ErrorKind::Interrupted,
         )));
         assert_eq!(other.key, "error.save.io");
+    }
+
+    // --- H-70: Save as a real job (progress/cancel, the busy flag, the free-space pre-flight) -
+
+    /// SPEC-005 §2.7/AC-15: "A second Save while one runs is refused with
+    /// `error.save.in_progress`." — both `save` (bound path) and `save_as` (an arbitrary new
+    /// one) check the same flag, before anything else.
+    #[test]
+    fn a_second_save_or_save_as_while_one_runs_is_refused() {
+        let (service, _engine, dir) = service("save-busy");
+        open_sine(&service, &dir);
+        *service.0.save_running.lock().unwrap() = true;
+
+        let err = service.save(false, false, false).unwrap_err();
+        assert_eq!(err.code, IpcErrorCode::Busy);
+        assert_eq!(err.key, "error.save.in_progress");
+
+        let err = service
+            .save_as(
+                &dir.join("elsewhere.wav"),
+                SaveContainer::Wav,
+                BitDepth::Bit24,
+                SaveDitherPref::Tpdf,
+                false,
+                false,
+            )
+            .unwrap_err();
+        assert_eq!(err.code, IpcErrorCode::Busy);
+        assert_eq!(err.key, "error.save.in_progress");
+
+        // Not left busy forever by this test: `begin_save`/`begin_save_as` never got far enough
+        // to touch the flag themselves, so it's still exactly what the test set.
+        assert!(service.is_save_running());
+    }
+
+    /// SPEC-005 §2.7 pre-flight step 1 (H-70): a volume with less free space than the estimated
+    /// output plus the 64 MiB margin refuses `begin_save`/`begin_save_as` with
+    /// `error.save.disk_full`, before any byte is written; a volume that fits succeeds. Uses
+    /// H-11's `FixedFreeSpace` fake rather than filling a real disk.
+    #[test]
+    fn save_free_space_preflight_refuses_a_too_small_volume_and_succeeds_once_it_fits() {
+        let (service, _engine, dir) = service("save-disk-space");
+        open_sine(&service, &dir);
+
+        let tiny = vox_project::FixedFreeSpace::new(1024);
+        let err = service.begin_save(false, false, false, &tiny).unwrap_err();
+        assert_eq!(err.code, IpcErrorCode::Io);
+        assert_eq!(err.key, "error.save.disk_full");
+        assert!(
+            !service.is_save_running(),
+            "a pre-flight refusal never sets the busy flag"
+        );
+
+        let plenty = vox_project::FixedFreeSpace::new(1024 * 1024 * 1024);
+        service.begin_save(false, false, false, &plenty).unwrap();
+        assert!(service.is_save_running(), "begin_save set the busy flag");
+        service.finish_save(&CancelToken::new(), |_| {}).unwrap();
+        assert!(!service.is_save_running(), "finish_save cleared it");
+
+        // Save As: an arbitrary new path checks the same estimate.
+        let out_path = dir.join("elsewhere.wav");
+        let err = service
+            .begin_save_as(
+                &out_path,
+                SaveContainer::Wav,
+                BitDepth::Bit24,
+                false,
+                false,
+                &tiny,
+            )
+            .unwrap_err();
+        assert_eq!(err.key, "error.save.disk_full");
+        assert!(!out_path.exists(), "no file was written");
+
+        service
+            .begin_save_as(
+                &out_path,
+                SaveContainer::Wav,
+                BitDepth::Bit24,
+                false,
+                false,
+                &plenty,
+            )
+            .unwrap();
+        service
+            .finish_save_as(
+                &out_path,
+                SaveContainer::Wav,
+                BitDepth::Bit24,
+                SaveDitherPref::Tpdf,
+                &CancelToken::new(),
+                |_| {},
+            )
+            .unwrap();
+        assert!(out_path.exists());
+    }
+
+    /// H-70 (SPEC-005 §4.10): `finish_save_as`'s `on_progress` starts at `0.0`, is monotonically
+    /// non-decreasing and ends at `1.0` — the document is several `CHUNK_SAMPLES` blocks long, so
+    /// there's more than one report in between. Save As (a brand-new target) always runs a full
+    /// write, unlike plain Save right after an unedited open (SPEC-018 §2.3's sidecar-only path,
+    /// covered by `a_rack_only_change_triggers_a_sidecar_only_save_leaving_the_wav_untouched`).
+    #[test]
+    fn finish_save_as_reports_progress_from_zero_to_one() {
+        let (service, _engine, dir) = service("save-progress");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 5.0, 48_000).unwrap();
+        assert!(samples.len() > vox_project::CHUNK_SAMPLES * 3);
+        let wav_path = dir.join("in.wav");
+        write_fixture_wav(
+            &wav_path,
+            &samples,
+            vox_testkit::wav::BitDepth::Float32,
+            48_000,
+        );
+        service.open(&wav_path, false).unwrap();
+
+        let out_path = dir.join("out.wav");
+        service
+            .begin_save_as(
+                &out_path,
+                SaveContainer::Wav,
+                BitDepth::Bit24,
+                false,
+                false,
+                &vox_project::SystemFreeSpace,
+            )
+            .unwrap();
+        let mut progress = Vec::new();
+        service
+            .finish_save_as(
+                &out_path,
+                SaveContainer::Wav,
+                BitDepth::Bit24,
+                SaveDitherPref::Tpdf,
+                &CancelToken::new(),
+                |fraction| progress.push(fraction),
+            )
+            .unwrap();
+
+        assert_eq!(progress.first().copied(), Some(0.0));
+        assert_eq!(progress.last().copied(), Some(1.0));
+        assert!(progress.is_sorted());
+        assert!(
+            progress.len() > 2,
+            "a multi-block save reports more than just the two endpoints, got {progress:?}"
+        );
+    }
+
+    /// H-70: cancelling a running Save As leaves the target untouched (the atomic write's temp
+    /// file is aborted, same as any other write failure) and always clears the busy flag.
+    #[test]
+    fn finish_save_as_cancelled_leaves_the_target_untouched_and_clears_the_busy_flag() {
+        let (service, _engine, dir) = service("save-cancel");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 5.0, 48_000).unwrap();
+        let wav_path = dir.join("in.wav");
+        write_fixture_wav(
+            &wav_path,
+            &samples,
+            vox_testkit::wav::BitDepth::Float32,
+            48_000,
+        );
+        service.open(&wav_path, false).unwrap();
+
+        let out_path = dir.join("out.wav");
+        service
+            .begin_save_as(
+                &out_path,
+                SaveContainer::Wav,
+                BitDepth::Bit24,
+                false,
+                false,
+                &vox_project::SystemFreeSpace,
+            )
+            .unwrap();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let err = service
+            .finish_save_as(
+                &out_path,
+                SaveContainer::Wav,
+                BitDepth::Bit24,
+                SaveDitherPref::Tpdf,
+                &cancel,
+                |_| {},
+            )
+            .unwrap_err();
+        assert_eq!(err.code, IpcErrorCode::Cancelled);
+        assert!(!out_path.exists(), "no target file after a cancelled save");
+        assert!(
+            !service.is_save_running(),
+            "finish_save_as always clears the busy flag"
+        );
     }
 
     // --- T-301: crash recovery, session cleanup, memory budget, state journaling -------------

@@ -36,6 +36,8 @@
   // Factory default (SPEC-002 §3) — used only if settings haven't loaded yet.
   const FALLBACK_FORMAT: DefaultFormatDto = { sample_rate_hz: 48_000, bit_depth: "24" };
   const hasDoc = $derived(hasDocument(doc.current));
+  // SPEC-005 §2.7 "Job behavior": "Save and Save As are disabled ('Saving…') while a save runs."
+  const saving = $derived(doc.saveJob?.state === "running");
 
   function openExport(): void {
     const base = doc.current.name?.replace(/\.[^./\\]+$/, "") ?? "untitled";
@@ -111,18 +113,18 @@
     {
       kind: "item",
       id: "save",
-      label: t("menu.file.save"),
+      label: saving ? t("menu.file.saving") : t("menu.file.save"),
       shortcut: shortcutLabelForAction("file.save"),
-      disabled: !hasDoc,
+      disabled: !hasDoc || saving,
       testid: "menu-save",
       onselect: () => dispatchAction("file.save"),
     },
     {
       kind: "item",
       id: "save-as",
-      label: t("menu.file.save_as"),
+      label: saving ? t("menu.file.saving") : t("menu.file.save_as"),
       shortcut: shortcutLabelForAction("file.save_as"),
-      disabled: !hasDoc,
+      disabled: !hasDoc || saving,
       testid: "menu-save-as",
       onselect: () => dispatchAction("file.save_as"),
     },

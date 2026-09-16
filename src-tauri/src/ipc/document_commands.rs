@@ -6,7 +6,9 @@ use tauri::ipc::Response;
 use tauri::{AppHandle, Emitter, Runtime, State};
 use vox_project::{ImportProbe, PEAKS_RAW_SPP, VxpkHeader, encode_vxpk};
 
-use crate::document::{DocumentService, PasteJobSource, PasteTarget, document_error};
+use crate::document::{
+    DocumentService, PasteJobSource, PasteTarget, SaveContainer, document_error,
+};
 use crate::ipc::document_dto::{
     ClipboardChangedDto, DocumentDto, DocumentProbeDto, DownmixChoiceDto, EditResultDto,
     EditTargetDto, HistoryStateDto, MarkerDto, MarkerRangeKindDto, PeaksRequestDto,
@@ -318,8 +320,93 @@ pub async fn document_probe(path: String) -> Result<DocumentProbeDto, IpcError> 
     .await
 }
 
-/// Saves the current revision back to its bound path and format (SPEC-005 §2.7). No rack
-/// rendering (D-019): this writes exactly the document's audio.
+/// H-70: the terminal half of Save/Save As's `job_progress` (SPEC-005 §4.10) — shared by
+/// `document_save`/`document_save_as` since both now run as a job (`JobKind::Save`) once their
+/// pre-flight (`begin_save`/`begin_save_as`) has passed. H-50 ordering: on success the document's
+/// own result (`document_changed` + any sidecar notices) goes out before the terminal `Done`; on
+/// a real failure the error notice goes out before `Failed` — mirrors T-602's bake service. A
+/// `NeedsConfirmation`/busy rejection never reaches here at all: `begin_save`/`begin_save_as`
+/// return those before any job_progress is ever emitted (see `document_save`'s doc comment).
+fn emit_save_job_result<R: Runtime>(
+    app: &AppHandle<R>,
+    doc: &DocumentService,
+    job_id: u32,
+    result: Result<crate::document::DocumentInfo, IpcError>,
+) -> Result<DocumentDto, IpcError> {
+    match result {
+        Ok(info) => {
+            let info: DocumentDto = info.into();
+            emit_document_changed(app, &info);
+            emit_sidecar_notice(app, doc);
+            if let Err(error) = emit_job_progress(
+                app,
+                JobProgressDto {
+                    job_id,
+                    kind: JobKind::Save,
+                    state: JobState::Done,
+                    fraction: 1.0,
+                },
+            ) {
+                tracing::warn!(%error, "emitting the save job's Done job_progress failed");
+            }
+            Ok(info)
+        }
+        Err(err) => {
+            let state = if err.code == IpcErrorCode::Cancelled {
+                JobState::Cancelled
+            } else {
+                JobState::Failed
+            };
+            if state == JobState::Failed {
+                let mut notice = Notice::toast(NoticeLevel::Error, err.key.clone());
+                for (name, value) in &err.params {
+                    notice = notice.with_param(name.clone(), value.clone());
+                }
+                if let Err(error) = emit_notice(app, notice) {
+                    tracing::warn!(%error, "emitting the save job's error notice failed");
+                }
+            }
+            if let Err(error) = emit_job_progress(
+                app,
+                JobProgressDto {
+                    job_id,
+                    kind: JobKind::Save,
+                    state,
+                    fraction: 0.0,
+                },
+            ) {
+                tracing::warn!(%error, "emitting the save job's terminal job_progress failed");
+            }
+            Err(err)
+        }
+    }
+}
+
+/// Emits the save job's first `job_progress` (`Running`, `fraction: 0.0`) right after
+/// `register_save_job` — before the (potentially several seconds long, AC-18) write starts.
+fn emit_save_job_started<R: Runtime>(app: &AppHandle<R>, job_id: u32) {
+    if let Err(error) = emit_job_progress(
+        app,
+        JobProgressDto {
+            job_id,
+            kind: JobKind::Save,
+            state: JobState::Running,
+            fraction: 0.0,
+        },
+    ) {
+        tracing::warn!(%error, "emitting the save job's first job_progress failed");
+    }
+}
+
+/// Saves the current revision back to its bound path and format (SPEC-005 §2.7), running as a
+/// job (H-70, `JobKind::Save`, ADR-003 `job_progress`): `document_save_cancel(job_id)` cancels it
+/// from another command invocation while this one is still awaiting. No rack rendering (D-019):
+/// this writes exactly the document's audio.
+///
+/// Pre-flight (`DocumentService::begin_save`: the busy/untitled/changed-on-disk/permission/
+/// disk-space/WAV-size/clip/multichannel checks, SPEC-005 §2.7's ordered checklist) runs first
+/// and, on any refusal, returns at once — no job ever starts, so the progress dialog never
+/// appears for a confirmation the UI is about to re-issue.
 ///
 /// T-209: `confirm_clip` bypasses SPEC-005 §2.8's clip prompt (the UI re-issues with `true` after
 /// "Clip and save"; `dialog.overs`'s `count`/`peak_dbfs` params come from the first refusal).
@@ -335,20 +422,63 @@ pub async fn document_save<R: Runtime>(
 ) -> Result<DocumentDto, IpcError> {
     let doc = (*doc).clone();
     let doc_for_notice = doc.clone();
-    let info: DocumentDto =
-        run_blocking(move || doc.save(overwrite, confirm_clip, confirm_multichannel))
-            .await?
-            .into();
-    emit_document_changed(&app, &info);
-    emit_sidecar_notice(&app, &doc_for_notice);
-    Ok(info)
+
+    let begin_doc = doc.clone();
+    run_blocking(move || {
+        begin_doc.begin_save(
+            overwrite,
+            confirm_clip,
+            confirm_multichannel,
+            &vox_project::SystemFreeSpace,
+        )
+    })
+    .await?;
+
+    let (job_id, cancel) = doc.register_save_job();
+    emit_save_job_started(&app, job_id);
+    let finish_doc = doc.clone();
+    let app_for_job = app.clone();
+    let result = run_blocking(move || {
+        let mut last_fraction = 0.0f32;
+        finish_doc.finish_save(&cancel, move |fraction| {
+            if fraction - last_fraction >= 0.001 || fraction >= 1.0 {
+                last_fraction = fraction;
+                if let Err(error) = emit_job_progress(
+                    &app_for_job,
+                    JobProgressDto {
+                        job_id,
+                        kind: JobKind::Save,
+                        state: JobState::Running,
+                        fraction,
+                    },
+                ) {
+                    tracing::warn!(%error, "emitting save job_progress failed");
+                }
+            }
+        })
+    })
+    .await;
+    doc.unregister_save_job(job_id);
+    emit_save_job_result(&app, &doc_for_notice, job_id, result)
+}
+
+/// Cancels a running Save/Save As job (H-70, SPEC-005 §4.10). Best-effort, like every other job's
+/// cancel command — a no-op for an unknown or already-finished job id.
+#[tauri::command]
+pub async fn document_save_cancel(
+    doc: State<'_, DocumentService>,
+    job_id: u32,
+) -> Result<(), IpcError> {
+    doc.cancel_save_job(job_id);
+    Ok(())
 }
 
 /// Saves the current revision to `path` in `container` at `bits`/`dither` (SPEC-005 §2.7), then
-/// binds the document to it. T-209: `container`/`bits` reach the saver from the Save As dialog's
-/// format row (WAV 16/24/32-bit float or FLAC 16/24); H-20: `dither` is the dialog's Dither row
-/// (TPDF/None, shown for 16/24-bit only); `confirm_clip`/`confirm_multichannel` — see
-/// [`document_save`]'s doc comment.
+/// binds the document to it. Runs as the same kind of job [`document_save`] does — see its doc
+/// comment for the pre-flight/job-progress/cancel contract. T-209: `container`/`bits` reach the
+/// saver from the Save As dialog's format row (WAV 16/24/32-bit float or FLAC 16/24); H-20:
+/// `dither` is the dialog's Dither row (TPDF/None, shown for 16/24-bit only);
+/// `confirm_clip`/`confirm_multichannel` — see [`document_save`]'s doc comment.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn document_save_as<R: Runtime>(
@@ -365,23 +495,62 @@ pub async fn document_save_as<R: Runtime>(
     let doc = (*doc).clone();
     let doc_for_notice = doc.clone();
     let path_buf = std::path::PathBuf::from(&path);
-    let info: DocumentDto = run_blocking(move || {
-        doc.save_as(
-            std::path::Path::new(&path),
-            container.into(),
+    let container_val: SaveContainer = container.into();
+
+    let begin_doc = doc.clone();
+    let begin_path = path_buf.clone();
+    run_blocking(move || {
+        begin_doc.begin_save_as(
+            &begin_path,
+            container_val,
             bits,
-            dither,
             confirm_clip,
             confirm_multichannel,
+            &vox_project::SystemFreeSpace,
         )
     })
-    .await?
-    .into();
-    emit_document_changed(&app, &info);
-    emit_sidecar_notice(&app, &doc_for_notice);
-    // SPEC-018 §2.12: Save As always touches the list (a new recording's first save included).
-    touch_recent_file(&app, &settings, &path_buf);
-    Ok(info)
+    .await?;
+
+    let (job_id, cancel) = doc.register_save_job();
+    emit_save_job_started(&app, job_id);
+    let finish_doc = doc.clone();
+    let finish_path = path_buf.clone();
+    let app_for_job = app.clone();
+    let result = run_blocking(move || {
+        let mut last_fraction = 0.0f32;
+        finish_doc.finish_save_as(
+            &finish_path,
+            container_val,
+            bits,
+            dither,
+            &cancel,
+            move |fraction| {
+                if fraction - last_fraction >= 0.001 || fraction >= 1.0 {
+                    last_fraction = fraction;
+                    if let Err(error) = emit_job_progress(
+                        &app_for_job,
+                        JobProgressDto {
+                            job_id,
+                            kind: JobKind::Save,
+                            state: JobState::Running,
+                            fraction,
+                        },
+                    ) {
+                        tracing::warn!(%error, "emitting save job_progress failed");
+                    }
+                }
+            },
+        )
+    })
+    .await;
+    doc.unregister_save_job(job_id);
+    let outcome = emit_save_job_result(&app, &doc_for_notice, job_id, result);
+    if outcome.is_ok() {
+        // SPEC-018 §2.12: Save As always touches the list (a new recording's first save
+        // included).
+        touch_recent_file(&app, &settings, &path_buf);
+    }
+    outcome
 }
 
 /// T-306 (SPEC-018 §2.6.5): records the spectral pane's current settings for the next save.

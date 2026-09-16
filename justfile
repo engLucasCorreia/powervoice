@@ -9,6 +9,8 @@ check:
     just check-types
     python3 scripts/packaging/test_check_bundle.py
     python3 scripts/notices/generate.py --check
+    python3 scripts/docs/test_check.py
+    python3 scripts/docs/check.py
     @if [ -f ui/package.json ]; then node scripts/docs/generate_shortcuts.mjs --check; fi
     @if [ -f ui/package.json ]; then npm --prefix ui run check; fi
     @if [ -f ui/package.json ]; then npm --prefix ui test -- --run; fi
@@ -81,6 +83,12 @@ notices:
 # result.
 shortcuts-table:
     node scripts/docs/generate_shortcuts.mjs
+
+# T-706: regenerate the generated sections of the architecture docs (crate graph from `cargo
+# metadata`, IPC command/event tables from src-tauri/src/ipc) and check links, anchors and Mermaid
+# fences. `just check` runs the check without --write and fails when a section is stale.
+docs:
+    python3 scripts/docs/check.py --write
 
 # Build release binary (+ the Linux Tauri bundle: AppImage + .deb, T-705)
 build:

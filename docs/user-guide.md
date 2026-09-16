@@ -15,7 +15,7 @@ Plugin Manager headers starts a short tour of that panel. Use **→**/**Enter** 
 
 ## Install
 
-See the [README](../README.md#install) for install instructions per platform, and
+See the [README](../README.md#download) for install instructions per platform, and
 [`docs/building.md`](building.md) if you're building from source.
 
 ## First recording

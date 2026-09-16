@@ -95,14 +95,15 @@ just build    # release build + Linux bundles (AppImage, .deb)
 - **Interface:** [Tauri 2](https://v2.tauri.app/) with a Svelte 5 / TypeScript UI. It uses WebGL
   for the waveform, spectrogram and analyzer, and types generated from the Rust side.
 
-**Where to read more:**
+**Where to read more** — start at the [documentation hub](docs/README.md):
 - [`docs/user-guide.md`](docs/user-guide.md): how to use the app.
 - [`docs/shortcuts.md`](docs/shortcuts.md): every keyboard shortcut.
+- [`docs/architecture/overview.md`](docs/architecture/overview.md): how PowerVoice is built, with diagrams.
+- [`docs/contributing.md`](docs/contributing.md): dev setup, tests, and how to add things.
+- [`docs/glossary.md`](docs/glossary.md): every term, in plain language first.
 - [`docs/adr/`](docs/adr/): the architecture decisions.
 - [`specs/`](specs/): the behaviour specifications.
 - [`docs/performance.md`](docs/performance.md): measured performance, when available.
-
-Full architecture documentation and a non-technical guide are in progress.
 
 The project is developed spec-first: specs and ADRs define behaviour, and work is tracked as
 tickets in [`tickets/`](tickets/). Every change passes `just check`, which runs formatting,

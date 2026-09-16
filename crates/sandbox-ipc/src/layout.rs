@@ -201,8 +201,11 @@ impl EventKind {
     /// The user released a parameter (plugin → host).
     pub const GESTURE_END: Self = Self(3);
     /// Host → plugin (T-802): the module API's `reset()` (seek / loop wrap / transport start) —
-    /// clear delay lines and envelopes before processing the chunk that contains `pos`. `id`
-    /// and `value` are unused.
+    /// clear delay lines and envelopes before processing the chunk. `id` and `value` are
+    /// unused. [`PluginEnd::service`](crate::PluginEnd::service) ends a chunk at `pos`, so the
+    /// reset always belongs to the chunk that *starts* there (H-55): a backend applies it at
+    /// the chunk's first sample and the render stays independent of how far ahead the host
+    /// published.
     pub const RESET: Self = Self(4);
     /// Plugin → host (T-803): the plugin asked to be restarted (CLAP `request_restart`, e.g.
     /// its latency changed). The proxy raises `HostRequest::Restart` (ADR-008 §2); `pos`, `id`

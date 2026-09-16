@@ -412,3 +412,15 @@ worse than no ADR. The three *behaviour* changes H-59 made are marked **new**.
 - **`devices_rescan`. new** SPEC-001 §2.1's Rescan button: a fresh enumeration off the UI thread
   plus another reopen attempt for a device parked as lost (§2.4). Returns `DevicesDto`; the fresh
   enumeration lands through `devices_changed`.
+
+## Amendment 7 — H-67 (notice actions), 2026-09-16
+- **`Notice.action`. new** An optional `{ label_key, id }` on the `notice` payload (defaults to
+  `None`, like `cleared`/`auto_dismiss_ms`): a button the UI renders on the toast/banner. `id` is
+  the closed `NoticeActionId` enum (one variant so far, `go_to_first_dropout`) — the frontend's
+  `dispatchNoticeAction` (`ui/src/lib/notices/noticeActions.ts`) is the only place a new variant
+  needs wiring; the event never carries an arbitrary callback. First (and, per the SPEC-002
+  table's audit, only) user: the input-dropout notice (`notice.record.dropouts`, SPEC-002 AC-7),
+  attached once `commit_take`/`commit_take_op` has actually placed the dropout marker(s) in the
+  document, not before. The action carries no marker id — the frontend resolves "first" against
+  its own marker list (`goToFirstDropout`, same navigation semantics as `jumpToMarker`: moves the
+  cursor, never touches the time selection).

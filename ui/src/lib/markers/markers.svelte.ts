@@ -208,6 +208,20 @@ export function activateMarker(id: number): void {
   void seek(marker.pos_samples);
 }
 
+/** The dropout notice's "Go to first" action (H-67, SPEC-002 AC-7): jumps to the take's first
+ * dropout marker (smallest position; ties broken by id, like everywhere else markers are
+ * sorted). Navigation only, via {@link jumpToMarker} — never touches the time selection. A no-op
+ * if there is none (SPEC-022 §2.12 can leave a pre-/post-roll-only dropout without a marker). */
+export function goToFirstDropout(): void {
+  const first = markers
+    .filter((m) => m.kind === "dropout")
+    .sort((a, b) => a.pos_samples - b.pos_samples || a.id - b.id)
+    .at(0);
+  if (first) {
+    jumpToMarker(first.id);
+  }
+}
+
 /** Ctrl+Alt+→ (SPEC-009 §2.7): the marker with the smallest position past the reference position;
  * a no-op with none. */
 export function goToNextMarker(event?: KeyboardEvent): void {

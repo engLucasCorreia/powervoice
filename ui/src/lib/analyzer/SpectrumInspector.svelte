@@ -247,6 +247,7 @@
         id: null,
         cleared: false,
     auto_dismiss_ms: null,
+        action: null,
       };
       pushNotice(n);
     } catch (err) {

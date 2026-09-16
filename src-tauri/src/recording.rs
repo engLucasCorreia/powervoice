@@ -28,8 +28,8 @@ use vox_engine::{BufferRequest, EngineHandle, TransportCommand};
 
 use crate::document::{DocumentInfo, DocumentService};
 use crate::ipc::{
-    DocumentDto, EventName, HistoryStateDto, IpcError, IpcErrorCode, Notice, NoticeLevel,
-    RecordCancelDto, RecordFinishedDto, RecordStartedDto, RecordStateDto, emit_notice,
+    DocumentDto, EventName, HistoryStateDto, IpcError, IpcErrorCode, Notice, NoticeActionId,
+    NoticeLevel, RecordCancelDto, RecordFinishedDto, RecordStartedDto, RecordStateDto, emit_notice,
     engine_monitor_mode,
 };
 use crate::settings::{
@@ -168,6 +168,22 @@ fn duration_text(samples: u64, rate_hz: u32) -> String {
     }
 }
 
+/// H-67 (SPEC-002 AC-7): the take-finished dropout notice, with a "Go to first" action. Only
+/// emitted once the take/window actually committed (`on_take_finished`/`on_op_finished`'s
+/// `Ok(Some(..))` branches), so "markers were added" is always true by the time the UI can act on
+/// it. The action carries no marker id: the frontend resolves "first" against its own
+/// already-committed marker list (`ui/src/lib/markers/markers.svelte.ts::goToFirstDropout`),
+/// which stays correct even where SPEC-022 §2.12 keeps a pre-/post-roll-only dropout out of the
+/// document (rare; the button is then a harmless no-op — see the H-67 ticket report).
+fn dropout_notice(count: usize) -> Notice {
+    Notice::toast(NoticeLevel::Warning, "notice.record.dropouts")
+        .with_param("count", count.to_string())
+        .with_action(
+            NoticeActionId::GoToFirstDropout,
+            "notice.action.go_to_first",
+        )
+}
+
 /// T-304 (SPEC-022 §2.13): the device setup a recording offset is keyed by.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceSetup {
@@ -289,16 +305,6 @@ fn on_take_finished(inner: &Inner, result: RecordingResult) {
                 .with_param("count", result.clip_events.to_string()),
         );
     }
-    if !result.dropouts.is_empty() {
-        // H-10 item 4, SPEC-002 §2.4: `commit_take` below turns each into a "Dropout N ms"
-        // marker, committed with the take. Deviation from the spec's exact wording: no "Go to
-        // first" action on the notice itself (no action affordance exists on notices yet) — the
-        // markers are visible/clickable in the Markers panel once the take commits.
-        notice(
-            Notice::toast(NoticeLevel::Warning, "notice.record.dropouts")
-                .with_param("count", result.dropouts.len().to_string()),
-        );
-    }
     if let Some(op) = result.op {
         on_op_finished(inner, &result, op);
         return;
@@ -307,7 +313,15 @@ fn on_take_finished(inner: &Inner, result: RecordingResult) {
         .documents
         .commit_take(&result.finished, &result.dropouts)
     {
-        Ok(Some(info)) => (inner.emit)(RecordingEvent::DocumentChanged(info)),
+        Ok(Some(info)) => {
+            (inner.emit)(RecordingEvent::DocumentChanged(info));
+            if !result.dropouts.is_empty() {
+                // H-10 item 4, SPEC-002 §2.4/AC-7: `commit_take` above turned each into a
+                // "Dropout N ms" marker, committed with the take — so by now they exist and
+                // "Go to first" (H-67) is meaningful.
+                notice(dropout_notice(result.dropouts.len()));
+            }
+        }
         Ok(None) => tracing::info!("empty take discarded"),
         Err(e) => {
             tracing::error!(error = %e, "committing the take failed; kept for recovery");
@@ -336,6 +350,12 @@ fn on_op_finished(inner: &Inner, result: &RecordingResult, op: OpResult) {
     {
         Ok(Some((info, edit))) => {
             (inner.emit)(RecordingEvent::DocumentChanged(info));
+            if !result.dropouts.is_empty() {
+                // As in `on_take_finished`: `commit_take_op` above placed a marker for every
+                // dropout inside the committed window (SPEC-022 §2.12 — a pre-/post-roll-only
+                // dropout gets none, in which case "Go to first" is a harmless no-op).
+                notice(dropout_notice(result.dropouts.len()));
+            }
             if result.reason == StopReason::InputLost {
                 // §2.10: a partial result at the last good sample.
                 notice(
@@ -616,7 +636,8 @@ impl RecordingService {
 
 #[cfg(test)]
 mod tests {
-    use super::{duration_text, format_rate_hz, record_error, record_prefs};
+    use super::{dropout_notice, duration_text, format_rate_hz, record_error, record_prefs};
+    use crate::ipc::NoticeActionId;
     use crate::settings::{RecordModePref, RecordPrefsDto};
     use vox_engine::record::RecordError;
     use vox_engine::record_op::CursorRecordMode;
@@ -626,6 +647,18 @@ mod tests {
         assert_eq!(duration_text(0, 48_000), "0:00");
         assert_eq!(duration_text(48_000 * 751 + 47_999, 48_000), "12:31");
         assert_eq!(duration_text(44_100 * 3_661, 44_100), "1:01:01");
+    }
+
+    /// H-67 (SPEC-002 AC-7): the dropouts notice carries "Go to first" and the right count.
+    #[test]
+    fn dropout_notice_carries_the_go_to_first_action() {
+        let n = dropout_notice(3);
+        assert_eq!(n.key, "notice.record.dropouts");
+        assert_eq!(n.params.get("count").map(String::as_str), Some("3"));
+        assert!(!n.persistent, "dropouts are a toast, not a banner");
+        let action = n.action.expect("dropouts get a Go to first action");
+        assert_eq!(action.id, NoticeActionId::GoToFirstDropout);
+        assert_eq!(action.label_key, "notice.action.go_to_first");
     }
 
     /// H-10 item 7: the resampling notice shows "44.1 kHz"-style rates, not raw Hz.

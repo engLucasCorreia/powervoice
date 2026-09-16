@@ -61,6 +61,12 @@ pub struct Notice {
     /// stays until dismissed or replaced. Ignored for toasts, which already auto-dismiss.
     #[serde(default)]
     pub auto_dismiss_ms: Option<u32>,
+    /// H-67: an optional button the UI renders on the toast/banner (Banner.svelte/Toast.svelte).
+    /// `None` (the default for every existing notice): no button, unchanged look. `id` is a
+    /// closed set the frontend already knows how to handle (`dispatchNoticeAction` —
+    /// `ui/src/lib/notices/noticeActions.ts`); this event never ships an arbitrary callback.
+    #[serde(default)]
+    pub action: Option<NoticeAction>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -70,6 +76,28 @@ pub enum NoticeLevel {
     Info,
     Warning,
     Error,
+}
+
+/// A notice's action button (H-67): an i18n label key plus the closed [`NoticeActionId`] the
+/// frontend dispatches on. Never carries a callback or arbitrary payload over IPC.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct NoticeAction {
+    /// i18n key for the button's label (e.g. "Go to first" — `notice.action.go_to_first`).
+    pub label_key: String,
+    pub id: NoticeActionId,
+}
+
+/// The closed set of actions a `Notice` can carry (H-67). The UI's `dispatchNoticeAction`
+/// (`ui/src/lib/notices/noticeActions.ts`) is the only place a new variant needs wiring on the
+/// frontend side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum NoticeActionId {
+    /// SPEC-002 AC-7: moves the cursor to the take's first dropout marker (navigation — must not
+    /// touch the time selection, like `markers.svelte.ts::jumpToMarker`).
+    GoToFirstDropout,
 }
 
 impl Notice {
@@ -82,6 +110,7 @@ impl Notice {
             id: None,
             cleared: false,
             auto_dismiss_ms: None,
+            action: None,
         }
     }
 
@@ -94,6 +123,7 @@ impl Notice {
             id: Some(id.into()),
             cleared: false,
             auto_dismiss_ms: None,
+            action: None,
         }
     }
 
@@ -108,6 +138,7 @@ impl Notice {
             id: Some(id.into()),
             cleared: true,
             auto_dismiss_ms: None,
+            action: None,
         }
     }
 
@@ -121,6 +152,16 @@ impl Notice {
     #[must_use]
     pub fn with_param(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.params.insert(name.into(), value.into());
+        self
+    }
+
+    /// H-67: attaches the notice's one action button. Overwrites any action already set.
+    #[must_use]
+    pub fn with_action(mut self, id: NoticeActionId, label_key: impl Into<String>) -> Self {
+        self.action = Some(NoticeAction {
+            label_key: label_key.into(),
+            id,
+        });
         self
     }
 }
@@ -385,5 +426,46 @@ mod tests {
         assert!(banner.persistent);
         assert_eq!(banner.id.as_deref(), Some("device:output"));
         assert_eq!(banner.level, NoticeLevel::Error);
+    }
+
+    /// H-67: a notice built without `with_action` has none — every existing notice (toast or
+    /// banner) keeps looking exactly as it does today.
+    #[test]
+    fn no_action_by_default() {
+        let toast = Notice::toast(NoticeLevel::Info, "notice.example");
+        assert_eq!(toast.action, None);
+        let banner = Notice::banner(NoticeLevel::Error, "device:output", "notice.device_lost");
+        assert_eq!(banner.action, None);
+    }
+
+    /// H-67: `with_action` attaches the closed id + its i18n label, and round-trips through JSON
+    /// (the shape `ui/src/lib/notices/noticeActions.ts` dispatches on).
+    #[test]
+    fn with_action_round_trips_through_json() {
+        let notice = Notice::toast(NoticeLevel::Warning, "notice.record.dropouts")
+            .with_param("count", "2")
+            .with_action(
+                NoticeActionId::GoToFirstDropout,
+                "notice.action.go_to_first",
+            );
+        let action = notice.action.clone().expect("action was set");
+        assert_eq!(action.id, NoticeActionId::GoToFirstDropout);
+        assert_eq!(action.label_key, "notice.action.go_to_first");
+
+        let json = serde_json::to_string(&notice).unwrap();
+        assert!(json.contains(
+            r#""action":{"label_key":"notice.action.go_to_first","id":"go_to_first_dropout"}"#
+        ));
+        let back: Notice = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.action, notice.action);
+    }
+
+    /// H-67: an older payload with no `action` field still parses (`#[serde(default)]`, like
+    /// `cleared`/`auto_dismiss_ms`).
+    #[test]
+    fn missing_action_field_defaults_to_none() {
+        let json = r#"{"level":"info","key":"notice.example","params":{},"persistent":false,"id":null,"cleared":false,"auto_dismiss_ms":null}"#;
+        let notice: Notice = serde_json::from_str(json).unwrap();
+        assert_eq!(notice.action, None);
     }
 }

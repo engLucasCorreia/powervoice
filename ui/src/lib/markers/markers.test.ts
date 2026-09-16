@@ -11,6 +11,7 @@ import {
   activateMarker,
   addMarker,
   deleteSelectedMarker,
+  goToFirstDropout,
   goToNextMarker,
   goToPreviousMarker,
   initMarkers,
@@ -193,6 +194,48 @@ describe("markers store (S2-03)", () => {
     selectAllOf(480_000);
     activateMarker(2);
     expect(selectionState().current).toBeNull();
+    stop();
+  });
+
+  it("goToFirstDropout jumps to the earliest dropout marker, selection untouched (H-67, SPEC-002 AC-7)", async () => {
+    const seeks: unknown[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "markers_get") {
+        return [
+          marker(1, 50_000, 0, "User", "user"),
+          marker(3, 200_000, 480, "Dropout 10 ms", "dropout"),
+          marker(2, 144_000, 480, "Dropout 10 ms", "dropout"),
+        ];
+      }
+      if (cmd === "transport_seek") {
+        seeks.push(args);
+        return transportStateDto({ playhead_samples: 144_000, doc_len_samples: 480_000, can_play: true });
+      }
+      return null;
+    });
+    const stop = await initMarkers();
+    selectAllOf(480_000); // a pre-existing time selection must survive navigation
+    goToFirstDropout();
+    expect(markersState().selectedId).toBe(2);
+    expect(seeks).toEqual([{ positionSamples: 144_000 }]);
+    expect(selectionState().current).toEqual({ startSample: 0, endSample: 480_000 });
+    stop();
+  });
+
+  it("goToFirstDropout is a no-op with no dropout markers", async () => {
+    const seeks: unknown[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "markers_get") return [marker(1, 50_000, 0, "User", "user")];
+      if (cmd === "transport_seek") {
+        seeks.push(args);
+        return null;
+      }
+      return null;
+    });
+    const stop = await initMarkers();
+    goToFirstDropout();
+    expect(seeks).toHaveLength(0);
+    expect(markersState().selectedId).toBeNull();
     stop();
   });
 

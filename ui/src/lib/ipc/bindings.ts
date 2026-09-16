@@ -569,7 +569,31 @@ cleared: boolean,
  * banner, which replaces the lost one and then goes away on its own). `None`: the banner
  * stays until dismissed or replaced. Ignored for toasts, which already auto-dismiss.
  */
-auto_dismiss_ms: number | null, };
+auto_dismiss_ms: number | null, 
+/**
+ * H-67: an optional button the UI renders on the toast/banner (Banner.svelte/Toast.svelte).
+ * `None` (the default for every existing notice): no button, unchanged look. `id` is a
+ * closed set the frontend already knows how to handle (`dispatchNoticeAction` —
+ * `ui/src/lib/notices/noticeActions.ts`); this event never ships an arbitrary callback.
+ */
+action: NoticeAction | null, };
+
+/**
+ * A notice's action button (H-67): an i18n label key plus the closed [`NoticeActionId`] the
+ * frontend dispatches on. Never carries a callback or arbitrary payload over IPC.
+ */
+export type NoticeAction = { 
+/**
+ * i18n key for the button's label (e.g. "Go to first" — `notice.action.go_to_first`).
+ */
+label_key: string, id: NoticeActionId, };
+
+/**
+ * The closed set of actions a `Notice` can carry (H-67). The UI's `dispatchNoticeAction`
+ * (`ui/src/lib/notices/noticeActions.ts`) is the only place a new variant needs wiring on the
+ * frontend side.
+ */
+export type NoticeActionId = "go_to_first_dropout";
 
 export type NoticeLevel = "info" | "warning" | "error";
 

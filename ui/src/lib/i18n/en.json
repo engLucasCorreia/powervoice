@@ -386,6 +386,7 @@
   "error.nr_capture.capture_failed": "Capturing the noise print failed: {message}",
 
   "notice.dismiss": "Dismiss",
+  "notice.action.go_to_first": "Go to first",
   "notice.sidecar.mismatch": "{file} belongs to a different version of this audio and was ignored. It will be kept as a backup when you save.",
   "notice.sidecar.corrupt": "{file} is damaged and was ignored. It will be kept as a backup when you save.",
   "notice.sidecar.too_new": "{file} was written by a newer PowerVoice and can't be read. It will be kept as a backup when you save.",

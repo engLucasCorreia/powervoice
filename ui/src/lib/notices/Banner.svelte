@@ -2,20 +2,33 @@
   import { tDynamic, t } from "../i18n";
   import { dismissBanner } from "../state/notices.svelte";
   import type { ActiveNotice } from "../state/notices.svelte";
-  import { Icon, type IconName } from "../ui";
+  import { Button, Icon, type IconName } from "../ui";
+  import { dispatchNoticeAction } from "./noticeActions";
 
   /** H-25: Persistent banner with a status icon per level (the word carries the meaning, the icon and colour
-   * reinforce it) and a small dismiss key. */
+   * reinforce it) and a small dismiss key. H-67: an optional action button (`notice.action`) —
+   * absent on every notice that doesn't set one, so this looks exactly as it did before. */
   let { notice }: { notice: ActiveNotice } = $props();
 
   const glyph = $derived<IconName>(
     notice.level === "error" ? "error" : notice.level === "warning" ? "warning" : "info",
   );
+  const action = $derived(notice.action);
 </script>
 
 <div class="banner" data-testid="banner" data-level={notice.level}>
   <span class="glyph"><Icon name={glyph} /></span>
   <span class="message">{tDynamic(notice.key, notice.params)}</span>
+  {#if action}
+    <Button
+      size="sm"
+      variant="secondary"
+      testid="notice-action"
+      onclick={() => dispatchNoticeAction(action.id)}
+    >
+      {tDynamic(action.label_key)}
+    </Button>
+  {/if}
   <button
     type="button"
     class="dismiss"

@@ -76,9 +76,10 @@ pub use dto::AppInfo;
 pub use error::{IpcError, IpcErrorCode};
 pub use events::{
     EVENT_NAME_VARIANTS, EVENT_NAMES, EventName, ImportStartedDto, JobKind, JobProgressDto,
-    JobState, Notice, NoticeLevel, PluginScanProgressDto, PluginScanSummaryDto,
-    emit_import_started, emit_job_progress, emit_loudness_report, emit_normalize_result,
-    emit_notice, emit_plugin_scan_progress, emit_plugin_scan_summary, emit_spectrum_report,
+    JobState, Notice, NoticeAction, NoticeActionId, NoticeLevel, PluginScanProgressDto,
+    PluginScanSummaryDto, emit_import_started, emit_job_progress, emit_loudness_report,
+    emit_normalize_result, emit_notice, emit_plugin_scan_progress, emit_plugin_scan_summary,
+    emit_spectrum_report,
 };
 pub use export_commands::*;
 pub use export_dto::{

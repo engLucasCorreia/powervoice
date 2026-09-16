@@ -2,20 +2,35 @@
   import { tDynamic, t } from "../i18n";
   import { dismissToast } from "../state/notices.svelte";
   import type { ActiveNotice } from "../state/notices.svelte";
-  import { Icon, type IconName } from "../ui";
+  import { Button, Icon, type IconName } from "../ui";
+  import { dispatchNoticeAction } from "./noticeActions";
 
   /** H-25: Toast with a status icon per level (the word carries the meaning, the icon and colour
-   * reinforce it) and a small dismiss key. */
+   * reinforce it) and a small dismiss key. H-67: an optional action button (`notice.action`) —
+   * absent on every notice that doesn't set one, so this looks exactly as it did before. */
   let { notice }: { notice: ActiveNotice } = $props();
 
   const glyph = $derived<IconName>(
     notice.level === "error" ? "error" : notice.level === "warning" ? "warning" : "info",
   );
+  const action = $derived(notice.action);
 </script>
 
 <div class="toast" data-testid="toast" data-level={notice.level}>
   <span class="glyph"><Icon name={glyph} /></span>
   <span class="message">{tDynamic(notice.key, notice.params)}</span>
+  {#if action}
+    <span class="action">
+      <Button
+        size="sm"
+        variant="secondary"
+        testid="notice-action"
+        onclick={() => dispatchNoticeAction(action.id)}
+      >
+        {tDynamic(action.label_key)}
+      </Button>
+    </span>
+  {/if}
   <button
     type="button"
     class="dismiss"
@@ -61,6 +76,12 @@
 
   .message {
     flex: 1;
+  }
+
+  .action {
+    display: inline-flex;
+    flex: none;
+    margin-top: calc(-1 * var(--pv-space-half));
   }
 
   .dismiss {

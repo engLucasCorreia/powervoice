@@ -99,7 +99,7 @@
   }
 
   function notice(level: NoticeLevel, key: string, params: Record<string, string> = {}): Notice {
-    return { level, key, params, persistent: false, id: null, cleared: false, auto_dismiss_ms: null };
+    return { level, key, params, persistent: false, id: null, cleared: false, auto_dismiss_ms: null, action: null };
   }
 
   function eqWhat(action: EqAction): string {

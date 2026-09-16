@@ -22,6 +22,7 @@ describe("initNotices (S2-02: the shared `notice` event -> the toast/banner stor
       id: null,
       cleared: false,
       auto_dismiss_ms: null,
+      action: null,
     };
     await emit("notice", notice);
 
@@ -42,6 +43,7 @@ describe("pushNotice with cleared: true (H-17: e.g. the disk-almost-full banner)
       id: "disk_almost_full",
       cleared: false,
       auto_dismiss_ms: null,
+      action: null,
     });
     expect(noticesState().banners).toHaveLength(1);
 
@@ -53,6 +55,7 @@ describe("pushNotice with cleared: true (H-17: e.g. the disk-almost-full banner)
       id: "disk_almost_full",
       cleared: true,
       auto_dismiss_ms: null,
+      action: null,
     });
     expect(noticesState().banners).toHaveLength(0);
     expect(noticesState().toasts).toHaveLength(0);
@@ -68,6 +71,7 @@ describe("pushNotice with auto_dismiss_ms (H-59, SPEC-001 §2.3)", () => {
     id: "device:output",
     cleared: false,
     auto_dismiss_ms: autoDismissMs,
+    action: null,
   });
 
   it("dismisses the reconnected banner on its own, while the lost banner stays", () => {

@@ -870,3 +870,10 @@ export async function pluginsReveal(path: string): Promise<void> {
 export async function pluginsUninstall(path: string): Promise<void> {
   return invoke<void>("plugins_uninstall" satisfies CommandName, { path });
 }
+
+/** H-44 (ADR-006 §3/§7 step 5): every installed `.voxmod` package's validated `locales/<lang>.json`
+ * strings, merged into one `modules.<id>.*`-keyed map. Call at start-up and after an
+ * install/uninstall to keep the i18n table (`setModuleMessages`) in sync with what's installed. */
+export async function pluginsModuleLocales(lang: string): Promise<Record<string, string>> {
+  return invoke<Record<string, string>>("plugins_module_locales" satisfies CommandName, { lang });
+}

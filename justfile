@@ -164,7 +164,9 @@ spike:
 # T-805 (ADR-006 §3): build a module package crate — e.g. `just voxmod voxmod-gain` — as a release
 # `.clap` and zip it with the crate's `voxmod.json`, the licenses and checksums into
 # target/voxmod/<id>-<version>.voxmod ("Install module…" accepts it). Linux and Windows binaries;
-# macOS `.clap` bundles aren't assembled by this recipe yet.
+# macOS `.clap` bundles aren't assembled by this recipe yet. H-44: any `crates/<crate>/presets/
+# *.vopreset.json` and `crates/<crate>/locales/*.json` the crate ships are packed too (factory
+# presets and translated strings — both optional; a crate with neither packs exactly as before).
 voxmod crate:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -179,10 +181,19 @@ voxmod crate:
         Darwin*) echo "macOS .clap bundles aren't built by this recipe yet" >&2; exit 1 ;;
         *) lib="${pkg//-/_}.dll" ;;
     esac
+    preset_args=()
+    for f in crates/{{crate}}/presets/*.vopreset.json; do
+        [ -e "$f" ] && preset_args+=(--preset "$f")
+    done
+    locale_args=()
+    for f in crates/{{crate}}/locales/*.json; do
+        [ -e "$f" ] && locale_args+=(--locale "$f")
+    done
     cargo run --release -q -p powervoice-cli --bin voxmod -- \
         --manifest crates/{{crate}}/voxmod.json \
         --binary "target/release/$lib" \
         --license LICENSE-MIT --license LICENSE-APACHE --license THIRD_PARTY_NOTICES \
+        "${preset_args[@]}" "${locale_args[@]}" \
         --out target/voxmod
 
 # Check for Windows cross-compilation

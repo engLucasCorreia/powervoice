@@ -260,6 +260,7 @@ crate::ipc_commands!(
     plugins_install,
     plugins_reveal,
     plugins_uninstall,
+    plugins_module_locales,
 );
 
 #[cfg(feature = "spike")]
@@ -392,6 +393,7 @@ crate::ipc_commands!(
     plugins_install,
     plugins_reveal,
     plugins_uninstall,
+    plugins_module_locales,
     spike_env,
     spike_waveform_peaks,
     spike_spectrogram_texture,

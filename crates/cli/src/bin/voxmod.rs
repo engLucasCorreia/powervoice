@@ -7,8 +7,14 @@
 //! ```text
 //! voxmod --manifest crates/voxmod-gain/voxmod.json \
 //!        --binary target/release/libvox_voxmod_gain.so [--binary windows-x86_64=path.dll] \
-//!        --license LICENSE-MIT --license LICENSE-APACHE --out target/voxmod
+//!        --license LICENSE-MIT --license LICENSE-APACHE \
+//!        --preset presets/warm_boost.vopreset.json --locale locales/en.json \
+//!        --out target/voxmod
 //! ```
+//!
+//! `--preset`/`--locale` (H-44, ADR-006 §3) store their files as `presets/<file name>` /
+//! `locales/<file name>` — the factory presets and translated strings `PluginCatalog::module_presets`/
+//! `module_locale` read once the package is installed.
 
 use std::path::PathBuf;
 
@@ -29,6 +35,14 @@ struct Args {
     /// A license file, stored as `licenses/<file name>`.
     #[arg(long = "license")]
     licenses: Vec<PathBuf>,
+    /// A factory preset file (H-44, ADR-006 §3), stored as `presets/<file name>` —
+    /// `<name>.vopreset.json`, the same schema as a user-saved module preset.
+    #[arg(long = "preset")]
+    presets: Vec<PathBuf>,
+    /// A locale file (H-44, ADR-006 §3), stored as `locales/<file name>` — `<lang>.json`, its keys
+    /// namespaced `modules.<id>.*`.
+    #[arg(long = "locale")]
+    locales: Vec<PathBuf>,
     /// Output directory (the package is `<id>-<version>.voxmod` in it).
     #[arg(long, default_value = "target/voxmod")]
     out: PathBuf,
@@ -52,11 +66,17 @@ fn main() -> Result<()> {
         binaries.push((platform, path));
     }
     let mut extra = Vec::new();
-    for l in &args.licenses {
+    for (flag, prefix, l) in args
+        .licenses
+        .iter()
+        .map(|l| ("--license", "licenses", l))
+        .chain(args.presets.iter().map(|p| ("--preset", "presets", p)))
+        .chain(args.locales.iter().map(|p| ("--locale", "locales", p)))
+    {
         let name = l
             .file_name()
-            .with_context(|| format!("{} has no file name", l.display()))?;
-        extra.push((format!("licenses/{}", name.to_string_lossy()), l.clone()));
+            .with_context(|| format!("{flag} {} has no file name", l.display()))?;
+        extra.push((format!("{prefix}/{}", name.to_string_lossy()), l.clone()));
     }
     std::fs::create_dir_all(&args.out)?;
     let out = args

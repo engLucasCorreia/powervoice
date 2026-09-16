@@ -40,7 +40,9 @@ fn user_entry(name: String) -> PresetEntryDto {
 
 // --- Module presets --------------------------------------------------------------------------
 
-/// Factory presets (`ModuleFactory::presets`, ADR-005 §2) first, then user-saved ones
+/// Factory presets first — the built-in's own (`ModuleFactory::presets`, ADR-005 §2), then a
+/// `.voxmod` package's `presets/*.vopreset.json` (H-44, ADR-006 §3/§7 step 5; empty unless
+/// `module_id` was installed from a package that shipped some) — then user-saved ones
 /// (alphabetical) — the slot menu's preset list (SPEC-012 §2.7).
 #[tauri::command]
 pub async fn module_presets_list(
@@ -54,6 +56,7 @@ pub async fn module_presets_list(
         let mut out: Vec<PresetEntryDto> = handle
             .rack_module_presets(&module_id)
             .iter()
+            .chain(crate::plugins::module_presets(&module_id).iter())
             .map(|p| PresetEntryDto {
                 key: p.key.clone(),
                 name: (&p.name).into(),
@@ -202,6 +205,7 @@ fn resolve_module_preset(
         PresetRefDto::Factory { key } => handle
             .rack_module_presets(module_id)
             .into_iter()
+            .chain(crate::plugins::module_presets(module_id))
             .find(|p| p.key == key)
             .map(|p| p.state)
             .ok_or_else(|| no_such_preset(&key)),

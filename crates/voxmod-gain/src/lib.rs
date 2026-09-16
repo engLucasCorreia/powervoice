@@ -74,4 +74,38 @@ mod tests {
         let d = PackagedGainFactory::default().descriptor;
         assert_eq!(d.state_format_version, Gain::STATE_FORMAT_VERSION);
     }
+
+    /// H-44 (ADR-006 §3/§7 step 5): the package's two example factory presets parse as the same
+    /// schema a user-saved module preset uses, and reference a real `gain_db` param.
+    #[test]
+    fn the_example_presets_parse_and_reference_the_real_param() {
+        for (bytes, want_key) in [
+            (
+                include_str!("../presets/warm_boost.vopreset.json"),
+                "gain_db",
+            ),
+            (
+                include_str!("../presets/gentle_cut.vopreset.json"),
+                "gain_db",
+            ),
+        ] {
+            let stored: vox_presets::StoredModulePreset = serde_json::from_str(bytes).unwrap();
+            assert!(stored.state.params.contains_key(want_key), "{stored:?}");
+            assert!(!stored.name.is_empty());
+        }
+    }
+
+    /// H-44: every key in the example locale file is namespaced under this package's own
+    /// `modules.<id>.` prefix (ADR-006 §3) — the same rule the installer enforces at runtime.
+    #[test]
+    fn the_example_locale_keys_are_all_namespaced_under_this_modules_id() {
+        let json: serde_json::Value =
+            serde_json::from_str(include_str!("../locales/en.json")).unwrap();
+        let map = json.as_object().unwrap();
+        assert!(!map.is_empty());
+        let prefix = format!("modules.{ID}.");
+        for key in map.keys() {
+            assert!(key.starts_with(&prefix), "{key}");
+        }
+    }
 }

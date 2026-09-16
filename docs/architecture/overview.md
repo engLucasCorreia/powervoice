@@ -178,6 +178,7 @@ flowchart TD
   vox_modules --> vox_dsp
   vox_modules --> vox_module_api
   vox_plugin_host --> vox_module_api
+  vox_plugin_host --> vox_presets
   vox_plugin_host --> vox_rack
   vox_plugin_host --> vox_sandbox_ipc
   vox_presets --> vox_module_api
@@ -213,7 +214,7 @@ flowchart TD
 | `vox-module-api` | [`crates/module-api`](../../crates/module-api) | lib | none | none |
 | `vox-module-clap` | [`crates/module-clap`](../../crates/module-clap) | lib | `vox-module-api` | none |
 | `vox-modules` | [`crates/modules`](../../crates/modules) | lib | `vox-dsp`, `vox-module-api` | `vox-testkit` |
-| `vox-plugin-host` | [`crates/plugin-host`](../../crates/plugin-host) | lib | `vox-module-api`, `vox-rack`, `vox-sandbox-ipc` | none |
+| `vox-plugin-host` | [`crates/plugin-host`](../../crates/plugin-host) | lib | `vox-module-api`, `vox-presets`, `vox-rack`, `vox-sandbox-ipc` | none |
 | `vox-presets` | [`crates/presets`](../../crates/presets) | lib | `vox-module-api`, `vox-rack` | `vox-modules` |
 | `vox-project` | [`crates/project`](../../crates/project) | lib | `vox-dsp`, `vox-io` | `vox-testkit` |
 | `vox-rack` | [`crates/rack`](../../crates/rack) | lib | `vox-dsp`, `vox-module-api` | `vox-modules`, `vox-testkit` |
@@ -222,7 +223,7 @@ flowchart TD
 | `vox-test-lv2` | [`crates/test-lv2`](../../crates/test-lv2) | cdylib, rlib | `vox-lv2-abi`, `vox-module-api`, `vox-modules` | none |
 | `vox-test-vst3` | [`crates/test-vst3`](../../crates/test-vst3) | cdylib, rlib | `vox-module-api`, `vox-modules` | none |
 | `vox-testkit` | [`crates/testkit`](../../crates/testkit) | lib | none | none |
-| `vox-voxmod-gain` | [`crates/voxmod-gain`](../../crates/voxmod-gain) | cdylib, rlib | `vox-module-api`, `vox-module-clap`, `vox-modules` | none |
+| `vox-voxmod-gain` | [`crates/voxmod-gain`](../../crates/voxmod-gain) | cdylib, rlib | `vox-module-api`, `vox-module-clap`, `vox-modules` | `vox-presets` |
 | `vox-ysfx-sys` | [`crates/ysfx-sys`](../../crates/ysfx-sys) | lib | none | none |
 <!-- END GENERATED: crate-graph -->
 

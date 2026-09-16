@@ -322,3 +322,71 @@ installed on the development machine, so it has not been run yet.
 - **Not done (follow-ups):** merging `locales/` under `modules.<id>.*` and indexing `presets/`
   (§7 step 5) — the files are extracted but not used yet; package signing (v1: unsigned, the
   dialog states the trust model).
+
+## Amendment 3 — H-44: locales and presets read (§7 step 5), as implemented (2026-09-16)
+
+**Read fresh from disk, never cached.** Both a package's factory presets and its locale strings
+are read from `<modules>/<id>/<version>/` **on every call**
+(`vox_plugin_host::voxmod::read_module_presets`,
+`vox_plugin_host::module_locale::read_module_locale`; `PluginCatalog::module_presets`/
+`module_locale`/`installed_module_ids`), not indexed once at install time into some in-memory
+table. This means: "Uninstall…" (which already deletes the whole `<id>/` folder, §7 step 6) drops
+both for free — there is nothing to invalidate — and a package reinstalled with different files
+is picked up without an app restart.
+
+**Presets** (`presets/*.vopreset.json`, §3): the same on-disk schema a user-saved module preset
+uses (`vox_presets::StoredModulePreset` — `{ format_version, name, state }`; the module id is
+implicit, this package's own). A file that isn't that shape, or whose `format_version` is newer
+than this build understands, or over 16 MB, is skipped — one bad preset never keeps the others (or
+the install) from working. The preset's `key` is `vox_presets::sanitize_preset_name` of the file's
+stem; its `name` is `LocalizedText::keyed("modules.<id>.presets.<key>.name", <the file's name
+field>)`, so a package's own locale file can translate it. Unknown parameter keys inside `state`
+are left exactly as they are, like an imported preset: the host's generic `prepare_state`
+(`vox_module_api::state`, called wherever the state is actually applied to a live instance, not
+here) already drops what the module doesn't recognise and fills the rest at its schema default —
+this reader does no schema-aware filtering of its own.
+
+These presets surface exactly like a built-in's `ModuleFactory::presets()` — `PresetEntryDto {
+is_factory: true, .. }` in `module_presets_list`, resolved the same way in
+`module_preset_load`/`resolve_module_preset` — so the slot's Presets menu and the Manage Presets
+dialog need no changes to show them: they're read-only and unexportable by construction (the UI's
+existing `is_factory` branch already hides rename/delete/export for a factory entry, whichever of
+the two sources it came from).
+
+**Locales** (`locales/<lang>.json`, §3): validated as untrusted data
+(`vox_plugin_host::module_locale::validate_module_locale`) — must be a flat JSON object (≤ 4096
+keys, ≤ 1 MB total), every key ≤ 200 bytes and starting with `modules.<id>.` (`id` = this
+package's own manifest id, nothing else — not another module's namespace, not an app key), every
+value a JSON **string** ≤ 4096 bytes. Any violation rejects the **whole file** — never a partial
+merge of "the keys that were fine" — since a file that already tried to reach outside its
+namespace once is not a source to trust partially. Validation failure never fails an install or a
+listing; the caller (`plugins_module_locales`) reports it with a `notice.plugins.locale_rejected`
+toast (`{id}`, `{message}`) and simply doesn't merge anything from that file.
+
+**Where the merge happens.** There is no Rust-side global message table. `plugins_module_locales
+(lang)` (a new command) walks every id `PluginCatalog::installed_module_ids` reports, validates
+each one's `locales/<lang>.json` (skipping one with no file for `lang` — not an error, most
+languages won't be covered), and returns the merged map. The UI calls it at start-up
+(`initPlugins`) and after "Install module…"/"Uninstall…" complete, and replaces its **whole**
+runtime-merged overlay with the result (`ui/src/lib/i18n/index.ts`'s `setModuleMessages`) — a
+wholesale replace, not additive, so an uninstalled package's strings disappear rather than lingering
+until restart. `tDynamic` (already the lookup for any runtime-only key, e.g. an IPC error/notice
+key) checks this overlay after `en.json`. The overlay itself re-checks the `modules.` prefix and
+that no key already exists in `en.json`, as defense in depth on top of the backend's own
+validation — belt and braces, not the only guard (`en.json` is asserted, in `i18n.test.ts`, to
+never define a `modules.*` key itself, so there is nothing for a legitimate merge to collide
+with). The T-702 lint (`i18n.test.ts`'s `tDynamic()`-prefix check) ignores a `modules.` prefix for
+the same reason: those keys are never expected to have a static match in `en.json`.
+
+**Example package** (`crates/voxmod-gain`): `presets/warm_boost.vopreset.json` (`gain_db: 6.0`)
+and `presets/gentle_cut.vopreset.json` (`gain_db: -3.0`); `locales/en.json` translates their two
+preset names (`modules.org.powervoice.gain.packaged.presets.<key>.name`) — deliberately not the
+module's own built-in name/param strings, which already have their own `param.gain.*` keys owned
+by the built-in and are out of a package's namespace to begin with. `just voxmod`'s CLI
+(`crates/cli/src/bin/voxmod.rs`) gained `--preset`/`--locale` flags (alongside the existing
+`--license`, same "store under `<folder>/<file name>`" pattern); the `voxmod` justfile recipe
+passes every `presets/*.vopreset.json` and `locales/*.json` a package crate ships (both optional —
+a crate with neither packs exactly as before). Proven end to end in
+`crates/sandbox/tests/voxmod_install.rs`: install → both presets listed and one applies correctly
+(a real sandboxed instance's `gain_db`, bit-exact after settling) and the locale string appears →
+uninstall → both gone.

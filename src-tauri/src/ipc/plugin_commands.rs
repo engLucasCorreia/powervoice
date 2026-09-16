@@ -1,11 +1,15 @@
 //! Plugin manager commands (T-804 item 6, T-809; thin — the business logic lives in
 //! `vox_plugin_host::catalog`/`install`. The plugin manager UI is `ui/src/lib/plugins/`).
 
+use std::collections::HashMap;
+
 use tauri::{AppHandle, State};
 use vox_plugin_host::install::UninstallError;
 
 use crate::ipc::error::{IpcError, IpcErrorCode};
-use crate::ipc::events::{emit_plugin_scan_progress, emit_plugin_scan_summary};
+use crate::ipc::events::{
+    Notice, NoticeLevel, emit_notice, emit_plugin_scan_progress, emit_plugin_scan_summary,
+};
 use crate::ipc::plugin_dto::{
     PluginEntryDto, PluginFoldersDto, PluginInstallResultDto, plugin_list,
 };
@@ -204,6 +208,40 @@ pub async fn plugins_uninstall(path: String) -> Result<(), IpcError> {
     .await
     .map_err(|e| IpcError::internal(e.to_string()))?
     .map_err(uninstall_ipc_error)
+}
+
+/// Every installed `.voxmod` package's validated `locales/<lang>.json` strings, merged into one
+/// map keyed `modules.<id>.*` (H-44, ADR-006 §3/§7 step 5): the UI calls this at start-up and
+/// after an install/uninstall to keep its i18n table in sync with what's actually installed. A
+/// package whose locale file fails validation (a key trying to reach outside its own namespace,
+/// a non-string value, malformed JSON, …) is skipped and reported with a `notice.plugins.
+/// locale_rejected` toast — it never fails this call or the install that brought the file in.
+#[tauri::command]
+pub async fn plugins_module_locales<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    lang: String,
+) -> Result<HashMap<String, String>, IpcError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut merged = HashMap::new();
+        for id in crate::plugins::installed_module_ids() {
+            match crate::plugins::module_locale(&id, &lang) {
+                Ok(Some(strings)) => merged.extend(strings),
+                Ok(None) => {}
+                Err(e) => {
+                    let notice =
+                        Notice::toast(NoticeLevel::Warning, "notice.plugins.locale_rejected")
+                            .with_param("id", id)
+                            .with_param("message", e.to_string());
+                    if let Err(emit_err) = emit_notice(&app, notice) {
+                        tracing::warn!(error = %emit_err, "notice emit failed");
+                    }
+                }
+            }
+        }
+        merged
+    })
+    .await
+    .map_err(|e| IpcError::internal(e.to_string()))
 }
 
 /// Shows a plugin file in the system file manager (T-809).

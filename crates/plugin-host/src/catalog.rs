@@ -30,7 +30,7 @@ use crate::scan::{
     self, FailureKind, FoundPlugin, PluginFormat, ScanFailure, ScanOptions, ScanOutcome,
     ScannedPlugin, ShadowedPlugin,
 };
-use crate::voxmod::PackageHost;
+use crate::voxmod::{self, PackageHost};
 
 /// Where the catalog persists its state.
 #[derive(Clone, Debug)]
@@ -204,6 +204,65 @@ impl PluginCatalog {
     /// The sandbox options this catalog scans and hosts with (binary, health store, …).
     pub fn sandbox_options(&self) -> &SandboxOptions {
         &self.sandbox_options
+    }
+
+    /// `<modules>/<id>/<version>` for the currently installed version of `id` (`None`: no modules
+    /// folder is set, or `id` isn't installed). H-44: presets and locale strings are read fresh
+    /// from here on every call — never cached — so an uninstall (which deletes this whole folder,
+    /// `install::uninstall_module`) drops them for free, and a change on disk (a package
+    /// reinstalled with different files) is picked up without a restart.
+    fn installed_version_dir(&self, id: &str) -> Option<PathBuf> {
+        let modules = self.modules_dir()?;
+        let id_dir = modules.join(id);
+        let version = install::installed_versions(&id_dir)
+            .into_iter()
+            .next_back()?;
+        Some(id_dir.join(version))
+    }
+
+    /// `id`'s factory presets from its `.voxmod` package's `presets/*.vopreset.json` (ADR-006
+    /// §3/§7 step 5, H-44) — empty if `id` wasn't installed from a package, or it shipped none.
+    pub fn module_presets(&self, id: &str) -> Vec<vox_module_api::ModulePreset> {
+        match self.installed_version_dir(id) {
+            Some(dir) => voxmod::read_module_presets(id, &dir),
+            None => Vec::new(),
+        }
+    }
+
+    /// `id`'s validated `locales/<lang>.json` strings (H-44, ADR-006 §3/§7 step 5, Amendment 3).
+    /// `Ok(None)`: not installed from a package, or it has no file for `lang`. `Err`: the file
+    /// exists but failed validation (namespace, size, shape) — the caller shows a notice; this
+    /// never fails an install or a listing.
+    pub fn module_locale(
+        &self,
+        id: &str,
+        lang: &str,
+    ) -> Result<Option<std::collections::BTreeMap<String, String>>, crate::module_locale::LocaleError>
+    {
+        match self.installed_version_dir(id) {
+            Some(dir) => crate::module_locale::read_module_locale(id, &dir, lang),
+            None => Ok(None),
+        }
+    }
+
+    /// Every module id currently installed from a `.voxmod` package (a subdirectory of the
+    /// modules folder with at least one version) — for merging every installed package's locale
+    /// strings at once (`src-tauri`'s startup/after-install/after-uninstall i18n refresh).
+    pub fn installed_module_ids(&self) -> Vec<String> {
+        let Some(modules) = self.modules_dir() else {
+            return Vec::new();
+        };
+        let mut ids: Vec<String> = std::fs::read_dir(&modules)
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|n| !n.starts_with('.'))
+                    .collect()
+            })
+            .unwrap_or_default();
+        ids.sort();
+        ids
     }
 
     /// Sets the extra folders to scan in addition to the standard per-format paths (T-804 item
@@ -692,6 +751,7 @@ impl PluginCatalog {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)] // exact values round-tripped through JSON (H-44 preset params)
 mod tests {
     use super::*;
     use vox_module_api::ModuleDescriptor;
@@ -1007,6 +1067,153 @@ mod tests {
             }
         }
         assert!(registry2.get("clap:com.x.y").is_some());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- H-44: a package's presets and locale strings -----------------------------------------
+
+    const EXTRAS_MODULE: &str = "com.acme.extras";
+
+    /// A minimal `.voxmod` for [`EXTRAS_MODULE`] with one factory preset and one locale file.
+    fn package_with_extras(dir: &Path) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let bin = dir.join("plugin.clap");
+        std::fs::write(&bin, b"binary").unwrap();
+        let presets_dir = dir.join("src-presets");
+        std::fs::create_dir_all(&presets_dir).unwrap();
+        let preset_path = presets_dir.join("warm.vopreset.json");
+        std::fs::write(
+            &preset_path,
+            serde_json::json!({
+                "format_version": 1,
+                "name": "Warm",
+                "state": {"format_version": 1, "params": {"gain_db": 6.0}},
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let locales_dir = dir.join("src-locales");
+        std::fs::create_dir_all(&locales_dir).unwrap();
+        let locale_path = locales_dir.join("en.json");
+        std::fs::write(
+            &locale_path,
+            serde_json::json!({ "modules.com.acme.extras.name": "Acme Extras" }).to_string(),
+        )
+        .unwrap();
+
+        let manifest = voxmod::tests::manifest(EXTRAS_MODULE);
+        let out = dir.join("extras.voxmod");
+        voxmod::pack(
+            &manifest,
+            &[(voxmod::host_platform(), bin)],
+            &[
+                ("presets/warm.vopreset.json".into(), preset_path),
+                ("locales/en.json".into(), locale_path),
+            ],
+            &out,
+        )
+        .unwrap();
+        out
+    }
+
+    fn extras_scanned_plugin() -> crate::scan::ScannedPlugin {
+        let mut p = crate::install::tests::effect(EXTRAS_MODULE);
+        p.version = "1.2.0".into();
+        p.module_info = Some("{}".into());
+        p
+    }
+
+    /// End to end (H-44): installing a `.voxmod` with `presets/` and `locales/` makes both
+    /// available right away — the presets as `catalog.module_presets`, the locale strings as
+    /// `catalog.module_locale` — and uninstalling drops both again, since neither is cached: they
+    /// are read fresh from `<modules>/<id>/<version>/` on every call.
+    #[test]
+    fn presets_and_locale_are_available_after_install_and_gone_after_uninstall() {
+        let dir = temp_dir("module-extras");
+        let modules = dir.join("modules");
+        let c = catalog(&dir);
+        c.set_modules_dir(Some(modules.clone()));
+        let pkg = package_with_extras(&dir.join("build"));
+
+        assert_eq!(c.installed_module_ids(), Vec::<String>::new());
+        assert!(c.module_presets(EXTRAS_MODULE).is_empty());
+        assert_eq!(c.module_locale(EXTRAS_MODULE, "en"), Ok(None));
+
+        let report = c
+            .install_module_with(&pkg, &modules, false, |_| Ok(vec![extras_scanned_plugin()]))
+            .unwrap();
+        assert_eq!(report.effects.len(), 1);
+
+        assert_eq!(c.installed_module_ids(), vec![EXTRAS_MODULE.to_owned()]);
+        let presets = c.module_presets(EXTRAS_MODULE);
+        assert_eq!(presets.len(), 1);
+        assert_eq!(presets[0].key, "warm");
+        assert_eq!(presets[0].state.params["gain_db"], 6.0);
+        let locale = c.module_locale(EXTRAS_MODULE, "en").unwrap().unwrap();
+        assert_eq!(
+            locale["modules.com.acme.extras.name"],
+            "Acme Extras".to_owned()
+        );
+        // A language the package doesn't ship.
+        assert_eq!(c.module_locale(EXTRAS_MODULE, "fr"), Ok(None));
+
+        let target = modules
+            .join(EXTRAS_MODULE)
+            .join("1.2.0")
+            .join(format!("{EXTRAS_MODULE}.clap"));
+        c.uninstall_module(&target, &modules).unwrap();
+
+        assert_eq!(c.installed_module_ids(), Vec::<String>::new());
+        assert!(c.module_presets(EXTRAS_MODULE).is_empty());
+        assert_eq!(c.module_locale(EXTRAS_MODULE, "en"), Ok(None));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// H-44: a locale file whose key tries to reach outside the package's own `modules.<id>.`
+    /// namespace (e.g. an app key, or another module's) is rejected — `module_locale` reports the
+    /// error rather than merging anything from it — even though the install itself still
+    /// succeeds and the file's presets are indexed normally.
+    #[test]
+    fn a_malicious_locale_key_is_rejected_without_failing_the_install() {
+        let dir = temp_dir("module-locale-malicious");
+        let modules = dir.join("modules");
+        let c = catalog(&dir);
+        c.set_modules_dir(Some(modules.clone()));
+
+        let build = dir.join("build");
+        let bin = build.join("plugin.clap");
+        std::fs::create_dir_all(&build).unwrap();
+        std::fs::write(&bin, b"binary").unwrap();
+        let locales_dir = build.join("locales");
+        std::fs::create_dir_all(&locales_dir).unwrap();
+        let locale_path = locales_dir.join("en.json");
+        // Tries to override an app key, not a `modules.<id>.*` one.
+        std::fs::write(
+            &locale_path,
+            serde_json::json!({ "app.title": "Not PowerVoice" }).to_string(),
+        )
+        .unwrap();
+        let manifest = voxmod::tests::manifest(EXTRAS_MODULE);
+        let pkg = build.join("out.voxmod");
+        voxmod::pack(
+            &manifest,
+            &[(voxmod::host_platform(), bin)],
+            &[("locales/en.json".into(), locale_path)],
+            &pkg,
+        )
+        .unwrap();
+
+        let report = c
+            .install_module_with(&pkg, &modules, false, |_| Ok(vec![extras_scanned_plugin()]))
+            .unwrap();
+        assert_eq!(report.effects.len(), 1, "the install still succeeds");
+
+        assert!(matches!(
+            c.module_locale(EXTRAS_MODULE, "en"),
+            Err(crate::module_locale::LocaleError::KeyOutsideNamespace(_))
+        ));
 
         std::fs::remove_dir_all(&dir).ok();
     }

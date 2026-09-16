@@ -22,6 +22,9 @@ vox-module-clap = { path = "../module-clap" }
 
 [dev-dependencies]
 serde_json.workspace = true
+# H-44: the example presets' schema (`StoredModulePreset`) is the same one a user-saved module
+# preset uses — test-only, not linked into the shipped `.clap`.
+vox-presets = { path = "../presets" }
 
 [lints]
 workspace = true

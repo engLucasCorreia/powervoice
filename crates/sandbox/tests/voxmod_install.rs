@@ -8,6 +8,8 @@
 //!   anything runs;
 //! - "Uninstall…" removes `<modules>/<id>/` and the registry entry; the slot keeps its state.
 
+#![allow(clippy::float_cmp)] // exact values round-tripped through JSON (H-44 preset params)
+
 vox_module_api::install_test_allocator!();
 
 mod common;
@@ -45,16 +47,40 @@ fn template() -> Manifest {
     serde_json::from_str(include_str!("../../voxmod-gain/voxmod.json")).unwrap()
 }
 
-/// Packs `binary` under `manifest` like `just voxmod voxmod-gain` does.
+/// Packs `binary` under `manifest` like `just voxmod voxmod-gain` does — including the crate's
+/// two example factory presets and its example locale file (H-44, ADR-006 §3/§7 step 5).
 fn pack_into(dir: &std::path::Path, manifest: &Manifest, binary: &std::path::Path) -> PathBuf {
     std::fs::create_dir_all(dir).unwrap();
     let license = dir.join("LICENSE-MIT");
     std::fs::write(&license, b"MIT").unwrap();
+    let warm_boost = dir.join("warm_boost.vopreset.json");
+    std::fs::write(
+        &warm_boost,
+        include_str!("../../voxmod-gain/presets/warm_boost.vopreset.json"),
+    )
+    .unwrap();
+    let gentle_cut = dir.join("gentle_cut.vopreset.json");
+    std::fs::write(
+        &gentle_cut,
+        include_str!("../../voxmod-gain/presets/gentle_cut.vopreset.json"),
+    )
+    .unwrap();
+    let en_locale = dir.join("en.json");
+    std::fs::write(
+        &en_locale,
+        include_str!("../../voxmod-gain/locales/en.json"),
+    )
+    .unwrap();
     let out = dir.join(format!("{}-{}.voxmod", manifest.id, manifest.version));
     voxmod::pack(
         manifest,
         &[(host_platform(), binary.to_path_buf())],
-        &[("licenses/LICENSE-MIT".into(), license)],
+        &[
+            ("licenses/LICENSE-MIT".into(), license),
+            ("presets/warm_boost.vopreset.json".into(), warm_boost),
+            ("presets/gentle_cut.vopreset.json".into(), gentle_cut),
+            ("locales/en.json".into(), en_locale),
+        ],
         &out,
     )
     .unwrap();
@@ -195,6 +221,25 @@ fn install_scan_insert_then_uninstall_a_voxmod() {
         "the built-in is untouched (different id)"
     );
 
+    // H-44: the package's two example factory presets are indexed, and its locale file's
+    // strings — namespaced under this module's own id — are merged.
+    let presets = cat.module_presets(ID);
+    let mut keys: Vec<&str> = presets.iter().map(|p| p.key.as_str()).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, vec!["gentle_cut", "warm_boost"]);
+    let warm = presets.iter().find(|p| p.key == "warm_boost").unwrap();
+    assert_eq!(warm.state.params["gain_db"], 6.0);
+    let locale = cat.module_locale(ID, "en").unwrap().unwrap();
+    assert_eq!(
+        locale[&format!("modules.{ID}.presets.warm_boost.name")],
+        "Warm boost"
+    );
+    assert_eq!(
+        cat.module_locale(ID, "fr"),
+        Ok(None),
+        "no French file shipped"
+    );
+
     // The Missing slot recovers live (H-40) with its stored state, sandboxed.
     let notices = settle(&mut host);
     assert!(
@@ -218,6 +263,19 @@ fn install_scan_insert_then_uninstall_a_voxmod() {
         &y[s..],
         &want[s - latency..x.len() - latency],
         "installed module",
+    );
+
+    // H-44: applying the package's "Warm boost" factory preset (a parameter-only state, no blob)
+    // takes over the sandboxed instance's `gain_db`, smoothed, exactly like a built-in factory
+    // preset would.
+    host.apply_module_preset(0, &warm.state).unwrap();
+    let y = drive(&mut host, &mut live, &x);
+    let want = reference(&x, 6.0);
+    let s = latency + (RATE * 0.02).round() as usize + 256;
+    assert_bits(
+        &y[s..],
+        &want[s - latency..x.len() - latency],
+        "the applied factory preset",
     );
     host.teardown(live);
 
@@ -251,6 +309,10 @@ fn install_scan_insert_then_uninstall_a_voxmod() {
     assert!(installed_versions(&modules.join(ID)).is_empty());
     assert!(registry.get(ID).is_none());
     assert!(!cat.specs().iter().any(|s| s.descriptor.id == ID));
+    // H-44: both the factory presets and the locale strings are gone with it — read fresh from
+    // the folder `uninstall_module` just removed, nothing to invalidate.
+    assert!(cat.module_presets(ID).is_empty());
+    assert_eq!(cat.module_locale(ID, "en"), Ok(None));
 }
 
 #[test]

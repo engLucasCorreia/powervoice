@@ -1,15 +1,24 @@
 /// <reference types="node" />
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { readFileSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import en from './en.json';
+import { setModuleMessages, tDynamic as tDynamicRuntime } from './index';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const srcDir = join(__dirname, '../../..');
 
 type MessageKey = keyof typeof en;
+
+/**
+ * H-44: an installed `.voxmod` package's `locales/<lang>.json` strings are merged into i18n at
+ * runtime, namespaced `modules.<id>.*` (ADR-006 §3) — they never live in `en.json` (a package may
+ * only ever add to its own namespace, never touch an app key), so a `tDynamic("modules....")`
+ * prefix is expected to have no static match here.
+ */
+const DYNAMIC_PACKAGE_PREFIX = 'modules.';
 
 /**
  * Recursively find all .svelte and .ts/.tsx files
@@ -108,6 +117,40 @@ function extractPlaceholders(content: string): Map<string, Set<string>> {
   return placeholders;
 }
 
+describe('H-44: runtime-merged package messages', () => {
+  afterEach(() => {
+    // Every test starts from an empty overlay.
+    setModuleMessages({});
+  });
+
+  it('merges a namespaced key and looks it up through tDynamic', () => {
+    setModuleMessages({ 'modules.com.acme.deesser.name': 'De-esser' });
+    expect(tDynamicRuntime('modules.com.acme.deesser.name')).toBe('De-esser');
+  });
+
+  it('falls back to the raw key once the entry is gone (uninstall)', () => {
+    setModuleMessages({ 'modules.com.acme.deesser.name': 'De-esser' });
+    setModuleMessages({}); // a wholesale replace, not additive — the package was uninstalled
+    expect(tDynamicRuntime('modules.com.acme.deesser.name')).toBe('modules.com.acme.deesser.name');
+  });
+
+  it('a later merge replaces the whole overlay, not just adds to it', () => {
+    setModuleMessages({ 'modules.a.x': 'A' });
+    setModuleMessages({ 'modules.b.y': 'B' });
+    expect(tDynamicRuntime('modules.a.x')).toBe('modules.a.x');
+    expect(tDynamicRuntime('modules.b.y')).toBe('B');
+  });
+
+  it('never lets a merged key outside "modules." take effect, even a real en.json one', () => {
+    // Defense in depth (the backend rejects such a file outright, ADR-006 §3): the merge itself
+    // must also refuse to shadow an app key, in case that guard is ever bypassed.
+    const appKey = Object.keys(en)[0]!;
+    setModuleMessages({ 'notice.example': 'evil', [appKey]: 'evil override' });
+    expect(tDynamicRuntime('notice.example')).not.toBe('evil');
+    expect(tDynamicRuntime(appKey)).toBe((en as Record<string, string>)[appKey]);
+  });
+});
+
 describe('i18n lint', () => {
   it('every t("...") key exists in en.json', () => {
     const sourceFiles = findSourceFiles(srcDir).filter(
@@ -159,6 +202,9 @@ describe('i18n lint', () => {
       const prefixes = extractTDynamicPrefixes(content);
 
       for (const prefix of prefixes) {
+        if (prefix.startsWith(DYNAMIC_PACKAGE_PREFIX)) {
+          continue;
+        }
         // Check if at least one key with this prefix exists
         const hasPrefix = Object.keys(en).some((k) => k.startsWith(prefix));
         if (!hasPrefix) {
@@ -236,6 +282,14 @@ describe('i18n lint', () => {
 
       throw new Error(`Placeholder mismatches:\n${msg}`);
     }
+  });
+
+  it('never defines a "modules.<id>.*" key itself (H-44: reserved for installed packages)', () => {
+    // The security boundary (ADR-006 §3): a package's locale file may only ever add strings
+    // under its own `modules.<id>.` namespace, and the merge is rejected if it tries to reach an
+    // app key. That boundary only holds if the app itself never defines a key there either.
+    const collisions = Object.keys(en).filter((k) => k.startsWith(DYNAMIC_PACKAGE_PREFIX));
+    expect(collisions).toEqual([]);
   });
 
   it('report unused keys in en.json (informational only)', () => {

@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { t } from "../i18n";
+import { setModuleMessages, t } from "../i18n";
 import { currentPlatform } from "../ui/platform";
 import type {
   BlockCauseDto,
@@ -20,6 +20,7 @@ import {
   pluginsFolders,
   pluginsInstall,
   pluginsList,
+  pluginsModuleLocales,
   pluginsRemoveFolder,
   pluginsRescan,
   pluginsReveal,
@@ -220,6 +221,20 @@ export async function refreshFolders(): Promise<void> {
   }
 }
 
+/** H-44 (ADR-006 §3/§7 step 5): re-merges every installed `.voxmod` package's `en` locale strings
+ * into i18n (`setModuleMessages`) — a wholesale replace, so an uninstalled package's strings
+ * disappear and a newly installed one's appear. Called at start-up ([`initPlugins`]) and after an
+ * install/uninstall completes; a package with a bad locale file surfaces its own
+ * `notice.plugins.locale_rejected` toast from the backend, so failures here are only ever a
+ * broader IPC problem. */
+async function refreshModuleMessages(): Promise<void> {
+  try {
+    setModuleMessages((await pluginsModuleLocales("en")) ?? {});
+  } catch (err) {
+    report(err);
+  }
+}
+
 /** Opens the manager — on `focus` (a module id, or a row key) when given, e.g. from a flagged
  * rack slot or after an install. */
 export function openPluginManager(options: { focus?: string | null; tab?: ManagerTab } = {}): void {
@@ -359,6 +374,7 @@ export async function confirmUninstall(): Promise<void> {
     await pluginsUninstall(entry.path);
     uninstallPrompt = null;
     await refreshPlugins();
+    await refreshModuleMessages();
   } catch (err) {
     uninstallPrompt = null;
     report(err);
@@ -458,6 +474,7 @@ export async function installFrom(source: string, replace: boolean): Promise<voi
     return;
   }
   await refreshPlugins();
+  await refreshModuleMessages();
 }
 
 /** The collision prompt's Replace. */
@@ -493,6 +510,7 @@ export async function initPlugins(): Promise<() => void> {
     onScanProgress(event.payload),
   );
   void refreshPlugins();
+  void refreshModuleMessages();
   return () => {
     if (typeof unlisten === "function") {
       unlisten();

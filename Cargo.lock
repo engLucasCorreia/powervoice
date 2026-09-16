@@ -5206,6 +5206,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "vox-module-api",
+ "vox-presets",
  "vox-rack",
  "vox-sandbox-ipc",
  "zip",
@@ -5315,6 +5316,7 @@ dependencies = [
  "vox-module-api",
  "vox-module-clap",
  "vox-modules",
+ "vox-presets",
 ]
 
 [[package]]

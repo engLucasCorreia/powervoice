@@ -33,7 +33,11 @@
 //! - **Module packages** ([`voxmod`], T-805, ADR-006 §3/§7): `.voxmod` zip archives validated
 //!   without running code, installed per user into `<app local data>/modules/<id>/<version>/`
 //!   ([`install::install_voxmod`]); their `.clap` is a PowerVoice module registered under its
-//!   bare id ([`packaged_module_info`]).
+//!   bare id ([`packaged_module_info`]). A package's `presets/*.vopreset.json`
+//!   ([`voxmod::read_module_presets`]) and `locales/<lang>.json`
+//!   ([`module_locale::read_module_locale`], H-44, ADR-006 §3/§7 step 5, Amendment 3) are read
+//!   fresh from the installed version's folder — never cached — so an uninstall (which deletes
+//!   that folder) drops them for free.
 //! - Instances are created off the rack's control thread (`ModuleFactory::loads_async`).
 //! - The **watchdog** thread (one per process, [`watchdog`]) spawns the sandboxes, polls every
 //!   channel's `Monitor` (crash, hang, clean exit), kills hung processes and reaps retired ones:
@@ -45,6 +49,7 @@ mod editor;
 mod factory;
 pub mod health;
 pub mod install;
+pub mod module_locale;
 mod proxy;
 mod rpc;
 mod sandbox;
@@ -66,3 +71,6 @@ pub use sandbox::SandboxFault;
 // path without adding its own dependency on `vox-sandbox-ipc` (ADR-001 §3: format/protocol
 // crates stay behind `vox-plugin-host`, not linked directly by the editor's command layer).
 pub use vox_sandbox_ipc::protocol::{ClapPluginRef, JsfxPluginRef, Lv2PluginRef, Vst3PluginRef};
+// H-44: same reasoning — `crate::plugins::module_presets`'s return type, without giving
+// `src-tauri` its own non-test dependency on `vox-module-api`.
+pub use vox_module_api::ModulePreset;

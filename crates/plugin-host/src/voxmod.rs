@@ -32,7 +32,9 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use vox_module_api::{MODULE_API_VERSION, Version, is_valid_module_id};
+use vox_module_api::{
+    LocalizedText, MODULE_API_VERSION, ModulePreset, Version, is_valid_module_id,
+};
 
 use crate::sha256::{Sha256, hex, is_sha256_hex, sha256_hex};
 
@@ -49,6 +51,12 @@ const MAX_ENTRIES: usize = 4096;
 const MAX_NAME_BYTES: usize = 1024;
 /// Folders extracted next to the binary (besides the manifest).
 const DATA_DIRS: [&str; 3] = ["licenses/", "presets/", "locales/"];
+/// Extension a package's factory preset files must end in (ADR-006 §3):
+/// `presets/<name>.vopreset.json`.
+pub const PRESET_EXTENSION: &str = "vopreset.json";
+/// A factory preset file over this size is skipped (generous: a preset can carry a blob, e.g. a
+/// noise print, but this is a bundled package file, not a live capture).
+pub const MAX_PRESET_BYTES: u64 = 16 * 1024 * 1024;
 
 /// `manifest.json` (ADR-006 §3).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -619,7 +627,70 @@ pub fn pack(
     result.map(|()| manifest)
 }
 
+/// Reads `<version_dir>/presets/*.vopreset.json` as `id`'s **factory** presets (ADR-006 §3/§7
+/// step 5, H-44): the same on-disk schema as a user-saved module preset
+/// (`vox_presets::StoredModulePreset`) — `{ format_version, name, state }`, the module id implicit
+/// (this package's own, unlike an exported/imported preset, which carries it explicitly). A file
+/// that isn't valid JSON of that shape, or whose `format_version` is newer than this build
+/// understands, or over [`MAX_PRESET_BYTES`], is skipped — one bad preset never keeps the others
+/// (or the install) from working, and there is nothing to roll back (this is read fresh from disk,
+/// never at install time). Unknown parameter keys in `state.params` are left exactly as they are,
+/// like a user preset import: the host's generic `prepare_state` (called wherever the state is
+/// actually applied to a live instance) already drops what the module doesn't recognise and fills
+/// in the rest at its schema default.
+///
+/// The preset's `key` is [`vox_presets::sanitize_preset_name`] of the file's stem (its display
+/// `name` is whatever the file says, and its i18n key is `modules.<id>.presets.<key>.name` — a
+/// package's `locales/<lang>.json` can translate it, same namespace rule as everything else it
+/// contributes). Sorted by key for a stable menu order. Empty (not an error) if `version_dir` has
+/// no `presets/` folder at all — most modules won't ship any.
+pub fn read_module_presets(id: &str, version_dir: &Path) -> Vec<ModulePreset> {
+    let dir = version_dir.join("presets");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let suffix = format!(".{PRESET_EXTENSION}");
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.ends_with(&suffix).then_some(name)
+        })
+        .collect();
+    names.sort();
+
+    let mut out = Vec::new();
+    for name in names {
+        let Ok(meta) = std::fs::metadata(dir.join(&name)) else {
+            continue;
+        };
+        if meta.len() > MAX_PRESET_BYTES {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(dir.join(&name)) else {
+            continue;
+        };
+        let Ok(stored) = serde_json::from_slice::<vox_presets::StoredModulePreset>(&bytes) else {
+            continue;
+        };
+        if stored.format_version > vox_presets::CURRENT_MODULE_PRESET_FORMAT_VERSION {
+            continue;
+        }
+        let stem = name.strip_suffix(&suffix).unwrap_or(&name);
+        let Ok(key) = vox_presets::sanitize_preset_name(stem) else {
+            continue;
+        };
+        out.push(ModulePreset {
+            name: LocalizedText::keyed(format!("modules.{id}.presets.{key}.name"), stored.name),
+            key,
+            state: stored.state,
+        });
+    }
+    out
+}
+
 #[cfg(test)]
+#[allow(clippy::float_cmp)] // exact values round-tripped through JSON (H-44 preset params)
 pub(crate) mod tests {
     use super::*;
     use crate::install::tests::TempDir;
@@ -955,5 +1026,103 @@ pub(crate) mod tests {
         #[cfg(target_os = "macos")]
         assert_eq!(p, "macos-universal");
         assert!(!p.is_empty());
+    }
+
+    // --- H-44: factory presets from `presets/*.vopreset.json` -------------------------------
+
+    const MODULE: &str = "com.acme.deesser";
+
+    fn write_preset(dir: &Path, file_name: &str, format_version: u32, name: &str, gain_db: f64) {
+        std::fs::create_dir_all(dir).unwrap();
+        let json = serde_json::json!({
+            "format_version": format_version,
+            "name": name,
+            "state": { "format_version": 1, "params": { "gain_db": gain_db } },
+        });
+        std::fs::write(dir.join(file_name), json.to_string()).unwrap();
+    }
+
+    #[test]
+    fn reads_valid_factory_presets_sorted_by_key() {
+        let dir = TempDir::new("voxmod-presets-read");
+        let presets = dir.0.join("presets");
+        write_preset(&presets, "warm_boost.vopreset.json", 1, "Warm boost", 6.0);
+        write_preset(&presets, "gentle_cut.vopreset.json", 1, "Gentle cut", -3.0);
+        let list = read_module_presets(MODULE, &dir.0);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].key, "gentle_cut");
+        assert_eq!(list[0].name.text, "Gentle cut");
+        assert_eq!(
+            list[0].name.key.as_deref(),
+            Some("modules.com.acme.deesser.presets.gentle_cut.name")
+        );
+        assert_eq!(list[0].state.params["gain_db"], -3.0);
+        assert_eq!(list[1].key, "warm_boost");
+        assert_eq!(list[1].state.params["gain_db"], 6.0);
+    }
+
+    #[test]
+    fn a_missing_presets_folder_is_an_empty_list_not_an_error() {
+        let dir = TempDir::new("voxmod-presets-missing");
+        assert_eq!(read_module_presets(MODULE, &dir.0), Vec::new());
+    }
+
+    #[test]
+    fn files_not_ending_in_the_preset_extension_are_ignored() {
+        let dir = TempDir::new("voxmod-presets-other-ext");
+        let presets = dir.0.join("presets");
+        std::fs::create_dir_all(&presets).unwrap();
+        std::fs::write(presets.join("readme.txt"), b"not a preset").unwrap();
+        std::fs::write(presets.join("stray.json"), b"{}").unwrap();
+        assert_eq!(read_module_presets(MODULE, &dir.0), Vec::new());
+    }
+
+    #[test]
+    fn a_corrupt_or_too_new_preset_is_skipped_others_still_load() {
+        let dir = TempDir::new("voxmod-presets-corrupt");
+        let presets = dir.0.join("presets");
+        write_preset(&presets, "good.vopreset.json", 1, "Good", 0.0);
+        std::fs::write(presets.join("corrupt.vopreset.json"), b"{ not json").unwrap();
+        write_preset(
+            &presets,
+            "too_new.vopreset.json",
+            vox_presets::CURRENT_MODULE_PRESET_FORMAT_VERSION + 1,
+            "Too new",
+            0.0,
+        );
+        let list = read_module_presets(MODULE, &dir.0);
+        assert_eq!(list.len(), 1, "{list:?}");
+        assert_eq!(list[0].key, "good");
+    }
+
+    #[test]
+    fn an_unknown_param_key_passes_through_unfiltered_like_an_import() {
+        // Filtering unknown params against a module's live schema is `prepare_state`'s job
+        // (called when the preset is actually applied), not this reader's.
+        let dir = TempDir::new("voxmod-presets-unknown-param");
+        let presets = dir.0.join("presets");
+        std::fs::create_dir_all(&presets).unwrap();
+        let json = serde_json::json!({
+            "format_version": 1,
+            "name": "Weird",
+            "state": { "format_version": 1, "params": { "gain_db": 1.0, "not_a_real_param": 2.0 } },
+        });
+        std::fs::write(presets.join("weird.vopreset.json"), json.to_string()).unwrap();
+        let list = read_module_presets(MODULE, &dir.0);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].state.params["not_a_real_param"], 2.0);
+    }
+
+    #[test]
+    fn a_traversal_like_file_stem_never_produces_a_key_starting_with_a_dot() {
+        let dir = TempDir::new("voxmod-presets-traversal");
+        let presets = dir.0.join("presets");
+        // The file itself is a single, safe path component (extraction already guarantees
+        // that) but its *stem*, once the extension is stripped, could still look adversarial —
+        // prove the sanitizer is actually applied to it.
+        write_preset(&presets, "...evil.vopreset.json", 1, "Evil", 0.0);
+        let list = read_module_presets(MODULE, &dir.0);
+        assert_eq!(list.len(), 1);
+        assert!(!list[0].key.starts_with('.'), "{:?}", list[0].key);
     }
 }

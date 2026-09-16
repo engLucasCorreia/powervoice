@@ -13,6 +13,10 @@
 //! its own thread, hot-adding anything new into every registry [`registry`] has ever returned —
 //! including the ones `export`/`loudness`/`nr_capture` hold for the rest of the app's lifetime —
 //! so Add Module (and every render) picks up a plugin found after start-up without a restart.
+//!
+//! **A `.voxmod` package's presets and locale strings** ([`module_presets`], [`module_locale`],
+//! H-44, ADR-006 §3/§7 step 5): read fresh from `<modules>/<id>/<version>/` on every call, never
+//! cached, so uninstalling a package (which deletes that folder) drops both for free.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -209,6 +213,32 @@ pub fn details(module_id: &str) -> Option<PluginDetails> {
 /// Clears `module_id`'s runtime crash flag (T-809).
 pub fn clear_flag(module_id: &str) {
     catalog().clear_flag(module_id);
+}
+
+/// `module_id`'s factory presets from its `.voxmod` package's `presets/*.vopreset.json` (H-44,
+/// ADR-006 §3/§7 step 5) — empty unless it was installed from a package that shipped some. Read
+/// fresh from disk every call, so an uninstall drops them without anything to invalidate.
+pub fn module_presets(module_id: &str) -> Vec<vox_plugin_host::ModulePreset> {
+    catalog().module_presets(module_id)
+}
+
+/// `module_id`'s validated `locales/<lang>.json` strings (H-44, ADR-006 §3/§7 step 5, Amendment
+/// 3). `Ok(None)`: not installed from a package, or it has no file for `lang`. `Err`: the file
+/// exists but failed validation — the caller shows a notice; nothing else fails because of it.
+pub fn module_locale(
+    module_id: &str,
+    lang: &str,
+) -> Result<
+    Option<std::collections::BTreeMap<String, String>>,
+    vox_plugin_host::module_locale::LocaleError,
+> {
+    catalog().module_locale(module_id, lang)
+}
+
+/// Every module id currently installed from a `.voxmod` package (H-44) — for merging every
+/// installed package's locale strings at once.
+pub fn installed_module_ids() -> Vec<String> {
+    catalog().installed_module_ids()
 }
 
 /// The per-user CLAP folder (T-809; ADR-006 Amendment 1): `~/.clap`,

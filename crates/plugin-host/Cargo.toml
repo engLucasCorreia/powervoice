@@ -15,6 +15,9 @@ vox-sandbox-ipc = { path = "../sandbox-ipc" }
 # T-804: `PluginCatalog::observe`/`upsert` hot-adds newly found plugins into the live rack's
 # module registry (ADR-008 §6 Amendment 4) — no cycle: `vox-rack` doesn't depend on this crate.
 vox-rack = { path = "../rack" }
+# H-44 (ADR-006 §3/§7 step 5, Amendment 3): a `.voxmod` package's `presets/*.vopreset.json` reuse
+# the same on-disk schema and name sanitizer as user-saved module presets.
+vox-presets = { path = "../presets" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

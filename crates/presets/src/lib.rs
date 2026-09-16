@@ -16,6 +16,8 @@ mod rack_store;
 pub use error::PresetError;
 pub use export::{ExportedPreset, export_to_file, import_from_file};
 pub use factory_rack::{FactoryRackPreset, factory_rack_presets};
-pub use module_store::{ModulePresetStore, StoredModulePreset};
+pub use module_store::{
+    CURRENT_MODULE_PRESET_FORMAT_VERSION, ModulePresetStore, StoredModulePreset,
+};
 pub use name::{sanitize_module_id, sanitize_preset_name};
 pub use rack_store::{RackPresetStore, StoredRackPreset};

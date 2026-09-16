@@ -2,6 +2,7 @@ import { emit } from "@tauri-apps/api/event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PluginInstallResultDto } from "../ipc/bindings";
+import { setModuleMessages, tDynamic } from "../i18n";
 import { clearNotices } from "../state/notices.svelte";
 import { setPlatformForTest } from "../ui/platform";
 import {
@@ -62,6 +63,7 @@ afterEach(() => {
   clearNotices();
   resetPluginsForTest();
   setPlatformForTest(null);
+  setModuleMessages({});
 });
 
 describe("plugins store (T-809)", () => {
@@ -119,7 +121,11 @@ describe("plugins store (T-809)", () => {
     await done;
 
     expect(pluginsState().uninstallPrompt).toBeNull();
-    const actions = pluginCalls(calls).filter((c) => c.cmd !== "plugins_list");
+    // H-44: uninstalling a module also re-merges the installed-package locale strings, so the
+    // set of installed modules' i18n stays in sync (an uninstalled package's strings disappear).
+    const actions = pluginCalls(calls).filter(
+      (c) => c.cmd !== "plugins_list" && c.cmd !== "plugins_module_locales",
+    );
     expect(actions).toEqual([
       { cmd: "plugins_uninstall", args: { path: target.path } },
     ]);
@@ -183,6 +189,26 @@ describe("plugins store (T-809)", () => {
     stop();
   });
 
+  it("merges installed packages' locale strings into i18n at start-up (H-44)", async () => {
+    mock({
+      plugins_module_locales: () => ({ "modules.com.acme.deesser.presets.warm.name": "Warm" }),
+    });
+    const stop = await initPlugins();
+    await settle();
+    expect(tDynamic("modules.com.acme.deesser.presets.warm.name")).toBe("Warm");
+    stop();
+  });
+
+  it("re-merges locale strings after an uninstall, dropping the removed package's (H-44)", async () => {
+    let locales: Record<string, string> = { "modules.com.acme.deesser.name": "De-esser" };
+    mock({ plugins_module_locales: () => locales });
+    const target = entry("De-esser");
+    requestUninstall(target);
+    locales = {}; // the package is gone: the next merge (after uninstall) sees nothing from it
+    await confirmUninstall();
+    expect(tDynamic("modules.com.acme.deesser.name")).toBe("modules.com.acme.deesser.name");
+  });
+
   describe("Install module…", () => {
     const installed: PluginInstallResultDto = {
       kind: "installed",
@@ -203,8 +229,10 @@ describe("plugins store (T-809)", () => {
         replace: false,
       });
       expect(pluginsState().install).toMatchObject({ phase: "installed", target: "/home/u/.clap/acme.clap" });
-      // The list refreshes so the manager (and Add module) show the new effect.
-      expect(calls.at(-1)?.cmd).toBe("plugins_list");
+      // The list refreshes so the manager (and Add module) show the new effect, and (H-44) the
+      // installed-package locale strings are re-merged right after.
+      expect(calls.some((c) => c.cmd === "plugins_list")).toBe(true);
+      expect(calls.at(-1)?.cmd).toBe("plugins_module_locales");
 
       showInstallInManager();
       expect(pluginsState().install.phase).toBe("idle");

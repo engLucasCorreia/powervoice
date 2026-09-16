@@ -177,6 +177,7 @@ impl PluginInstance for TestPlugin {
         g.events.clear();
         for ev in chunk.events {
             if ev.kind == EventKind::RESET {
+                // At the chunk's first sample: the plugin end ends a chunk at a reset (H-55).
                 g.module.reset();
             } else if ev.kind == EventKind::PARAM_VALUE {
                 let _ = g.events.push(ParamEvent {

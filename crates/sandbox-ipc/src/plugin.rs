@@ -6,7 +6,7 @@ use std::sync::atomic::{Ordering, fence};
 use std::time::Duration;
 
 use crate::channel::{ChannelConfig, ChannelError, Mapped, read_header};
-use crate::layout::{CMD_SHUTDOWN, ControlBlock, PeerState, RING_BLOCKS, WireEvent};
+use crate::layout::{CMD_SHUTDOWN, ControlBlock, EventKind, PeerState, RING_BLOCKS, WireEvent};
 use crate::shm::SharedRegion;
 use crate::wakeup::{Deadline, PlatformWakeup, Wakeup};
 
@@ -43,7 +43,8 @@ pub struct Chunk<'a> {
     /// Output samples to fill (initially the previous chunk's contents).
     pub output: &'a mut [f32],
     /// Events with positions before the chunk's end, in order (late ones included; see
-    /// [`Chunk::offset`]).
+    /// [`Chunk::offset`]). A [`EventKind::RESET`] is never past `pos`: the chunk ends at a
+    /// reset's position (H-55), so a backend applies it at the chunk's first sample.
     pub events: &'a [WireEvent],
 }
 
@@ -212,7 +213,11 @@ impl<W: Wakeup> PluginEnd<W> {
                 continue;
             }
             let start = self.read_pos;
-            let end = w.min(start + max_block);
+            // H-55: a `RESET` inside the chunk ends it, so a reset always applies at a chunk's
+            // first sample. Chunk boundaries otherwise follow how far the host happened to
+            // publish, which would make a reset's effective position (and the render) depend on
+            // timing.
+            let end = self.reset_barrier(start, w.min(start + max_block));
             let n = (end - start) as usize;
             for (i, x) in self.in_buf[..n].iter_mut().enumerate() {
                 let idx = ((start + i as u64) & self.mask) as usize;
@@ -284,6 +289,31 @@ impl<W: Wakeup> PluginEnd<W> {
             w = cb.in_write_pos.load(Ordering::Acquire);
         }
         Serviced::Processed { chunks, frames }
+    }
+
+    /// `end`, shortened to the position of the first [`EventKind::RESET`] strictly inside
+    /// `start..end` (peek only: the event cursor doesn't move). Bounded by the event capacity,
+    /// allocation-free.
+    fn reset_barrier(&self, start: u64, end: u64) -> u64 {
+        let cb = self.map.control();
+        let ring = self.map.events_in();
+        let ev_w = cb.ev_in_write.load(Ordering::Acquire);
+        // A cursor further ahead than the ring holds: `service_with_events` drops those events.
+        let mut read = self.ev_in_read;
+        if ev_w.wrapping_sub(read) > self.event_capacity {
+            read = ev_w;
+        }
+        while read != ev_w {
+            let ev = WireEvent::load(&ring[(read & self.event_mask) as usize]);
+            if ev.pos >= end {
+                break;
+            }
+            if ev.kind == EventKind::RESET && ev.pos > start {
+                return ev.pos;
+            }
+            read = read.wrapping_add(1);
+        }
+        end
     }
 
     /// Queues a plugin → host event (e.g. a parameter the plugin's GUI changed). `false` if the

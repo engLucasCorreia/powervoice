@@ -742,6 +742,7 @@ impl PluginInstance for Vst3Instance {
         };
         for ev in chunk.events {
             if ev.kind == EventKind::RESET {
+                // At the chunk's first sample: the plugin end ends a chunk at a reset (H-55).
                 // SAFETY: audio thread, active processor: the documented buffer reset.
                 unsafe {
                     p.setProcessing(0);

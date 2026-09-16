@@ -16,9 +16,9 @@ use vox_module_api::test_util::{alloc_checks_active, no_alloc};
 use vox_sandbox_ipc::test_plugins::{TEST_GAIN, apply_gain};
 use vox_sandbox_ipc::wakeup::{Doorbell, WaitStatus};
 use vox_sandbox_ipc::{
-    BlockOutcome, Channel, ChannelConfig, Chunk, Deadline, Fault, HostEnd, HostOptions, Monitor,
-    PeerState, PeerStatus, PlatformWakeup, PluginEnd, Serviced, SharedRegion, SpinYieldWakeup,
-    WaitBudget, Wakeup, WireEvent,
+    BlockOutcome, Channel, ChannelConfig, Chunk, Deadline, EventKind, Fault, HostEnd, HostOptions,
+    Monitor, PeerState, PeerStatus, PlatformWakeup, PluginEnd, Serviced, SharedRegion,
+    SpinYieldWakeup, WaitBudget, Wakeup, WireEvent,
 };
 
 fn gain(c: Chunk<'_>) {
@@ -233,6 +233,68 @@ fn events_reach_the_plugin_at_their_positions() {
         Some(WireEvent::param(5, 42, 0.25))
     );
     assert_eq!(host.pop_output_event(), None);
+}
+
+/// H-55: every backend applies a `RESET` at its chunk's **first** sample, so the plugin end
+/// must end a chunk at a reset's position. Otherwise the sample a reset lands on depends on how
+/// far ahead the host published when the plugin picked the chunk up — pure timing — and two
+/// runs of the same offline render diverge (the packaged Gain's `determinism` check on a slow
+/// CI runner).
+#[test]
+fn a_reset_starts_its_chunk_however_far_ahead_the_host_got() {
+    /// The positions the host asked a reset at, and the positions the plugin applied one at,
+    /// when the plugin services once every `service_every` host blocks.
+    fn run_script(service_every: usize) -> (Vec<u64>, Vec<u64>) {
+        const B: usize = 64;
+        const SIZES: [usize; 8] = [40, 24, 17, 64, 9, 33, 64, 50];
+        const RESET_BEFORE: [usize; 3] = [1, 4, 5];
+        let (mut plugin, mut host, _monitor) = setup::<SpinYieldWakeup>(
+            ChannelConfig::pipelined(RATE, B as u32),
+            options(WaitBudget::FractionOfBlock(0.0), 16),
+        );
+        let x = noise(SIZES.iter().sum::<usize>(), 7);
+        let mut y = vec![0.0f32; B];
+        let (mut asked, mut applied) = (Vec::new(), Vec::new());
+        let service = |plugin: &mut PluginEnd<SpinYieldWakeup>, applied: &mut Vec<u64>| {
+            plugin.service(Duration::ZERO, |c| {
+                for e in c.events {
+                    if e.kind == EventKind::RESET {
+                        // What a backend does: reset the plugin, then process the chunk.
+                        applied.push(c.pos);
+                    }
+                }
+                c.output.copy_from_slice(c.input);
+            });
+        };
+        let mut at = 0;
+        for (k, &n) in SIZES.iter().enumerate() {
+            if RESET_BEFORE.contains(&k) {
+                let pos = host.position();
+                assert!(host.push_event(WireEvent {
+                    pos,
+                    kind: EventKind::RESET,
+                    id: 0,
+                    value: 0.0,
+                }));
+                asked.push(pos);
+            }
+            run(&mut host, &x[at..at + n], &mut y[..n]);
+            at += n;
+            if (k + 1).is_multiple_of(service_every) {
+                service(&mut plugin, &mut applied);
+            }
+        }
+        service(&mut plugin, &mut applied);
+        (asked, applied)
+    }
+
+    let (asked, one_at_a_time) = run_script(1);
+    assert_eq!(one_at_a_time, asked, "aligned chunks");
+    for service_every in [2, 3, 4, 8] {
+        let (asked_again, applied) = run_script(service_every);
+        assert_eq!(asked_again, asked);
+        assert_eq!(applied, asked, "the host {service_every} blocks ahead");
+    }
 }
 
 #[test]

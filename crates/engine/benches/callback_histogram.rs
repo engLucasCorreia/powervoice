@@ -10,6 +10,11 @@
 //! `crates/sandbox/benches/clap_round_trip.rs` and `crates/sandbox-ipc/benches/round_trip.rs`).
 //! Exposed as `just bench-callback`. `VOX_ENGINE_BENCH_SECONDS` overrides the 3 s per row
 //! (default).
+//!
+//! H-52: the very first line of output is `assert_no_alloc`'s warn-mode `eprintln!`, "Tried to
+//! (de)allocate memory in a thread that forbids allocator calls!" — that is
+//! [`report`]'s deliberate `alloc_checks_active()` self-test proving the checker is installed,
+//! not a violation from the measured callback path. See the comment at its call site.
 
 vox_module_api::install_test_allocator!();
 
@@ -128,10 +133,6 @@ fn summarize(h: &Histogram) -> Summary {
 /// Runs `seconds` of simulated playback at a fixed `block`-frame callback size through the
 /// typical rack, and returns a summary of real wall time per output callback.
 fn run(block: u32, seconds: f64) -> Summary {
-    assert!(
-        vox_module_api::test_util::alloc_checks_active(),
-        "the allocation checker must be installed"
-    );
     let scratch = ScratchDir::new(&block.to_string());
 
     let fake = FakeBackend::new(0xC0FFEE);
@@ -197,6 +198,23 @@ fn run(block: u32, seconds: f64) -> Summary {
 }
 
 fn report() {
+    // H-52: confirm the allocation checker is actually installed before trusting any of the
+    // `no_alloc` results below (`no_alloc` always returns `Ok` when the checker isn't wired up
+    // — see its doc comment — so a misconfigured build would otherwise silently report zero RT
+    // violations forever). `alloc_checks_active()` proves this by deliberately allocating inside
+    // `assert_no_alloc`; that call's warn-mode allocator always prints "Tried to (de)allocate
+    // memory in a thread that forbids allocator calls!" to stderr the instant it catches the
+    // probe (`assert_no_alloc::assert_no_alloc`'s `eprintln!` isn't gated by anything we can
+    // suppress from here — see the `assert_no_alloc` crate source). That single line, printed
+    // once here before any row is measured, is expected and benign: it is the probe firing, not
+    // an RT violation from the timed callback path in `run()` below. It used to run once per
+    // `BLOCKS` row (inside `run()`), which made it look like every row had violated the RT rules;
+    // it now runs exactly once, up front, for that reason.
+    assert!(
+        vox_module_api::test_util::alloc_checks_active(),
+        "the allocation checker must be installed"
+    );
+
     let seconds = run_seconds();
     println!(
         "output callback wall time, {RATE} Hz, typical 6-module voice rack, {seconds} s per row \

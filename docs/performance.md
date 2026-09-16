@@ -45,9 +45,9 @@ Each measurement prints `BENCH_RESULT` lines, using the T-110 convention from
 
 <!-- BEGIN TARGETS MATRIX -->
 
-_Generated 2026-09-15 18:54 UTC by `just perf-matrix` on AMD Ryzen 7 PRO 7840U w/ Radeon 780M Graphics, 16 threads, Linux 7.2.3-arch1-3, `target/` on btrfs. Logs:
-`just bench` 2026-09-15 18:54 UTC, `just test-big` 2026-09-15 18:45 UTC, `just bench-ui` 2026-09-15 18:48 UTC._
-**67 pass, 11 tight (< 30 % margin), 16 fail, 0 not run.**
+_Generated 2026-09-16 05:36 UTC by `just perf-matrix` on AMD Ryzen 7 PRO 7840U w/ Radeon 780M Graphics, 16 threads, Linux 7.2.5-3-omarchy, `target/` on btrfs. Logs:
+`just bench` 2026-09-16 05:27 UTC, `just test-big` 2026-09-16 05:30 UTC, `just bench-ui` 2026-09-16 05:36 UTC._
+**102 pass, 9 tight (< 30 % margin), 1 fail, 0 not run.**
 
 
 ### PROMPT §2 — open a 60-min 48 kHz mono WAV in < 3 s, waveform shown (SPEC-006 AC-19: first draw ≤ 3 s after open)
@@ -56,12 +56,12 @@ How: `powervoice-app` `perf_big`: `DocumentService::open` (the `document_open` p
 
 | metric | measured | target | margin | status |
 |---|---|---|---|---|
-| `open_60min_wav_ms` | 2017 ms | ≤ 3000 | +33 % | pass |
-| `open_60min_to_first_overview_ms` | 2030 ms | ≤ 3000 | +32 % | pass |
-| `open_60min_first_overview_1280px_ms` | 9.583 ms | ≤ 3000 | +100 % | pass |
-| `open_60min_first_overview_2126px_ms` | 13.12 ms | ≤ 3000 | +100 % | pass |
-| `import_60min_wav_cold_cache_ms` | 1656 ms | ≤ 3000 | +45 % | pass |
-| `import_60min_wav_warm_cache_ms` | 2612 ms | ≤ 3000 | +13 % | tight |
+| `open_60min_wav_ms` | 1421 ms | ≤ 3000 | +53 % | pass |
+| `open_60min_to_first_overview_ms` | 1428 ms | ≤ 3000 | +52 % | pass |
+| `open_60min_first_overview_1280px_ms` | 7.051 ms | ≤ 3000 | +100 % | pass |
+| `open_60min_first_overview_2126px_ms` | 6.179 ms | ≤ 3000 | +100 % | pass |
+| `import_60min_wav_cold_cache_ms` | 1069 ms | ≤ 3000 | +64 % | pass |
+| `import_60min_wav_warm_cache_ms` | 1692 ms | ≤ 3000 | +44 % | pass |
 
 ### PROMPT §2 — 60 fps scroll/zoom; SPEC-006 AC-18: p50 ≤ 16.7 ms, p99 ≤ 50 ms, ≤ 1 frame > 50 ms (T-704 adds p95 ≤ 16.7 ms)
 
@@ -69,21 +69,21 @@ How: `scripts/bench/ui_frames.mjs`: the preview App (`?preview&scene=document&do
 
 | metric | measured | target | margin | status |
 |---|---|---|---|---|
-| `frame_document_canvas2d_1280x720_p50_ms` | 4.6 ms | ≤ 16.7 | +72 % | pass |
-| `frame_document_canvas2d_1280x720_p95_ms` | 13 ms | ≤ 16.7 | +22 % | tight |
-| `frame_document_canvas2d_1280x720_p99_ms` | 22.3 ms | ≤ 50 | +55 % | pass |
+| `frame_document_canvas2d_1280x720_p50_ms` | 1.7 ms | ≤ 16.7 | +90 % | pass |
+| `frame_document_canvas2d_1280x720_p95_ms` | 2.9 ms | ≤ 16.7 | +83 % | pass |
+| `frame_document_canvas2d_1280x720_p99_ms` | 6.1 ms | ≤ 50 | +88 % | pass |
 | `frame_document_canvas2d_1280x720_frames_over_50ms` | 0 frames | ≤ 1 | +100 % | pass |
-| `frame_document_canvas2d_2126x850_p50_ms` | 14.9 ms | ≤ 16.7 | +11 % | tight |
-| `frame_document_canvas2d_2126x850_p95_ms` | 45.7 ms | ≤ 16.7 | -174 % | **FAIL** |
-| `frame_document_canvas2d_2126x850_p99_ms` | 85.4 ms | ≤ 50 | -71 % | **FAIL** |
-| `frame_document_canvas2d_2126x850_frames_over_50ms` | 23 frames | ≤ 1 | -2200 % | **FAIL** |
-| `frame_document_auto_1280x720_p50_ms` | 4 ms | ≤ 16.7 | +76 % | pass |
-| `frame_document_auto_1280x720_p95_ms` | 11 ms | ≤ 16.7 | +34 % | pass |
-| `frame_document_auto_1280x720_p99_ms` | 18.3 ms | ≤ 50 | +63 % | pass |
-| `frame_document_auto_1280x720_frames_over_50ms` | 3 frames | ≤ 1 | -200 % | **FAIL** |
-| `frame_document_auto_2126x850_p50_ms` | 5.4 ms | ≤ 16.7 | +68 % | pass |
-| `frame_document_auto_2126x850_p95_ms` | 12.4 ms | ≤ 16.7 | +26 % | tight |
-| `frame_document_auto_2126x850_p99_ms` | 27.3 ms | ≤ 50 | +45 % | pass |
+| `frame_document_canvas2d_2126x850_p50_ms` | 2.2 ms | ≤ 16.7 | +87 % | pass |
+| `frame_document_canvas2d_2126x850_p95_ms` | 4.4 ms | ≤ 16.7 | +74 % | pass |
+| `frame_document_canvas2d_2126x850_p99_ms` | 13.3 ms | ≤ 50 | +73 % | pass |
+| `frame_document_canvas2d_2126x850_frames_over_50ms` | 0 frames | ≤ 1 | +100 % | pass |
+| `frame_document_auto_1280x720_p50_ms` | 1.8 ms | ≤ 16.7 | +89 % | pass |
+| `frame_document_auto_1280x720_p95_ms` | 3.3 ms | ≤ 16.7 | +80 % | pass |
+| `frame_document_auto_1280x720_p99_ms` | 6.8 ms | ≤ 50 | +86 % | pass |
+| `frame_document_auto_1280x720_frames_over_50ms` | 0 frames | ≤ 1 | +100 % | pass |
+| `frame_document_auto_2126x850_p50_ms` | 1.9 ms | ≤ 16.7 | +89 % | pass |
+| `frame_document_auto_2126x850_p95_ms` | 4.6 ms | ≤ 16.7 | +72 % | pass |
+| `frame_document_auto_2126x850_p99_ms` | 11.1 ms | ≤ 50 | +78 % | pass |
 | `frame_document_auto_2126x850_frames_over_50ms` | 0 frames | ≤ 1 | +100 % | pass |
 
 ### SPEC-007 AC-10 — split view (waveform + spectral) frame time, tiles cached: same tolerance as SPEC-006 AC-18
@@ -92,22 +92,43 @@ How: Same sweep with `scene=spectral` (split view). Reproduce: `just bench-ui`.
 
 | metric | measured | target | margin | status |
 |---|---|---|---|---|
-| `frame_spectral_canvas2d_1280x720_p50_ms` | 4.1 ms | ≤ 16.7 | +75 % | pass |
-| `frame_spectral_canvas2d_1280x720_p95_ms` | 12.2 ms | ≤ 16.7 | +27 % | tight |
-| `frame_spectral_canvas2d_1280x720_p99_ms` | 14.8 ms | ≤ 50 | +70 % | pass |
+| `frame_spectral_canvas2d_1280x720_p50_ms` | 3.9 ms | ≤ 16.7 | +77 % | pass |
+| `frame_spectral_canvas2d_1280x720_p95_ms` | 11.5 ms | ≤ 16.7 | +31 % | pass |
+| `frame_spectral_canvas2d_1280x720_p99_ms` | 13.5 ms | ≤ 50 | +73 % | pass |
 | `frame_spectral_canvas2d_1280x720_frames_over_50ms` | 0 frames | ≤ 1 | +100 % | pass |
-| `frame_spectral_canvas2d_2126x850_p50_ms` | 9.7 ms | ≤ 16.7 | +42 % | pass |
-| `frame_spectral_canvas2d_2126x850_p95_ms` | 22.7 ms | ≤ 16.7 | -36 % | **FAIL** |
-| `frame_spectral_canvas2d_2126x850_p99_ms` | 25.5 ms | ≤ 50 | +49 % | pass |
+| `frame_spectral_canvas2d_2126x850_p50_ms` | 8.9 ms | ≤ 16.7 | +47 % | pass |
+| `frame_spectral_canvas2d_2126x850_p95_ms` | 21.2 ms | ≤ 16.7 | -27 % | **FAIL** |
+| `frame_spectral_canvas2d_2126x850_p99_ms` | 24.7 ms | ≤ 50 | +51 % | pass |
 | `frame_spectral_canvas2d_2126x850_frames_over_50ms` | 0 frames | ≤ 1 | +100 % | pass |
-| `frame_spectral_auto_1280x720_p50_ms` | 3.8 ms | ≤ 16.7 | +77 % | pass |
-| `frame_spectral_auto_1280x720_p95_ms` | 6.6 ms | ≤ 16.7 | +60 % | pass |
-| `frame_spectral_auto_1280x720_p99_ms` | 9.5 ms | ≤ 50 | +81 % | pass |
+| `frame_spectral_auto_1280x720_p50_ms` | 3.2 ms | ≤ 16.7 | +81 % | pass |
+| `frame_spectral_auto_1280x720_p95_ms` | 9.9 ms | ≤ 16.7 | +41 % | pass |
+| `frame_spectral_auto_1280x720_p99_ms` | 15.1 ms | ≤ 50 | +70 % | pass |
 | `frame_spectral_auto_1280x720_frames_over_50ms` | 0 frames | ≤ 1 | +100 % | pass |
-| `frame_spectral_auto_2126x850_p50_ms` | 2.9 ms | ≤ 16.7 | +83 % | pass |
-| `frame_spectral_auto_2126x850_p95_ms` | 9.8 ms | ≤ 16.7 | +41 % | pass |
-| `frame_spectral_auto_2126x850_p99_ms` | 17.1 ms | ≤ 50 | +66 % | pass |
+| `frame_spectral_auto_2126x850_p50_ms` | 3.1 ms | ≤ 16.7 | +81 % | pass |
+| `frame_spectral_auto_2126x850_p95_ms` | 6.1 ms | ≤ 16.7 | +63 % | pass |
+| `frame_spectral_auto_2126x850_p99_ms` | 14 ms | ≤ 50 | +72 % | pass |
 | `frame_spectral_auto_2126x850_frames_over_50ms` | 0 frames | ≤ 1 | +100 % | pass |
+
+### H-43 — idle main-thread CPU ≤ 2 % of one core in a release build (≤ 10 % debug); playback still draws at the display rate (60 fps)
+
+How: `scripts/bench/ui_frames.mjs` idle pass: the preview App (renderer `auto`) in vsync-paced (60 Hz) headless Chromium — not the uncapped sweep above — 10 s idle per scene after a 4 s settle; busy = CDP `TaskDuration` / wall time. `dev` is the Vite dev server (debug JS), `release` a `vite build` bundle with the bench preview (`VITE_PV_BENCH_PREVIEW=1`). Then Play for 3 s: animation frames the app ran per second. Reproduce: `just bench-ui`.
+
+| metric | measured | target | margin | status |
+|---|---|---|---|---|
+| `idle_dev_empty_main_thread_pct` | 0.028 pct_core | ≤ 10 | +100 % | pass |
+| `idle_dev_document_main_thread_pct` | 0.007 pct_core | ≤ 10 | +100 % | pass |
+| `idle_dev_document_rack_main_thread_pct` | 0.008 pct_core | ≤ 10 | +100 % | pass |
+| `idle_dev_spectral_main_thread_pct` | 0.009 pct_core | ≤ 10 | +100 % | pass |
+| `idle_release_empty_main_thread_pct` | 0.016 pct_core | ≤ 2 | +99 % | pass |
+| `idle_release_document_main_thread_pct` | 0.006 pct_core | ≤ 2 | +100 % | pass |
+| `idle_release_document_rack_main_thread_pct` | 0.006 pct_core | ≤ 2 | +100 % | pass |
+| `idle_release_spectral_main_thread_pct` | 0.008 pct_core | ≤ 2 | +100 % | pass |
+| `playback_dev_document_fps` | 59.98 fps | ≥ 55 | +9 % | tight |
+| `playback_dev_document_rack_fps` | 60.23 fps | ≥ 55 | +10 % | tight |
+| `playback_dev_spectral_fps` | 59.96 fps | ≥ 55 | +9 % | tight |
+| `playback_release_document_fps` | 59.96 fps | ≥ 55 | +9 % | tight |
+| `playback_release_document_rack_fps` | 59.96 fps | ≥ 55 | +9 % | tight |
+| `playback_release_spectral_fps` | 59.96 fps | ≥ 55 | +9 % | tight |
 
 ### PROMPT §2 / SPEC-003 AC-1 — playback start < 50 ms (Play → first non-silent frame written to the device buffer)
 
@@ -125,19 +146,30 @@ How: `vox-engine` `playback_start`: `ManualEngine` on the `FakeBackend` clock, s
 | `playback_start_voice_rack_256f_overhead_max_ms` | 0 ms | ≤ 5 | +100 % | pass |
 | `playback_start_voice_rack_1024f_overhead_max_ms` | 0 ms | ≤ 5 | +100 % | pass |
 
-_H-46 rows re-measured 2026-09-15 with `cargo bench -p vox-engine --bench playback_start` (before: 49.4 ms at every buffer size). The rest of the matrix is from the T-704 run: `just perf-matrix` was not re-run, because this worktree has no `test-big`/`bench-ui` logs and it would have reset those rows to "not run"._
-
 ### PROMPT §2 — full rack at 48 kHz < 20 % of one core
 
 How: `vox-rack` `full_rack` (T-110): the typical voice rack's `process()` at each realtime block size; `vox-engine` `callback_histogram`: the whole output callback. Reproduce: `just bench`.
 
 | metric | measured | target | margin | status |
 |---|---|---|---|---|
-| `full_rack_process_64f_pct_core` | 0.7993 pct_core | ≤ 20 | +96 % | pass |
-| `full_rack_process_128f_pct_core` | 0.835 pct_core | ≤ 20 | +96 % | pass |
-| `full_rack_process_256f_pct_core` | 0.7824 pct_core | ≤ 20 | +96 % | pass |
-| `full_rack_process_512f_pct_core` | 0.7546 pct_core | ≤ 20 | +96 % | pass |
-| `full_rack_process_1024f_pct_core` | 0.7285 pct_core | ≤ 20 | +96 % | pass |
+| `full_rack_process_64f_pct_core` | 0.6393 pct_core | ≤ 20 | +97 % | pass |
+| `full_rack_process_128f_pct_core` | 0.6325 pct_core | ≤ 20 | +97 % | pass |
+| `full_rack_process_256f_pct_core` | 0.6268 pct_core | ≤ 20 | +97 % | pass |
+| `full_rack_process_512f_pct_core` | 0.6257 pct_core | ≤ 20 | +97 % | pass |
+| `full_rack_process_1024f_pct_core` | 0.6238 pct_core | ≤ 20 | +97 % | pass |
+
+### SPEC-007 AC-18 / H-42 §8.11 — live analyzer diagnostics ≤ 2 % of one core at 60 Hz (≤ 333 µs per analyzer frame)
+
+How: `vox-dsp` `diagnostics`: the live voice tracker fed one 60 Hz control tick (800 samples at 48 kHz) per frame, a report every 6th frame, 20 s of speech-like signal, best of 3; one Spectrum Inspector frame per FFT size (30 Hz); the long-term average job (FFT 16 384 + diagnostics) as a realtime factor. Reproduce: `just bench`.
+
+| metric | measured | target | margin | status |
+|---|---|---|---|---|
+| `diagnostics_live_per_frame` | 41.89 us | ≤ 333 | +87 % | pass |
+| `inspector_frame_fft1024` | 1.243 us | — | — | info |
+| `inspector_frame_fft4096` | 5.176 us | — | — | info |
+| `inspector_frame_fft16384` | 22.54 us | — | — | info |
+| `inspector_frame_fft32768` | 47.83 us | — | — | info |
+| `ltas_offline_realtime_factor` | 1023 realtime_x | — | — | info |
 
 ### PROMPT §2 — noise-reduction latency ≤ 50 ms
 
@@ -154,7 +186,7 @@ How: `vox-modules` `spec_budgets`, offline 4096-frame blocks, best of 3. Reprodu
 
 | metric | measured | target | margin | status |
 |---|---|---|---|---|
-| `noise_gate_60s_hpf_lookahead5ms_render_s` | 0.05714 s | ≤ 0.3 | +81 % | pass |
+| `noise_gate_60s_hpf_lookahead5ms_render_s` | 0.04926 s | ≤ 0.3 | +84 % | pass |
 
 ### SPEC-014 AC-18 — Noise Reduction: 60 s ≤ 1.2 s at defaults, ≤ 1.8 s at N = 8192; 60 s capture ≤ 0.3 s
 
@@ -162,9 +194,9 @@ How: `vox-modules` `spec_budgets` with a captured print (the STFT path — T-110
 
 | metric | measured | target | margin | status |
 |---|---|---|---|---|
-| `noise_reduction_60s_defaults_render_s` | 0.1592 s | ≤ 1.2 | +87 % | pass |
-| `noise_reduction_60s_n8192_render_s` | 0.1778 s | ≤ 1.8 | +90 % | pass |
-| `noise_reduction_capture_60s_s` | 0.08144 s | ≤ 0.3 | +73 % | pass |
+| `noise_reduction_60s_defaults_render_s` | 0.1288 s | ≤ 1.2 | +89 % | pass |
+| `noise_reduction_60s_n8192_render_s` | 0.1339 s | ≤ 1.8 | +93 % | pass |
+| `noise_reduction_capture_60s_s` | 0.06304 s | ≤ 0.3 | +79 % | pass |
 
 ### SPEC-015 AC-22 — EQ response curve: 2048 points, 9 components ≤ 2 ms (median of 100)
 
@@ -172,7 +204,7 @@ How: `vox-modules` `spec_budgets`. Reproduce: `just bench`.
 
 | metric | measured | target | margin | status |
 |---|---|---|---|---|
-| `eq_response_curve_2048pts_9components_median_ms` | 0.9451 ms | ≤ 2 | +53 % | pass |
+| `eq_response_curve_2048pts_9components_median_ms` | 0.8391 ms | ≤ 2 | +58 % | pass |
 
 ### SPEC-016 AC-19 — Dynamics: 60 s all sections + RMS + look-ahead 10 ms ≤ 0.6 s; defaults ≤ 0.3 s
 
@@ -180,8 +212,8 @@ How: `vox-modules` `spec_budgets`. Reproduce: `just bench`.
 
 | metric | measured | target | margin | status |
 |---|---|---|---|---|
-| `dynamics_60s_all_sections_rms_lookahead10ms_render_s` | 0.1662 s | ≤ 0.6 | +72 % | pass |
-| `dynamics_60s_defaults_render_s` | 0.165 s | ≤ 0.3 | +45 % | pass |
+| `dynamics_60s_all_sections_rms_lookahead10ms_render_s` | 0.1418 s | ≤ 0.6 | +76 % | pass |
+| `dynamics_60s_defaults_render_s` | 0.1418 s | ≤ 0.3 | +53 % | pass |
 
 ### SPEC-017 AC-17 — True-Peak Limiter ≤ 1.5 % of one core (256-frame blocks)
 
@@ -189,7 +221,7 @@ How: `vox-modules` `true_peak_limiter`, worst of 0/+12/+24 dB input gain. Reprod
 
 | metric | measured | target | margin | status |
 |---|---|---|---|---|
-| `true_peak_limiter_256f_worst_pct_core` | 0.3106 pct_core | ≤ 1.5 | +79 % | pass |
+| `true_peak_limiter_256f_worst_pct_core` | 0.2699 pct_core | ≤ 1.5 | +82 % | pass |
 
 ### SPEC-004 AC-3 — undo/redo on 20 000 pieces ≤ 50 ms
 
@@ -197,7 +229,7 @@ How: `vox-project` `history_exact` (H-17), real disk. Reproduce: `just test-big`
 
 | metric | measured | target | margin | status |
 |---|---|---|---|---|
-| `spec004_ac3_worst_undo_redo_20000_pieces_ms` | 1.636 ms | ≤ 50 | +97 % | pass |
+| `spec004_ac3_worst_undo_redo_20000_pieces_ms` | 1.318 ms | ≤ 50 | +97 % | pass |
 
 ### SPEC-004 AC-5 / T-301 — memory budget: resident ≤ budget + 128 MiB
 
@@ -207,7 +239,7 @@ How: `vox-project` `big.rs`: 60-min playback + 200 seeks at a 512 MiB budget. `p
 |---|---|---|---|---|
 | `spec004_ac5_60min_playback_peak_resident_mib` | 512 MiB | ≤ 640 | +20 % | tight |
 | `open_60min_store_peak_resident_mib` | 704 MiB | ≤ 4224 | +83 % | pass |
-| `open_60min_process_rss_growth_mib` | 665.4 MiB | ≤ 4224 | +84 % | pass |
+| `open_60min_process_rss_growth_mib` | 665.7 MiB | ≤ 4224 | +84 % | pass |
 
 ### SPEC-004 AC-11 — recovering a 60-min session with 1000 records < 5 s
 
@@ -215,7 +247,7 @@ How: `vox-project` `recovery` (H-17). Reproduce: `just test-big`.
 
 | metric | measured | target | margin | status |
 |---|---|---|---|---|
-| `spec004_ac11_recover_60min_1000_records_ms` | 104.1 ms | ≤ 5000 | +98 % | pass |
+| `spec004_ac11_recover_60min_1000_records_ms` | 64.51 ms | ≤ 5000 | +99 % | pass |
 
 ### SPEC-007 AC-9 — spectrogram tiles on a 60-min document: visible ≤ 200 ms, refined ≤ 2 s, warm ≤ 50 ms
 
@@ -223,21 +255,21 @@ How: `vox-engine` `tests/spectro.rs` (engine side: compute + channel send), 1920
 
 | metric | measured | target | margin | status |
 |---|---|---|---|---|
-| `spec007_ac9_visible_3600s_view_ms` | 10.75 ms | ≤ 200 | +95 % | pass |
-| `spec007_ac9_refined_3600s_view_ms` | 167.2 ms | ≤ 2000 | +92 % | pass |
-| `spec007_ac9_warm_3600s_view_ms` | 2.676 ms | ≤ 50 | +95 % | pass |
-| `spec007_ac9_visible_600s_view_ms` | 10.78 ms | ≤ 200 | +95 % | pass |
-| `spec007_ac9_refined_600s_view_ms` | 36.52 ms | ≤ 2000 | +98 % | pass |
-| `spec007_ac9_warm_600s_view_ms` | 1.499 ms | ≤ 50 | +97 % | pass |
-| `spec007_ac9_visible_60s_view_ms` | 12.27 ms | ≤ 200 | +94 % | pass |
-| `spec007_ac9_refined_60s_view_ms` | 12.27 ms | ≤ 2000 | +99 % | pass |
-| `spec007_ac9_warm_60s_view_ms` | 0.7614 ms | ≤ 50 | +98 % | pass |
-| `spec007_ac9_visible_10s_view_ms` | 14.64 ms | ≤ 200 | +93 % | pass |
-| `spec007_ac9_refined_10s_view_ms` | 14.64 ms | ≤ 2000 | +99 % | pass |
-| `spec007_ac9_warm_10s_view_ms` | 2.619 ms | ≤ 50 | +95 % | pass |
-| `spec007_ac9_visible_1s_view_ms` | 5.071 ms | ≤ 200 | +97 % | pass |
-| `spec007_ac9_refined_1s_view_ms` | 5.071 ms | ≤ 2000 | +100 % | pass |
-| `spec007_ac9_warm_1s_view_ms` | 0.0965 ms | ≤ 50 | +100 % | pass |
+| `spec007_ac9_visible_3600s_view_ms` | 8.035 ms | ≤ 200 | +96 % | pass |
+| `spec007_ac9_refined_3600s_view_ms` | 107 ms | ≤ 2000 | +95 % | pass |
+| `spec007_ac9_warm_3600s_view_ms` | 1.671 ms | ≤ 50 | +97 % | pass |
+| `spec007_ac9_visible_600s_view_ms` | 12.34 ms | ≤ 200 | +94 % | pass |
+| `spec007_ac9_refined_600s_view_ms` | 31.02 ms | ≤ 2000 | +98 % | pass |
+| `spec007_ac9_warm_600s_view_ms` | 1.491 ms | ≤ 50 | +97 % | pass |
+| `spec007_ac9_visible_60s_view_ms` | 7.515 ms | ≤ 200 | +96 % | pass |
+| `spec007_ac9_refined_60s_view_ms` | 7.515 ms | ≤ 2000 | +100 % | pass |
+| `spec007_ac9_warm_60s_view_ms` | 0.4835 ms | ≤ 50 | +99 % | pass |
+| `spec007_ac9_visible_10s_view_ms` | 10.22 ms | ≤ 200 | +95 % | pass |
+| `spec007_ac9_refined_10s_view_ms` | 10.22 ms | ≤ 2000 | +99 % | pass |
+| `spec007_ac9_warm_10s_view_ms` | 0.9427 ms | ≤ 50 | +98 % | pass |
+| `spec007_ac9_visible_1s_view_ms` | 3.664 ms | ≤ 200 | +98 % | pass |
+| `spec007_ac9_refined_1s_view_ms` | 3.664 ms | ≤ 2000 | +100 % | pass |
+| `spec007_ac9_warm_1s_view_ms` | 0.0548 ms | ≤ 50 | +100 % | pass |
 
 ### SPEC-008 AC-14 — edit ops on 20 000 pieces + 1000 markers: splice ≤ 5 ms p95, command (incl. journal fdatasync) ≤ 50 ms p95
 
@@ -245,19 +277,19 @@ How: `vox-project` `history_exact`, 100 seeded runs per op, real disk. Reproduce
 
 | metric | measured | target | margin | status |
 |---|---|---|---|---|
-| `spec008_ac14_copy_splice_p95_ms` | 0.002184 ms | ≤ 5 | +100 % | pass |
-| `spec008_ac14_cut_splice_p95_ms` | 0.6845 ms | ≤ 5 | +86 % | pass |
-| `spec008_ac14_cut_command_p95_ms` | 12.77 ms | ≤ 50 | +74 % | pass |
-| `spec008_ac14_paste_splice_p95_ms` | 1.069 ms | ≤ 5 | +79 % | pass |
-| `spec008_ac14_paste_command_p95_ms` | 14.88 ms | ≤ 50 | +70 % | pass |
-| `spec008_ac14_delete_splice_p95_ms` | 0.4251 ms | ≤ 5 | +91 % | pass |
-| `spec008_ac14_delete_command_p95_ms` | 1.671 ms | ≤ 50 | +97 % | pass |
-| `spec008_ac14_trim_splice_p95_ms` | 0.5764 ms | ≤ 5 | +88 % | pass |
-| `spec008_ac14_trim_command_p95_ms` | 1.836 ms | ≤ 50 | +96 % | pass |
-| `spec008_ac14_silence_splice_p95_ms` | 0.4975 ms | ≤ 5 | +90 % | pass |
-| `spec008_ac14_silence_command_p95_ms` | 1.828 ms | ≤ 50 | +96 % | pass |
-| `spec008_ac14_insert_silence_splice_p95_ms` | 0.6559 ms | ≤ 5 | +87 % | pass |
-| `spec008_ac14_insert_silence_command_p95_ms` | 1.995 ms | ≤ 50 | +96 % | pass |
+| `spec008_ac14_copy_splice_p95_ms` | 0.001834 ms | ≤ 5 | +100 % | pass |
+| `spec008_ac14_cut_splice_p95_ms` | 0.3966 ms | ≤ 5 | +92 % | pass |
+| `spec008_ac14_cut_command_p95_ms` | 26.09 ms | ≤ 50 | +48 % | pass |
+| `spec008_ac14_paste_splice_p95_ms` | 0.3826 ms | ≤ 5 | +92 % | pass |
+| `spec008_ac14_paste_command_p95_ms` | 12.36 ms | ≤ 50 | +75 % | pass |
+| `spec008_ac14_delete_splice_p95_ms` | 0.3466 ms | ≤ 5 | +93 % | pass |
+| `spec008_ac14_delete_command_p95_ms` | 14.27 ms | ≤ 50 | +71 % | pass |
+| `spec008_ac14_trim_splice_p95_ms` | 0.2595 ms | ≤ 5 | +95 % | pass |
+| `spec008_ac14_trim_command_p95_ms` | 1.527 ms | ≤ 50 | +97 % | pass |
+| `spec008_ac14_silence_splice_p95_ms` | 0.1853 ms | ≤ 5 | +96 % | pass |
+| `spec008_ac14_silence_command_p95_ms` | 1.505 ms | ≤ 50 | +97 % | pass |
+| `spec008_ac14_insert_silence_splice_p95_ms` | 0.2966 ms | ≤ 5 | +94 % | pass |
+| `spec008_ac14_insert_silence_command_p95_ms` | 1.437 ms | ≤ 50 | +97 % | pass |
 
 ### SPEC-018 AC-18 — sidecar write/read ≤ 150 ms p95
 
@@ -265,8 +297,8 @@ How: `vox-project` `sidecar_perf`. Reproduce: `just test-big`.
 
 | metric | measured | target | margin | status |
 |---|---|---|---|---|
-| `spec018_ac18_sidecar_write_p95_ms` | 10.48 ms | ≤ 150 | +93 % | pass |
-| `spec018_ac18_sidecar_read_p95_ms` | 26.38 ms | ≤ 150 | +82 % | pass |
+| `spec018_ac18_sidecar_write_p95_ms` | 6.938 ms | ≤ 150 | +95 % | pass |
+| `spec018_ac18_sidecar_read_p95_ms` | 7.311 ms | ≤ 150 | +95 % | pass |
 
 <!-- END TARGETS MATRIX -->
 

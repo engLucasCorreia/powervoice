@@ -23,6 +23,12 @@ export type AcxRuleDto = { measured_db: number | null, status: AcxRuleStatusDto,
 export type AcxRuleStatusDto = "pass" | "too_low" | "too_high" | "invalid" | "too_short";
 
 /**
+ * H-72 (SPEC-006 §2.4): the amplitude ruler display mode (dBFS is the default; percentage is a
+ * linear alternative).
+ */
+export type AmplitudeRulerModeDto = "dbfs" | "percent";
+
+/**
  * H-42 (SPEC-007 §8): the analyzer's diagnostics overlays and the Spectrum Inspector's last
  * settings.
  */
@@ -1455,9 +1461,8 @@ export type WaveformSelectionDto = { start_sample: number, end_sample: number, }
  * H-12 (SPEC-018 §2.6.5's `view.waveform`, this ticket's subset — see `WaveformViewInfo`'s doc
  * for what's deferred): the shared waveform/spectral viewport plus the selection and edit
  * cursor, persisted like `SpectralViewDto`. T-206 adds `time_ruler_format` (SPEC-006 §2.5/§2.2,
- * SPEC-018 §2.6.5's `waveform.time_ruler_format`); H-35 adds `vertical_zoom` (SPEC-006 §2.4/§2.6)
- * — `amplitude_ruler_mode` still has no corresponding UI and is left for whichever ticket adds it
- * (`WaveformViewInfo`'s doc).
+ * SPEC-018 §2.6.5's `waveform.time_ruler_format`); H-35 adds `vertical_zoom` (SPEC-006 §2.4/§2.6);
+ * H-72 adds `amplitude_ruler_mode` (SPEC-006 §2.4, default `dbfs`).
  */
 export type WaveformViewDto = { start_sample: number, samples_per_pixel: number, 
 /**
@@ -1467,4 +1472,9 @@ selection: WaveformSelectionDto | null, cursor_samples: number, time_ruler_forma
 /**
  * H-35 (SPEC-006 §2.4): the linear amplitude scale factor, `1.0..=256.0`, default `1.0`.
  */
-vertical_zoom: number, };
+vertical_zoom: number, 
+/**
+ * H-72 (SPEC-006 §2.4): dBFS (default, logarithmic) or Percentage (linear) amplitude ruler
+ * mode.
+ */
+amplitude_ruler_mode: AmplitudeRulerModeDto, };

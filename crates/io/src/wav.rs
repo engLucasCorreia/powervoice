@@ -199,14 +199,43 @@ pub fn write_wav(
 }
 
 /// A marker as read from, or to be written to, a WAV `cue `/`LIST adtl` chunk pair (SPEC-005
-/// §2.9). S2-03 essential subset: UTF-8 names only (no Windows-1252 read fallback), and a
-/// malformed or oversized `cue `/`LIST adtl` layout is treated as "no markers" rather than
-/// surfaced as a notice — both are deferred to hardening (ticket report).
+/// §2.9). UTF-8 names only (no Windows-1252 read fallback — S2-03 essential-subset deviation,
+/// unrelated to H-72). H-72 surfaces a malformed `cue `/`LIST adtl` layout, and out-of-range cue
+/// points, as `notice.open.markers_unreadable`/`notice.open.markers_out_of_range`
+/// ([`WavMarkersResult`], `read_wav_markers_detailed`) — the audio still opens with no markers
+/// (or with the bad ones dropped) either way, only the file's own reader (`document.rs`) has ever
+/// been silent about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WavMarker {
     pub pos_samples: u64,
     pub len_samples: u64,
     pub name: String,
+}
+
+/// H-72 (SPEC-005 §2.5/§2.9): result of parsing markers, including what was dropped.
+#[derive(Debug, Clone, Default)]
+pub struct WavMarkersResult {
+    pub markers: Vec<WavMarker>,
+    /// SPEC-005 §2.9: "a `cue ` chunk declaring more than 100 000 points counts as malformed" —
+    /// its cue points are dropped entirely (`markers` has none from that chunk).
+    pub malformed_cue: bool,
+    /// SPEC-005 §4.5: "a [`LIST adtl`] sub-chunk overrunning its parent ends parsing, and the
+    /// notice applies" — whatever `labl`/`ltxt` sub-chunks were read before the overrun are kept
+    /// (SPEC-005 §2.9's "Malformed `LIST adtl`" row: "the audio and cue positions open;
+    /// unreadable names become default names").
+    pub adtl_malformed: bool,
+    /// SPEC-005 §2.9: cue points whose region (`pos_samples..pos_samples + len_samples`) doesn't
+    /// fit within the document, dropped rather than clamped (matching `import.rs`'s existing
+    /// filter, unchanged by H-72 — see this ticket's report).
+    pub out_of_range_count: u32,
+}
+
+impl WavMarkersResult {
+    /// SPEC-005 §2.5: both the malformed-`cue ` and the malformed-`LIST adtl` rows fire the same
+    /// `notice.open.markers_unreadable`.
+    pub fn markers_unreadable(&self) -> bool {
+        self.malformed_cue || self.adtl_malformed
+    }
 }
 
 /// SPEC-005 §2.9/`cue_max_points`: a `cue ` chunk declaring more points than this is malformed.
@@ -366,12 +395,28 @@ impl WavStreamWriter {
 /// matching `labl`, decoded as UTF-8; empty/whitespace-only or missing becomes "Marker N", 1-based
 /// by position), and region length (a matching `ltxt`'s `dwSampleLength`). Ordered by position,
 /// then by cue order (a stable sort). Returns an empty list for a file with no `cue ` chunk, and
-/// also — quietly, S2-03 scope — for one whose chunk layout doesn't parse: a malformed `cue `/
-/// `LIST adtl` never fails the audio open on its account (full notice/error reporting is
-/// hardening, deferred).
+/// also — quietly — for one whose chunk layout doesn't parse at all (never fails the audio open on
+/// its account). No out-of-range filtering (that needs the document length — see
+/// [`read_wav_markers_detailed`]); callers that don't already filter by length themselves
+/// (`crates/project/src/import.rs`) get unfiltered positions.
 pub fn read_wav_markers(path: impl AsRef<Path>) -> Result<Vec<WavMarker>> {
     let bytes = std::fs::read(path.as_ref())?;
-    Ok(parse_wav_markers(&bytes).unwrap_or_default())
+    Ok(parse_wav_markers_internal(&bytes, None)
+        .unwrap_or_default()
+        .markers)
+}
+
+/// H-72 (SPEC-005 §2.5/§2.9): like [`read_wav_markers`], but also reports what was dropped and
+/// why — a malformed `cue `/`LIST adtl` chunk ([`WavMarkersResult::markers_unreadable`]) or cue
+/// points outside `[0, audio_len_samples]` (`out_of_range_count`) — so a caller can post
+/// `notice.open.markers_unreadable`/`notice.open.markers_out_of_range` (SPEC-005 §2.5's exact
+/// keys). `markers` is already filtered to fit the document, matching `import.rs`'s own filter.
+pub fn read_wav_markers_detailed(
+    path: impl AsRef<Path>,
+    audio_len_samples: u64,
+) -> Result<WavMarkersResult> {
+    let bytes = std::fs::read(path.as_ref())?;
+    Ok(parse_wav_markers_internal(&bytes, Some(audio_len_samples)).unwrap_or_default())
 }
 
 /// H-20 (SPEC-005 §2.10): does `path` carry a `LIST INFO`, `bext`, `iXML` or `smpl` chunk — the
@@ -452,7 +497,10 @@ struct RawCue {
     sample_offset: u32,
 }
 
-fn parse_wav_markers(bytes: &[u8]) -> Option<Vec<WavMarker>> {
+pub(crate) fn parse_wav_markers_internal(
+    bytes: &[u8],
+    audio_len_samples: Option<u64>,
+) -> Option<WavMarkersResult> {
     if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
         return None;
     }
@@ -460,6 +508,8 @@ fn parse_wav_markers(bytes: &[u8]) -> Option<Vec<WavMarker>> {
     let mut seen_ids = std::collections::HashSet::new();
     let mut labels: HashMap<u32, String> = HashMap::new();
     let mut region_lengths: HashMap<u32, u32> = HashMap::new();
+    let mut malformed_cue = false;
+    let mut adtl_malformed = false;
 
     let mut cur = Cursor::new(&bytes[12..]);
     while cur.remaining() >= 8 {
@@ -474,7 +524,8 @@ fn parse_wav_markers(bytes: &[u8]) -> Option<Vec<WavMarker>> {
                 let mut c = Cursor::new(body);
                 let Some(count) = c.u32() else { continue };
                 if count > CUE_MAX_POINTS {
-                    return None;
+                    malformed_cue = true;
+                    continue;
                 }
                 for _ in 0..count {
                     let Some(cue_id) = c.u32() else { break };
@@ -501,11 +552,16 @@ fn parse_wav_markers(bytes: &[u8]) -> Option<Vec<WavMarker>> {
                     continue;
                 }
                 while c.remaining() >= 8 {
+                    // `remaining() >= 8` guarantees the 4-byte tag and 4-byte size both read.
                     let Some(sub_id) = c.tag() else { break };
                     let Some(sub_size) = c.u32().map(|n| n as usize) else {
                         break;
                     };
                     let Some(sub_body) = c.take(sub_size) else {
+                        // SPEC-005 §4.5: "a sub-chunk overrunning its parent ends parsing, and the
+                        // notice applies" — whatever labl/ltxt this LIST adtl already yielded
+                        // stays (SPEC-005 §2.9's "unreadable names become default names").
+                        adtl_malformed = true;
                         break;
                     };
                     if sub_size % 2 == 1 {
@@ -535,21 +591,36 @@ fn parse_wav_markers(bytes: &[u8]) -> Option<Vec<WavMarker>> {
         }
     }
 
+    let mut out_of_range_count = 0u32;
     let mut markers: Vec<WavMarker> = cues
         .iter()
-        .map(|cue| {
+        .filter_map(|cue| {
             let pos = if cue.fcc_chunk == *b"data" && cue.chunk_start == 0 && cue.block_start == 0 {
                 cue.sample_offset
             } else {
                 cue.position
             };
-            let len = region_lengths.get(&cue.id).copied().unwrap_or(0);
-            let name = labels.get(&cue.id).cloned().unwrap_or_default();
-            WavMarker {
-                pos_samples: u64::from(pos),
-                len_samples: u64::from(len),
-                name,
+            let pos_samples = u64::from(pos);
+            let len_samples = u64::from(region_lengths.get(&cue.id).copied().unwrap_or(0));
+            // H-72 (SPEC-005 §2.9): "cue points with a position > document length are dropped" —
+            // matches `crates/project/src/import.rs`'s own pre-existing filter
+            // (`pos_samples + len_samples <= len`), which this function now does on its behalf
+            // (see `read_wav_markers_detailed`'s doc) so both keep exactly one definition of
+            // "out of range".
+            if let Some(len) = audio_len_samples
+                && !pos_samples
+                    .checked_add(len_samples)
+                    .is_some_and(|end| end <= len)
+            {
+                out_of_range_count += 1;
+                return None;
             }
+            let name = labels.get(&cue.id).cloned().unwrap_or_default();
+            Some(WavMarker {
+                pos_samples,
+                len_samples,
+                name,
+            })
         })
         .collect();
     // SPEC-005 §2.9: ordered by position, then cue order — a stable sort preserves the cue-record
@@ -560,7 +631,12 @@ fn parse_wav_markers(bytes: &[u8]) -> Option<Vec<WavMarker>> {
             marker.name = format!("Marker {}", i + 1);
         }
     }
-    Some(markers)
+    Some(WavMarkersResult {
+        markers,
+        malformed_cue,
+        adtl_malformed,
+        out_of_range_count,
+    })
 }
 
 /// SPEC-005 §2.9/§4.6: UTF-8 is tried first; any invalid byte sequence decodes the whole string
@@ -1162,5 +1238,192 @@ mod tests {
         let tmp = temp_path_for(&path);
         assert!(!tmp.exists(), "abort must remove the temp file");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn h72_marker_parse_detects_out_of_range_cues() {
+        let dir = tmp_dir("h72-out-of-range");
+        // Create a simple WAV with 1000 samples (indices 0-999)
+        let samples = vec![0.0; 1000];
+        write_wav(
+            dir.join("orig.wav"),
+            48_000,
+            BitDepth::Int16,
+            DitherMode::None,
+            &samples,
+        )
+        .unwrap();
+
+        // Write it with markers at various positions
+        // Valid: 500 (0-indexed within 0-999)
+        // Invalid: 1000 (>= len, out of range), 2000 (>> len, out of range)
+        let markers = vec![
+            WavMarker {
+                pos_samples: 500,
+                len_samples: 0,
+                name: "Marker 1".to_string(),
+            },
+            WavMarker {
+                pos_samples: 1000, // >= len, out of range
+                len_samples: 0,
+                name: "Marker 2".to_string(),
+            },
+            WavMarker {
+                pos_samples: 2000, // >> len, out of range
+                len_samples: 0,
+                name: "Marker 3".to_string(),
+            },
+        ];
+        let path = dir.join("with_markers.wav");
+        write_wav_with_markers(
+            &path,
+            48_000,
+            BitDepth::Int16,
+            DitherMode::None,
+            &samples,
+            &markers,
+        )
+        .unwrap();
+
+        // Parse with audio_len_samples = 1000
+        let bytes = std::fs::read(&path).unwrap();
+        let result = parse_wav_markers_internal(&bytes, Some(1000)).unwrap();
+
+        // SPEC-005 §2.9: "Cue points with a position > document length are dropped"
+        // So with len=1000, positions > 1000 are dropped
+        // Position 500: 500 > 1000? No, keep
+        // Position 1000: 1000 > 1000? No, keep
+        // Position 2000: 2000 > 1000? Yes, drop
+        assert_eq!(
+            result.markers.len(),
+            2,
+            "markers at pos <= len should be kept"
+        );
+        assert_eq!(result.markers[0].pos_samples, 500);
+        assert_eq!(result.markers[1].pos_samples, 1000);
+        assert_eq!(result.out_of_range_count, 1, "only position 2000 is > 1000");
+        assert!(!result.malformed_cue);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn h72_read_wav_markers_detailed_reports_status() {
+        let dir = tmp_dir("h72-detailed");
+        let samples = vec![0.5; 500];
+        let markers = vec![WavMarker {
+            pos_samples: 100,
+            len_samples: 50,
+            name: "Test Marker".to_string(),
+        }];
+        let path = dir.join("test.wav");
+        write_wav_with_markers(
+            &path,
+            48_000,
+            BitDepth::Int16,
+            DitherMode::None,
+            &samples,
+            &markers,
+        )
+        .unwrap();
+
+        let result = read_wav_markers_detailed(&path, 500).unwrap();
+        assert_eq!(result.markers.len(), 1);
+        assert_eq!(result.markers[0].pos_samples, 100);
+        assert!(!result.malformed_cue);
+        assert!(!result.adtl_malformed);
+        assert!(!result.markers_unreadable());
+        assert_eq!(result.out_of_range_count, 0);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// H-72 (SPEC-005 §2.9): a marker whose region (`pos_samples..pos_samples + len_samples`)
+    /// runs past the document end is dropped even though its start position alone would be
+    /// in-range — the region-aware criterion `read_wav_markers_detailed` shares with
+    /// `crates/project/src/import.rs`'s pre-existing filter (this ticket only adds the notice,
+    /// not a behavior change — see the ticket report).
+    #[test]
+    fn h72_marker_parse_drops_a_region_that_overruns_the_document_end() {
+        let dir = tmp_dir("h72-region-overrun");
+        let samples = vec![0.0; 1000];
+        let markers = vec![WavMarker {
+            pos_samples: 900,
+            len_samples: 200, // 900 + 200 = 1100 > 1000: the position alone is in range, the
+            // region isn't.
+            name: "Region".to_string(),
+        }];
+        let path = dir.join("region.wav");
+        write_wav_with_markers(
+            &path,
+            48_000,
+            BitDepth::Int16,
+            DitherMode::None,
+            &samples,
+            &markers,
+        )
+        .unwrap();
+
+        let result = read_wav_markers_detailed(&path, 1000).unwrap();
+        assert!(
+            result.markers.is_empty(),
+            "a region overrunning the document end is dropped, not clamped"
+        );
+        assert_eq!(result.out_of_range_count, 1);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// SPEC-005 §2.5/§2.9: "a `cue ` chunk declaring more than 100 000 points counts as
+    /// malformed" — its cue records are dropped entirely and `markers_unreadable()` is true (the
+    /// previous agent's `count > 100_000` heuristic was already correct; H-72 confirms it against
+    /// the spec text rather than changing it — see the ticket report).
+    #[test]
+    fn h72_marker_parse_detects_malformed_cue_chunk() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // RIFF size: unchecked past the header
+        bytes.extend_from_slice(b"WAVE");
+        bytes.extend_from_slice(b"cue ");
+        bytes.extend_from_slice(&4u32.to_le_bytes()); // chunk size: just the count field
+        bytes.extend_from_slice(&(CUE_MAX_POINTS + 1).to_le_bytes());
+
+        let result =
+            parse_wav_markers_internal(&bytes, None).expect("a valid RIFF/WAVE header parses");
+        assert!(
+            result.malformed_cue,
+            "count > CUE_MAX_POINTS is malformed (SPEC-005 §2.9)"
+        );
+        assert!(!result.adtl_malformed);
+        assert!(result.markers.is_empty());
+        assert!(result.markers_unreadable());
+    }
+
+    /// SPEC-005 §4.5: "a sub-chunk overrunning its parent ends parsing, and the notice applies" —
+    /// the "Malformed `LIST adtl`" row of SPEC-005 §2.9's table, which the previous agent's
+    /// `WavMarkersResult` didn't track at all (no caller could tell a truncated `LIST adtl` from a
+    /// clean one).
+    #[test]
+    fn h72_marker_parse_detects_adtl_overrun() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(b"WAVE");
+        bytes.extend_from_slice(b"LIST");
+        let mut list_body = Vec::new();
+        list_body.extend_from_slice(b"adtl");
+        list_body.extend_from_slice(b"labl");
+        list_body.extend_from_slice(&100u32.to_le_bytes()); // claims 100 bytes; none follow
+        bytes.extend_from_slice(&(list_body.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&list_body);
+
+        let result =
+            parse_wav_markers_internal(&bytes, None).expect("a valid RIFF/WAVE header parses");
+        assert!(
+            result.adtl_malformed,
+            "an oversized labl sub-chunk overruns its LIST adtl parent"
+        );
+        assert!(!result.malformed_cue);
+        assert!(result.markers_unreadable());
     }
 }

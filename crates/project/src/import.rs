@@ -136,13 +136,21 @@ pub struct ImportResult {
     /// (`LIST INFO`, `bext`, `iXML`, `smpl`, ID3/Vorbis comments) — drives
     /// `notice.save.metadata_dropped` at the document's first Save.
     pub has_foreign_metadata: bool,
+    /// H-72 (SPEC-005 §2.5/§2.9): the source's `cue `/`LIST adtl` chunk was malformed (`false`,
+    /// harmlessly, for a non-WAV source — `read_wav_markers_detailed` never parses one) — drives
+    /// `notice.open.markers_unreadable`.
+    pub wav_markers_malformed: bool,
+    /// H-72 (SPEC-005 §2.9): cue points dropped for falling outside the document — drives
+    /// `notice.open.markers_out_of_range`'s `{count}`.
+    pub wav_markers_out_of_range: u32,
 }
 
 /// Streams `path` through [`vox_io::decode`], downmixing by `downmix` (SPEC-005 §2.4, §4.3), into
 /// `session`'s store, then makes the result the undo floor — the general-format counterpart of
-/// [`import_wav`] (SPEC-005 §4.2's decode loop). WAV `cue `/`LIST adtl` markers are read the same
-/// way `import_wav`'s callers already do ([`vox_io::read_wav_markers`], harmless/empty for a
-/// non-WAV `path`).
+/// [`import_wav`] (SPEC-005 §4.2's decode loop). WAV `cue `/`LIST adtl` markers are read via
+/// [`vox_io::read_wav_markers_detailed`] (harmless/empty for a non-WAV `path`), which also
+/// filters out-of-range cues and reports what it dropped (H-72: [`ImportResult::wav_markers_malformed`]/
+/// [`ImportResult::wav_markers_out_of_range`], for the caller's open-time notices).
 ///
 /// `progress(frames_done, len_samples_hint)` is called at ~[`PROGRESS_INTERVAL`] and once more
 /// after the loop ends; `len_samples_hint` mirrors [`ImportProbe::len_samples`] (`None` when the
@@ -274,14 +282,17 @@ fn import_file_impl(
 
     let audio = writer.finish()?;
     let len = audio.len_samples;
-    let wav_markers = vox_io::read_wav_markers(path).unwrap_or_default();
+    // H-72 (SPEC-005 §2.5/§2.9): `read_wav_markers_detailed` now does the out-of-range filtering
+    // this used to do inline (`pos_samples + len_samples <= len`, unchanged) and also reports
+    // what it dropped, so `document.rs`'s open path can post
+    // `notice.open.markers_unreadable`/`notice.open.markers_out_of_range` instead of staying
+    // silent about it.
+    let wav_markers = vox_io::read_wav_markers_detailed(path, len).unwrap_or_default();
+    let wav_markers_malformed = wav_markers.markers_unreadable();
+    let wav_markers_out_of_range = wav_markers.out_of_range_count;
     let markers: Vec<Marker> = wav_markers
+        .markers
         .into_iter()
-        .filter(|m| {
-            m.pos_samples
-                .checked_add(m.len_samples)
-                .is_some_and(|end| end <= len)
-        })
         .enumerate()
         .map(|(i, m)| Marker::new(MarkerId(i as u64 + 1), m.pos_samples, m.len_samples, m.name))
         .collect();
@@ -295,6 +306,8 @@ fn import_file_impl(
         damaged_packets,
         non_finite_replaced: source.non_finite_replaced(),
         has_foreign_metadata: info.has_foreign_metadata,
+        wav_markers_malformed,
+        wav_markers_out_of_range,
     })
 }
 

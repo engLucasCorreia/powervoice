@@ -35,12 +35,13 @@
   import { createFrameClient } from "../render/frameScheduler";
   import { themeState } from "../theme/theme.svelte";
   import {
+    amplitudeRulerModeState,
     audioKeyFor,
     consumePendingRestore,
     setVerticalZoom,
     verticalZoomState,
   } from "../state/waveformView.svelte";
-  import { amplitudeTicksDbfs, centerlineY } from "./amplitudeAxis";
+  import { amplitudeTicksDbfs, amplitudeTicksPercent, centerlineY } from "./amplitudeAxis";
   import { extendSelectionEdge, hitTestHandle, normalizeSelection, nudgeSelectionRange } from "./selection";
   import {
     DRAG_THRESHOLD_PX as MARKER_DRAG_THRESHOLD_PX,
@@ -234,6 +235,9 @@
    * `startSample`/`samplesPerPixel`), so it's read directly here instead of through a bindable
    * prop. */
   const vzoom = verticalZoomState();
+  /** H-72 (SPEC-006 §2.4): dBFS (default) vs. percent — same "read directly, no bindable prop"
+   * shape as `vzoom` above. */
+  const ampRulerMode = amplitudeRulerModeState();
 
   // H-43: the canvas draws on demand from the shared frame scheduler (`render/frameScheduler.ts`,
   // replacing H-32's perpetual rAF loop): one frame whenever an input of `draw()` changes (the
@@ -273,19 +277,33 @@
     opPeaksRequestStart(layout, Math.max(0, Math.floor(startSample)), viewportPx * samplesPerPixel),
   );
 
-  // H-24 item 7 / H-35: the amplitude ruler gutter, scaled by the real `verticalZoom` (SPEC-006
-  // §2.4/§2.2 — drag-to-zoom the gutter itself is still out of scope, see amplitudeAxis.ts's doc
-  // comment). `heightPx` is this view's own measured canvas height (below).
+  // H-24 item 7 / H-35 / H-72: the amplitude ruler gutter, scaled by the real `verticalZoom`
+  // (SPEC-006 §2.4/§2.2 — drag-to-zoom the gutter itself is still out of scope, see
+  // amplitudeAxis.ts's doc comment), in whichever of the two ruler modes is current. `heightPx`
+  // is this view's own measured canvas height (below).
   const ampTicks = $derived.by(() =>
-    heightPx > 0 ? amplitudeTicksDbfs(heightPx, vzoom.current, 16) : [],
+    heightPx > 0
+      ? ampRulerMode.current === "percent"
+        ? amplitudeTicksPercent(heightPx, vzoom.current, 16)
+        : amplitudeTicksDbfs(heightPx, vzoom.current, 16)
+      : [],
   );
   // H-26: the ruler's labels, fitted (`fitGutterLabels`): the 0 dBFS labels at the top and
   // bottom edges align inward instead of being cut in half, and none touches the unit. The grid
-  // lines still use every tick.
+  // lines still use every tick. H-72: percent mode has no separate unit corner label — each tick
+  // already carries its own `%` (amplitudeAxis.ts's `amplitudeTicksPercent`), so a second "unit"
+  // box would be redundant (and, unlike dBFS's plain digits, would collide with the sign).
   const ampLabels = $derived(
     fitGutterLabels(
       ampTicks.map((tick) => ({ ...tick, pos: tick.y, text: tick.label })),
-      { length: heightPx, width: 48, fontPx: 10, lineHeightPx: 12, unit: { text: t("waveform.amp_unit"), fontPx: 10 } },
+      {
+        length: heightPx,
+        width: 48,
+        fontPx: 10,
+        lineHeightPx: 12,
+        unit:
+          ampRulerMode.current === "percent" ? undefined : { text: t("waveform.amp_unit"), fontPx: 10 },
+      },
     ),
   );
   const zeroLineY = $derived(centerlineY(heightPx));
@@ -1594,7 +1612,9 @@
   {#if isOpen}
     <div class="body" data-testid="waveform-body">
       <div class="amp-ruler" data-testid="waveform-amp-ruler">
-        <span class="unit">{t("waveform.amp_unit")}</span>
+        {#if ampRulerMode.current !== "percent"}
+          <span class="unit">{t("waveform.amp_unit")}</span>
+        {/if}
         {#each ampLabels as tick, i (tick.y + "-" + i)}
           <span class="tick" data-align={tick.align} style={`top: ${tick.y}px`}>{tick.label}</span>
         {/each}

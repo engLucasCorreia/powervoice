@@ -12,12 +12,17 @@
   import { hasSelection } from "../state/selection.svelte";
   import { saveSettings, settingsState } from "../state/settings.svelte";
   import { spectralState } from "../state/spectral.svelte";
-  import { setTimeRulerFormat, timeRulerFormatState } from "../state/waveformView.svelte";
+  import {
+    amplitudeRulerModeState,
+    setAmplitudeRulerMode,
+    setTimeRulerFormat,
+    timeRulerFormatState,
+  } from "../state/waveformView.svelte";
   import { transportState } from "../state/transport.svelte";
   import { chooseTheme } from "../theme/chooseTheme";
   import { themeState, THEMES } from "../theme/theme.svelte";
   import type { MenuEntry } from "../ui/menuModel";
-  import type { TimeRulerFormatDto } from "../ipc/bindings";
+  import type { AmplitudeRulerModeDto, TimeRulerFormatDto } from "../ipc/bindings";
 
   /**
    * View menu (H-19): Spectral/Analyzer toggles, waveform zoom, and the H-13 renderer override
@@ -35,6 +40,9 @@
    * see `actions.ts`; Zoom to Selection is disabled without one, per the ticket) and the vertical
    * zoom trio (Zoom In/Out (Vertical), Reset Vertical Zoom — `Alt+=`/`Alt+-`/`Alt+0`, SPEC-006
    * §2.4).
+   * H-72: Amplitude Ruler ▸ (dBFS / Percent, SPEC-006 §2.4, per-document —
+   * `waveformView.svelte.ts`'s `amplitudeRulerModeState`, no shortcut named by the spec), same
+   * radio-submenu pattern as Time Format ▸.
    */
   const analyzer = analyzerState();
   const diagnostics = diagnosticsState();
@@ -42,6 +50,7 @@
   const renderer = rendererPref();
   const theme = themeState();
   const timeFormat = timeRulerFormatState();
+  const ampRulerMode = amplitudeRulerModeState();
   const doc = documentState();
   const transport = transportState();
   const isOpen = $derived(hasDocument(doc.current));
@@ -61,6 +70,14 @@
     { value: "timecode", labelKey: "menu.view.time_format_timecode" },
     { value: "samples", labelKey: "menu.view.time_format_samples" },
     { value: "seconds", labelKey: "menu.view.time_format_seconds" },
+  ];
+
+  const AMPLITUDE_RULER_MODE_OPTIONS: readonly {
+    value: AmplitudeRulerModeDto;
+    labelKey: string;
+  }[] = [
+    { value: "dbfs", labelKey: "menu.view.amplitude_ruler_mode_dbfs" },
+    { value: "percent", labelKey: "menu.view.amplitude_ruler_mode_percent" },
   ];
 
   const RENDERER_OPTIONS: readonly { value: RendererPreference; labelKey: string }[] = [
@@ -234,6 +251,22 @@
         checked: timeFormat.current === option.value,
         testid: `menu-time-format-${option.value}`,
         onselect: () => setTimeRulerFormat(option.value),
+      })),
+    },
+    {
+      kind: "submenu",
+      id: "amplitude-ruler-mode",
+      label: t("menu.view.amplitude_ruler_mode"),
+      testid: "menu-amplitude-ruler-mode",
+      menuTestid: "menu-amplitude-ruler-mode-list",
+      minWidth: 160,
+      items: AMPLITUDE_RULER_MODE_OPTIONS.map((option) => ({
+        kind: "radio" as const,
+        id: option.value,
+        label: tDynamic(option.labelKey),
+        checked: ampRulerMode.current === option.value,
+        testid: `menu-amplitude-ruler-mode-${option.value}`,
+        onselect: () => setAmplitudeRulerMode(option.value),
       })),
     },
   ]);

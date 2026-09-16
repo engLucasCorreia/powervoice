@@ -401,6 +401,7 @@ function documentFixture(options: PreviewOptions): DocumentDto {
           cursor_samples: 19 * PREVIEW_RATE_HZ,
           time_ruler_format: "timecode",
           vertical_zoom: 1,
+          amplitude_ruler_mode: "dbfs",
         },
   });
 }

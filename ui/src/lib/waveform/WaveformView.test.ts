@@ -19,7 +19,11 @@ import type { MarkerDto } from "../ipc/bindings";
 import { RAW_SPP } from "./coords";
 import { VXPK_FLAGS } from "./vxpk";
 import WaveformView from "./WaveformView.svelte";
-import { resetWaveformViewForTest, verticalZoomState } from "../state/waveformView.svelte";
+import {
+  resetWaveformViewForTest,
+  setAmplitudeRulerMode,
+  verticalZoomState,
+} from "../state/waveformView.svelte";
 
 afterEach(() => {
   clearMocks();
@@ -1219,6 +1223,29 @@ describe("WaveformView zoom commands (H-35)", () => {
     container.dispatchEvent(new WheelEvent("wheel", { deltaY: 100, altKey: true, bubbles: true, cancelable: true }));
     flushSync();
     expect(verticalZoomState().current).toBe(1);
+
+    unmount(app);
+    target.remove();
+  });
+
+  // H-72 (SPEC-006 §2.4): the amplitude ruler actually switches between dBFS and percent labels
+  // when `amplitudeRulerModeState` changes — the previous agent's `amplitudeTicksPercent` had no
+  // caller in `WaveformView.svelte` at all.
+  it("the amplitude ruler switches from dBFS to percent labels (H-72)", async () => {
+    stubWidth(800);
+    await openFixture(100_000);
+    const { app, target } = mountBoundView();
+
+    const ruler = target.querySelector('[data-testid="waveform-amp-ruler"]')!;
+    expect(ruler.querySelector(".unit")?.textContent).toBe("dBFS");
+    expect(ruler.textContent).toContain("0"); // a 0 dBFS tick, unlabeled with a % sign
+
+    setAmplitudeRulerMode("percent");
+    flushSync();
+
+    expect(ruler.querySelector(".unit")).toBeNull(); // H-72: no separate unit box in percent mode
+    expect(ruler.textContent).toContain("0%");
+    expect(ruler.textContent).toContain("100%");
 
     unmount(app);
     target.remove();

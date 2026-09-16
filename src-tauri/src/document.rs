@@ -24,7 +24,7 @@ use vox_project::{
     save_snapshot_flac, sidecar_path_for, validate_range, write_sidecar,
 };
 
-use crate::ipc::document_dto::TimeRulerFormatDto;
+use crate::ipc::document_dto::{AmplitudeRulerModeDto, TimeRulerFormatDto};
 use crate::ipc::{IpcError, IpcErrorCode};
 use crate::settings::{BitDepth, SaveDitherPref};
 
@@ -261,10 +261,9 @@ pub struct SpectralViewInfo {
 /// H-12 (SPEC-018 §2.6.5's `view.waveform`): the shared waveform/spectral viewport plus the
 /// selection and edit cursor, lifted out of `EditorView`'s own state so it can be persisted per
 /// document (like [`SpectralViewInfo`]) and restored on open. T-206 adds `time_ruler_format`
-/// (SPEC-006 §2.5); H-35 adds `vertical_zoom` (SPEC-006 §2.4/§2.6). `amplitude_ruler_mode`
-/// (SPEC-018 §2.6.5, dBFS vs. percent) still has no corresponding UI (one fixed dBFS ruler,
-/// SPEC-006 §2.4's own "Decided: default = dBFS") and is left for whichever ticket adds it. Plain
-/// data — [`crate::ipc::document_dto::WaveformViewDto`] is the ts-rs wire type.
+/// (SPEC-006 §2.5); H-35 adds `vertical_zoom` (SPEC-006 §2.4/§2.6); H-72 adds
+/// `amplitude_ruler_mode` (SPEC-006 §2.4, dBFS vs. percent). Plain data —
+/// [`crate::ipc::document_dto::WaveformViewDto`] is the ts-rs wire type.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WaveformViewInfo {
     pub start_sample: u64,
@@ -278,6 +277,9 @@ pub struct WaveformViewInfo {
     /// H-35 (SPEC-006 §2.4, SPEC-018 §2.6.5): the linear amplitude scale factor, `1.0..=256.0`
     /// (SPEC-006 §2.4's range), default `1.0`.
     pub vertical_zoom: f64,
+    /// H-72 (SPEC-006 §2.4, SPEC-018 §2.6.5): dBFS (default, logarithmic) or Percentage (linear)
+    /// amplitude ruler mode.
+    pub amplitude_ruler_mode: AmplitudeRulerModeDto,
 }
 
 /// S2-01/H-56: the in-app clipboard (SPEC-008 §2.6). `Bound` pieces reference the currently open
@@ -1256,7 +1258,8 @@ const DEFAULT_VERTICAL_ZOOM: f64 = 1.0;
 /// the invalid part" spirit as `selection`/`cursor_samples`. H-35: `vertical_zoom` needs no
 /// viewport to validate (SPEC-006 §2.4's range is a fixed `[1, 256]`, not viewport-relative like
 /// `samples_per_pixel`), so it's clamped here directly, falling back to the SPEC-006 §2.4 default
-/// (`1.0`) on a missing or non-finite value.
+/// (`1.0`) on a missing or non-finite value. H-72: `amplitude_ruler_mode` falls back to `Dbfs`
+/// (SPEC-006 §2.4's default) on a missing or unrecognized value, same as `time_ruler_format`.
 fn waveform_view_of(view: &serde_json::Value, len_samples: u64) -> Option<WaveformViewInfo> {
     let w = view.get("waveform")?;
     let start_sample = w.get("start_sample")?.as_u64()?;
@@ -1288,6 +1291,10 @@ fn waveform_view_of(view: &serde_json::Value, len_samples: u64) -> Option<Wavefo
         .filter(|v| v.is_finite())
         .map(|v| v.clamp(MIN_VERTICAL_ZOOM, MAX_VERTICAL_ZOOM))
         .unwrap_or(DEFAULT_VERTICAL_ZOOM);
+    let amplitude_ruler_mode = match w.get("amplitude_ruler_mode").and_then(|v| v.as_str()) {
+        Some("percent") => AmplitudeRulerModeDto::Percent,
+        _ => AmplitudeRulerModeDto::Dbfs,
+    };
     Some(WaveformViewInfo {
         start_sample,
         samples_per_pixel,
@@ -1295,6 +1302,7 @@ fn waveform_view_of(view: &serde_json::Value, len_samples: u64) -> Option<Wavefo
         cursor_samples,
         time_ruler_format,
         vertical_zoom,
+        amplitude_ruler_mode,
     })
 }
 
@@ -2106,6 +2114,23 @@ impl DocumentService {
                 params: vec![("from", from.to_string()), ("to", to.to_string())],
             });
         }
+        // H-72 (SPEC-005 §2.5/§2.9): the source's `cue `/`LIST adtl` chunk was malformed, or some
+        // of its cue points fell outside the document — both silently dropped until now
+        // (`import_file`'s marker filter), now surfaced. Independent of the sidecar's own
+        // markers/precedence (SPEC-005 §2.9 "Sidecar precedence"): this is about the *source
+        // file's* cue chunk, true regardless of which markers end up on the document.
+        if import.wav_markers_malformed {
+            self.push_sidecar_notice(SidecarNoticeInfo {
+                key: "notice.open.markers_unreadable",
+                params: Vec::new(),
+            });
+        }
+        if import.wav_markers_out_of_range > 0 {
+            self.push_sidecar_notice(SidecarNoticeInfo {
+                key: "notice.open.markers_out_of_range",
+                params: vec![("count", import.wav_markers_out_of_range.to_string())],
+            });
+        }
 
         let store = Arc::clone(session.store());
         self.0.engine.set_document(Some(PlaybackDoc {
@@ -2207,6 +2232,10 @@ impl DocumentService {
             TimeRulerFormatDto::Samples => "samples",
             TimeRulerFormatDto::Seconds => "seconds",
         };
+        let amplitude_ruler_mode = match waveform.amplitude_ruler_mode {
+            AmplitudeRulerModeDto::Dbfs => "dbfs",
+            AmplitudeRulerModeDto::Percent => "percent",
+        };
         view.insert(
             "waveform".to_string(),
             serde_json::json!({
@@ -2216,6 +2245,7 @@ impl DocumentService {
                 "cursor_samples": waveform.cursor_samples,
                 "time_ruler_format": time_ruler_format,
                 "vertical_zoom": waveform.vertical_zoom,
+                "amplitude_ruler_mode": amplitude_ruler_mode,
             }),
         );
         doc.sidecar.view = serde_json::Value::Object(view);
@@ -4769,6 +4799,92 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// H-72 (SPEC-005 §2.5/§2.9): a `cue ` chunk declaring more than `CUE_MAX_POINTS` (100 000,
+    /// `vox_io`'s private constant) points is malformed — the audio still opens, with no markers,
+    /// and posts `notice.open.markers_unreadable` (the previous agent's `WavMarkersResult` had no
+    /// caller at all; this is the open path wired to it).
+    #[test]
+    fn open_of_a_wav_with_a_malformed_cue_chunk_posts_the_markers_unreadable_notice() {
+        let (service, _engine, dir) = service("markers-unreadable");
+        let wav_path = dir.join("in.wav");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.05, 48_000).unwrap();
+        write_fixture_wav(
+            &wav_path,
+            &samples,
+            vox_testkit::wav::BitDepth::Int24,
+            48_000,
+        );
+        // Append a `cue ` chunk whose declared point count is over SPEC-005 §2.9's 100 000
+        // threshold ("counts as malformed") — no real cue records follow it.
+        let mut bytes = std::fs::read(&wav_path).unwrap();
+        bytes.extend_from_slice(b"cue ");
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&100_001u32.to_le_bytes());
+        let riff_size = (bytes.len() - 8) as u32;
+        bytes[4..8].copy_from_slice(&riff_size.to_le_bytes());
+        std::fs::write(&wav_path, &bytes).unwrap();
+
+        service.open(&wav_path, false).unwrap();
+        assert!(
+            service.markers_get().is_empty(),
+            "a malformed cue chunk still drops its cue points, exactly as before H-72"
+        );
+        let notices = service.take_sidecar_notices();
+        assert!(
+            notices
+                .iter()
+                .any(|n| n.key == "notice.open.markers_unreadable"),
+            "a malformed cue chunk posts notice.open.markers_unreadable (SPEC-005 §2.5), got {notices:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// H-72 (SPEC-005 §2.9): a cue point whose region falls outside the document is dropped
+    /// (unchanged from before H-72 — `import.rs`'s own filter) and now posts
+    /// `notice.open.markers_out_of_range` with the dropped count.
+    #[test]
+    fn open_of_a_wav_with_an_out_of_range_marker_posts_the_notice_and_drops_it() {
+        let (service, _engine, dir) = service("markers-out-of-range");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 0.05, 48_000).unwrap();
+        let len_samples = samples.len() as u64;
+        let wav_path = dir.join("in.wav");
+        let markers = vec![
+            vox_io::WavMarker {
+                pos_samples: 10,
+                len_samples: 0,
+                name: "In range".to_string(),
+            },
+            vox_io::WavMarker {
+                pos_samples: len_samples + 1_000,
+                len_samples: 0,
+                name: "Out of range".to_string(),
+            },
+        ];
+        vox_io::write_wav_with_markers(
+            &wav_path,
+            48_000,
+            vox_io::BitDepth::Int24,
+            vox_io::DitherMode::None,
+            &samples,
+            &markers,
+        )
+        .unwrap();
+
+        service.open(&wav_path, false).unwrap();
+        let kept = service.markers_get();
+        assert_eq!(kept.len(), 1, "only the in-range marker survives");
+        assert_eq!(kept[0].pos_samples, 10);
+        let notices = service.take_sidecar_notices();
+        let notice = notices
+            .iter()
+            .find(|n| n.key == "notice.open.markers_out_of_range")
+            .unwrap_or_else(|| {
+                panic!("expected notice.open.markers_out_of_range, got {notices:?}")
+            });
+        assert_eq!(notice.params, vec![("count", "1".to_string())]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// H-20 (SPEC-005 §2.10): the first Save over a source with `LIST INFO`/`bext`/etc metadata
     /// posts `notice.save.metadata_dropped` exactly once — a second Save stays silent.
     #[test]
@@ -7040,6 +7156,7 @@ mod tests {
             cursor_samples: 3_000,
             time_ruler_format: TimeRulerFormatDto::Seconds,
             vertical_zoom: 8.0,
+            amplitude_ruler_mode: AmplitudeRulerModeDto::Percent,
         });
 
         let save_path = dir.join("with-rack.wav");
@@ -7111,6 +7228,11 @@ mod tests {
             (waveform_view.vertical_zoom - 8.0).abs() < 1e-9,
             "H-35: vertical_zoom round-trips too"
         );
+        assert_eq!(
+            waveform_view.amplitude_ruler_mode,
+            AmplitudeRulerModeDto::Percent,
+            "H-72: amplitude_ruler_mode round-trips too"
+        );
 
         assert!(
             !info.sidecar_dirty,
@@ -7131,6 +7253,7 @@ mod tests {
             cursor_samples: 0,
             time_ruler_format: TimeRulerFormatDto::Timecode,
             vertical_zoom: 1.0,
+            amplitude_ruler_mode: AmplitudeRulerModeDto::Dbfs,
         });
         assert_eq!(service.info().waveform_view, None);
     }
@@ -7164,6 +7287,7 @@ mod tests {
             cursor_samples: 100,
             time_ruler_format: TimeRulerFormatDto::Samples,
             vertical_zoom: 16.0,
+            amplitude_ruler_mode: AmplitudeRulerModeDto::Dbfs,
         });
 
         assert!(!service.info().sidecar_dirty);
@@ -7196,6 +7320,11 @@ mod tests {
             (info.vertical_zoom - 1.0).abs() < 1e-9,
             "H-35: a missing vertical_zoom falls back to the SPEC-006 §2.4 default (1.0)"
         );
+        assert_eq!(
+            info.amplitude_ruler_mode,
+            AmplitudeRulerModeDto::Dbfs,
+            "H-72: a missing amplitude_ruler_mode falls back to the SPEC-006 §2.4 default (dBFS)"
+        );
 
         let missing_view = serde_json::json!({ "waveform": { "start_sample": 10 } });
         assert_eq!(
@@ -7215,6 +7344,7 @@ mod tests {
                 "cursor_samples": 5_000,
                 "time_ruler_format": "not-a-real-format",
                 "vertical_zoom": 1_000.0,
+                "amplitude_ruler_mode": "not-a-real-mode",
             }
         });
         let info = waveform_view_of(&out_of_range, 1_000).unwrap();
@@ -7232,6 +7362,11 @@ mod tests {
             (info.vertical_zoom - 256.0).abs() < 1e-9,
             "H-35: vertical_zoom beyond the SPEC-006 §2.4 range is clamped, not dropped"
         );
+        assert_eq!(
+            info.amplitude_ruler_mode,
+            AmplitudeRulerModeDto::Dbfs,
+            "H-72: an unrecognized amplitude_ruler_mode value falls back to the default too"
+        );
 
         let samples_format = serde_json::json!({
             "waveform": {
@@ -7241,6 +7376,7 @@ mod tests {
                 "cursor_samples": 0,
                 "time_ruler_format": "samples",
                 "vertical_zoom": 0.0001,
+                "amplitude_ruler_mode": "percent",
             }
         });
         let info = waveform_view_of(&samples_format, 1_000).unwrap();
@@ -7248,6 +7384,11 @@ mod tests {
         assert!(
             (info.vertical_zoom - 1.0).abs() < 1e-9,
             "H-35: vertical_zoom below the SPEC-006 §2.4 range is clamped to 1.0"
+        );
+        assert_eq!(
+            info.amplitude_ruler_mode,
+            AmplitudeRulerModeDto::Percent,
+            "H-72: a recognized amplitude_ruler_mode value ('percent') is restored"
         );
 
         let null_vertical_zoom = serde_json::json!({

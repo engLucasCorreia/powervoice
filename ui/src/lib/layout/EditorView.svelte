@@ -7,6 +7,7 @@
   import { spectralState } from "../state/spectral.svelte";
   import { transportState } from "../state/transport.svelte";
   import {
+    amplitudeRulerModeState,
     schedulePersistWaveformView,
     timeRulerFormatState,
     verticalZoomState,
@@ -50,6 +51,7 @@
   const spectral = spectralState();
   const timeFormat = timeRulerFormatState();
   const vzoom = verticalZoomState();
+  const ampRulerMode = amplitudeRulerModeState();
 
   const lenSamples = $derived(doc.current.len_samples);
   const rateHz = $derived(doc.current.sample_rate_hz);
@@ -84,7 +86,9 @@
   // last-known, non-extrapolated position (`state.playhead_samples`) rather than the
   // continuously-extrapolated `playheadSamples` — the latter changes every animation frame while
   // playing, which would starve the debounce and never persist anything. H-35 adds the vertical
-  // zoom (`WaveformView` owns the actual zoom gesture; this effect just re-fires when it changes).
+  // zoom (`WaveformView` owns the actual zoom gesture; this effect just re-fires when it
+  // changes). H-72 adds the amplitude ruler mode (View menu owns the actual toggle, same
+  // "just re-fires" shape).
   $effect(() => {
     if (!isOpen) {
       return;
@@ -96,6 +100,7 @@
       transport.state.playhead_samples,
       timeFormat.current,
       vzoom.current,
+      ampRulerMode.current,
     );
   });
 

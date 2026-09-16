@@ -1,11 +1,13 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  amplitudeRulerModeState,
   audioKeyFor,
   clearPendingRestore,
   consumePendingRestore,
   resetWaveformViewForTest,
   schedulePersistWaveformView,
+  setAmplitudeRulerMode,
   setPendingRestore,
   setTimeRulerFormat,
   setVerticalZoom,
@@ -62,6 +64,14 @@ describe("verticalZoomState (H-35, SPEC-006 §2.4)", () => {
   });
 });
 
+describe("amplitudeRulerModeState (H-72, SPEC-006 §2.4)", () => {
+  it("defaults to dbfs and is settable", () => {
+    expect(amplitudeRulerModeState().current).toBe("dbfs");
+    setAmplitudeRulerMode("percent");
+    expect(amplitudeRulerModeState().current).toBe("percent");
+  });
+});
+
 describe("H-12: sidecar_view_set_waveform persistence (debounced, SPEC-018 §2.6.5)", () => {
   it("debounces a sidecar_view_set_waveform call with the full snapshot", () => {
     vi.useFakeTimers();
@@ -88,6 +98,7 @@ describe("H-12: sidecar_view_set_waveform persistence (debounced, SPEC-018 §2.6
         cursor_samples: 150,
         time_ruler_format: "timecode",
         vertical_zoom: 1,
+        amplitude_ruler_mode: "dbfs",
       },
     });
   });
@@ -130,6 +141,28 @@ describe("H-12: sidecar_view_set_waveform persistence (debounced, SPEC-018 §2.6
     expect((calls[1] as { waveform: { time_ruler_format: unknown } }).waveform.time_ruler_format).toBe(
       "seconds",
     );
+  });
+
+  it("persists the current amplitude_ruler_mode, or an explicit override (H-72)", () => {
+    vi.useFakeTimers();
+    const calls: unknown[] = [];
+    mockIPC((cmd, args) => {
+      calls.push(args);
+      return null;
+    });
+
+    setAmplitudeRulerMode("percent");
+    schedulePersistWaveformView(0, 1, null, 0);
+    vi.advanceTimersByTime(300);
+    expect(
+      (calls[0] as { waveform: { amplitude_ruler_mode: unknown } }).waveform.amplitude_ruler_mode,
+    ).toBe("percent");
+
+    schedulePersistWaveformView(0, 1, null, 0, "timecode", 1, "dbfs");
+    vi.advanceTimersByTime(300);
+    expect(
+      (calls[1] as { waveform: { amplitude_ruler_mode: unknown } }).waveform.amplitude_ruler_mode,
+    ).toBe("dbfs");
   });
 
   it("a null selection persists as null (no selection)", () => {

@@ -11,7 +11,9 @@ import { resetSelectionForTest, setSelectionFromResult } from "../state/selectio
 import { loadSettings, resetSettingsStateForTest, settingsState } from "../state/settings.svelte";
 import { resetSpectralForTest, spectralState } from "../state/spectral.svelte";
 import {
+  amplitudeRulerModeState,
   resetWaveformViewForTest,
+  setAmplitudeRulerMode,
   setTimeRulerFormat,
   timeRulerFormatState,
 } from "../state/waveformView.svelte";
@@ -298,6 +300,44 @@ describe("ViewMenu (H-19)", () => {
       flushSync();
 
       expect(timeRulerFormatState().current).toBe("seconds");
+      expect(target.querySelector('[data-testid="view-menu"]')).toBeNull();
+
+      unmount(app);
+      target.remove();
+    });
+  });
+
+  describe("Amplitude Ruler submenu (H-72, SPEC-006 §2.4)", () => {
+    it("lists dBFS/Percent as menuitemradio rows, the current one checked", () => {
+      mockIPC(() => null);
+      setAmplitudeRulerMode("percent");
+      const { target, app } = mountMenu();
+      openMenu(target);
+      target.querySelector<HTMLButtonElement>('[data-testid="menu-amplitude-ruler-mode"]')!.click();
+      flushSync();
+
+      const rows = ["dbfs", "percent"].map((value) =>
+        target.querySelector(`[data-testid="menu-amplitude-ruler-mode-${value}"]`),
+      );
+      expect(rows.map((row) => row?.getAttribute("role"))).toEqual(Array(2).fill("menuitemradio"));
+      expect(rows.map((row) => row?.getAttribute("aria-checked"))).toEqual(["false", "true"]);
+
+      unmount(app);
+      target.remove();
+    });
+
+    it("picking one updates the live store immediately (no persistence round trip needed)", () => {
+      mockIPC(() => null);
+      const { target, app } = mountMenu();
+      openMenu(target);
+      target.querySelector<HTMLButtonElement>('[data-testid="menu-amplitude-ruler-mode"]')!.click();
+      flushSync();
+      target
+        .querySelector<HTMLButtonElement>('[data-testid="menu-amplitude-ruler-mode-percent"]')!
+        .click();
+      flushSync();
+
+      expect(amplitudeRulerModeState().current).toBe("percent");
       expect(target.querySelector('[data-testid="view-menu"]')).toBeNull();
 
       unmount(app);

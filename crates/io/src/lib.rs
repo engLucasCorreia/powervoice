@@ -37,6 +37,7 @@ pub use mp3::{Mp3Settings, encode_mp3, mp3_available};
 /// `flac` already call through `vox_dsp::dither`).
 pub use vox_dsp::dither::DitherMode;
 pub use wav::{
-    BitDepth, SampleFormat, WavFormat, WavMarker, WavSource, WavStreamWriter, WriteReport,
-    read_wav, read_wav_markers, wav_has_foreign_metadata, write_wav, write_wav_with_markers,
+    BitDepth, SampleFormat, WavFormat, WavMarker, WavMarkersResult, WavSource, WavStreamWriter,
+    WriteReport, read_wav, read_wav_markers, read_wav_markers_detailed, wav_has_foreign_metadata,
+    write_wav, write_wav_with_markers,
 };

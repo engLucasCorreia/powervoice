@@ -1,5 +1,5 @@
 import { sidecarViewSetWaveform } from "../ipc/commands";
-import type { TimeRulerFormatDto } from "../ipc/bindings";
+import type { AmplitudeRulerModeDto, TimeRulerFormatDto } from "../ipc/bindings";
 import type { SelectionRange } from "../waveform/selection";
 import { clampVerticalZoom, DEFAULT_VERTICAL_ZOOM } from "../waveform/verticalZoom";
 
@@ -80,6 +80,25 @@ export function setVerticalZoom(value: number): void {
   verticalZoom = clampVerticalZoom(value);
 }
 
+/**
+ * H-72 (SPEC-006 §2.4, SPEC-018 §2.6.5's `waveform.amplitude_ruler_mode`): the amplitude ruler
+ * display mode (dBFS = default logarithmic, percent = linear). No viewport width needed to
+ * validate, so `document.svelte.ts` applies a restored value immediately on open.
+ */
+let amplitudeRulerMode = $state<AmplitudeRulerModeDto>("dbfs");
+
+export function amplitudeRulerModeState(): { readonly current: AmplitudeRulerModeDto } {
+  return {
+    get current() {
+      return amplitudeRulerMode;
+    },
+  };
+}
+
+export function setAmplitudeRulerMode(mode: AmplitudeRulerModeDto): void {
+  amplitudeRulerMode = mode;
+}
+
 interface PendingRestore {
   audioKey: string;
   startSample: number;
@@ -129,6 +148,7 @@ export function schedulePersistWaveformView(
   cursorSamples: number,
   timeRulerFormatValue: TimeRulerFormatDto = timeRulerFormat,
   verticalZoomValue: number = verticalZoom,
+  amplitudeRulerModeValue: AmplitudeRulerModeDto = amplitudeRulerMode,
 ): void {
   if (persistTimer !== null) {
     clearTimeout(persistTimer);
@@ -144,6 +164,7 @@ export function schedulePersistWaveformView(
       cursor_samples: cursorSamples,
       time_ruler_format: timeRulerFormatValue,
       vertical_zoom: verticalZoomValue,
+      amplitude_ruler_mode: amplitudeRulerModeValue,
     }).catch(() => {
       // Fire-and-forget, same as `spectral.svelte.ts`: no document open, or the IPC call itself
       // failed — the next Save just won't carry this particular viewport tweak.
@@ -192,4 +213,5 @@ export function resetWaveformViewForTest(): void {
   pendingRestore = null;
   timeRulerFormat = "timecode";
   verticalZoom = DEFAULT_VERTICAL_ZOOM;
+  amplitudeRulerMode = "dbfs";
 }

@@ -19,7 +19,8 @@ export interface AmplitudeTick {
   /** Pixel y (0 = top, `heightPx` = bottom). */
   y: number;
   label: string;
-  db: number;
+  db?: number;
+  percent?: number;
 }
 
 /** SPEC-006 §2.4's fixed dBFS tick set, most of a waveform view's usable dynamic range. Beyond
@@ -86,4 +87,58 @@ function thinnedHalf(
     }
   }
   return out;
+}
+
+/** Percentage ticks for the amplitude gutter (SPEC-006 §2.4), linear scale with evenly spaced
+ * ticks at ..., −100 %, −50 %, 0 %, 50 %, 100 %, ... of full scale. Mirrored above and below
+ * the centerline (positive and negative peaks read the same percent magnitude), thinned by
+ * `minLabelGapPx` working outward from the top/bottom edges toward the centerline so the most
+ * useful ticks (±100%, ±50%, 0%) are the ones that survive thinning at a small `heightPx`.
+ */
+export function amplitudeTicksPercent(
+  heightPx: number,
+  verticalZoom: number,
+  minLabelGapPx: number,
+): AmplitudeTick[] {
+  if (!(heightPx > 0) || !(verticalZoom > 0)) {
+    return [];
+  }
+  const centerY = heightPx / 2;
+  const out: AmplitudeTick[] = [];
+
+  // SPEC-006 §2.4: evenly spaced at 50%, 100%, 150%, ... of full scale.
+  const PERCENT_TICKS = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500] as const;
+
+  // Top half: positive ticks (working outward from centerline toward top edge)
+  let lastTopY: number | null = null;
+  for (const percent of PERCENT_TICKS) {
+    const amp = (percent / 100) * verticalZoom;
+    if (amp > 1) {
+      continue; // beyond the top edge at this zoom
+    }
+    const y = centerY - amp * centerY;
+    if (lastTopY === null || Math.abs(y - lastTopY) >= minLabelGapPx) {
+      out.push({ y, label: `${percent}%`, percent });
+      lastTopY = y;
+    }
+  }
+
+  // Centerline: 0%
+  out.push({ y: centerY, label: "0%", percent: 0 });
+
+  // Bottom half: negative ticks (working outward from centerline toward bottom edge)
+  let lastBottomY: number | null = null;
+  for (const percent of PERCENT_TICKS) {
+    const amp = (percent / 100) * verticalZoom;
+    if (amp > 1) {
+      continue; // beyond the bottom edge at this zoom
+    }
+    const y = centerY + amp * centerY;
+    if (lastBottomY === null || Math.abs(y - lastBottomY) >= minLabelGapPx) {
+      out.push({ y, label: `−${percent}%`, percent: -percent });
+      lastBottomY = y;
+    }
+  }
+
+  return out.sort((a, b) => a.y - b.y);
 }

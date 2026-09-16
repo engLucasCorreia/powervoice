@@ -197,6 +197,9 @@
   "menu.view.time_format_timecode": "Timecode",
   "menu.view.time_format_samples": "Samples",
   "menu.view.time_format_seconds": "Seconds",
+  "menu.view.amplitude_ruler_mode": "Amplitude Ruler",
+  "menu.view.amplitude_ruler_mode_dbfs": "dBFS",
+  "menu.view.amplitude_ruler_mode_percent": "Percent",
   "menu.view.snap_to_zero_crossing": "Snap to Zero Crossing",
   "menu.view.loop": "Loop Playback",
 
@@ -397,6 +400,8 @@
   "notice.save.sidecar_failed.flac": "Saved {name}, but its settings file couldn't be written. Markers, effects and view settings are not.",
   "notice.save.markers_not_in_flac": "FLAC files can't store markers; {count} markers won't be in {name}.",
   "notice.open.format_mapped": "This {from} file will be saved as {to}.",
+  "notice.open.markers_unreadable": "The file's markers couldn't be read and were ignored.",
+  "notice.open.markers_out_of_range": "{count} markers outside the audio were ignored.",
   "notice.save.metadata_dropped": "Metadata in the original file (INFO, bext) isn't kept by PowerVoice — {name} was saved without it.",
   "notice.device.rate_fallback": "{requested} Hz isn't supported by {device} — using {applied} Hz.",
   "notice.device.buffer_fallback": "A buffer of {requested} samples isn't supported by {device} — using {applied}.",

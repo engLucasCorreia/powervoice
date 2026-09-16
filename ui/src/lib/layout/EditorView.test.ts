@@ -8,6 +8,7 @@ import { resetSelectionForTest, selectionState } from "../state/selection.svelte
 import { resetSpectralForTest, spectralState } from "../state/spectral.svelte";
 import { docDto, transportStateDto } from "../test/fixtures";
 import {
+  amplitudeRulerModeState,
   resetWaveformViewForTest,
   setTimeRulerFormat,
   timeRulerFormatState,
@@ -253,6 +254,7 @@ describe("EditorView shared ruler/scrollbar (H-12, SPEC-007 §2.1's ruler → wa
         cursor_samples: 1_500,
         time_ruler_format: "samples",
         vertical_zoom: 4,
+        amplitude_ruler_mode: "percent",
       },
     });
 
@@ -269,6 +271,8 @@ describe("EditorView shared ruler/scrollbar (H-12, SPEC-007 §2.1's ruler → wa
     expect(timeRulerFormatState().current).toBe("samples");
     // H-35: same "no viewport width needed" shape as time_ruler_format.
     expect(verticalZoomState().current).toBe(4);
+    // H-72: same "no viewport width needed" shape too.
+    expect(amplitudeRulerModeState().current).toBe("percent");
 
     const scrollbar = target.querySelector<HTMLInputElement>('[data-testid="editor-scrollbar"]')!;
     expect(scrollbar.value).toBe("12000");
@@ -287,6 +291,7 @@ describe("EditorView shared ruler/scrollbar (H-12, SPEC-007 §2.1's ruler → wa
         cursor_samples: 0,
         time_ruler_format: "timecode",
         vertical_zoom: 1,
+        amplitude_ruler_mode: "dbfs",
       },
     });
 

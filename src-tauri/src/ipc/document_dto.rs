@@ -96,9 +96,8 @@ impl From<SpectralViewDto> for SpectralViewInfo {
 /// H-12 (SPEC-018 §2.6.5's `view.waveform`, this ticket's subset — see `WaveformViewInfo`'s doc
 /// for what's deferred): the shared waveform/spectral viewport plus the selection and edit
 /// cursor, persisted like `SpectralViewDto`. T-206 adds `time_ruler_format` (SPEC-006 §2.5/§2.2,
-/// SPEC-018 §2.6.5's `waveform.time_ruler_format`); H-35 adds `vertical_zoom` (SPEC-006 §2.4/§2.6)
-/// — `amplitude_ruler_mode` still has no corresponding UI and is left for whichever ticket adds it
-/// (`WaveformViewInfo`'s doc).
+/// SPEC-018 §2.6.5's `waveform.time_ruler_format`); H-35 adds `vertical_zoom` (SPEC-006 §2.4/§2.6);
+/// H-72 adds `amplitude_ruler_mode` (SPEC-006 §2.4, default `dbfs`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "bindings.ts")]
 pub struct WaveformViewDto {
@@ -110,6 +109,9 @@ pub struct WaveformViewDto {
     pub time_ruler_format: TimeRulerFormatDto,
     /// H-35 (SPEC-006 §2.4): the linear amplitude scale factor, `1.0..=256.0`, default `1.0`.
     pub vertical_zoom: f64,
+    /// H-72 (SPEC-006 §2.4): dBFS (default, logarithmic) or Percentage (linear) amplitude ruler
+    /// mode.
+    pub amplitude_ruler_mode: AmplitudeRulerModeDto,
 }
 
 /// `[start_sample, end_sample)` document samples (SPEC-006 §2.2's selection shape).
@@ -134,6 +136,17 @@ pub enum TimeRulerFormatDto {
     Seconds,
 }
 
+/// H-72 (SPEC-006 §2.4): the amplitude ruler display mode (dBFS is the default; percentage is a
+/// linear alternative).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum AmplitudeRulerModeDto {
+    #[default]
+    Dbfs,
+    Percent,
+}
+
 impl From<WaveformViewInfo> for WaveformViewDto {
     fn from(v: WaveformViewInfo) -> Self {
         Self {
@@ -148,6 +161,7 @@ impl From<WaveformViewInfo> for WaveformViewDto {
             cursor_samples: v.cursor_samples,
             time_ruler_format: v.time_ruler_format,
             vertical_zoom: v.vertical_zoom,
+            amplitude_ruler_mode: v.amplitude_ruler_mode,
         }
     }
 }
@@ -161,6 +175,7 @@ impl From<WaveformViewDto> for WaveformViewInfo {
             cursor_samples: v.cursor_samples,
             time_ruler_format: v.time_ruler_format,
             vertical_zoom: v.vertical_zoom,
+            amplitude_ruler_mode: v.amplitude_ruler_mode,
         }
     }
 }

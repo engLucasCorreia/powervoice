@@ -260,7 +260,7 @@ All format code lives in `crates/sandbox/src/` behind `PluginBackend` / `PluginI
 | LV2 | `lv2/` | `vox-lv2-abi` + **lilv loaded at run time** (`POWERVOICE_LILV` overrides the path) | Unix only; URID, options, bounded block length, worker (own thread), state; sample-accurate controls by block splitting |
 | JSFX | `jsfx/` | vendored ysfx (`vox-ysfx-sys`) | Unix x86-64/aarch64 only; sliders → params; `@serialize` state; latency from `pdc_delay` |
 | test | `test_backend` | built-in Gain + fault injection | Dev menu with `POWERVOICE_DEV_PLUGINS=1` (`test:gain`, crash, hang) |
-| VST2 | — | — | **Not implemented**: gated on the owner's legal sign-off (T-811) |
+| VST2 | — | — | **Dropped** (ADR-007 §7): Steinberg stopped licensing the VST2 SDK in 2018 |
 
 Every adapter is mono in/out; a stereo-only plugin gets dual-mono input and the host keeps the
 left channel.

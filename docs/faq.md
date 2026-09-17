@@ -142,8 +142,12 @@ platform.
 
 ### Can I use VST2 plugins?
 
-No — VST2 hosting needs headers Steinberg no longer licenses, so it's gated pending a legal
-decision and isn't implemented. CLAP, VST3, LV2 and JSFX are supported today.
+No. Steinberg stopped licensing the VST2 SDK in 2018, so there is no legitimate way to add VST2
+hosting, and PowerVoice has decided not to ship it. CLAP, VST3, LV2 and JSFX are all supported, and
+practically every maintained plugin offers one of them.
+
+If you have an old VST2-only plugin you can't replace, you can wrap it yourself — [Carla](https://github.com/falkTX/Carla)
+and VST2-to-VST3 wrappers both work — and load the wrapper in PowerVoice as a supported format.
 
 ## Files and safety
 

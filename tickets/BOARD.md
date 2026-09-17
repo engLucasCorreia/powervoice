@@ -242,7 +242,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-808 | JSFX adapter (ysfx, sandbox-only) | W4 | O | T-803, T-804 | done |
 | T-809 | Plugin manager UI + "Install module…" | W5 | S | T-804 | done |
 | T-810 | Plugin state in presets/sidecar | W5 | S | T-803 | done |
-| T-811 | VST2 adapter (prefer Carla bridge) | W5 | O | T-803 + owner legal sign-off | gated |
+| T-811 | VST2 adapter — **dropped** 2026-09-17 (owner): Steinberg no longer licenses the VST2 SDK (ADR-007 §7) | W5 | O | — | dropped |
 
 ## M9 — Native plugin editors
 | ID | Title | Wave | Tier | Deps | Status |

@@ -154,11 +154,17 @@ need checking when they are adopted.
   https://news.ycombinator.com/item?id=25977447).
 - Clean-room headers (e.g. FST, VeSTige) exist, but their legal status is a grey area. The FST license
   is not verified ⚠.
-- **Decision:** T-811 stays **gated on the owner's legal sign-off**. The preferred route ships **no
-  VST2 code of ours**: the user installs Carla (GPL-2.0-or-later, https://github.com/falkTX/Carla) and
-  we reach VST2 plugins through Carla, either its plugin build (e.g. an LV2 "Carla-Rack" in our LV2
-  adapter) or its `carla-bridge-*` binaries. T-811 verifies the route ⚠.
-- Carla is never linked, and we copy none of its code.
+- **Decision (2026-09-17, owner): VST2 is dropped.** Asked to choose between the Carla route and
+  dropping the format, the owner said "just drop the vst2 then, if its no more licensed". T-811 is
+  closed as won't-do and PowerVoice hosts CLAP, VST3, LV2 and JSFX only.
+- The route that was on the table, for the record: ship **no VST2 code of ours**, have the user
+  install Carla (GPL-2.0-or-later, https://github.com/falkTX/Carla) and reach VST2 plugins through
+  it, either its plugin build (e.g. an LV2 "Carla-Rack" in our LV2 adapter) or its `carla-bridge-*`
+  binaries, never linked and with none of its code copied. It stays rejected unless the owner
+  revisits it; nothing in the codebase depends on it.
+- A user with a VST2-only plugin can still bridge it themselves (Carla, or a VST2-to-VST3 wrapper)
+  and load the result as a supported format — that is their choice on their machine, not something
+  PowerVoice ships or requires.
 
 ### 8. Project license: owner decision (implications)
 | | MIT OR Apache-2.0 (Rust norm) | GPL-3.0-or-later |
@@ -191,7 +197,7 @@ before the first public distribution or outside contribution, and it doesn't blo
 - T-202: MPL check.
 - T-806: VST3 header version.
 - T-808: ysfx library-only build and thirdparty licenses.
-- T-811: gated.
+- T-811: dropped (§7, 2026-09-17).
 - Correct "ysfx (GPLv3)" in `docs/references.md` and MEMORY.
 
 ## Alternatives considered
@@ -208,7 +214,7 @@ before the first public distribution or outside contribution, and it doesn't blo
    library on Windows/macOS/AppImage and as a system dependency on deb/Arch. **Needed before M6.**
 2. **Project license:** MIT OR Apache-2.0 (recommended) or GPL-3.0-or-later. Needed before any public
    distribution.
-3. **VST2:** approve (or not) the Carla-based route in T-811.
+3. ~~**VST2:** approve (or not) the Carla-based route in T-811.~~ **Answered 2026-09-17: dropped** (§7).
 4. Before public distribution: counsel review of the process-boundary argument (only if GPL code
    enters the sandbox) and of AAC-decoding patent exposure.
 

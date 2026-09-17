@@ -223,7 +223,7 @@ pub struct ModuleDescriptor {
     /// Built-ins and packaged modules (ADR-006): reverse-DNS, `[a-z0-9.-]+`, e.g.
     /// `"org.powervoice.gain"`. External plugins (adapters): `"<format>:<native id>"` —
     /// `"clap:com.u-he.diva"`, `"vst3:<32 hex cid>"`, `"lv2:<uri>"`,
-    /// `"jsfx:<path relative to the effects root>"`, `"vst2:<id>"`. Ids are permanent.
+    /// `"jsfx:<path relative to the effects root>"`. Ids are permanent.
     pub id: String,
     /// Module version. Adapters use [`Version::parse_lenient`].
     pub version: Version,

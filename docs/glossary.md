@@ -567,9 +567,9 @@ Jump to: [A](#a) · [B](#b) · [C](#c) · [D](#d) · [E](#e) · [F](#f) · [G](#
   levels](user-guide.md#check-your-levels-analyzer-and-diagnostics).
 
 **VST3 / VST2**
-- *Plain:* Steinberg's plugin formats; VST3 is supported, VST2 is not.
-- VST3 via the `vst3` crate in the sandbox. VST2 is gated on a legal decision (T-811) and not
-  implemented.
+- *Plain:* Steinberg's plugin formats; VST3 is supported, VST2 is not and won't be.
+- VST3 via the `vst3` crate in the sandbox. VST2 was dropped in 2026-09 because Steinberg no longer
+  licenses its SDK (ADR-007 §7).
 
 **`.voxmod`**
 - *Plain:* a package file for installing a PowerVoice add-on effect.

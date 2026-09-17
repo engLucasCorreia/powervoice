@@ -32,12 +32,23 @@ export function audioKeyFor(sampleRateHz: number, lenSamples: number): string {
   return `${sampleRateHz}:${lenSamples}`;
 }
 
-interface ViewportSnapshot {
-  startSample: number;
-  samplesPerPixel: number;
-}
-
-let state = $state<ViewportSnapshot>({ startSample: 0, samplesPerPixel: 1 });
+/**
+ * H-83: `startSample`/`samplesPerPixel` are two independent primitive `$state` sources, not one
+ * object replaced wholesale on every write. A combined `{ startSample, samplesPerPixel }` object
+ * re-created via `{ ...state, startSample: value }` on every set is a *new reference* even when
+ * `value` didn't actually change, so Svelte's dirty-check (`Object.is` on the source) can never
+ * see a same-value write as a no-op — every setter call looks like a change to every consumer.
+ * While a take records into an empty document, `WaveformView`'s H-07 live-zoom effect
+ * unconditionally re-asserts `startSample = 0` and a freshly computed `samplesPerPixel` on every
+ * telemetry tick; fanned out through `EditorView`'s `bind:startSample={wv.startSample}` /
+ * `bind:samplesPerPixel={wv.samplesPerPixel}` two-way sync (SPEC-007 §2.3 "one viewport"), the
+ * resulting churn retriggered its own dependents inside one flush until Svelte's
+ * `effect_update_depth_exceeded` guard tripped (surfaced by H-68's bench as a repeating
+ * `console.error("updated at", ...)`). Plain primitive sources make an unchanged value a real
+ * no-op again, exactly like `verticalZoom`/`amplitudeRulerMode` below.
+ */
+let startSampleValue = $state(0);
+let samplesPerPixelValue = $state(1);
 
 /**
  * T-206 (SPEC-006 §2.5, SPEC-018 §2.6.5's `waveform.time_ruler_format`): the time display format
@@ -116,16 +127,16 @@ export interface WaveformViewApi {
 export function waveformViewApi(): WaveformViewApi {
   return {
     get startSample() {
-      return state.startSample;
+      return startSampleValue;
     },
     set startSample(value: number) {
-      state = { ...state, startSample: value };
+      startSampleValue = value;
     },
     get samplesPerPixel() {
-      return state.samplesPerPixel;
+      return samplesPerPixelValue;
     },
     set samplesPerPixel(value: number) {
-      state = { ...state, samplesPerPixel: value };
+      samplesPerPixelValue = value;
     },
   };
 }
@@ -209,7 +220,8 @@ export function resetWaveformViewForTest(): void {
     clearTimeout(persistTimer);
     persistTimer = null;
   }
-  state = { startSample: 0, samplesPerPixel: 1 };
+  startSampleValue = 0;
+  samplesPerPixelValue = 1;
   pendingRestore = null;
   timeRulerFormat = "timecode";
   verticalZoom = DEFAULT_VERTICAL_ZOOM;

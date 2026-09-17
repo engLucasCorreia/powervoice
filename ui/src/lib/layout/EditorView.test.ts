@@ -1,12 +1,15 @@
+import { emit } from "@tauri-apps/api/event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
+import { initDocument, openDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import type { DocumentDto } from "../ipc/bindings";
+import { VXTM_FLAGS, type TelemetryFrame } from "../ipc/telemetry";
 import { clearActionHandlers } from "../shortcuts";
+import { initRecord, onInputTelemetry, resetRecordForTest } from "../state/record.svelte";
 import { resetSelectionForTest, selectionState } from "../state/selection.svelte";
 import { resetSpectralForTest, spectralState } from "../state/spectral.svelte";
-import { docDto, transportStateDto } from "../test/fixtures";
+import { docDto, recordStateDto, transportStateDto } from "../test/fixtures";
 import {
   amplitudeRulerModeState,
   resetWaveformViewForTest,
@@ -90,8 +93,25 @@ afterEach(() => {
   resetWaveformViewForTest();
   resetDocumentStateForTest();
   resetSelectionForTest();
+  resetRecordForTest();
   unstubSize();
 });
+
+function frame(flags: number, playheadSample = 0): TelemetryFrame {
+  return {
+    seq: 0,
+    flags,
+    playheadSample,
+    playheadTimeNs: 0,
+    rate: 0,
+    outPeakDbfs: Number.NEGATIVE_INFINITY,
+    outRmsDbfs: Number.NEGATIVE_INFINITY,
+    inPeakDbfs: Number.NEGATIVE_INFINITY,
+    inRmsDbfs: Number.NEGATIVE_INFINITY,
+    audioRev: 0,
+    droppedRtEvents: 0,
+  };
+}
 
 describe("EditorView split layout (T-207, SPEC-007 §2.1)", () => {
   it("shows only the waveform pane by default (spectral pane hidden)", () => {
@@ -399,5 +419,62 @@ describe("EditorView shared ruler/scrollbar (H-12, SPEC-007 §2.1's ruler → wa
 
     unmount(app);
     target.remove();
+  });
+});
+
+describe("EditorView viewport ownership (H-83, H-28 item 1)", () => {
+  // H-83: `WaveformView`'s H-07 live-zoom effect writes `startSample`/`samplesPerPixel` on every
+  // telemetry tick while a take records into an empty document. H-28's own `WaveformView.test.ts`
+  // regression mounts `WaveformView` unbound (no parent), which never exercises the two-way
+  // `bind:startSample={wv.startSample}` / `bind:samplesPerPixel={wv.samplesPerPixel}` `EditorView`
+  // wires up to the shared `state/waveformView.svelte.ts` store (SPEC-007 §2.3 "one viewport").
+  // Mounting through `EditorView` here reproduces H-68's bench finding: the shared store's setters
+  // used to replace the whole `{ startSample, samplesPerPixel }` snapshot with a brand new object
+  // on every write, even a no-op one, so every telemetry tick looked like a "change" to every
+  // consumer (EditorView's persist effect, the bind: sync effect, `WaveformView`'s own follow
+  // effects) and the flush count blew past Svelte's `effect_update_depth_exceeded` guard.
+  it("does not throw effect_update_depth_exceeded while a take records into an empty document", async () => {
+    stubSize(800, 400);
+    const recordingDoc = docDto({ name: null, path: null, len_samples: 0, audio_rev: 0 });
+    const recordingState = recordStateDto({ armed: true, input_open: true, recording: true, monitoring: true });
+    mockIPC(
+      (cmd) => {
+        if (cmd === "record_get") {
+          return recordingState;
+        }
+        if (cmd === "record_peaks_get") {
+          return headerOnlyVxpk();
+        }
+        return null;
+      },
+      { shouldMockEvents: true },
+    );
+
+    const stopDocument = await initDocument();
+    const stopRecord = initRecord();
+    await emit("document_changed", recordingDoc);
+    flushSync();
+    await Promise.resolve();
+
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(EditorView, { target });
+    flushSync();
+    await Promise.resolve();
+
+    try {
+      expect(() => {
+        for (let i = 1; i <= 200; i++) {
+          onInputTelemetry(frame(VXTM_FLAGS.RECORDING, i * 4_800));
+          flushSync();
+        }
+      }).not.toThrow();
+      expect(target.querySelector('[data-testid="waveform-canvas"]')).not.toBeNull();
+    } finally {
+      unmount(app);
+      target.remove();
+      stopRecord();
+      stopDocument();
+    }
   });
 });

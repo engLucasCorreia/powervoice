@@ -1,3 +1,4 @@
+import { Channel } from "@tauri-apps/api/core";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
@@ -5,6 +6,8 @@ import type { CurveHandleDto, LocalizedTextDto, ParamInfoDto, RackSlotDto, Respo
 import { resetRackForTest } from "../rack/rack.svelte";
 import { frameScheduler } from "../render/frameScheduler";
 import { rackSlotDto } from "../test/fixtures";
+import { deliverChannelMessage } from "../test/liveFrame";
+import { encodeVxsa } from "../test/vxsa";
 import { closeEqExpanded, eqExpandedState, resetEqExpandedForTest } from "./eqExpanded.svelte";
 import EqGraph from "./EqGraph.svelte";
 
@@ -176,6 +179,91 @@ describe("idle behaviour (ticket: must not keep the scheduler awake when the ana
     flushSync();
     expect(frameScheduler.stats.frames).toBe(before); // no perpetual loop, nothing changed
     teardown();
+  });
+});
+
+describe("live spectrum overlay draws real analyzer data (H-88, from H-87's open question)", () => {
+  /** A `CanvasRenderingContext2D` stand-in that counts calls per method — `EqGraph.redraw.test.ts`'s
+   * pattern — so this can tell "the overlay fill path ran" apart from "nothing happened". */
+  function fakeCtx(): CanvasRenderingContext2D & { calls: Record<string, number> } {
+    const calls: Record<string, number> = {};
+    const target: Record<string, unknown> = { calls };
+    const handler: ProxyHandler<Record<string, unknown>> = {
+      get(obj, prop) {
+        if (prop in obj) {
+          return obj[prop as string];
+        }
+        const spy = (..._args: unknown[]): void => {
+          calls[prop as string] = (calls[prop as string] ?? 0) + 1;
+        };
+        obj[prop as string] = spy;
+        return spy;
+      },
+      set(obj, prop, value) {
+        obj[prop as string] = value;
+        return true;
+      },
+    };
+    return new Proxy(target, handler) as unknown as CanvasRenderingContext2D & { calls: Record<string, number> };
+  }
+
+  let getContextDescriptor: PropertyDescriptor | undefined;
+  function stubGetContext(ctx: unknown): void {
+    getContextDescriptor = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, "getContext");
+    Object.defineProperty(HTMLCanvasElement.prototype, "getContext", { configurable: true, value: () => ctx });
+  }
+
+  afterEach(() => {
+    if (getContextDescriptor) {
+      Object.defineProperty(HTMLCanvasElement.prototype, "getContext", getContextDescriptor);
+      getContextDescriptor = undefined;
+    }
+  });
+
+  it("fills the overlay only once a live VXSA frame decodes to real band levels — not before", async () => {
+    let channel: Channel<ArrayBuffer> | undefined;
+    const sub: unknown[] = [];
+    const unsub: unknown[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "rack_response_curve") {
+        return EMPTY_CURVE; // no total-curve fill, so any `fill()` call is the overlay's
+      }
+      if (cmd === "analyzer_subscribe") {
+        channel = (args as { channel: Channel<ArrayBuffer> }).channel;
+        sub.push(args);
+        return sub.length;
+      }
+      if (cmd === "analyzer_unsubscribe") {
+        unsub.push(args);
+        return undefined;
+      }
+      return { slots: [], ab: false, latency_samples: 0 };
+    });
+    const ctx = fakeCtx();
+    stubGetContext(ctx);
+    stubClientWidth(400);
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(EqGraph, { target, props: { slotIndex: 0, rackSlot: slotFixture(), rateHz: 48_000 } });
+    flushSync();
+    await settle();
+    expect(channel).toBeDefined();
+
+    // Before any frame arrives, the fixture's disabled HP node and empty curve draw nothing that
+    // calls `fill()` — so a later `fill()` can only be the overlay reacting to the live frame.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    flushSync();
+    expect(ctx.calls.fill ?? 0).toBe(0);
+
+    // Real VXSA bytes (`encodeVxsa`, H-88), decoded through the component's own analyzer feed —
+    // not a hand-rolled `AnalyzerFrame` poked into its state.
+    const levelsDb = Array.from({ length: 100 }, () => -30);
+    deliverChannelMessage(channel!, encodeVxsa({ levelsDb, f0Hz: 20, bandsPerOctave: 24 }));
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    flushSync();
+
+    expect(ctx.calls.fill ?? 0).toBeGreaterThan(0);
+    unmount(app);
   });
 });
 

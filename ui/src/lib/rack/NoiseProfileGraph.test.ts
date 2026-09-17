@@ -1,3 +1,4 @@
+import { Channel } from "@tauri-apps/api/core";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -9,11 +10,15 @@ import type {
   RackSlotDto,
 } from "../ipc/bindings";
 import { resetOutputDeviceStatusForTest } from "../analyzer/outputDeviceStatus.svelte";
+import { nearestIndex } from "../analyzer/plotGeometry";
 import { uForFreq } from "../spectrum/freqAxis";
 import { resetRackForTest } from "./rack.svelte";
 import { frameScheduler } from "../render/frameScheduler";
 import { paramInfoDto, rackSlotDto } from "../test/fixtures";
+import { deliverChannelMessage } from "../test/liveFrame";
 import { box } from "../test/reactive.svelte";
+import { encodeVxsa } from "../test/vxsa";
+import { liveBandFreqsHz } from "./noiseProfilePlot";
 import NoiseProfileGraph from "./NoiseProfileGraph.svelte";
 
 /**
@@ -337,6 +342,50 @@ describe("hover readout (H-87, SPEC-014 §2.8: frequency, print level, live leve
     // No live analyzer frame arrived in this test: the live reading stays silent.
     expect(hover!.textContent).toContain("Live −∞ dB");
     expect(hover!.textContent).toMatch(/Hz/);
+    teardown();
+  });
+
+  it("shows a real live level under the cursor once a live analyzer frame arrives (H-88)", async () => {
+    let channel: Channel<ArrayBuffer> | undefined;
+    mockIPC((cmd, args) => {
+      if (cmd === "noise_profile_curve") {
+        return curveFixture();
+      }
+      if (cmd === "analyzer_subscribe") {
+        channel = (args as { channel: Channel<ArrayBuffer> }).channel;
+        return 1;
+      }
+      if (cmd === "analyzer_unsubscribe") {
+        return null;
+      }
+      if (cmd === "devices_list") {
+        return devicesDto();
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    const { target, teardown } = render("loaded");
+    await afterFrame();
+    expect(channel).toBeDefined();
+
+    // The component's own SPEC-007 band ladder (f0 = 20 Hz, 24 bands/octave, 246 bands covers
+    // 20 Hz..~24 kHz) — put a distinct level at the band nearest 1 000 Hz, floor everywhere else,
+    // so the live reading at that frequency can only have come from decoding this frame.
+    const bandFreqs = liveBandFreqsHz(246, 20, 24);
+    const targetBand = nearestIndex(bandFreqs, 1_000);
+    const levelsDb = bandFreqs.map((_, i) => (i === targetBand ? -12 : -90));
+    deliverChannelMessage(channel!, encodeVxsa({ levelsDb }));
+    flushSync();
+
+    const canvas = target.querySelector("canvas")!;
+    canvas.dispatchEvent(
+      new MouseEvent("mousemove", { clientX: xForFreqHz(1_000), clientY: 40, bubbles: true }),
+    );
+    flushSync();
+
+    const hover = target.querySelector('[data-testid="nr-profile-hover"]');
+    expect(hover).not.toBeNull();
+    expect(hover!.textContent).toContain("Print −55.0 dB"); // curveFixture() is unaffected
+    expect(hover!.textContent).toContain("Live −12.0 dB"); // the real decoded live level, not -∞
     teardown();
   });
 

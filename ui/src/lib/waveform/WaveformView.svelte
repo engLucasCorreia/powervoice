@@ -315,6 +315,26 @@
   const isImporting = $derived(importJob !== null && importJob.state === "running");
   const isOpen = $derived(hasDocument(doc.current) || isImporting);
   const isRecording = $derived(rec.state.recording);
+  /**
+   * H-76 (SPEC-005 §2.3 item 4, "while importing: zoom, scroll and selection work"): the sample
+   * range every clamp/zoom/selection helper below treats as "the document" while an import is
+   * running. `lenSamples` (`doc.current.len_samples`) is the *previous* document's length — 0 if
+   * none was open, or a completely unrelated file's length otherwise — so using it here would
+   * leave the view stuck at start=0/max-zoom-in (nothing to scroll or zoom out to) for the common
+   * "first document" case, or bound it to the wrong file's length otherwise.
+   *
+   * Chosen bound: the import job's own `len_samples` (`import_started`'s probe result, SPEC-005
+   * §2.3 step 1 — known before the decode loop even starts, for every format that reports a frame
+   * count). That's exactly the length the progressive fill (H-71) is filling *toward*: scrolling
+   * or zooming out to a not-yet-committed part of it shows `--wave-pending` columns
+   * (`drawWebgl2`/`drawCanvas2d`'s `isImporting` branches), never a hard wall. A container that
+   * reports no frame count at all (`len_samples: null`, rare) has no better bound available yet —
+   * falls back to `lenSamples` (pre-H-76 behavior) until the import completes and a real document
+   * replaces it.
+   */
+  const interactionLenSamples = $derived(
+    isImporting ? (importJob?.lenSamples ?? lenSamples) : lenSamples,
+  );
   // H-66 (SPEC-008 §2.11): the right-click menu's enablement must exactly match `EditMenu.svelte`'s
   // — a document open, a non-empty selection, and not while recording (`error.not_while_recording`
   // covers "or a document job", since the job's own modal dialog owns the window meanwhile).
@@ -369,8 +389,13 @@
   // `waveform_view` restores that viewport instead — clamped to this width, falling back to zoom
   // full when the restored `samples_per_pixel` is out of range ("an out-of-range
   // `samples_per_pixel` -> zoom full").
+  // H-76: gated on `hasDoc` (the *real* document), not `isOpen` — `isOpen` also covers "an import
+  // is running, no real document yet" (H-71), and fitting *that* to `lenSamples` (always 0 with
+  // none open before) forced `samplesPerPixel` to 0 the instant an import's canvas first mounted.
+  // The import gets its own, separate initial-fit effect right below, keyed off the job id instead
+  // of `audioKeyFor` (there's no real audio revision to key on yet).
   $effect(() => {
-    if (!isOpen) {
+    if (!hasDoc) {
       fittedForAudio = null;
       return;
     }
@@ -393,11 +418,36 @@
     }
   });
 
+  /** H-76 (SPEC-005 §2.3 item 4): fits the view to the *importing* document's own probed length
+   * once, the moment its canvas first gets a known viewport width — mirrors the real-document fit
+   * effect above, but keyed on the job id (an import has no `audio_rev` to key on, ADR-003
+   * Amendment 7) and kept fully separate from `fittedForAudio` so cancelling/finishing an import
+   * never re-fits whatever real document is (or was) open: that document's own fit is untouched
+   * by this effect, in either direction. */
+  let fittedImportJobId = $state<number | null>(null);
+  $effect(() => {
+    if (!isImporting || viewportPx <= 0) {
+      fittedImportJobId = null;
+      return;
+    }
+    const job = importJob!;
+    if (fittedImportJobId !== job.jobId) {
+      fittedImportJobId = job.jobId;
+      samplesPerPixel = zoomFullSamplesPerPixel(interactionLenSamples, viewportPx);
+      startSample = 0;
+    }
+  });
+
   // Issues a peaks_get request whenever the visible range or the document's audio_rev changes
   // (SPEC-006 §4.3). The response is applied asynchronously and redrawn on the next frame.
+  // H-76: also skipped while an import job is running — nothing in `drawWebgl2`/`drawCanvas2d`'s
+  // `isImporting` branches ever reads `requester.state`, so fetching it would only be wasted IPC
+  // work racing the import for the backend's attention (and, if a previous document happened to
+  // still be open, `startSample`/`samplesPerPixel` are by then bounded to the *importing*
+  // document's length, not this one's — a request built from them would be meaningless anyway).
   $effect(() => {
     requester.setAudioRev(doc.current.audio_rev);
-    if (viewportPx <= 0 || lenSamples <= 0 || rateHz <= 0) {
+    if (viewportPx <= 0 || lenSamples <= 0 || rateHz <= 0 || isImporting) {
       return;
     }
     const spp = samplesPerPixel;
@@ -1174,13 +1224,16 @@
     ctx.stroke();
   }
 
+  // H-76: zoom/scroll/selection clamp against `interactionLenSamples` — the previous document's
+  // length while nothing is importing (unchanged), the importing document's own probed length
+  // while one is (see that derived value's doc comment).
   function zoomAt(anchorSample: number, anchorPx: number, nextSpp: number): void {
-    const clampedSpp = clampSamplesPerPixel(nextSpp, lenSamples, viewportPx);
+    const clampedSpp = clampSamplesPerPixel(nextSpp, interactionLenSamples, viewportPx);
     samplesPerPixel = clampedSpp;
     startSample = clampStartSample(
       zoomAroundSample(anchorSample, anchorPx, clampedSpp),
       clampedSpp,
-      lenSamples,
+      interactionLenSamples,
       viewportPx,
     );
   }
@@ -1193,7 +1246,7 @@
     const playheadPx = pixelAtSample(transport.playheadSamples, startSample, samplesPerPixel);
     const anchorPx = playheadPx >= 0 && playheadPx <= viewportPx ? playheadPx : viewportPx / 2;
     const anchorSample = sampleAtPixel(anchorPx, startSample, samplesPerPixel);
-    zoomAt(anchorSample, anchorPx, zoomStep(samplesPerPixel, direction, lenSamples, viewportPx));
+    zoomAt(anchorSample, anchorPx, zoomStep(samplesPerPixel, direction, interactionLenSamples, viewportPx));
   }
 
   /** H-35 (SPEC-006 §2.6): "Zoom to selection" — a no-op (per spec) with no document open or no
@@ -1202,7 +1255,7 @@
     if (!isOpen) {
       return;
     }
-    const result = zoomToSelectionViewport(selection.current, lenSamples, viewportPx);
+    const result = zoomToSelectionViewport(selection.current, interactionLenSamples, viewportPx);
     if (!result) {
       return;
     }
@@ -1215,7 +1268,7 @@
     if (!isOpen || viewportPx <= 0) {
       return;
     }
-    const result = zoomFullViewport(lenSamples, viewportPx);
+    const result = zoomFullViewport(interactionLenSamples, viewportPx);
     samplesPerPixel = result.samplesPerPixel;
     startSample = result.startSample;
   }
@@ -1257,20 +1310,22 @@
       startSample = clampStartSample(
         startSample + delta * samplesPerPixel,
         samplesPerPixel,
-        lenSamples,
+        interactionLenSamples,
         viewportPx,
       );
     }
   }
 
-  /** The document sample under `clientX`, clamped to the document (SPEC-006 §4.1). */
+  /** The document sample under `clientX`, clamped to the document (SPEC-006 §4.1). H-76: clamped
+   * to `interactionLenSamples` so a selection/handle-drag/click-seek made while importing is
+   * bounded to the importing document, not the previous one. */
   function sampleAtClientX(clientX: number): number | null {
     if (!containerEl) {
       return null;
     }
     const rect = containerEl.getBoundingClientRect();
     const px = clientX - rect.left;
-    return Math.max(0, Math.min(sampleAtPixel(px, startSample, samplesPerPixel), lenSamples));
+    return Math.max(0, Math.min(sampleAtPixel(px, startSample, samplesPerPixel), interactionLenSamples));
   }
 
   /** The device-pixel x of `clientX` inside the canvas container, or `null` if it isn't mounted. */
@@ -1429,9 +1484,11 @@
   /** SPEC-006 §2.10: async zero-crossing snap, gated on `Settings.snap_to_zero_crossing`. A
    * no-op (returns `sample` unchanged) when the setting is off — kept synchronous in that (by
    * far the more common) case so existing callers/tests that don't await it still see the
-   * unsnapped result applied immediately. */
+   * unsnapped result applied immediately. H-76: also a no-op while an import job is running — the
+   * snap reads real audio through the normal `peaksGet` (never `import_peaks_get`), which would
+   * either read the wrong (previous) document or, with none open before, nothing at all. */
   function maybeSnapToZeroCrossing(sample: number): number | Promise<number> {
-    if (!isOpen || !settingsState().current?.snap_to_zero_crossing) {
+    if (!isOpen || isImporting || !settingsState().current?.snap_to_zero_crossing) {
       return sample;
     }
     return snapSampleToZeroCrossing(peaksGet, doc.current.audio_rev, lenSamples, sample);
@@ -1455,11 +1512,11 @@
     const delta = keyboardStepSamples() * direction;
     const current = selection.current;
     if (current && hasSelection()) {
-      const moved = nudgeSelectionRange(current, delta, lenSamples);
+      const moved = nudgeSelectionRange(current, delta, interactionLenSamples);
       setSelectionFromResult([moved.startSample, moved.endSample]);
       return;
     }
-    const next = Math.max(0, Math.min(transport.playheadSamples + delta, lenSamples));
+    const next = Math.max(0, Math.min(transport.playheadSamples + delta, interactionLenSamples));
     void seek(next);
   }
 
@@ -1472,7 +1529,13 @@
       return;
     }
     const step = keyboardStepSamples();
-    const target = extendSelectionEdge(selection.current, transport.playheadSamples, direction, step, lenSamples);
+    const target = extendSelectionEdge(
+      selection.current,
+      transport.playheadSamples,
+      direction,
+      step,
+      interactionLenSamples,
+    );
     if (!target) {
       return;
     }
@@ -1579,7 +1642,14 @@
     resetMarkerAutoscroll();
     // H-57 (SPEC-009 §2.5): a flag hit takes priority over the selection handle/plain-drag
     // hit-testing below, and works during recording too (only the drag itself is disabled then).
-    const flagHit = recordState().state.recording ? null : flagHitAtClient(event.clientX, event.clientY);
+    // H-76 (SPEC-005 §2.3 item 4, "markers ... disabled" while importing): `markers.list` still
+    // holds the *previous* document's markers here — they're already never drawn while importing
+    // (`drawWebgl2`/`drawCanvas2d`'s `isImporting` branches), so hit-testing them too would only
+    // let a click start an invisible drag against a marker that isn't even on screen.
+    const flagHit =
+      recordState().state.recording || isImporting
+        ? null
+        : flagHitAtClient(event.clientX, event.clientY);
     if (flagHit && pointerDownSample !== null) {
       const marker = markers.list.find((m) => m.id === flagHit.id);
       if (marker) {
@@ -1746,7 +1816,7 @@
   /** Double-click selects the entire document (SPEC-006 §2.9, same as Ctrl+A). */
   function onDoubleClick(): void {
     if (isOpen) {
-      selectAllOf(lenSamples);
+      selectAllOf(interactionLenSamples);
     }
   }
 
@@ -1787,7 +1857,7 @@
       registerAction("waveform.zoom_reset_vertical", resetVerticalZoomKeyboard),
       registerAction("waveform.select_all", () => {
         if (isOpen) {
-          selectAllOf(lenSamples);
+          selectAllOf(interactionLenSamples);
         }
       }),
       // H-57 (SPEC-009 §2.5): Esc cancels an in-progress marker drag instead of clearing the

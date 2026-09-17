@@ -1620,3 +1620,291 @@ describe("WaveformView right-click menu (H-66)", () => {
     unmount(app);
   });
 });
+
+// H-76 (SPEC-005 §2.3 item 4): "while importing: zoom, scroll and selection work" — bounded by
+// the importing document's own probed length (`import_started`'s `len_samples`), never the
+// previous document's (0 with none open before, or a different file's otherwise); the previous
+// document's overlays/markers never leak into the importing one's interactions either.
+describe("WaveformView interaction during an import (H-76)", () => {
+  const widthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+  const heightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+
+  function stubSize(widthPx: number, heightPx = 200): void {
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get: () => widthPx,
+    });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get: () => heightPx,
+    });
+  }
+
+  afterEach(() => {
+    resetMarkersForTest();
+    if (widthDescriptor) {
+      Object.defineProperty(HTMLElement.prototype, "clientWidth", widthDescriptor);
+    }
+    if (heightDescriptor) {
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", heightDescriptor);
+    }
+  });
+
+  /** Same `mount()` pattern as the H-35 zoom-commands tests above — a plain get/set pair reads
+   * the `$bindable` startSample/samplesPerPixel from outside a parent template. */
+  function mountBoundView(): {
+    app: object;
+    target: HTMLElement;
+    viewport: () => { startSample: number; samplesPerPixel: number };
+  } {
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    let startSample = 0;
+    let samplesPerPixel = 1;
+    const app = mount(WaveformView, {
+      target,
+      props: {
+        get startSample() {
+          return startSample;
+        },
+        set startSample(v: number) {
+          startSample = v;
+        },
+        get samplesPerPixel() {
+          return samplesPerPixel;
+        },
+        set samplesPerPixel(v: number) {
+          samplesPerPixel = v;
+        },
+      },
+    });
+    flushSync();
+    return { app, target, viewport: () => ({ startSample, samplesPerPixel }) };
+  }
+
+  it("zooms full and scrolls on a fresh import with no previous document open, bounded to the import's probed length", async () => {
+    stubSize(800);
+    mockIPC(
+      (cmd) => {
+        if (cmd === "import_peaks_get") {
+          return headerOnlyVxpk();
+        }
+        if (cmd === "peaks_get") {
+          throw new Error("peaks_get must not be called while an import job is running");
+        }
+        return null;
+      },
+      { shouldMockEvents: true },
+    );
+
+    const stopDocument = await initDocument();
+    await emit("import_started", {
+      job_id: 1,
+      name: "big.wav",
+      sample_rate_hz: 48_000,
+      len_samples: 480_000,
+    });
+    flushSync();
+    await Promise.resolve();
+
+    const { app, target, viewport } = mountBoundView();
+    flushSync();
+    await Promise.resolve();
+
+    // The import's own initial fit (H-76's `fittedImportJobId` effect) — before this ticket, the
+    // pre-existing "fit a newly opened document" effect ran instead, keyed to the *previous*
+    // document's length (0, none was open), which forced samplesPerPixel to 0.
+    expect(viewport()).toEqual({ startSample: 0, samplesPerPixel: 600 }); // 480_000 / 800
+
+    const { dispatchAction } = await import("../shortcuts");
+    dispatchAction("waveform.zoom_in");
+    flushSync();
+    expect(viewport().samplesPerPixel).toBeLessThan(600);
+    expect(viewport().samplesPerPixel).toBeGreaterThan(0);
+
+    dispatchAction("waveform.zoom_full");
+    flushSync();
+    expect(viewport()).toEqual({ startSample: 0, samplesPerPixel: 600 });
+
+    // Scroll (plain wheel, no modifier): still bounded to the import's length, not stuck at 0.
+    const container = target.querySelector('[data-testid="waveform-canvas"]')!.parentElement as HTMLElement;
+    container.dispatchEvent(
+      new WheelEvent("wheel", { deltaY: 100, bubbles: true, cancelable: true }),
+    );
+    flushSync();
+    expect(viewport().startSample).toBe(0); // already fully zoomed out — nothing to scroll to
+
+    dispatchAction("waveform.zoom_in");
+    flushSync();
+    const before = viewport().startSample;
+    container.dispatchEvent(
+      new WheelEvent("wheel", { deltaY: 100, bubbles: true, cancelable: true }),
+    );
+    flushSync();
+    expect(viewport().startSample).toBeGreaterThan(before);
+
+    unmount(app);
+    target.remove();
+    stopDocument();
+  });
+
+  it("Ctrl+A during an import selects up to the import's own length, not the previous (different) document's", async () => {
+    stubSize(800);
+    const fixture = docDto({ len_samples: 1_000, sample_rate_hz: 48_000 });
+    mockIPC(
+      (cmd) => {
+        if (cmd === "document_open") {
+          return fixture;
+        }
+        if (cmd === "peaks_get" || cmd === "import_peaks_get") {
+          return headerOnlyVxpk();
+        }
+        return null;
+      },
+      { shouldMockEvents: true },
+    );
+
+    const stopDocument = await initDocument();
+    await openDocument("/home/user/take.wav");
+    flushSync();
+
+    await emit("import_started", {
+      job_id: 2,
+      name: "bigger.wav",
+      sample_rate_hz: 48_000,
+      len_samples: 500_000,
+    });
+    flushSync();
+    await Promise.resolve();
+
+    const { app, target } = mountBoundView();
+    flushSync();
+
+    const { dispatchAction } = await import("../shortcuts");
+    dispatchAction("waveform.select_all");
+    flushSync();
+
+    expect(selectionState().current).toEqual({ startSample: 0, endSample: 500_000 });
+
+    unmount(app);
+    target.remove();
+    stopDocument();
+  });
+
+  it("stops fetching peaks_get for the previous document once an import starts", async () => {
+    stubSize(800);
+    const fixture = docDto({ len_samples: 100_000, sample_rate_hz: 48_000 });
+    let peaksGetCalls = 0;
+    mockIPC(
+      (cmd) => {
+        if (cmd === "document_open") {
+          return fixture;
+        }
+        if (cmd === "peaks_get") {
+          peaksGetCalls++;
+          return headerOnlyVxpk();
+        }
+        if (cmd === "import_peaks_get") {
+          return headerOnlyVxpk();
+        }
+        return null;
+      },
+      { shouldMockEvents: true },
+    );
+
+    const stopDocument = await initDocument();
+    await openDocument("/home/user/take.wav");
+    flushSync();
+
+    const { app, target } = mountBoundView();
+    flushSync();
+    await Promise.resolve();
+    const callsBeforeImport = peaksGetCalls;
+    expect(callsBeforeImport).toBeGreaterThan(0);
+
+    await emit("import_started", {
+      job_id: 3,
+      name: "bigger.wav",
+      sample_rate_hz: 48_000,
+      len_samples: 5_000_000,
+    });
+    flushSync();
+    await Promise.resolve();
+
+    // A viewport change that, before H-76, would have re-requested peaks_get for the old document
+    // at the import's (much larger) bounds.
+    const { dispatchAction } = await import("../shortcuts");
+    dispatchAction("waveform.zoom_full");
+    flushSync();
+    await Promise.resolve();
+
+    expect(peaksGetCalls).toBe(callsBeforeImport);
+
+    unmount(app);
+    target.remove();
+    stopDocument();
+  });
+
+  it("a click that would hit the previous document's marker flag starts a plain selection drag instead, while importing", async () => {
+    stubSize(800);
+    const fixture = docDto({ len_samples: 8_000, sample_rate_hz: 48_000 });
+    mockIPC(
+      (cmd) => {
+        if (cmd === "document_open") {
+          return fixture;
+        }
+        if (cmd === "peaks_get" || cmd === "import_peaks_get") {
+          return headerOnlyVxpk();
+        }
+        if (cmd === "markers_get") {
+          return [{ id: 1, pos_samples: 60_000, len_samples: 0, name: "m1", kind: "user" }];
+        }
+        if (cmd === "marker_set_range") {
+          throw new Error("marker_set_range must not be called while importing");
+        }
+        return null;
+      },
+      { shouldMockEvents: true },
+    );
+
+    const stopDocument = await initDocument();
+    await openDocument("/home/user/take.wav");
+    await initMarkers();
+    flushSync();
+
+    await emit("import_started", {
+      job_id: 4,
+      name: "bigger.wav",
+      sample_rate_hz: 48_000,
+      len_samples: 480_000,
+    });
+    flushSync();
+    await Promise.resolve();
+
+    const { app, target } = mountBoundView();
+    flushSync();
+
+    // The view has already re-fit to the *importing* document's own probed length (H-76's
+    // separate `fittedImportJobId` effect: 480_000 / 800 = 600 samples/px, startSample 0) — the
+    // old document's marker at sample 60_000 now sits at px 100 (60_000 / 600). Before this
+    // ticket's `isImporting` guard on `flagHitAtClient`, landing a pointerdown there would have
+    // started an (invisible, since markers aren't drawn during import) marker drag instead.
+    const container = target.querySelector('[data-testid="waveform-canvas"]')!.parentElement as HTMLElement;
+    container.dispatchEvent(
+      new PointerEvent("pointerdown", { clientX: 100, clientY: 0, bubbles: true }),
+    );
+    container.dispatchEvent(
+      new PointerEvent("pointermove", { clientX: 150, clientY: 0, bubbles: true }),
+    );
+    container.dispatchEvent(
+      new PointerEvent("pointerup", { clientX: 150, clientY: 0, bubbles: true }),
+    );
+    flushSync();
+
+    expect(selectionState().current).not.toBeNull();
+
+    unmount(app);
+    target.remove();
+    stopDocument();
+  });
+});

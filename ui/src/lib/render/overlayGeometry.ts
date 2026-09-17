@@ -10,6 +10,7 @@
 import { pixelAtSample } from "../waveform/coords";
 import { LOOP_STRIP_PX, loopGeometry } from "./loopOverlay";
 import { QuadBatch, type Rgba } from "./quads";
+import { selectionGeometry } from "./selectionOverlay";
 
 export interface OverlayMarker {
   pos_samples: number;
@@ -18,6 +19,9 @@ export interface OverlayMarker {
 
 export interface OverlayColors {
   selectionFill: Rgba;
+  /** H-79: the selection's boundary lines (`--wave-selection-handle`) — a distinct, more solid
+   * shade of the selection's own hue, drawn over the content so the edges stay visible. */
+  selectionBorder: Rgba;
   marker: Rgba;
   markerRegionFill: Rgba;
   playhead: Rgba;
@@ -31,6 +35,12 @@ export interface OverlayInput {
   viewportPx: number;
   heightPx: number;
   selection: { startSample: number; endSample: number } | null;
+  /** H-79: when `true`, the returned batch omits the selection *fill* rect (boundary lines are
+   * still included) — the waveform pane draws that fill itself, before the wave content, via
+   * {@link buildSelectionUnderlay} (SPEC-006 §2.12 Amendment 2: painting the wash over the wave is
+   * what made a same-hue selection swallow it). The spectral pane leaves this `false` (default)
+   * and keeps drawing the fill in this same batch, after its content. */
+  omitSelectionFill?: boolean;
   /** H-37: the active loop region (`null`/absent: not looping). */
   loop?: { startSample: number; endSample: number } | null;
   /** H-37: the loop brace strip's height in this batch's pixel space. Default `LOOP_STRIP_PX`. */
@@ -63,10 +73,12 @@ export function buildOverlayBatch(input: OverlayInput): QuadBatch {
   const markerStyle = input.markerStyle ?? "flags-and-regions";
   const lineWidthPx = input.lineWidthPx ?? 1;
 
-  if (input.selection) {
-    const x0 = Math.max(0, pixelAtSample(input.selection.startSample, startSample, samplesPerPixel));
-    const x1 = Math.min(viewportPx, pixelAtSample(input.selection.endSample, startSample, samplesPerPixel));
-    batch.rect(x0, 0, x1, heightPx, colors.selectionFill);
+  const selection = selectionGeometry(input.selection, startSample, samplesPerPixel, viewportPx);
+  if (!input.omitSelectionFill && selection.fill) {
+    batch.rect(selection.fill.x0, 0, selection.fill.x1, heightPx, colors.selectionFill);
+  }
+  for (const px of selection.lines) {
+    batch.vLine(px, 0, heightPx, colors.selectionBorder, lineWidthPx);
   }
 
   if (input.loop && colors.loop) {
@@ -104,5 +116,28 @@ export function buildOverlayBatch(input: OverlayInput): QuadBatch {
     }
   }
 
+  return batch;
+}
+
+/** H-79: just the selection *fill* rect, as its own batch — the waveform pane draws this before
+ * its wave content (`omitSelectionFill: true` on the main {@link buildOverlayBatch} call keeps the
+ * fill out of that later, on-top batch), so the wave is never painted over by a same-hue wash. */
+export function buildSelectionUnderlay(input: {
+  startSample: number;
+  samplesPerPixel: number;
+  viewportPx: number;
+  heightPx: number;
+  selection: { startSample: number; endSample: number } | null;
+  color: Rgba;
+}): QuadBatch {
+  const batch = new QuadBatch();
+  const { startSample, samplesPerPixel, viewportPx, heightPx, color } = input;
+  if (viewportPx <= 0 || heightPx <= 0 || samplesPerPixel <= 0) {
+    return batch;
+  }
+  const geometry = selectionGeometry(input.selection, startSample, samplesPerPixel, viewportPx);
+  if (geometry.fill) {
+    batch.rect(geometry.fill.x0, 0, geometry.fill.x1, heightPx, color);
+  }
   return batch;
 }

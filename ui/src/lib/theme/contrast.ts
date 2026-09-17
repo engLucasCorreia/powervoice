@@ -18,6 +18,12 @@ export interface ContrastPair {
   bg: string;
   min: number;
   use: string;
+  /** H-79: when `fg` (or `bg`) resolves to a translucent colour (an `rgba()` wash, e.g. a
+   * selection fill), composite it over this token's opaque colour first — the ratio then
+   * reflects what a viewer actually sees, not the wash's colour in isolation. Ignored for an
+   * opaque `fg`/`bg`. */
+  fgOver?: string;
+  bgOver?: string;
 }
 
 const AA_TEXT = 4.5;
@@ -107,6 +113,24 @@ export const CONTRAST_PAIRS: readonly ContrastPair[] = [
   { fg: "--wave-record", bg: "--wave-bg", min: AA_NON_TEXT, use: "take being recorded" },
   { fg: "--wave-record-head", bg: "--wave-bg", min: AA_NON_TEXT, use: "record head" },
   { fg: "--wave-selection-handle", bg: "--wave-bg", min: AA_NON_TEXT, use: "selection edge" },
+  // H-79 (SPEC-006 §2.12 Amendment 2): the selection must read as a different colour from the
+  // wave, and the wave must stay visible against the selection's own wash. Both washes are
+  // translucent, so they're composited over `--wave-bg` (what the well shows behind them) before
+  // comparing — see `fgOver`/`bgOver` and `compositeOver` below.
+  {
+    fg: "--wave-selection-fill",
+    fgOver: "--wave-bg",
+    bg: "--wave-fill",
+    min: AA_NON_TEXT,
+    use: "selection wash vs. the waveform's own colour",
+  },
+  {
+    fg: "--wave-fill-selected",
+    bg: "--wave-selection-fill",
+    bgOver: "--wave-bg",
+    min: AA_NON_TEXT,
+    use: "the wave drawn inside a selection, against the selection wash",
+  },
   { fg: "--wave-ruler-text", bg: "--pv-bg-panel", min: AA_TEXT, use: "amplitude/time ruler labels" },
   { fg: "--wave-playhead", bg: "--spec-bg", min: AA_NON_TEXT, use: "playhead over the spectrogram" },
   { fg: "--wave-marker", bg: "--spec-bg", min: AA_NON_TEXT, use: "marker over the spectrogram" },
@@ -137,6 +161,37 @@ export function parseHex(value: string): Rgb | null {
     return [long[1]!, long[2]!, long[3]!].map((c) => parseInt(c, 16)) as Rgb;
   }
   return null;
+}
+
+/** `#rgb`/`#rrggbb` or `rgb(a)(...)` -> `{ rgb, alpha }` (alpha defaults to 1), or `null` for
+ * anything else. H-79: the compositing counterpart to {@link parseHex}, which only accepts opaque
+ * hex — this also accepts the `rgba()` shape our translucent wash tokens use. */
+export function parseCssColor(value: string): { rgb: Rgb; alpha: number } | null {
+  const hex = parseHex(value);
+  if (hex) {
+    return { rgb: hex, alpha: 1 };
+  }
+  const m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)$/.exec(value.trim());
+  if (!m) {
+    return null;
+  }
+  return {
+    rgb: [Number(m[1]), Number(m[2]), Number(m[3])],
+    alpha: m[4] !== undefined ? Number(m[4]) : 1,
+  };
+}
+
+/** Alpha-composites `fg` (hex or `rgba()`) over the opaque hex `bg`, returning an opaque hex —
+ * i.e. what a viewer actually sees when a translucent wash sits over a surface (H-79). An already
+ * opaque `fg` normalizes straight through. */
+export function compositeOver(fg: string, bg: string): string {
+  const f = parseCssColor(fg);
+  const b = parseHex(bg);
+  if (!f || !b) {
+    throw new Error(`compositeOver needs a resolvable colour and an opaque hex bg, got ${fg} / ${bg}`);
+  }
+  const [r, g, bl] = f.rgb.map((c, i) => Math.round(c * f.alpha + b[i]! * (1 - f.alpha)));
+  return `#${[r, g, bl].map((c) => c!.toString(16).padStart(2, "0")).join("")}`;
 }
 
 function channel(c: number): number {

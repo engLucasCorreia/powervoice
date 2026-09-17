@@ -799,3 +799,14 @@ frames come from `gen_ipc_fixtures` (ADR-003 §4). No audio files are committed.
   reports are not resent, Inspector frames read a bin-centred flat-top tone within 0.1 dB, reconfigure
   and unsubscribe work, silence idles the stream, and the output callback never allocates
   (`crates/engine/tests/analyzer.rs`).
+
+## Amendment 1 — H-79 selection colour (2026-09-16, owner-reported, autonomous)
+
+§4.7's overlays share SPEC-006 §2.12's tokens, so SPEC-006's Amendment 2 (selection/wave colour
+collision) applies here too: `--wave-selection-fill`/`--wave-selection-handle` move to a
+pink/magenta hue, and the selection now draws a boundary line at each edge (previously fill-only).
+Unlike the waveform pane, this pane's draw order is **unchanged** — the wash still draws after the
+tile content, after the boundary lines are added alongside it — because the spectrogram's content
+is an opaque heatmap image, not a thin line on an empty background; a translucent wash tints it
+rather than hiding it, which was never the reported failure mode here. Both panes pick up the new
+hue automatically since they read the same shared tokens.

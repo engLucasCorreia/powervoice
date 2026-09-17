@@ -603,3 +603,46 @@ component tests), golden `VXPK` fixtures extended with `PARTIAL`/stale-`audio_re
 - **§2.8 follow at a wrap:** the displayed playhead jumps from the loop end back to the loop start
   (SPEC-003 §2.2 amendment); band-follow treats it like any jump — when the loop is longer than the
   view, the view reframes in that frame so the loop start sits on the band's leading edge.
+
+## Amendment 2 — H-79 selection/wave colour collision (2026-09-16, owner-reported, autonomous)
+
+The owner reported that the selection wash and the waveform were the same colour (both blue —
+`--wave-fill`/`--wave-outline` and `--wave-selection-fill` all resolved to the same hue), and that
+the wash was painted *over* the already-drawn wave, so selecting part of the waveform hid the very
+thing being selected.
+
+- **§2.12 token changes:**
+  - `--wave-selection-fill` and `--wave-selection-handle` move to a **pink/magenta hue**, clearly
+    distinct from the wave's blue, the playhead's amber, markers' green, the loop's violet, and
+    record/clip red — and chosen to stay distinct from the spectrogram's Inferno/Viridis colormaps
+    too (Viridis has a teal midtone, which ruled out a teal/cyan choice).
+  - `--wave-selection-handle` was already spec'd (§2.12's original token list) but never actually
+    drawn by any renderer — this amendment is also the first time it's used: the selection now gets
+    an explicit **boundary line at each edge**, in this colour, drawn over the content (same
+    geometry helper pattern as `--wave-loop`'s brace/boundaries, H-37's Amendment 1) — previously
+    the selection was only ever a filled rectangle, with no boundary marking its edges.
+  - **§2.12 gains one token, `--wave-fill-selected`** (dark `#eaf6ff`, light `#0b2a55`, high
+    contrast `#ffffff`): the wave's own colour where it passes through the current selection —
+    lighter than the base wave colour in Dark/High Contrast (a "lit up" look), darker in Light
+    (where lightening doesn't read against a white well).
+- **Draw order (the actual fix for "the wave disappears inside the selection"):** on the waveform
+  pane, the selection *fill* now draws **before** the wave content instead of after — the wave then
+  draws fully opaque on top of it, so a same-hue wash can never hide it regardless of colour choice.
+  The wave content inside the selected pixel range is additionally drawn in `--wave-fill-selected`
+  rather than `--wave-fill`, so the selected slice still reads as "selected" even where it entirely
+  covers the wash (e.g. quiet audio, where most of the selection's height is empty well, or loud
+  audio, where the wave fills the selection edge to edge). The selection's *boundary lines* keep
+  drawing after the content, alongside the other overlays (loop/markers/playhead), so they stay
+  crisp on top.
+  - The spectral pane's content is an opaque tile image, not a thin line on an empty background —
+    a translucent wash over it tints the heatmap rather than hiding it, which was never the
+    reported failure mode there. Its draw order is unchanged (wash after content); it gains the
+    same boundary lines as the waveform pane for a consistent look, and both panes share the new
+    hue automatically via the shared `--wave-selection-fill`/`--wave-selection-handle` tokens.
+- **Scope:** the wave-inside-selection recolouring applies to the plain document view (the case the
+  owner hit, and the one covered by the required screenshots). The import-progress and live-take
+  recording views, and the punch/insert operation view (H-21), keep single-colour content — the
+  selection is locked during recording in all of these (MEMORY H-37/T-701), so the wave never needs
+  to show a selected slice there; only the selection *fill* underlay/boundary treatment applies
+  where those views drew the selection at all before this amendment (the operation view did; import
+  and live-take never did).

@@ -34,9 +34,14 @@ export interface ThemeColors {
   readonly wave: {
     readonly bg: ThemeColor;
     readonly fill: ThemeColor;
+    /** H-79: the wave's colour where it passes through the current selection — a distinct shade
+     * from `fill`, drawn on top so the wave stays fully legible there (SPEC-006 §2.12 Amendment 2). */
+    readonly fillSelected: ThemeColor;
     readonly pending: ThemeColor;
     readonly playhead: ThemeColor;
     readonly selectionFill: ThemeColor;
+    /** H-79: the selection's boundary lines (`--wave-selection-handle`). */
+    readonly selectionBorder: ThemeColor;
     readonly marker: ThemeColor;
     readonly markerRegion: ThemeColor;
     readonly record: ThemeColor;
@@ -132,9 +137,11 @@ export function readThemeColors(theme: ResolvedTheme): ThemeColors {
     wave: {
       bg: color("--wave-bg"),
       fill: color("--wave-fill"),
+      fillSelected: color("--wave-fill-selected"),
       pending: color("--wave-pending"),
       playhead: color("--wave-playhead"),
       selectionFill: color("--wave-selection-fill"),
+      selectionBorder: color("--wave-selection-handle"),
       marker: color("--wave-marker"),
       markerRegion: color("--wave-marker-region"),
       record: color("--wave-record"),

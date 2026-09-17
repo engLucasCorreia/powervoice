@@ -44,6 +44,7 @@ describe("buildOverlayBatch with a loop", () => {
     playheadSample: null,
     colors: {
       selectionFill: [0, 0, 1, 0.2] as const,
+      selectionBorder: [0, 0, 0.8, 1] as const,
       marker: [0, 1, 0, 1] as const,
       markerRegionFill: [0, 1, 0, 0.2] as const,
       playhead: [1, 0.5, 0, 1] as const,

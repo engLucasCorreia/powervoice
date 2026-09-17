@@ -107,11 +107,15 @@
   --wave-bg: #16171a;
   --wave-fill: #7fc8ff;
   --wave-outline: #4da3ff;
+  /* H-79: the wave's colour inside the current selection — SPEC-006 §2.12 Amendment 2. */
+  --wave-fill-selected: #eaf6ff;
   --wave-pending: #3a3d44;
   --wave-clip: #e5484d;
   --wave-playhead: #ffb454;
-  --wave-selection-fill: rgba(77, 163, 255, 0.22);
-  --wave-selection-handle: #4da3ff;
+  /* H-79: selection now has its own hue (pink/magenta) so it never reads as the same colour as
+     the wave (which is blue) — see SPEC-006 §2.12 Amendment 2. */
+  --wave-selection-fill: rgba(233, 99, 184, 0.28);
+  --wave-selection-handle: #f06abf;
   --wave-marker: #35c46a;
   --wave-marker-region: rgba(53, 196, 106, 0.18);
   --wave-marker-dropout: #e0a030;
@@ -242,11 +246,12 @@
   --wave-bg: #fbfcfd;
   --wave-fill: #2f72d6;
   --wave-outline: #1f5fbf;
+  --wave-fill-selected: #0b2a55;
   --wave-pending: #d3d7de;
   --wave-clip: #d11f27;
   --wave-playhead: #c46c00;
-  --wave-selection-fill: rgba(31, 111, 224, 0.16);
-  --wave-selection-handle: #1f6fe0;
+  --wave-selection-fill: rgba(179, 25, 122, 0.18);
+  --wave-selection-handle: #a51775;
   --wave-marker: #178a49;
   --wave-marker-region: rgba(23, 138, 73, 0.12);
   --wave-marker-dropout: #9c5f0a;
@@ -373,11 +378,12 @@
   --wave-bg: #000000;
   --wave-fill: #9fd6ff;
   --wave-outline: #ffffff;
+  --wave-fill-selected: #ffffff;
   --wave-pending: #2a2e35;
   --wave-clip: #ff4d55;
   --wave-playhead: #ffc14d;
-  --wave-selection-fill: rgba(108, 184, 255, 0.32);
-  --wave-selection-handle: #8cc8ff;
+  --wave-selection-fill: rgba(247, 110, 197, 0.34);
+  --wave-selection-handle: #f994d4;
   --wave-marker: #4be08a;
   --wave-marker-region: rgba(75, 224, 138, 0.22);
   --wave-marker-dropout: #ffcf5c;

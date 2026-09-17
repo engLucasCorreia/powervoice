@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { pixelAtSample } from "../waveform/coords";
 import { FLOATS_PER_VERTEX } from "./quads";
-import { buildOverlayBatch, type OverlayColors } from "./overlayGeometry";
+import { buildOverlayBatch, buildSelectionUnderlay, type OverlayColors } from "./overlayGeometry";
 
+// H-79: selectionFill and selectionBorder are deliberately different colours in these fixtures so
+// tests can tell fill-rect vertices apart from boundary-line vertices by their colour channels.
 const COLORS: OverlayColors = {
   selectionFill: [0.3, 0.6, 1, 0.22],
+  selectionBorder: [0.9, 0.4, 0.8, 1],
   marker: [0.2, 0.77, 0.42, 1],
   markerRegionFill: [0.2, 0.77, 0.42, 0.18],
   playhead: [1, 0.7, 0.33, 1],
@@ -14,6 +17,20 @@ function xsOf(vertices: Float32Array): number[] {
   const xs: number[] = [];
   for (let i = 0; i < vertices.length; i += FLOATS_PER_VERTEX) {
     xs.push(vertices[i]!);
+  }
+  return xs;
+}
+
+/** x-positions of only the vertices tinted with `color` (H-79: isolates the fill rect from the
+ * boundary lines, which share a batch but use different colours) — approximate, since the batch's
+ * `Float32Array` rounds each channel from the `number`s in `color`. */
+function xsOfColor(vertices: Float32Array, color: readonly [number, number, number, number]): number[] {
+  const close = (a: number, b: number) => Math.abs(a - b) < 1e-4;
+  const xs: number[] = [];
+  for (let i = 0; i < vertices.length; i += FLOATS_PER_VERTEX) {
+    if (close(vertices[i + 2]!, color[0]) && close(vertices[i + 3]!, color[1]) && close(vertices[i + 4]!, color[2])) {
+      xs.push(vertices[i]!);
+    }
   }
   return xs;
 }
@@ -48,21 +65,59 @@ describe("buildOverlayBatch (H-13, SPEC-006 §4.5 / SPEC-007 §4.7)", () => {
       ...base,
       selection: { startSample: 1000, endSample: 1500 },
     });
-    const xs = xsOf(batch.toFloat32Array());
+    const xs = xsOfColor(batch.toFloat32Array(), COLORS.selectionFill);
     const expectedX0 = pixelAtSample(1000, base.startSample, base.samplesPerPixel);
     const expectedX1 = pixelAtSample(1500, base.startSample, base.samplesPerPixel);
     expect(Math.min(...xs)).toBe(expectedX0);
     expect(Math.max(...xs)).toBe(expectedX1);
   });
 
-  it("clips the selection to the viewport", () => {
+  it("clips the selection fill to the viewport", () => {
     const batch = buildOverlayBatch({
       ...base,
       selection: { startSample: -10_000, endSample: 100_000 },
     });
-    const xs = xsOf(batch.toFloat32Array());
+    const xs = xsOfColor(batch.toFloat32Array(), COLORS.selectionFill);
     expect(Math.min(...xs)).toBe(0);
     expect(Math.max(...xs)).toBe(base.viewportPx);
+  });
+
+  it("H-79: also draws a boundary line at each selection edge, in selectionBorder", () => {
+    const batch = buildOverlayBatch({
+      ...base,
+      selection: { startSample: 1000, endSample: 1500 },
+    });
+    const borderXs = xsOfColor(batch.toFloat32Array(), COLORS.selectionBorder);
+    const expectedX0 = pixelAtSample(1000, base.startSample, base.samplesPerPixel);
+    const expectedX1 = pixelAtSample(1500, base.startSample, base.samplesPerPixel);
+    expect(Math.min(...borderXs)).toBeCloseTo(expectedX0 - 0.5, 5);
+    expect(Math.max(...borderXs)).toBeCloseTo(expectedX1 + 0.5, 5);
+  });
+
+  it("H-79: omitSelectionFill drops the fill rect but keeps the boundary lines", () => {
+    const batch = buildOverlayBatch({
+      ...base,
+      selection: { startSample: 1000, endSample: 1500 },
+      omitSelectionFill: true,
+    });
+    const vertices = batch.toFloat32Array();
+    expect(xsOfColor(vertices, COLORS.selectionFill)).toEqual([]);
+    expect(xsOfColor(vertices, COLORS.selectionBorder).length).toBeGreaterThan(0);
+  });
+
+  it("H-79: buildSelectionUnderlay draws exactly the fill rect the main batch would omit", () => {
+    const selection = { startSample: 1000, endSample: 1500 };
+    const underlay = buildSelectionUnderlay({ ...base, selection, color: COLORS.selectionFill });
+    const xs = xsOf(underlay.toFloat32Array());
+    const expectedX0 = pixelAtSample(1000, base.startSample, base.samplesPerPixel);
+    const expectedX1 = pixelAtSample(1500, base.startSample, base.samplesPerPixel);
+    expect(Math.min(...xs)).toBe(expectedX0);
+    expect(Math.max(...xs)).toBe(expectedX1);
+    expect(underlay.vertexCount).toBe(6); // one rect
+  });
+
+  it("H-79: buildSelectionUnderlay is empty with no selection", () => {
+    expect(buildSelectionUnderlay({ ...base, selection: null, color: COLORS.selectionFill }).vertexCount).toBe(0);
   });
 
   it("draws the playhead as a thin line at its pixel position", () => {

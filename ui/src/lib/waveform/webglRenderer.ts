@@ -34,9 +34,13 @@ export interface WaveformGlDrawOptions {
   cssHeightPx: number;
   devicePixelRatio: number;
   background: Rgba;
+  /** H-79: the selection fill, drawn right after the clear and *before* `content` — painting a
+   * same-hue wash on top of the wave (the original bug) is what this ordering avoids; the wave
+   * then draws fully opaque on top of it. `null`/absent: no selection. */
+  underlay?: Float32Array | null;
   content: WaveformGlContent | null;
-  /** Selection fill + markers + playhead + (while recording) the record-head line, pre-batched by
-   * the caller with `overlayGeometry.ts` (H-13: one shared builder for both renderers). */
+  /** Selection border + markers + playhead + (while recording) the record-head line, pre-batched
+   * by the caller with `overlayGeometry.ts` (H-13: one shared builder for both renderers). */
   overlay: Float32Array | null;
 }
 
@@ -58,6 +62,10 @@ export class WaveformGlRenderer {
 
     const w = opts.cssWidthPx;
     const h = opts.cssHeightPx;
+
+    if (opts.underlay && opts.underlay.length > 0) {
+      this.quads.draw(opts.underlay, w, h, gl.TRIANGLES);
+    }
 
     if (opts.content?.mode === "columns") {
       this.quads.draw(opts.content.vertices, w, h, gl.TRIANGLES);

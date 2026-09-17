@@ -78,10 +78,11 @@
   } from "./coords";
   import { DEFAULT_VERTICAL_ZOOM, verticalZoomStep } from "./verticalZoom";
   import { GlContextHost } from "../render/glContext";
-  import { buildOverlayBatch } from "../render/overlayGeometry";
+  import { buildOverlayBatch, buildSelectionUnderlay } from "../render/overlayGeometry";
   import { QuadBatch } from "../render/quads";
   import { crispOffset, themeColors } from "../theme/themeColors";
   import { LOOP_STRIP_PX, loopFromRange, loopGeometry } from "../render/loopOverlay";
+  import { selectionGeometry } from "../render/selectionOverlay";
   import { pushNotice } from "../state/notices.svelte";
   import { rendererPref } from "../state/rendererPref.svelte";
   import { decodeVxpk } from "./vxpk";
@@ -580,6 +581,13 @@
     const fillColor = themeColors().wave.fill.rgba;
     const overlay = new QuadBatch();
     let content: WaveformGlContent | null = null;
+    // H-79 (SPEC-006 §2.12 Amendment 2): the selection wash is drawn as its own "underlay" pass,
+    // before the wave content, so a same-hue wash never gets painted over an already-drawn wave
+    // (the original bug) — the content below draws fully opaque on top of it. Populated only in
+    // the branches that used to include the selection fill in `overlay` (the plain document view
+    // and the recording operation view below) — never during import/live-take, matching the
+    // Canvas2D fallback (`drawCanvas2d`) and the pre-H-79 behavior.
+    const underlay = new QuadBatch();
 
     const vz = vzoom.current;
     if (isImporting) {
@@ -627,6 +635,16 @@
     } else if (layout) {
       // H-21: the operation view — the existing audio (Insert: shifted past `at`) plus the live
       // take at `at` in the record colour, the punch region, the record head.
+      underlay.append(
+        buildSelectionUnderlay({
+          startSample,
+          samplesPerPixel,
+          viewportPx,
+          heightPx,
+          selection: selection.current,
+          color: themeColors().wave.selectionFill.rgba,
+        }),
+      );
       const cols = opViewColumns(layout);
       const quads = buildColumnQuads(cols.base, centerY, fillColor, vz);
       quads.append(buildColumnQuads(cols.take, centerY, themeColors().wave.record.rgba, vz));
@@ -640,6 +658,20 @@
       const headPx = pixelAtSample(layout.at + layout.takeLen, startSample, samplesPerPixel);
       overlay.vLine(headPx, 0, heightPx, themeColors().wave.recordHead.rgba, themeColors().strokePx);
     } else {
+      underlay.append(
+        buildSelectionUnderlay({
+          startSample,
+          samplesPerPixel,
+          viewportPx,
+          heightPx,
+          selection: selection.current,
+          color: themeColors().wave.selectionFill.rgba,
+        }),
+      );
+      const selectionFill = selectionGeometry(selection.current, startSample, samplesPerPixel, viewportPx).fill;
+      const highlight = selectionFill
+        ? { startPx: selectionFill.x0, endPx: selectionFill.x1, color: themeColors().wave.fillSelected.rgba }
+        : undefined;
       const state = requester.state;
       const level = pickLevel(samplesPerPixel);
       if (state && state.level === level && state.buckets.length > 0) {
@@ -654,11 +686,15 @@
             showsDots(samplesPerPixel),
             themeColors().strokePx,
             vz,
+            highlight,
           );
           content = { mode: "raw", geometry };
         } else {
           const columns = reduceColumns(state.buckets, state.startSample, level, startSample, samplesPerPixel, Math.ceil(viewportPx));
-          content = { mode: "columns", vertices: buildColumnQuads(columns, centerY, fillColor, vz).toFloat32Array() };
+          content = {
+            mode: "columns",
+            vertices: buildColumnQuads(columns, centerY, fillColor, vz, undefined, highlight).toFloat32Array(),
+          };
         }
       } else if (state?.partial) {
         overlay.rect(0, 0, viewportPx, heightPx, themeColors().wave.pending.rgba);
@@ -673,12 +709,15 @@
       cssHeightPx: heightPx,
       devicePixelRatio: dpr,
       background: bgColor,
+      underlay: underlay.vertexCount > 0 ? underlay.toFloat32Array() : null,
       content,
       overlay: overlay.vertexCount > 0 ? overlay.toFloat32Array() : null,
     });
   }
 
-  /** Selection, markers (`markerList`) and playhead as one WebGL2 overlay batch. */
+  /** Selection border/markers (`markerList`)/playhead as one WebGL2 overlay batch, drawn *after*
+   * the wave content — the selection *fill* is a separate underlay drawn before it (H-79, see
+   * `drawWebgl2`), so `omitSelectionFill` keeps this batch from drawing it a second time. */
   function overlayBatch(markerList: MarkerDto[]): QuadBatch {
     return buildOverlayBatch({
       startSample,
@@ -686,12 +725,14 @@
       viewportPx,
       heightPx,
       selection: selection.current,
+      omitSelectionFill: true,
       loop: loopFromRange(transport.state.loop_range),
       markers: markerList,
       playheadSample: isOpen ? transport.playheadSamples : null,
       lineWidthPx: themeColors().strokePx,
       colors: {
         selectionFill: themeColors().wave.selectionFill.rgba,
+        selectionBorder: themeColors().wave.selectionBorder.rgba,
         marker: themeColors().wave.marker.rgba,
         markerRegionFill: themeColors().wave.markerRegion.rgba,
         playhead: themeColors().wave.playhead.rgba,
@@ -730,6 +771,14 @@
 
     const centerY = heightPx / 2;
     const vz = vzoom.current;
+    // H-79: the part of the wave inside the selection is recolored so it still reads as
+    // "selected" even where it fully covers the wash — scoped to the plain document view (the
+    // common case a selection is made in); the import/live-recording/operation-view branches
+    // below keep their existing single-color content unchanged.
+    const selectionFillPx = selectionGeometry(selection.current, startSample, samplesPerPixel, viewportPx).fill;
+    const highlightCss = selectionFillPx
+      ? { startPx: selectionFillPx.x0, endPx: selectionFillPx.x1, color: themeColors().wave.fillSelected.css }
+      : undefined;
     if (isImporting) {
       // H-71 (SPEC-005 §2.3, SPEC-006 AC-13): the growing import's own peaks (see `drawWebgl2`'s
       // matching branch for the full rationale) — `PARTIAL`/`NaN` buckets render as
@@ -766,6 +815,11 @@
     }
     if (layout) {
       // H-21: the operation view (see `drawWebgl2`).
+      // H-79 (SPEC-006 §2.12 Amendment 2): the selection wash is drawn before the wave content, so
+      // a same-hue wash never paints over an already-drawn wave (the original bug) — the content
+      // drawn below is fully opaque on top of it. The border lines are drawn later, alongside the
+      // other overlays, so they stay crisp over the content.
+      drawSelectionFill(ctx);
       const cols = opViewColumns(layout);
       if (layout.punchEnd !== null) {
         const x0 = Math.max(0, pixelAtSample(layout.at, startSample, samplesPerPixel));
@@ -777,7 +831,7 @@
       }
       fillColumns(ctx, cols.base, themeColors().wave.fill.css, centerY, vz);
       fillColumns(ctx, cols.take, themeColors().wave.record.css, centerY, vz);
-      drawSelection(ctx);
+      drawSelectionBorder(ctx);
       drawLoop(ctx);
       drawMarkers(ctx, opMarkers(layout, markers.list, isTakeMarker));
       drawPlayhead(ctx, centerY);
@@ -791,19 +845,24 @@
       ctx.restore();
       return;
     }
+    // H-79 (SPEC-006 §2.12 Amendment 2): the selection wash is drawn before the wave content, so a
+    // same-hue wash never paints over an already-drawn wave (the original bug) — the content drawn
+    // below is fully opaque on top of it. The border lines are drawn after, with the other
+    // overlays, so they stay crisp over the content.
+    drawSelectionFill(ctx);
     const state = requester.state;
     const level = pickLevel(samplesPerPixel);
     if (state && state.level === level && state.buckets.length > 0) {
       if (level === RAW_SPP) {
-        drawRawPolyline(ctx, state.buckets, state.startSample, centerY, vz);
+        drawRawPolyline(ctx, state.buckets, state.startSample, centerY, vz, highlightCss);
       } else {
-        drawColumns(ctx, state.buckets, state.startSample, level, centerY, vz);
+        drawColumns(ctx, state.buckets, state.startSample, level, centerY, vz, undefined, highlightCss);
       }
     } else if (state?.partial) {
       ctx.fillStyle = themeColors().wave.pending.css;
       ctx.fillRect(0, 0, viewportPx, heightPx);
     }
-    drawSelection(ctx);
+    drawSelectionBorder(ctx);
     drawLoop(ctx);
     drawMarkers(ctx, markersForDraw());
     drawPlayhead(ctx, centerY);
@@ -880,18 +939,40 @@
     }
   }
 
-  function drawSelection(ctx: CanvasRenderingContext2D): void {
-    const sel = selection.current;
-    if (!sel) {
-      return;
-    }
-    const x0 = Math.max(0, pixelAtSample(sel.startSample, startSample, samplesPerPixel));
-    const x1 = Math.min(viewportPx, pixelAtSample(sel.endSample, startSample, samplesPerPixel));
-    if (x1 <= x0) {
+  /** H-79: recolors a pixel `px` when it falls inside `highlight`'s range (the current
+   * selection) — used by `fillColumns`/`drawRawPolyline` so the wave stays legible, and visibly
+   * marked as selected, inside the selection (SPEC-006 §2.12 Amendment 2). */
+  function colorAtPx(px: number, base: string, highlight?: { startPx: number; endPx: number; color: string }): string {
+    return highlight && px >= highlight.startPx && px < highlight.endPx ? highlight.color : base;
+  }
+
+  /** The selection wash (S2-01, SPEC-006 §2.1/§2.9), clipped to the visible viewport. H-79: drawn
+   * *before* the wave content (see `drawCanvas2d`) so it never paints over an already-drawn wave. */
+  function drawSelectionFill(ctx: CanvasRenderingContext2D): void {
+    const geometry = selectionGeometry(selection.current, startSample, samplesPerPixel, viewportPx);
+    if (!geometry.fill) {
       return;
     }
     ctx.fillStyle = themeColors().wave.selectionFill.css;
-    ctx.fillRect(x0, 0, x1 - x0, heightPx);
+    ctx.fillRect(geometry.fill.x0, 0, geometry.fill.x1 - geometry.fill.x0, heightPx);
+  }
+
+  /** H-79: the selection's boundary lines (`--wave-selection-handle`), drawn over the wave content
+   * alongside the other overlays (loop/markers/playhead) so the edges stay visible against both
+   * the selected and unselected background. */
+  function drawSelectionBorder(ctx: CanvasRenderingContext2D): void {
+    const geometry = selectionGeometry(selection.current, startSample, samplesPerPixel, viewportPx);
+    if (geometry.lines.length === 0) {
+      return;
+    }
+    ctx.strokeStyle = themeColors().wave.selectionBorder.css;
+    ctx.lineWidth = themeColors().strokePx;
+    for (const px of geometry.lines) {
+      ctx.beginPath();
+      ctx.moveTo(px + crispOffset(ctx.lineWidth), 0);
+      ctx.lineTo(px + crispOffset(ctx.lineWidth), heightPx);
+      ctx.stroke();
+    }
   }
 
   function drawColumns(
@@ -902,6 +983,7 @@
     centerY: number,
     verticalZoom = 1,
     pendingColor?: string,
+    highlight?: { startPx: number; endPx: number; color: string },
   ): void {
     const columns = reduceColumns(
       buckets,
@@ -911,13 +993,14 @@
       samplesPerPixel,
       Math.ceil(viewportPx),
     );
-    fillColumns(ctx, columns, themeColors().wave.fill.css, centerY, verticalZoom, pendingColor);
+    fillColumns(ctx, columns, themeColors().wave.fill.css, centerY, verticalZoom, pendingColor, highlight);
   }
 
   /** One `color` min/max column per pixel (`null`: nothing drawn there). `verticalZoom` (H-35,
    * SPEC-006 §2.4) defaults to `1` (unscaled). H-71 (SPEC-006 AC-13): a `PENDING_COLUMN` (see
    * `coords.ts::isPendingColumn`) draws full-height in `pendingColor` instead — omit it and such
-   * a column is skipped like `null`, unchanged from before H-71. */
+   * a column is skipped like `null`, unchanged from before H-71. H-79: `highlight` recolors the
+   * columns inside the current selection instead of skipping them (see {@link colorAtPx}). */
   function fillColumns(
     ctx: CanvasRenderingContext2D,
     columns: ReadonlyArray<Column>,
@@ -925,6 +1008,7 @@
     centerY: number,
     verticalZoom = 1,
     pendingColor?: string,
+    highlight?: { startPx: number; endPx: number; color: string },
   ): void {
     for (let px = 0; px < columns.length; px++) {
       const column = columns[px];
@@ -940,7 +1024,7 @@
       }
       const [mn, mx] = column;
       const [yTop, yBot] = columnYRange(mn, mx, centerY, verticalZoom);
-      ctx.fillStyle = color;
+      ctx.fillStyle = colorAtPx(px + 0.5, color, highlight);
       ctx.fillRect(px, yTop, 1, yBot - yTop);
     }
   }
@@ -951,10 +1035,20 @@
     fetchStartSample: number,
     centerY: number,
     verticalZoom = 1,
+    highlight?: { startPx: number; endPx: number; color: string },
   ): void {
-    ctx.strokeStyle = themeColors().wave.fill.css;
+    const baseColor = themeColors().wave.fill.css;
     ctx.lineWidth = themeColors().strokePx;
-    ctx.beginPath();
+    // H-79: without a `highlight` this draws exactly as before — one path, one `stroke()` call
+    // (performance-critical at raw zoom, ~100k segments, T-704). A highlight only splits the path
+    // at its two color transitions (entering/leaving the selection), so it's still at most 3
+    // `stroke()` calls total rather than one per segment. Each segment takes the color at its
+    // later endpoint — same rule as the WebGL2 path's `buildRawPolyline` (`webglGeometry.ts`), so
+    // the two renderers agree.
+    let currentColor: string | null = null;
+    let prevPx: number | null = null;
+    let prevY: number | null = null;
+    let pathOpen = false;
     for (let i = 0; i < samples.length; i++) {
       const sample = samples[i];
       if (!sample) {
@@ -962,15 +1056,29 @@
       }
       const px = pixelAtSample(fetchStartSample + i, startSample, samplesPerPixel);
       const y = centerY - sample[0] * verticalZoom * centerY;
-      if (i === 0) {
-        ctx.moveTo(px, y);
+      const color = colorAtPx(px, baseColor, highlight);
+      if (prevPx === null || prevY === null) {
+        // first point: nothing to connect yet.
+      } else if (!pathOpen || color !== currentColor) {
+        if (pathOpen) {
+          ctx.stroke();
+        }
+        ctx.strokeStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(prevPx, prevY);
+        ctx.lineTo(px, y);
+        pathOpen = true;
       } else {
         ctx.lineTo(px, y);
       }
+      currentColor = color;
+      prevPx = px;
+      prevY = y;
     }
-    ctx.stroke();
+    if (pathOpen) {
+      ctx.stroke();
+    }
     if (showsDots(samplesPerPixel)) {
-      ctx.fillStyle = themeColors().wave.fill.css;
       for (let i = 0; i < samples.length; i++) {
         const sample = samples[i];
         if (!sample) {
@@ -978,6 +1086,7 @@
         }
         const px = pixelAtSample(fetchStartSample + i, startSample, samplesPerPixel);
         const y = centerY - sample[0] * verticalZoom * centerY;
+        ctx.fillStyle = colorAtPx(px, baseColor, highlight);
         ctx.beginPath();
         ctx.arc(px, y, 1 + themeColors().strokePx / 2, 0, Math.PI * 2);
         ctx.fill();

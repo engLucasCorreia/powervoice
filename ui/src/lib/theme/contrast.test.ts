@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
   CONTRAST_PAIRS,
+  compositeOver,
   contrastRatio,
   minRatio,
+  parseCssColor,
   parseHex,
   parseThemes,
   resolveColor,
+  resolveValue,
+  type ContrastPair,
+  type ThemeTokens,
 } from "./contrast";
 import { RESOLVED_THEMES } from "./theme.svelte";
 
@@ -36,6 +41,22 @@ describe("contrast math (WCAG 2.2 relative luminance)", () => {
     expect(parseHex("rgba(0, 0, 0, 0.5)")).toBeNull();
     expect(parseHex("#12345")).toBeNull();
   });
+
+  it("parseCssColor accepts hex (alpha 1) and rgba(), rejects everything else (H-79)", () => {
+    expect(parseCssColor("#4da3ff")).toEqual({ rgb: [77, 163, 255], alpha: 1 });
+    expect(parseCssColor("rgba(77, 163, 255, 0.22)")).toEqual({ rgb: [77, 163, 255], alpha: 0.22 });
+    expect(parseCssColor("rgb(77, 163, 255)")).toEqual({ rgb: [77, 163, 255], alpha: 1 });
+    expect(parseCssColor("not-a-color")).toBeNull();
+  });
+
+  it("compositeOver alpha-blends a translucent colour onto an opaque bg (H-79)", () => {
+    // 50% white over black -> mid-gray.
+    expect(compositeOver("rgba(255, 255, 255, 0.5)", "#000000")).toBe("#808080");
+    // Fully opaque fg passes through unchanged (just re-cased).
+    expect(compositeOver("#4da3ff", "#000000")).toBe("#4da3ff");
+    // Fully transparent fg is indistinguishable from the bg.
+    expect(compositeOver("rgba(255, 0, 0, 0)", "#123456")).toBe("#123456");
+  });
 });
 
 describe("design-tokens.css themes", () => {
@@ -62,9 +83,31 @@ describe("design-tokens.css themes", () => {
   it("every pair names a role that exists and resolves to an opaque colour", () => {
     for (const [name, theme] of Object.entries(themes)) {
       for (const pair of CONTRAST_PAIRS) {
-        for (const role of [pair.fg, pair.bg]) {
-          const value = resolveColor(theme, role);
-          expect(value, `${name}: ${role}`).not.toBeNull();
+        // H-79: `fg`/`bg` paired with `fgOver`/`bgOver` may resolve to a translucent `rgba()` wash
+        // instead — that's fine, since the ratio check composites it before comparing (below).
+        if (!pair.fgOver) {
+          expect(resolveColor(theme, pair.fg), `${name}: ${pair.fg}`).not.toBeNull();
+        }
+        if (!pair.bgOver) {
+          expect(resolveColor(theme, pair.bg), `${name}: ${pair.bg}`).not.toBeNull();
+        }
+      }
+    }
+  });
+
+  it("H-79: a fg/bg paired with fgOver/bgOver at least resolves to *some* parseable colour", () => {
+    for (const [name, theme] of Object.entries(themes)) {
+      for (const pair of CONTRAST_PAIRS) {
+        for (const [role, over] of [
+          [pair.fg, pair.fgOver],
+          [pair.bg, pair.bgOver],
+        ] as const) {
+          if (over) {
+            const value = resolveValue(theme, role);
+            expect(value, `${name}: ${role}`).not.toBeNull();
+            expect(parseCssColor(value!), `${name}: ${role} = ${value}`).not.toBeNull();
+            expect(resolveColor(theme, over), `${name}: ${over}`).not.toBeNull();
+          }
         }
       }
     }
@@ -79,14 +122,25 @@ describe("design-tokens.css themes", () => {
     expect(minRatio(ring, "dark")).toBe(3);
   });
 
+  /** H-79: resolves `role` to an opaque hex — compositing it over `over`'s opaque colour first
+   * when the pair says to (a translucent wash), otherwise the plain opaque resolution as before. */
+  function resolvedOrComposited(theme: ThemeTokens, role: string, over: string | undefined): string | null {
+    if (!over) {
+      return resolveColor(theme, role);
+    }
+    const value = resolveValue(theme, role);
+    const overColor = resolveColor(theme, over);
+    return value && overColor ? compositeOver(value, overColor) : null;
+  }
+
   for (const themeName of RESOLVED_THEMES) {
     describe(`${themeName} theme meets its contrast bar`, () => {
       for (const pair of CONTRAST_PAIRS) {
         const min = minRatio(pair, themeName);
         it(`${pair.fg} on ${pair.bg} ≥ ${min}:1 (${pair.use})`, () => {
           const theme = themes[themeName] ?? {};
-          const fg = resolveColor(theme, pair.fg);
-          const bg = resolveColor(theme, pair.bg);
+          const fg = resolvedOrComposited(theme, pair.fg, pair.fgOver);
+          const bg = resolvedOrComposited(theme, pair.bg, pair.bgOver);
           if (!fg || !bg) {
             throw new Error(`unresolved ${pair.fg} / ${pair.bg}`);
           }

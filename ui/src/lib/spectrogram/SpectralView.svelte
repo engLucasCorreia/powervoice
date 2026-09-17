@@ -24,6 +24,7 @@
   import { createFrameClient } from "../render/frameScheduler";
   import { themeState } from "../theme/theme.svelte";
   import { LOOP_STRIP_PX, loopFromRange, loopGeometry } from "../render/loopOverlay";
+  import { selectionGeometry } from "../render/selectionOverlay";
   import { formatTime } from "../transport/playhead";
   import { normalizeSelection } from "../waveform/selection";
   import { snapSampleToZeroCrossing } from "../waveform/zeroCrossing";
@@ -341,6 +342,7 @@
       lineWidthPx: themeColors().strokePx * dpr,
       colors: {
         selectionFill: themeColors().wave.selectionFill.rgba,
+        selectionBorder: themeColors().wave.selectionBorder.rgba,
         marker: themeColors().wave.marker.rgba,
         markerRegionFill: themeColors().wave.markerRegion.rgba,
         playhead: themeColors().wave.playhead.rgba,
@@ -487,13 +489,23 @@
   }
 
   function drawOverlays(ctx: CanvasRenderingContext2D): void {
-    const sel = selection.current;
-    if (sel) {
-      const x0 = Math.max(0, pixelAtSample(sel.startSample, startSample, samplesPerPixel));
-      const x1 = Math.min(viewportPx, pixelAtSample(sel.endSample, startSample, samplesPerPixel));
-      if (x1 > x0) {
-        ctx.fillStyle = themeColors().wave.selectionFill.css;
-        ctx.fillRect(x0, 0, x1 - x0, heightPx);
+    // H-79 (SPEC-006 §2.12 Amendment 2): the wash keeps drawing after the spectrogram tiles (its
+    // content is an opaque heatmap, not a thin line — a translucent tint doesn't hide it the way
+    // it hid the waveform), but now also gets the same boundary lines as the waveform pane for a
+    // consistent look.
+    const geometry = selectionGeometry(selection.current, startSample, samplesPerPixel, viewportPx);
+    if (geometry.fill) {
+      ctx.fillStyle = themeColors().wave.selectionFill.css;
+      ctx.fillRect(geometry.fill.x0, 0, geometry.fill.x1 - geometry.fill.x0, heightPx);
+    }
+    if (geometry.lines.length > 0) {
+      ctx.strokeStyle = themeColors().wave.selectionBorder.css;
+      ctx.lineWidth = themeColors().strokePx;
+      for (const px of geometry.lines) {
+        ctx.beginPath();
+        ctx.moveTo(px + crispOffset(ctx.lineWidth), 0);
+        ctx.lineTo(px + crispOffset(ctx.lineWidth), heightPx);
+        ctx.stroke();
       }
     }
     // H-37: the loop brace and boundaries (same geometry as the waveform pane's).

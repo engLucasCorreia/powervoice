@@ -43,7 +43,8 @@ describe("themeColors (T-708)", () => {
 
   it("parses translucent fills into RGBA with their alpha", () => {
     const c = readThemeColors("dark");
-    expect(c.wave.selectionFill.rgba[3]).toBeCloseTo(0.22, 5);
+    // H-79 (SPEC-006 §2.12 Amendment 2): the selection wash's alpha.
+    expect(c.wave.selectionFill.rgba[3]).toBeCloseTo(0.28, 5);
     expect(c.wave.bg.rgba[3]).toBe(1);
   });
 

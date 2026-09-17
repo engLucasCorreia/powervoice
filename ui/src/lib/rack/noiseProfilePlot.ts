@@ -76,3 +76,13 @@ export function paramValueByKey(rackSlot: RackSlotDto, key: string, fallback = 0
   }
   return rackSlot.values.find((v) => v.id === info.id)?.value ?? info.default;
 }
+
+/**
+ * The live analyzer frame's band centre frequencies (H-87): `f0Hz * 2^(k / bandsPerOctave)` for
+ * `k` in `[0, count)` — the same 1/24-octave ladder `AnalyzerPanel.svelte`'s own `bandFrequencies`
+ * builds. Pulled out here so the graph's draw pass and its hover readout share one computation
+ * instead of drifting apart.
+ */
+export function liveBandFreqsHz(count: number, f0Hz: number, bandsPerOctave: number): number[] {
+  return Array.from({ length: count }, (_, k) => f0Hz * 2 ** (k / bandsPerOctave));
+}

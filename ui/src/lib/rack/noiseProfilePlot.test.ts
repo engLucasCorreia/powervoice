@@ -3,6 +3,7 @@ import { paramInfoDto, rackSlotDto } from "../test/fixtures";
 import {
   NR_GRAPH_DEFAULT_MAX_DB,
   NR_GRAPH_DEFAULT_MIN_DB,
+  liveBandFreqsHz,
   noiseProfileFreqRange,
   paramValueByKey,
   profileDbRange,
@@ -88,5 +89,19 @@ describe("paramValueByKey", () => {
   it("falls back to the given default for an unknown key", () => {
     const slot = rackSlotDto({ params: [], values: [] });
     expect(paramValueByKey(slot, "reduction_db", -1)).toBe(-1);
+  });
+});
+
+describe("liveBandFreqsHz (H-87: the live analyzer frame's 1/24-octave band centres)", () => {
+  it("builds the band ladder from f0 and bands-per-octave", () => {
+    const freqs = liveBandFreqsHz(4, 20, 24);
+    expect(freqs[0]).toBeCloseTo(20, 6);
+    expect(freqs[1]).toBeCloseTo(20 * 2 ** (1 / 24), 6);
+    expect(freqs[2]).toBeCloseTo(20 * 2 ** (2 / 24), 6);
+    expect(freqs[3]).toBeCloseTo(20 * 2 ** (3 / 24), 6);
+  });
+
+  it("returns an empty array for zero bands", () => {
+    expect(liveBandFreqsHz(0, 20, 24)).toEqual([]);
   });
 });

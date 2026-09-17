@@ -934,6 +934,7 @@
   "module.noise_reduction.graph.legend.print": "Noise print",
   "module.noise_reduction.graph.legend.reduced_to": "Reduced to",
   "module.noise_reduction.graph.legend.live": "Output (rack)",
+  "module.noise_reduction.graph.hover": "{freq} · Print {print} dB · Live {live} dB",
   "module.parametric_eq.name": "Parametric EQ",
   "module.parametric_eq.description": "High-pass, low-pass, two shelves and five peaks.",
   "module.parametric_eq.param.master_gain_db": "Master gain",

@@ -7,15 +7,18 @@
   import { type AnalyzerFrame, decodeVxsa } from "../ipc/analyzer";
   import { toArrayBuffer } from "../ipc/telemetry";
   import { CoalescedCurveRequest } from "../eq/curveRequest";
-  import { columnize } from "../analyzer/plotGeometry";
+  import { columnize, levelAt } from "../analyzer/plotGeometry";
   import { dbAxisTicks, yForAnalyzerDb } from "../analyzer/analyzerMath";
-  import { frequencyTicks, uForFreq } from "../spectrum/freqAxis";
+  import { initOutputDeviceStatus, outputDeviceStatus } from "../analyzer/outputDeviceStatus.svelte";
+  import { formatNumber } from "../ui/units";
+  import { formatHoverFreqHz, freqForU, frequencyTicks, uForFreq } from "../spectrum/freqAxis";
   import { createFrameClient } from "../render/frameScheduler";
   import { themeColors } from "../theme/themeColors";
   import { themeState } from "../theme/theme.svelte";
   import {
     NR_GRAPH_DEFAULT_MAX_DB,
     NR_GRAPH_DEFAULT_MIN_DB,
+    liveBandFreqsHz,
     noiseProfileFreqRange,
     paramValueByKey,
     profileDbRange,
@@ -33,8 +36,11 @@
    * math in this file — the print's own points always come from Rust's `NoiseProfile::describe()`
    * (`noise_profile_curve`).
    *
-   * Out of this slice (not in SPEC-014 §2.8's testable AC-21 checklist): the hover readout and
-   * "greyed while the analyzer has no output device" — see the H-85 report.
+   * H-87 adds the two §2.8 details H-85 left out: a hover readout (frequency, print level, live
+   * level) in the same floating-tag style `SpectrumPlot.svelte` uses for the Analyzer panel and
+   * Spectrum Inspector, and an honest "no output device" state for the live curve — reusing the
+   * analyzer panel's own device-status store and its exact wording (`analyzer.no_device`, H-59)
+   * rather than inventing new language for the same fact.
    */
   let {
     slotIndex,
@@ -52,6 +58,8 @@
   let curve = $state<NoiseProfileCurveDto | null>(null);
   let liveFrame = $state<AnalyzerFrame | undefined>(undefined);
   let subscriberId: number | undefined;
+  /** The pointer (or keyboard-moved) crosshair position, canvas pixels; `null` = no hover. */
+  let hover = $state<{ x: number; y: number } | null>(null);
 
   const hasPrint = $derived(status === "loaded" && (curve?.freqs_hz?.length ?? 0) > 0);
   // The live analyzer frame carries the rack's actual sample rate; without one yet, the graph
@@ -69,6 +77,36 @@
         )
       : [],
   );
+
+  // H-87 (SPEC-014 §2.8: "greyed while the analyzer has no output device"): the same shared,
+  // ref-counted device-status store the analyzer panel uses (`outputDeviceStatus.svelte.ts`), not
+  // a second subscription — this is just another consumer.
+  const device = outputDeviceStatus();
+  const noOutputDevice = $derived(device.current === "not_selected" || device.current === "lost");
+
+  $effect(() => {
+    let cleanup: (() => void) | undefined;
+    let cancelled = false;
+    void initOutputDeviceStatus().then((c) => {
+      if (cancelled) {
+        c();
+      } else {
+        cleanup = c;
+      }
+    });
+    return () => {
+      cancelled = true;
+      cleanup?.();
+    };
+  });
+
+  // The live frame's band centre frequencies, shared by the draw pass and the hover readout.
+  const liveFreqsHzArr = $derived(
+    liveFrame ? liveBandFreqsHz(liveFrame.levelsDb.length, liveFrame.f0Hz, liveFrame.bandsPerOctave) : [],
+  );
+  // No output device: the live curve is never drawn or read from, even if a frame lingers from
+  // just before the device went away (stale data would look like it's still live).
+  const showLive = $derived(!noOutputDevice && (liveFrame?.levelsDb?.length ?? 0) > 0);
 
   const fetcher = new CoalescedCurveRequest<NoiseProfileCurveDto, number>(
     (slot) => noiseProfileCurve(slot),
@@ -143,7 +181,18 @@
 
   const frames = createFrameClient(() => draw(), { name: "nr-profile-graph" });
   $effect(() => {
-    void [canvasEl, width, curve, liveFrame, reducedTo, dbRange, freqRange, themeState().revision];
+    void [
+      canvasEl,
+      width,
+      curve,
+      liveFrame,
+      reducedTo,
+      dbRange,
+      freqRange,
+      noOutputDevice,
+      hover,
+      themeState().revision,
+    ];
     frames.invalidate();
   });
   $effect(() => () => frames.dispose());
@@ -286,11 +335,12 @@
       }
     }
 
-    // Live spectrum: the rack-output analyzer stream, labelled "Output (rack)" (§2.8).
+    // Live spectrum: the rack-output analyzer stream, labelled "Output (rack)" (§2.8). H-87:
+    // never drawn without an output device — a lingering last frame would look like it's still
+    // live when it's actually frozen.
     const live = liveFrame;
-    if (live && live.levelsDb.length > 0) {
-      const freqs = live.levelsDb.map((_, k) => live.f0Hz * 2 ** (k / live.bandsPerOctave));
-      const pts = columnize(freqs, live.levelsDb, xForFreq, fLo, fHi);
+    if (showLive && live) {
+      const pts = columnize(liveFreqsHzArr, live.levelsDb, xForFreq, fLo, fHi);
       if (pts.length > 0) {
         ctx.strokeStyle = colors.analyzer.compareA.css;
         ctx.lineWidth = colors.strokePx;
@@ -306,6 +356,19 @@
         ctx.stroke();
       }
     }
+
+    // H-87 hover crosshair: a single vertical line at the pointer/keyboard position, matching
+    // the Analyzer panel / Spectrum Inspector's `SpectrumPlot.svelte` crosshair (frequency only —
+    // the readout's levels come from the curves, not the pointer's y).
+    if (hover && hover.x >= DB_LABEL_GUTTER_PX) {
+      ctx.strokeStyle = colors.analyzer.crosshair.css;
+      ctx.lineWidth = 1;
+      const x = Math.round(hover.x) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, GRAPH_HEIGHT_PX);
+      ctx.stroke();
+    }
   }
 
   /** Frequency ticks as a fraction `u` of the plot width (log axis), reusing the shared ladder
@@ -320,6 +383,94 @@
       label: tick.label,
     }));
   }
+
+  // --- Hover readout (H-87, SPEC-014 §2.8: "frequency, print level, live level") ----------------
+
+  function plotWidthPx(): number {
+    return Math.max(1, width - DB_LABEL_GUTTER_PX);
+  }
+
+  /** The frequency at canvas x-coordinate `x`, or `null` outside the plot area (the dB gutter). */
+  function freqAtX(x: number): number | null {
+    const plotW = plotWidthPx();
+    const frac = (x - DB_LABEL_GUTTER_PX) / plotW;
+    if (frac < 0 || frac > 1) {
+      return null;
+    }
+    const [fLo, fHi] = freqRange;
+    return freqForU(frac, fLo, fHi, "log");
+  }
+
+  // Same floating tag the Analyzer panel / Spectrum Inspector show (`SpectrumPlot.svelte`'s
+  // `.hover`), but with both the print and the live level under the cursor instead of one.
+  const hoverReadout = $derived.by(() => {
+    if (!hover || width <= 0) {
+      return null;
+    }
+    const freqHz = freqAtX(hover.x);
+    if (freqHz === null) {
+      return null;
+    }
+    const c = curve;
+    const printDb = levelAt({ freqsHz: c?.freqs_hz ?? [], levelsDb: c?.levels_dbfs ?? [] }, freqHz);
+    const liveDb =
+      showLive && liveFrame
+        ? levelAt({ freqsHz: liveFreqsHzArr, levelsDb: liveFrame.levelsDb }, freqHz)
+        : Number.NEGATIVE_INFINITY;
+    return {
+      x: hover.x,
+      text: t("module.noise_reduction.graph.hover", {
+        freq: formatHoverFreqHz(freqHz),
+        print: formatNumber(printDb, 1),
+        live: formatNumber(liveDb, 1),
+      }),
+    };
+  });
+
+  function handleMouseMove(e: MouseEvent): void {
+    const rect = canvasEl?.getBoundingClientRect();
+    if (!rect) {
+      return;
+    }
+    hover = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  function handleMouseLeave(): void {
+    hover = null;
+  }
+
+  // Keyboard reachability (the ticket: "keyboard-reachable if the neighbouring graphs are" — the
+  // Analyzer panel / Spectrum Inspector plots are focusable): focusing the graph shows the
+  // readout at its centre frequency; arrows step it; Escape or blur clears it.
+  function handleFocus(): void {
+    if (!hover) {
+      hover = { x: DB_LABEL_GUTTER_PX + plotWidthPx() / 2, y: GRAPH_HEIGHT_PX / 2 };
+    }
+  }
+
+  function handleBlur(): void {
+    hover = null;
+  }
+
+  function handleKeydown(e: KeyboardEvent): void {
+    if (e.ctrlKey || e.metaKey || e.altKey) {
+      return;
+    }
+    if (e.key === "Escape") {
+      hover = null;
+      e.preventDefault();
+      return;
+    }
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") {
+      return;
+    }
+    const plotW = plotWidthPx();
+    const currentX = hover?.x ?? DB_LABEL_GUTTER_PX + plotW / 2;
+    const currentU = Math.min(1, Math.max(0, (currentX - DB_LABEL_GUTTER_PX) / plotW));
+    const nextU = Math.min(1, Math.max(0, currentU + (e.key === "ArrowLeft" ? -0.05 : 0.05)));
+    hover = { x: DB_LABEL_GUTTER_PX + nextU * plotW, y: GRAPH_HEIGHT_PX / 2 };
+    e.preventDefault();
+  }
 </script>
 
 <div class="nr-graph" data-testid="nr-profile-graph">
@@ -330,17 +481,50 @@
     <span class="legend-item" data-testid="nr-graph-legend-reduced">
       <i class="swatch reduced"></i>{t("module.noise_reduction.graph.legend.reduced_to")}
     </span>
-    <span class="legend-item" data-testid="nr-graph-legend-live">
-      <i class="swatch live"></i>{t("module.noise_reduction.graph.legend.live")}
+    <span
+      class="legend-item"
+      class:legend-item-disabled={noOutputDevice}
+      data-testid="nr-graph-legend-live"
+    >
+      <i class="swatch live" class:swatch-disabled={noOutputDevice}></i>{t(
+        "module.noise_reduction.graph.legend.live",
+      )}
+      {#if noOutputDevice}
+        <!-- H-59's own wording for this fact (`analyzer.no_device`), not a new phrase for it. -->
+        <span class="legend-note" data-testid="nr-graph-live-no-device">
+          · {t("analyzer.no_device")}
+        </span>
+      {/if}
     </span>
   </div>
-  <canvas
-    bind:this={canvasEl}
-    class="graph"
-    style={`height: ${GRAPH_HEIGHT_PX}px`}
+  <!-- ARIA's "application" role is an interactive widget role (the plot takes arrow keys and
+       reports a hover readout), but Svelte's a11y list doesn't count it as one — same exception
+       `SpectrumPlot.svelte`'s canvas-wrap takes. -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+  <div
+    class="canvas-wrap"
+    role="application"
+    tabindex="0"
     aria-label={t("module.noise_reduction.graph.label")}
-    data-testid="nr-profile-canvas"
-  ></canvas>
+    data-testid="nr-profile-canvas-wrap"
+    onmousemove={handleMouseMove}
+    onmouseleave={handleMouseLeave}
+    onfocus={handleFocus}
+    onblur={handleBlur}
+    onkeydown={handleKeydown}
+  >
+    <canvas
+      bind:this={canvasEl}
+      class="graph"
+      style={`height: ${GRAPH_HEIGHT_PX}px`}
+      data-testid="nr-profile-canvas"
+    ></canvas>
+    {#if hoverReadout}
+      <div class="hover" data-testid="nr-profile-hover" style:left="{hoverReadout.x}px">
+        {hoverReadout.text}
+      </div>
+    {/if}
+  </div>
 </div>
 
 <style>
@@ -383,8 +567,37 @@
     );
   }
 
+  /* H-87: the print/reduced swatches are thin lines; the live swatch is a dot, so "which curve is
+   * which" doesn't rely on the noise/compare-a colours alone (H-85 found them nearly identical at
+   * this size). */
   .swatch.live {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
     background: var(--analyzer-compare-a);
+  }
+
+  .swatch-disabled {
+    background: var(--pv-text-tertiary) !important;
+  }
+
+  .legend-item-disabled {
+    opacity: 0.5;
+  }
+
+  .legend-note {
+    color: var(--pv-text-tertiary);
+    white-space: nowrap;
+  }
+
+  .canvas-wrap {
+    position: relative;
+  }
+
+  .canvas-wrap:focus-visible {
+    outline: var(--pv-focus-width) solid var(--pv-focus-ring);
+    outline-offset: -2px;
+    border-radius: var(--pv-radius-md);
   }
 
   .graph {
@@ -393,5 +606,23 @@
     border: var(--pv-border-width) solid var(--pv-border);
     border-radius: var(--pv-radius-md);
     background: var(--pv-bg-inset);
+  }
+
+  /* Matches `SpectrumPlot.svelte`'s `.hover` (Analyzer panel / Spectrum Inspector) — same
+   * floating tag, so the readout style is one system across every plot in the app. */
+  .hover {
+    position: absolute;
+    top: var(--pv-space-1);
+    transform: translateX(-50%);
+    padding: var(--pv-space-half) var(--pv-space-2);
+    border: var(--pv-border-width) solid var(--pv-border);
+    border-radius: var(--pv-radius-sm);
+    background: var(--pv-bg-overlay);
+    box-shadow: var(--pv-shadow-1);
+    color: var(--pv-text-primary);
+    font-size: var(--pv-text-xs);
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+    white-space: nowrap;
   }
 </style>

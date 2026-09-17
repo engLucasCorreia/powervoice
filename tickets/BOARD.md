@@ -105,7 +105,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-79 | Owner-reported: the selection wash is the same blue as the waveform and is painted over it — give the selection its own colour and keep the waveform readable inside it, in all four themes | S | done |
 | H-80 | Owner-requested: loop the whole document when nothing is selected (selection looping already works; SPEC-003 §2.2's "inert with no selection" rule is revised) | S | done |
 | H-81 | Owner-reported bug: turning Loop off keeps looping the old region and the pink loop strip never disappears | S | done |
-| H-82 | Editing during an import: SPEC-005 §2.3 item 4 says it is disabled, but nothing gates it (H-76's open question — a UX gap, not a data bug) | S | todo |
+| H-82 | Editing during an import: SPEC-005 §2.3 item 4 says it is disabled, but nothing gates it (H-76's open question — a UX gap, not a data bug) | S | done |
 | H-83 | Svelte ownership warning: EditorView's effect writes waveformView's `startSample`/`samplesPerPixel` from outside the owning module (found by H-68's recording harness) | S | todo |
 | H-62 | Sandbox event-ring overflow is silent (H-55 open question): `HostEnd::push_event` / the proxy drop events when the ring is full (counted in `events_dropped`, never surfaced) — another timing-dependent divergence under heavy automation; surface it as a notice/slot status and test it | S | done |
 | H-56 | Insert silence + cross-document clipboard (T-302 remainder, SPEC-008) | S | done |

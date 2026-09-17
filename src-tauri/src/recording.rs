@@ -170,18 +170,26 @@ fn duration_text(samples: u64, rate_hz: u32) -> String {
 
 /// H-67 (SPEC-002 AC-7): the take-finished dropout notice, with a "Go to first" action. Only
 /// emitted once the take/window actually committed (`on_take_finished`/`on_op_finished`'s
-/// `Ok(Some(..))` branches), so "markers were added" is always true by the time the UI can act on
-/// it. The action carries no marker id: the frontend resolves "first" against its own
-/// already-committed marker list (`ui/src/lib/markers/markers.svelte.ts::goToFirstDropout`),
-/// which stays correct even where SPEC-022 §2.12 keeps a pre-/post-roll-only dropout out of the
-/// document (rare; the button is then a harmless no-op — see the H-67 ticket report).
-fn dropout_notice(count: usize) -> Notice {
-    Notice::toast(NoticeLevel::Warning, "notice.record.dropouts")
-        .with_param("count", count.to_string())
-        .with_action(
+/// `Ok(Some(..))` branches). The action carries no marker id: the frontend resolves "first"
+/// against its own already-committed marker list
+/// (`ui/src/lib/markers/markers.svelte.ts::goToFirstDropout`).
+///
+/// H-74: `marker_placed` is `false` when SPEC-022 §2.12 kept every dropout out of the document
+/// (a punch whose dropouts all fell in pre-/post-roll) — `commit_take_op` reports that, and the
+/// action is omitted rather than left as a no-op button, while the notice itself still tells the
+/// user dropouts happened. `on_take_finished`'s plain `commit_take` never filters dropouts, so it
+/// always passes `true`.
+fn dropout_notice(count: usize, marker_placed: bool) -> Notice {
+    let notice = Notice::toast(NoticeLevel::Warning, "notice.record.dropouts")
+        .with_param("count", count.to_string());
+    if marker_placed {
+        notice.with_action(
             NoticeActionId::GoToFirstDropout,
             "notice.action.go_to_first",
         )
+    } else {
+        notice
+    }
 }
 
 /// T-304 (SPEC-022 §2.13): the device setup a recording offset is keyed by.
@@ -318,8 +326,9 @@ fn on_take_finished(inner: &Inner, result: RecordingResult) {
             if !result.dropouts.is_empty() {
                 // H-10 item 4, SPEC-002 §2.4/AC-7: `commit_take` above turned each into a
                 // "Dropout N ms" marker, committed with the take — so by now they exist and
-                // "Go to first" (H-67) is meaningful.
-                notice(dropout_notice(result.dropouts.len()));
+                // "Go to first" (H-67) is meaningful. Unlike `commit_take_op`, `commit_take`
+                // never filters dropouts, so a marker always exists here.
+                notice(dropout_notice(result.dropouts.len(), true));
             }
         }
         Ok(None) => tracing::info!("empty take discarded"),
@@ -348,13 +357,14 @@ fn on_op_finished(inner: &Inner, result: &RecordingResult, op: OpResult) {
         .documents
         .commit_take_op(&result.finished, &op, &result.dropouts)
     {
-        Ok(Some((info, edit))) => {
+        Ok(Some((info, edit, marker_placed))) => {
             (inner.emit)(RecordingEvent::DocumentChanged(info));
             if !result.dropouts.is_empty() {
-                // As in `on_take_finished`: `commit_take_op` above placed a marker for every
-                // dropout inside the committed window (SPEC-022 §2.12 — a pre-/post-roll-only
-                // dropout gets none, in which case "Go to first" is a harmless no-op).
-                notice(dropout_notice(result.dropouts.len()));
+                // As in `on_take_finished`, but `commit_take_op` places a marker only for
+                // dropouts inside the committed window (SPEC-022 §2.12 — a pre-/post-roll-only
+                // dropout gets none). H-74: `marker_placed` says which happened, so the notice
+                // omits "Go to first" rather than offering a button that goes nowhere.
+                notice(dropout_notice(result.dropouts.len(), marker_placed));
             }
             if result.reason == StopReason::InputLost {
                 // §2.10: a partial result at the last good sample.
@@ -649,16 +659,32 @@ mod tests {
         assert_eq!(duration_text(44_100 * 3_661, 44_100), "1:01:01");
     }
 
-    /// H-67 (SPEC-002 AC-7): the dropouts notice carries "Go to first" and the right count.
+    /// H-67 (SPEC-002 AC-7): the dropouts notice carries "Go to first" and the right count when
+    /// a marker was placed.
     #[test]
-    fn dropout_notice_carries_the_go_to_first_action() {
-        let n = dropout_notice(3);
+    fn dropout_notice_carries_the_go_to_first_action_when_a_marker_was_placed() {
+        let n = dropout_notice(3, true);
         assert_eq!(n.key, "notice.record.dropouts");
         assert_eq!(n.params.get("count").map(String::as_str), Some("3"));
         assert!(!n.persistent, "dropouts are a toast, not a banner");
         let action = n.action.expect("dropouts get a Go to first action");
         assert_eq!(action.id, NoticeActionId::GoToFirstDropout);
         assert_eq!(action.label_key, "notice.action.go_to_first");
+    }
+
+    /// H-74 (SPEC-022 §2.12): when every dropout was filtered out of the committed window, no
+    /// marker exists, so the notice still tells the user dropouts happened but drops the "Go to
+    /// first" action rather than offering a button that goes nowhere.
+    #[test]
+    fn dropout_notice_omits_the_action_when_no_marker_was_placed() {
+        let n = dropout_notice(2, false);
+        assert_eq!(n.key, "notice.record.dropouts");
+        assert_eq!(n.params.get("count").map(String::as_str), Some("2"));
+        assert!(!n.persistent, "dropouts are still a toast, not a banner");
+        assert!(
+            n.action.is_none(),
+            "no marker exists, so there's nothing for 'Go to first' to reach"
+        );
     }
 
     /// H-10 item 7: the resampling notice shows "44.1 kHz"-style rates, not raw Hz.

@@ -17,6 +17,7 @@ import type {
   DocumentDto,
   DocumentProbeDto,
   HistoryStateDto,
+  Notice,
   ParamInfoDto,
   PluginEntryDto,
   PluginFoldersDto,
@@ -26,6 +27,21 @@ import type {
   Settings,
   TransportStateDto,
 } from "../ipc/bindings";
+
+/** A one-shot info toast with no action and no params (H-74) — override per test. */
+export function noticeFixture(overrides: Partial<Notice> = {}): Notice {
+  return {
+    level: "info",
+    key: "notice.example",
+    params: {},
+    persistent: false,
+    id: null,
+    cleared: false,
+    auto_dismiss_ms: null,
+    action: null,
+    ...overrides,
+  };
+}
 
 /** `Settings.device` default: PipeWire host, no devices selected (SPEC-001 §3 factory default). */
 function devicePrefsDto(overrides: Partial<DevicePrefsDto> = {}): DevicePrefsDto {

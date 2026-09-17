@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { IpcError } from "../ipc/bindings";
 import { initMarkers, resetMarkersForTest } from "../markers/markers.svelte";
 import { clearNotices, pushNotice } from "../state/notices.svelte";
+import { noticeFixture } from "../test/fixtures";
 import { noticeFromIpcError } from "./fromIpcError";
 import NoticeHost from "./NoticeHost.svelte";
 
@@ -54,26 +55,21 @@ describe("IpcError -> toast", () => {
   });
 
   it("renders a persistent banner distinctly from a toast, and replaces by id", () => {
-    pushNotice({
-      level: "error",
-      key: "error.device_lost",
-      params: {},
-      persistent: true,
-      id: "device:output",
-      cleared: false,
-    auto_dismiss_ms: null,
-      action: null,
-    });
-    pushNotice({
-      level: "info",
-      key: "error.cancelled",
-      params: {},
-      persistent: true,
-      id: "device:output",
-      cleared: false,
-    auto_dismiss_ms: null,
-      action: null,
-    });
+    pushNotice(
+      noticeFixture({
+        level: "error",
+        key: "error.device_lost",
+        persistent: true,
+        id: "device:output",
+      }),
+    );
+    pushNotice(
+      noticeFixture({
+        key: "error.cancelled",
+        persistent: true,
+        id: "device:output",
+      }),
+    );
 
     const target = document.createElement("div");
     document.body.appendChild(target);
@@ -91,16 +87,7 @@ describe("IpcError -> toast", () => {
 
 describe("Notice.action (H-67, SPEC-002 AC-7)", () => {
   it("a notice with no action renders no button — looks exactly as it does today", () => {
-    pushNotice({
-      level: "info",
-      key: "notice.example",
-      params: {},
-      persistent: false,
-      id: null,
-      cleared: false,
-      auto_dismiss_ms: null,
-      action: null,
-    });
+    pushNotice(noticeFixture());
 
     const target = document.createElement("div");
     document.body.appendChild(target);
@@ -129,16 +116,14 @@ describe("Notice.action (H-67, SPEC-002 AC-7)", () => {
     });
     const stopMarkers = await initMarkers();
 
-    pushNotice({
-      level: "warning",
-      key: "notice.record.dropouts",
-      params: { count: "1" },
-      persistent: false,
-      id: null,
-      cleared: false,
-      auto_dismiss_ms: null,
-      action: { label_key: "notice.action.go_to_first", id: "go_to_first_dropout" },
-    });
+    pushNotice(
+      noticeFixture({
+        level: "warning",
+        key: "notice.record.dropouts",
+        params: { count: "1" },
+        action: { label_key: "notice.action.go_to_first", id: "go_to_first_dropout" },
+      }),
+    );
 
     const target = document.createElement("div");
     document.body.appendChild(target);
@@ -171,16 +156,13 @@ describe("Notice.action (H-67, SPEC-002 AC-7)", () => {
       return null;
     });
 
-    pushNotice({
-      level: "info",
-      key: "notice.markers_deleted",
-      params: { count: "37" },
-      persistent: false,
-      id: null,
-      cleared: false,
-      auto_dismiss_ms: null,
-      action: { label_key: "notice.action.undo", id: "undo_marker_delete" },
-    });
+    pushNotice(
+      noticeFixture({
+        key: "notice.markers_deleted",
+        params: { count: "37" },
+        action: { label_key: "notice.action.undo", id: "undo_marker_delete" },
+      }),
+    );
 
     const target = document.createElement("div");
     document.body.appendChild(target);
@@ -200,16 +182,16 @@ describe("Notice.action (H-67, SPEC-002 AC-7)", () => {
   });
 
   it("a persistent banner with an action renders the same button", () => {
-    pushNotice({
-      level: "warning",
-      key: "notice.record.dropouts",
-      params: { count: "1" },
-      persistent: true,
-      id: "dropouts",
-      cleared: false,
-      auto_dismiss_ms: null,
-      action: { label_key: "notice.action.go_to_first", id: "go_to_first_dropout" },
-    });
+    pushNotice(
+      noticeFixture({
+        level: "warning",
+        key: "notice.record.dropouts",
+        params: { count: "1" },
+        persistent: true,
+        id: "dropouts",
+        action: { label_key: "notice.action.go_to_first", id: "go_to_first_dropout" },
+      }),
+    );
 
     const target = document.createElement("div");
     document.body.appendChild(target);

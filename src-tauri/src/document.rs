@@ -2973,12 +2973,17 @@ impl DocumentService {
     /// of the new audio after Insert/Overwrite). A cancelled operation closes its take with
     /// `take_cancel` and returns `Ok(None)` (document unchanged). On a commit failure the take is
     /// closed without an edit (its WAV stays in the session) so the document stays usable.
+    ///
+    /// H-74: the returned `bool` says whether a dropout marker was actually placed (SPEC-022
+    /// §2.12 filters dropouts to those inside the committed window — a punch whose only dropouts
+    /// fell in pre-/post-roll places none). The caller (`recording.rs`'s dropout notice) uses it
+    /// to omit the "Go to first" action when it would go nowhere.
     pub fn commit_take_op(
         &self,
         finished: &FinishedTake,
         op: &vox_engine::record::OpResult,
         dropouts: &[DropoutMark],
-    ) -> Result<Option<(DocumentInfo, EditResult)>, IpcError> {
+    ) -> Result<Option<(DocumentInfo, EditResult, bool)>, IpcError> {
         use vox_engine::record_op::RecordOpKind;
         let mut guard = self.0.open.lock().unwrap();
         let doc = guard.as_mut().ok_or_else(no_document)?;
@@ -3015,6 +3020,7 @@ impl DocumentService {
                 .with_kind(MarkerKind::Dropout)
             })
             .collect();
+        let marker_placed = !markers.is_empty();
         let mut outcome = doc.session.commit_take_window(finished, (ws, we), &markers);
         for _ in 1..COMMIT_ATTEMPTS {
             if outcome.is_ok() {
@@ -3052,7 +3058,11 @@ impl DocumentService {
             selection,
             playhead_samples: playhead,
         };
-        Ok(Some((info_of(&self.0.engine, guard.as_ref()), result)))
+        Ok(Some((
+            info_of(&self.0.engine, guard.as_ref()),
+            result,
+            marker_placed,
+        )))
     }
 
     /// The Edit menu's Undo/Redo state (`history_state` event).
@@ -7262,6 +7272,125 @@ mod tests {
             audio_rev,
             "the audio is untouched"
         );
+    }
+
+    /// H-74 (SPEC-022 §2.12): when every dropout the capture-writer reported falls in pre-/post-
+    /// roll (outside the committed window), `commit_take_op` places no dropout marker and reports
+    /// that with its returned `bool` — so the caller (`recording.rs`) knows the notice's "Go to
+    /// first" action would go nowhere.
+    #[test]
+    fn commit_take_op_reports_no_marker_placed_when_every_dropout_is_outside_the_window() {
+        use vox_engine::record::{DropoutMark, OpResult};
+        use vox_engine::record_op::{RecordOpKind, RecordPlan};
+        let (service, _engine, dir) = service("dropout-op-filtered");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 1.0, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let plan = RecordPlan {
+            kind: RecordOpKind::Punch,
+            at_samples: 12_000,
+            end_samples: Some(24_000),
+            preroll_samples: 6_000,
+            postroll_samples: 4_800,
+            aligned: true,
+            offset_ns: 0,
+            hear_original: false,
+            xfade_samples: 480,
+            doc_len_samples: 48_000,
+            doc_rate_hz: 48_000,
+        };
+        let mut capture = service.begin_record_op(&plan).unwrap();
+        capture.append(&[0.25f32; 22_800]).unwrap();
+        let finished = capture.finish();
+        let op = OpResult {
+            plan,
+            window: Some((6_000, 18_000)),
+            cancelled: None,
+        };
+        // Both dropouts sit outside `[6_000, 18_000)`: one in pre-roll, one in post-roll.
+        let dropouts = [
+            DropoutMark {
+                pos_samples: 2_000,
+                len_samples: 100,
+            },
+            DropoutMark {
+                pos_samples: 20_000,
+                len_samples: 100,
+            },
+        ];
+        let (_, _, marker_placed) = service
+            .commit_take_op(&finished, &op, &dropouts)
+            .unwrap()
+            .expect("the punch committed");
+        assert!(
+            !marker_placed,
+            "every dropout was outside the window, so no marker should be placed"
+        );
+        assert!(
+            service
+                .markers_get()
+                .iter()
+                .all(|m| m.kind != MarkerKindInfo::Dropout),
+            "no dropout marker should exist"
+        );
+    }
+
+    /// H-74 (SPEC-022 §2.12): a dropout inside the committed window still becomes a marker, and
+    /// `commit_take_op` reports that it placed one.
+    #[test]
+    fn commit_take_op_reports_a_marker_placed_when_a_dropout_is_inside_the_window() {
+        use vox_engine::record::{DropoutMark, OpResult};
+        use vox_engine::record_op::{RecordOpKind, RecordPlan};
+        let (service, _engine, dir) = service("dropout-op-inside");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 1.0, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        let plan = RecordPlan {
+            kind: RecordOpKind::Punch,
+            at_samples: 12_000,
+            end_samples: Some(24_000),
+            preroll_samples: 6_000,
+            postroll_samples: 4_800,
+            aligned: true,
+            offset_ns: 0,
+            hear_original: false,
+            xfade_samples: 480,
+            doc_len_samples: 48_000,
+            doc_rate_hz: 48_000,
+        };
+        let mut capture = service.begin_record_op(&plan).unwrap();
+        capture.append(&[0.25f32; 22_800]).unwrap();
+        let finished = capture.finish();
+        let op = OpResult {
+            plan,
+            window: Some((6_000, 18_000)),
+            cancelled: None,
+        };
+        // One dropout outside the window (pre-roll), one inside at take-relative 10_000, which
+        // is document position `at_samples + (10_000 - ws)` = `12_000 + 4_000` = `16_000`.
+        let dropouts = [
+            DropoutMark {
+                pos_samples: 2_000,
+                len_samples: 100,
+            },
+            DropoutMark {
+                pos_samples: 10_000,
+                len_samples: 480,
+            },
+        ];
+        let (_, _, marker_placed) = service
+            .commit_take_op(&finished, &op, &dropouts)
+            .unwrap()
+            .expect("the punch committed");
+        assert!(
+            marker_placed,
+            "a dropout inside the window should place a marker"
+        );
+        let dropout_markers: Vec<_> = service
+            .markers_get()
+            .into_iter()
+            .filter(|m| m.kind == MarkerKindInfo::Dropout)
+            .collect();
+        assert_eq!(dropout_markers.len(), 1);
+        assert_eq!(dropout_markers[0].pos_samples, 16_000);
     }
 
     /// SPEC-005 §2.9 / SPEC-009 §2.13 case 5: end-to-end through `DocumentService` — Save writes

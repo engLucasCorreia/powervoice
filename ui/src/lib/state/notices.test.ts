@@ -1,7 +1,7 @@
 import { emit } from "@tauri-apps/api/event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Notice } from "../ipc/bindings";
+import { noticeFixture } from "../test/fixtures";
 import { clearNotices, initNotices, noticesState, pushNotice } from "./notices.svelte";
 
 afterEach(() => {
@@ -14,16 +14,7 @@ describe("initNotices (S2-02: the shared `notice` event -> the toast/banner stor
     mockIPC(() => null, { shouldMockEvents: true });
     const stop = await initNotices();
 
-    const notice: Notice = {
-      level: "info",
-      key: "notice.normalize_silent",
-      params: {},
-      persistent: false,
-      id: null,
-      cleared: false,
-      auto_dismiss_ms: null,
-      action: null,
-    };
+    const notice = noticeFixture({ key: "notice.normalize_silent" });
     await emit("notice", notice);
 
     expect(noticesState().toasts).toHaveLength(1);
@@ -35,44 +26,37 @@ describe("initNotices (S2-02: the shared `notice` event -> the toast/banner stor
 
 describe("pushNotice with cleared: true (H-17: e.g. the disk-almost-full banner)", () => {
   it("removes the banner sharing the id instead of adding anything", () => {
-    pushNotice({
-      level: "warning",
-      key: "notice.disk.almost_full",
-      params: {},
-      persistent: true,
-      id: "disk_almost_full",
-      cleared: false,
-      auto_dismiss_ms: null,
-      action: null,
-    });
+    pushNotice(
+      noticeFixture({
+        level: "warning",
+        key: "notice.disk.almost_full",
+        persistent: true,
+        id: "disk_almost_full",
+      }),
+    );
     expect(noticesState().banners).toHaveLength(1);
 
-    pushNotice({
-      level: "info",
-      key: "",
-      params: {},
-      persistent: true,
-      id: "disk_almost_full",
-      cleared: true,
-      auto_dismiss_ms: null,
-      action: null,
-    });
+    pushNotice(
+      noticeFixture({
+        key: "",
+        persistent: true,
+        id: "disk_almost_full",
+        cleared: true,
+      }),
+    );
     expect(noticesState().banners).toHaveLength(0);
     expect(noticesState().toasts).toHaveLength(0);
   });
 });
 
 describe("pushNotice with auto_dismiss_ms (H-59, SPEC-001 §2.3)", () => {
-  const banner = (key: string, autoDismissMs: number | null): Notice => ({
-    level: "info",
-    key,
-    params: {},
-    persistent: true,
-    id: "device:output",
-    cleared: false,
-    auto_dismiss_ms: autoDismissMs,
-    action: null,
-  });
+  const banner = (key: string, autoDismissMs: number | null) =>
+    noticeFixture({
+      key,
+      persistent: true,
+      id: "device:output",
+      auto_dismiss_ms: autoDismissMs,
+    });
 
   it("dismisses the reconnected banner on its own, while the lost banner stays", () => {
     vi.useFakeTimers();

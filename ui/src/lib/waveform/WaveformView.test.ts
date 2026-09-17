@@ -5,7 +5,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { VXTM_FLAGS, type TelemetryFrame } from "../ipc/telemetry";
 import { clearActionHandlers, registerAction } from "../shortcuts";
 import type { ActionId } from "../shortcuts/actions";
-import { initDocument, openDocument, resetDocumentStateForTest } from "../document/document.svelte";
+import {
+  applyImportJobProgress,
+  applyImportStarted,
+  initDocument,
+  openDocument,
+  resetDocumentStateForTest,
+} from "../document/document.svelte";
+import { t } from "../i18n";
 import { clearNotices } from "../state/notices.svelte";
 import { resetEditForTest } from "../state/edit.svelte";
 import { resetInsertSilenceForTest } from "../state/insertSilence.svelte";
@@ -1500,6 +1507,58 @@ describe("WaveformView right-click menu (H-66)", () => {
         id,
       ).toBe(true);
     }
+
+    unmount(app);
+    target.remove();
+  });
+
+  // H-82 (SPEC-005 §2.3 item 4 / Amendment 1): a selection made while an import is running
+  // describes a position in the *importing* file (its own progressive shell/probed length,
+  // H-71/H-76), not the previous document these seven ops would act on — they must stay disabled
+  // for as long as the import job is `running`, exactly like the Edit menu.
+  it("disables all seven while an import is running, even with a selection (H-82)", async () => {
+    stubWidth(800);
+    await openFixtureDocument(8_000);
+    setSelectionFromResult([0, 100]);
+    applyImportStarted({ job_id: 21, name: "new.wav", sample_rate_hz: 48_000, len_samples: 480_000 });
+    const { target, app, container } = mountView();
+
+    openContextMenu(container);
+    for (const id of OP_IDS) {
+      expect(
+        target.querySelector<HTMLButtonElement>(`[data-testid="waveform-menu-${id}"]`)?.disabled,
+        id,
+      ).toBe(true);
+    }
+    const expectedTitle = t("edit.unavailable_while_importing");
+    expect(target.querySelector('[data-testid="waveform-menu-cut"]')?.getAttribute("title")).toBe(
+      expectedTitle,
+    );
+    expect(
+      target.querySelector('[data-testid="waveform-menu-insert-silence"]')?.getAttribute("title"),
+    ).toBe(expectedTitle);
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("re-enables once the import ends (H-82)", async () => {
+    stubWidth(800);
+    await openFixtureDocument(8_000);
+    setSelectionFromResult([0, 100]);
+    applyImportStarted({ job_id: 22, name: "new.wav", sample_rate_hz: 48_000, len_samples: 480_000 });
+    const { target, app, container } = mountView();
+    applyImportJobProgress({ job_id: 22, kind: "import", state: "done", fraction: 1 });
+    flushSync();
+
+    openContextMenu(container);
+    for (const id of ["cut", "copy", "delete", "trim", "silence", "insert-silence"]) {
+      expect(
+        target.querySelector<HTMLButtonElement>(`[data-testid="waveform-menu-${id}"]`)?.disabled,
+        id,
+      ).toBe(false);
+    }
+    expect(target.querySelector('[data-testid="waveform-menu-cut"]')?.getAttribute("title")).toBeNull();
 
     unmount(app);
     target.remove();

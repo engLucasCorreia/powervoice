@@ -16,6 +16,7 @@ import {
   dismissImportJob,
   dismissSaveJob,
   documentState,
+  isImportRunning,
   openDocument,
   openSaveAsPrompt,
   requestOpen,
@@ -695,6 +696,29 @@ describe("T-209: import job progress (SPEC-005 §2.3)", () => {
     cancelImportJob();
     await new Promise((r) => setTimeout(r, 0));
     expect(called).toBe(false);
+  });
+
+  // H-82 (SPEC-005 §2.3 item 4 / Amendment 1): the single source of truth every edit entry point
+  // (Edit menu, waveform right-click menu, keymap) gates on.
+  it("isImportRunning is true only while a job is 'running', false with none, done, cancelled or failed", () => {
+    expect(isImportRunning()).toBe(false);
+
+    applyImportStarted({ job_id: 11, name: "big.wav", sample_rate_hz: 48_000, len_samples: 480_000 });
+    expect(isImportRunning()).toBe(true);
+
+    applyImportJobProgress({ job_id: 11, kind: "import", state: "running", fraction: 0.5 });
+    expect(isImportRunning()).toBe(true);
+
+    applyImportJobProgress({ job_id: 11, kind: "import", state: "done", fraction: 1 });
+    expect(isImportRunning()).toBe(false);
+
+    applyImportStarted({ job_id: 12, name: "b.wav", sample_rate_hz: 48_000, len_samples: 1 });
+    applyImportJobProgress({ job_id: 12, kind: "import", state: "cancelled", fraction: 0.2 });
+    expect(isImportRunning()).toBe(false);
+
+    applyImportStarted({ job_id: 13, name: "c.wav", sample_rate_hz: 48_000, len_samples: 1 });
+    applyImportJobProgress({ job_id: 13, kind: "import", state: "failed", fraction: 0.2 });
+    expect(isImportRunning()).toBe(false);
   });
 });
 

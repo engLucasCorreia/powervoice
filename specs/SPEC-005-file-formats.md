@@ -760,3 +760,33 @@ save_format}`. `saved` already carries `format`. No structural change: new field
   in FLAC; ID3 chapters; CD cue sheets.
 - **Other:** noise-shaped dither; resampling on open or save; stereo or multichannel editing (PROMPT
   §3.8); batch conversion.
+
+## Amendment 1 — H-82 editing during an import: which document, and why (2026-09-17, autonomous)
+
+H-76 found that §2.3 item 4 ("editing... are disabled" while an import runs) was never actually
+enforced for Cut/Copy/Paste/Delete/Trim/Silence/Insert Silence, and — because the import job never
+touches the *previous* document until it commits — asked whether that gap even mattered. It does,
+but not for data-integrity reasons, so the wording is sharpened here to say why.
+
+- **The previous document is safe either way.** `document_open` only swaps the previous document
+  out for the newly-imported one at commit (`document_changed`); nothing an edit command does
+  while an import job is merely running can reach the file being imported, and nothing the import
+  does can reach the previous document.
+- **The *view* is not safe.** While importing, the waveform shows the *importing* file's
+  progressive shell (§2.3 step 3, H-71), and — per item 4's own "zoom, scroll and selection work"
+  — every selection, cursor position and zoom/scroll interaction is bounded by that file's own
+  probed length, not the previous document's (H-76's `interactionLenSamples`). A selection or
+  cursor position the user sets during an import therefore describes a location in the *importing*
+  file, not in the document an edit command would actually act on. Running Cut, Copy, Paste,
+  Delete, Trim, Silence or Insert Silence during that window would silently apply those
+  importing-file coordinates to the previous document's audio — wrong, even though nothing is
+  corrupted in the sense of writing to the wrong file on disk.
+- **Item 4 is read literally, not narrowed.** "Editing... are disabled" means exactly that: all
+  seven ops named above, in every place they can be triggered — the Edit menu, the waveform's
+  right-click menu (SPEC-008 §2.11) and their keyboard shortcuts alike — for as long as an import
+  job is `running`. This matches the existing treatment of `peaks_get`, zero-crossing snap and
+  marker hit-testing (H-76: "they would read the wrong document"). Selection, zoom and scroll stay
+  exactly as item 4 already describes them: live, bounded by the importing file.
+- **Undo/Redo are unaffected.** They replay the previous document's own history stack directly, by
+  index — never through a selection or cursor position read off the current view — so they carry
+  none of the ambiguity above and are out of this ticket's scope.

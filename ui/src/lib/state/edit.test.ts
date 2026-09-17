@@ -3,14 +3,24 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ClipboardChangedDto, EditResultDto } from "../ipc/bindings";
 import { clearActionHandlers } from "../shortcuts";
+import {
+  applyImportJobProgress,
+  applyImportStarted,
+  resetDocumentStateForTest,
+} from "../document/document.svelte";
 import { clearNotices } from "./notices.svelte";
 import {
   cancelPasteJob,
+  copy,
+  cut,
+  deleteSelection,
   dismissPasteJob,
   editState,
   initEdit,
   paste,
   resetEditForTest,
+  silence,
+  trim,
 } from "./edit.svelte";
 import { resetSelectionForTest, selectAllOf, selectionState } from "./selection.svelte";
 import { historyStateDto } from "../test/fixtures";
@@ -23,6 +33,7 @@ afterEach(() => {
   resetEditForTest();
   resetSelectionForTest();
   resetTransportForTest();
+  resetDocumentStateForTest();
 });
 
 describe("edit store (S2-01)", () => {
@@ -110,6 +121,66 @@ describe("edit store (S2-01)", () => {
 
     dismissPasteJob();
     expect(editState().pasteJob).toBeNull();
+
+    stop();
+  });
+
+  // H-82 (SPEC-005 §2.3 item 4 / Amendment 1): a selection/cursor made while an import is running
+  // describes a position in the *importing* file, not this (previous) document — so Cut, Copy,
+  // Delete, Trim and Silence must no-op then, the same way they already no-op with no selection.
+  it("H-82: Cut/Copy/Delete/Trim/Silence no-op while an import is running, and work again once it ends", async () => {
+    const calls: string[] = [];
+    mockIPC((cmd) => {
+      calls.push(cmd);
+      return {
+        changed: true,
+        audio_rev: 1,
+        len_samples: 100,
+        selection: null,
+        playhead_samples: 0,
+      } satisfies EditResultDto;
+    });
+
+    selectAllOf(500);
+    applyImportStarted({ job_id: 1, name: "big.wav", sample_rate_hz: 48_000, len_samples: 480_000 });
+
+    await cut();
+    await copy();
+    await deleteSelection();
+    await trim();
+    await silence();
+    expect(calls).toHaveLength(0);
+
+    applyImportJobProgress({ job_id: 1, kind: "import", state: "done", fraction: 1 });
+    await cut();
+    expect(calls).toEqual(["edit_cut"]);
+  });
+
+  it("H-82: Paste no-ops while an import is running, and works again once it ends", async () => {
+    const calls: string[] = [];
+    mockIPC(
+      (cmd) => {
+        calls.push(cmd);
+        return {
+          changed: true,
+          audio_rev: 1,
+          len_samples: 100,
+          selection: [0, 100],
+          playhead_samples: 0,
+        } satisfies EditResultDto;
+      },
+      { shouldMockEvents: true },
+    );
+    const stop = await initEdit();
+    await emit("clipboard_changed", { len_samples: 10, sample_rate_hz: 48_000 } satisfies ClipboardChangedDto);
+
+    applyImportStarted({ job_id: 2, name: "big.wav", sample_rate_hz: 48_000, len_samples: 480_000 });
+    await paste();
+    expect(calls).toHaveLength(0);
+
+    applyImportJobProgress({ job_id: 2, kind: "import", state: "done", fraction: 1 });
+    await paste();
+    expect(calls).toEqual(["edit_paste"]);
 
     stop();
   });

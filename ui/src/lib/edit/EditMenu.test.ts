@@ -1,7 +1,13 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { resetDocumentStateForTest, openDocument } from "../document/document.svelte";
+import {
+  applyImportJobProgress,
+  applyImportStarted,
+  resetDocumentStateForTest,
+  openDocument,
+} from "../document/document.svelte";
+import { t } from "../i18n";
 import { clearActionHandlers, registerAction } from "../shortcuts";
 import type { ActionId } from "../shortcuts/actions";
 import { resetMarkersForTest, selectMarker } from "../markers/markers.svelte";
@@ -189,6 +195,72 @@ describe("EditMenu (H-19)", () => {
         true,
       );
     }
+    unmount(app);
+    target.remove();
+  });
+
+  // H-82 (SPEC-005 §2.3 item 4 / Amendment 1): a selection made while an import is running
+  // describes a position in the *importing* file, not the previous document these commands would
+  // act on — so they must stay disabled for as long as the import is `running`, even with a
+  // selection.
+  it("disables Cut/Copy/Delete/Trim/Silence/Insert Silence while an import is running, even with a selection (H-82)", async () => {
+    await openFixtureDocument();
+    setSelectionFromResult([0, 100]);
+    applyImportStarted({ job_id: 1, name: "new.wav", sample_rate_hz: 48_000, len_samples: 1_000 });
+    const { target, app } = mountMenu();
+    openMenu(target);
+    for (const id of [
+      "menu-cut",
+      "menu-copy",
+      "menu-delete",
+      "menu-trim",
+      "menu-silence",
+      "menu-insert-silence",
+    ]) {
+      expect(target.querySelector<HTMLButtonElement>(`[data-testid="${id}"]`)?.disabled, id).toBe(
+        true,
+      );
+    }
+    unmount(app);
+    target.remove();
+  });
+
+  it("shows the spec's tooltip on Cut/Insert Silence while importing, and re-enables both once it ends (H-82)", async () => {
+    await openFixtureDocument();
+    setSelectionFromResult([0, 100]);
+    applyImportStarted({ job_id: 2, name: "new.wav", sample_rate_hz: 48_000, len_samples: 1_000 });
+    const { target, app } = mountMenu();
+    openMenu(target);
+    const expectedTitle = t("edit.unavailable_while_importing");
+    expect(target.querySelector('[data-testid="menu-cut"]')?.getAttribute("title")).toBe(
+      expectedTitle,
+    );
+    expect(
+      target.querySelector('[data-testid="menu-insert-silence"]')?.getAttribute("title"),
+    ).toBe(expectedTitle);
+
+    applyImportJobProgress({ job_id: 2, kind: "import", state: "done", fraction: 1 });
+    flushSync();
+    expect(
+      target.querySelector<HTMLButtonElement>('[data-testid="menu-cut"]')?.disabled,
+    ).toBe(false);
+    expect(target.querySelector('[data-testid="menu-cut"]')?.getAttribute("title")).toBeNull();
+    expect(
+      target.querySelector<HTMLButtonElement>('[data-testid="menu-insert-silence"]')?.disabled,
+    ).toBe(false);
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Select All stays enabled while importing (SPEC-005 §2.3 item 4: 'selection work') — unlike recording, which disables it (H-82)", async () => {
+    await openFixtureDocument();
+    applyImportStarted({ job_id: 3, name: "new.wav", sample_rate_hz: 48_000, len_samples: 1_000 });
+    const { target, app } = mountMenu();
+    openMenu(target);
+    expect(
+      target.querySelector<HTMLButtonElement>('[data-testid="menu-select-all"]')?.disabled,
+    ).toBe(false);
     unmount(app);
     target.remove();
   });

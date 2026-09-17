@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { hasDocument, documentState } from "../document/document.svelte";
+  import { hasDocument, documentState, isImportRunning } from "../document/document.svelte";
   import { t, tDynamic } from "../i18n";
   import { dispatchAction } from "../shortcuts";
   import { isPlatformMac } from "../shortcuts/registry";
@@ -30,9 +30,16 @@
   const markers = markersState();
 
   const recording = $derived(rec.state.recording);
-  const selected = $derived(hasSelection() && !recording);
-  const pasteEnabled = $derived(hasClipboard() && !recording);
+  /** H-82 (SPEC-005 §2.3 item 4): editing stays gated while an import is running — see
+   * `isImportRunning`'s doc comment for why (the previous document is untouched, but the
+   * on-screen selection/cursor is bound to the *importing* file, not it). */
+  const importing = $derived(isImportRunning());
+  const selected = $derived(hasSelection() && !recording && !importing);
+  const pasteEnabled = $derived(hasClipboard() && !recording && !importing);
   const hasDoc = $derived(hasDocument(doc.current));
+  /** The spec's own tooltip (§2.3 item 4), shown only on items disabled *because of* the import —
+   * not on ones merely lacking a selection/clipboard or disabled by recording. */
+  const importingTitle = $derived(importing ? t("edit.unavailable_while_importing") : undefined);
 
   /** T-301 (ADR-004 Amendment 3): a label's placeholder values ("Normalize to {target} dB"). */
   function labelParams(params: Partial<Record<string, string>>): Record<string, string> {
@@ -63,6 +70,11 @@
     actionId: Parameters<typeof dispatchAction>[0],
     disabled: boolean,
     withShortcut = true,
+    /** H-82: only the ops actually gated on `importing` (cut/copy/paste/delete/trim) opt into the
+     * spec's tooltip — undo/redo/select-all/markers are disabled for unrelated reasons even while
+     * an import happens to be running, and must not show a tooltip promising they'll re-enable
+     * once it finishes. */
+    importGated = false,
   ): MenuEntry {
     return {
       kind: "item",
@@ -70,6 +82,7 @@
       label,
       shortcut: withShortcut ? shortcutLabelForAction(actionId) : undefined,
       disabled,
+      title: importGated && disabled ? importingTitle : undefined,
       testid: `menu-${id}`,
       onselect: () => dispatchAction(actionId),
     };
@@ -79,16 +92,17 @@
     action("undo", undoLabel, "history.undo", !edit.history.can_undo || recording),
     action("redo", redoLabel, "history.redo", !edit.history.can_redo || recording),
     { kind: "separator", id: "sep-clipboard" },
-    action("cut", t("edit.cut"), "edit.cut", !selected),
-    action("copy", t("edit.copy"), "edit.copy", !selected),
-    action("paste", t("edit.paste"), "edit.paste", !pasteEnabled),
-    action("delete", t("edit.delete"), "edit.delete", !selected),
-    action("trim", t("edit.trim"), "edit.trim", !selected),
+    action("cut", t("edit.cut"), "edit.cut", !selected, true, true),
+    action("copy", t("edit.copy"), "edit.copy", !selected, true, true),
+    action("paste", t("edit.paste"), "edit.paste", !pasteEnabled, true, true),
+    action("delete", t("edit.delete"), "edit.delete", !selected, true, true),
+    action("trim", t("edit.trim"), "edit.trim", !selected, true, true),
     {
       kind: "item",
       id: "silence",
       label: t("edit.silence"),
       disabled: !selected,
+      title: !selected ? importingTitle : undefined,
       testid: "menu-silence",
       onselect: () => void silence(),
     },
@@ -96,7 +110,8 @@
       kind: "item",
       id: "insert-silence",
       label: t("edit.insert_silence"),
-      disabled: !hasDoc || recording,
+      disabled: !hasDoc || recording || importing,
+      title: importing ? importingTitle : undefined,
       testid: "menu-insert-silence",
       onselect: openInsertSilenceDialog,
     },

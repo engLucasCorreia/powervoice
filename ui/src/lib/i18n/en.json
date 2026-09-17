@@ -653,6 +653,7 @@
   "edit.trim": "Trim to Selection",
   "edit.silence": "Silence",
   "edit.insert_silence": "Insert Silence…",
+  "edit.unavailable_while_importing": "Available when the file has finished opening",
   "history.cut": "Cut",
   "history.paste": "Paste",
   "history.delete": "Delete",

@@ -1,7 +1,12 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it } from "vitest";
 import type { EditResultDto } from "../ipc/bindings";
-import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
+import {
+  applyImportJobProgress,
+  applyImportStarted,
+  openDocument,
+  resetDocumentStateForTest,
+} from "../document/document.svelte";
 import { clearNotices } from "./notices.svelte";
 import {
   applyInsertSilenceDialog,
@@ -138,6 +143,21 @@ describe("insertSilence store (H-56, SPEC-008 §2.5)", () => {
     openInsertSilenceDialog();
     setInsertSilenceDialogText("0");
     await applyInsertSilenceDialog();
+    expect(insertSilenceState().dialogOpen).toBe(true);
+  });
+
+  // H-82 (SPEC-005 §2.3 item 4 / Amendment 1): the cursor/selection target would be the
+  // *importing* file's, not this document's — the Edit menu/right-click menu already disable the
+  // item, but a direct call (e.g. a bypassed disabled state) must stay a safe no-op too.
+  it("H-82: openInsertSilenceDialog no-ops while an import is running, and works again once it ends", async () => {
+    await openFixtureDocument();
+    applyImportStarted({ job_id: 1, name: "new.wav", sample_rate_hz: 48_000, len_samples: 1_000 });
+
+    openInsertSilenceDialog();
+    expect(insertSilenceState().dialogOpen).toBe(false);
+
+    applyImportJobProgress({ job_id: 1, kind: "import", state: "done", fraction: 1 });
+    openInsertSilenceDialog();
     expect(insertSilenceState().dialogOpen).toBe(true);
   });
 });

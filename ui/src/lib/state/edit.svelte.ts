@@ -21,6 +21,7 @@ import {
 } from "../ipc/commands";
 import { registerAction } from "../shortcuts";
 import { noticeFromIpcError } from "../notices/fromIpcError";
+import { isImportRunning } from "../document/document.svelte";
 import { hasSelection, selectionState, setSelectionFromResult } from "./selection.svelte";
 import { pushNotice } from "./notices.svelte";
 import { transportState } from "./transport.svelte";
@@ -114,10 +115,15 @@ function selectedRange(): [number, number] | null {
 }
 
 /** Cut, Copy, Delete, Trim and Silence are no-ops with no (or an empty) selection (SPEC-008 §2.2)
- * — the Edit menu/keymap disable them, but a direct call is also a safe no-op. */
+ * — the Edit menu/keymap disable them, but a direct call is also a safe no-op. H-82 (SPEC-005
+ * §2.3 item 4): also a no-op while an import is running — the selection was made against the
+ * *importing* file's own probed length (H-76's `interactionLenSamples`), not this (previous)
+ * document's, so applying it here would silently act on the wrong offsets. The Edit menu, the
+ * waveform's right-click menu and the keymap (this function, so a shortcut can't bypass a
+ * disabled menu) all gate on the same `isImportRunning()`. */
 function withSelection(op: (start: number, end: number) => Promise<EditResultDto>): Promise<void> {
   const range = selectedRange();
-  return range ? run(() => op(range[0], range[1])) : Promise.resolve();
+  return range && !isImportRunning() ? run(() => op(range[0], range[1])) : Promise.resolve();
 }
 
 export const cut = (): Promise<void> => withSelection(editCut);
@@ -127,9 +133,11 @@ export const trim = (): Promise<void> => withSelection(editTrim);
 export const silence = (): Promise<void> => withSelection(editSilence);
 
 /** Paste at the cursor (no selection) or over the current selection (SPEC-008 §2.1). A no-op
- * with an empty clipboard. */
+ * with an empty clipboard, or (H-82, SPEC-005 §2.3 item 4) while an import is running — same
+ * reasoning as `withSelection` above: the cursor/selection is the *importing* file's, not this
+ * document's. */
 export function paste(): Promise<void> {
-  if (!hasClipboard()) {
+  if (!hasClipboard() || isImportRunning()) {
     return Promise.resolve();
   }
   const range = selectedRange();

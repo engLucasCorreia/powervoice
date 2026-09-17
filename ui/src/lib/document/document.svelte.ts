@@ -253,6 +253,25 @@ export function hasDocument(info: DocumentDto): boolean {
   return info.sample_rate_hz > 0;
 }
 
+/**
+ * H-82 (SPEC-005 §2.3 item 4): `true` while an import job is running. `doc` above keeps holding
+ * the *previous* document, untouched, until `document_open`'s own `document_changed` swaps in the
+ * real one at commit — so an edit command issued meanwhile would not corrupt anything by writing
+ * to the wrong place. It is still wrong to run one: while importing, the waveform shows the
+ * *importing* file's progressive shell (H-71) and every selection/cursor/zoom interaction is
+ * bounded by that file's own probed length (H-76's `interactionLenSamples`), not the previous
+ * document's. A Cut or Paste fired from that view would apply coordinates chosen against one file
+ * to the other file entirely. So editing (Cut/Copy/Paste/Delete/Trim/Silence/Insert Silence)
+ * stays gated on this everywhere it can be triggered — the Edit menu, the waveform's right-click
+ * menu (`WaveformView.svelte`) and the keymap actions themselves (`state/edit.svelte.ts`,
+ * `state/insertSilence.svelte.ts`) — so a shortcut can't act on the wrong document even if a
+ * menu's disabled state were somehow bypassed. Selection/zoom/scroll are unaffected (SPEC-005
+ * §2.3 item 4 explicitly allows them during an import).
+ */
+export function isImportRunning(): boolean {
+  return importJob !== null && importJob.state === "running";
+}
+
 /** The document's display name: its file name, "Untitled" for a never-saved recording, `null`
  * when none is open. */
 export function displayName(info: DocumentDto): string | null {

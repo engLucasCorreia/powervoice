@@ -1,6 +1,6 @@
 import type { EditTargetDto, IpcError } from "../ipc/bindings";
 import { editInsertSilence } from "../ipc/commands";
-import { documentState } from "../document/document.svelte";
+import { documentState, isImportRunning } from "../document/document.svelte";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { pushNotice } from "./notices.svelte";
 import { hasSelection, selectionState, setSelectionFromResult } from "./selection.svelte";
@@ -132,8 +132,15 @@ export function canInsertSilence(): boolean {
   return documentState().current.sample_rate_hz > 0;
 }
 
-/** Edit → Insert Silence… (§2.5): opens with the last accepted value remembered this session. */
+/** Edit → Insert Silence… (§2.5): opens with the last accepted value remembered this session. A
+ * no-op while an import is running (H-82, SPEC-005 §2.3 item 4) — the Edit menu and the
+ * waveform's right-click menu already disable the item, but the target (cursor/selection) would
+ * otherwise be the *importing* file's, not this document's (same reasoning as
+ * `state/edit.svelte.ts`'s `withSelection`/`paste`). */
 export function openInsertSilenceDialog(): void {
+  if (isImportRunning()) {
+    return;
+  }
   const resolved = currentTarget();
   if (!resolved) {
     return;

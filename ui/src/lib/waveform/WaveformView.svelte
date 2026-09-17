@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
-  import { documentState, hasDocument } from "../document/document.svelte";
+  import { documentState, hasDocument, isImportRunning } from "../document/document.svelte";
   import { t } from "../i18n";
   import { importPeaksGet, peaksGet } from "../ipc/commands";
   import { recordPeaksGet } from "../ipc/record_commands";
@@ -312,7 +312,7 @@
    * failed (H-20's `applyImportJobProgress` clears it back to a terminal state only briefly; the
    * `ImportProgressBar` then dismisses it, but this view only cares about "running"). */
   const importJob = $derived(doc.importJob);
-  const isImporting = $derived(importJob !== null && importJob.state === "running");
+  const isImporting = $derived(isImportRunning());
   const isOpen = $derived(hasDocument(doc.current) || isImporting);
   const isRecording = $derived(rec.state.recording);
   /**
@@ -338,9 +338,13 @@
   // H-66 (SPEC-008 §2.11): the right-click menu's enablement must exactly match `EditMenu.svelte`'s
   // — a document open, a non-empty selection, and not while recording (`error.not_while_recording`
   // covers "or a document job", since the job's own modal dialog owns the window meanwhile).
+  // H-82: an import is the one job that *isn't* modal (zoom/scroll/selection stay live, per
+  // SPEC-005 §2.3 item 4), so it needs its own explicit `isImporting` check here too — see
+  // `isImportRunning`'s doc comment for why editing must stay blocked even though the previous
+  // document itself is untouched.
   const hasDoc = $derived(hasDocument(doc.current));
-  const editSelected = $derived(hasSelection() && !isRecording);
-  const editPasteEnabled = $derived(hasClipboard() && !isRecording);
+  const editSelected = $derived(hasSelection() && !isRecording && !isImporting);
+  const editPasteEnabled = $derived(hasClipboard() && !isRecording && !isImporting);
   /** H-07: a new recording into an empty document (its take isn't committed until Stop). */
   const liveNewTake = $derived(isRecording && lenSamples === 0);
   /** H-21: a running record operation on a document with audio (`null`: none). */
@@ -1559,6 +1563,11 @@
     });
   }
 
+  /** H-82 (SPEC-005 §2.3 item 4): the tooltip named in the spec, shown on every edit item this
+   * menu disables *because an import is running* (as opposed to no selection/an empty clipboard/
+   * recording, which show no tooltip here, matching pre-H-82 behavior). */
+  const importingTitle = $derived(isImporting ? t("edit.unavailable_while_importing") : undefined);
+
   /** H-66 (SPEC-008 §2.11): an item that runs a keymap action, with its shortcut chip — same
    * routing (`dispatchAction`) and same labels/shortcuts as `EditMenu.svelte`'s equivalent row, so
    * the two menus can never drift apart. */
@@ -1574,6 +1583,7 @@
       label,
       shortcut: shortcutLabelForAction(actionId),
       disabled,
+      title: disabled ? importingTitle : undefined,
       testid: `waveform-menu-${id}`,
       onselect: () => dispatchAction(actionId),
     };
@@ -1582,7 +1592,10 @@
   /** H-66 (SPEC-008 §2.11): Cut, Copy, Paste, Delete, Trim, Silence, Insert Silence — the same
    * seven ops as the Edit menu, same order, same enablement (`editSelected`/`editPasteEnabled`/
    * `hasDoc` above mirror `EditMenu.svelte` exactly). Silence and Insert Silence have no keymap
-   * binding (menu-only, `registry.ts`), so they call the store directly like the Edit menu does. */
+   * binding (menu-only, `registry.ts`), so they call the store directly like the Edit menu does.
+   * H-82: all seven are additionally disabled while `isImporting` (`editSelected`/
+   * `editPasteEnabled` already fold it in; Insert Silence checks it explicitly, like `hasDoc`/
+   * `isRecording`). */
   const contextMenuItems = $derived<MenuEntry[]>([
     editMenuAction("cut", t("edit.cut"), "edit.cut", !editSelected),
     editMenuAction("copy", t("edit.copy"), "edit.copy", !editSelected),
@@ -1594,6 +1607,7 @@
       id: "silence",
       label: t("edit.silence"),
       disabled: !editSelected,
+      title: !editSelected ? importingTitle : undefined,
       testid: "waveform-menu-silence",
       onselect: () => void silence(),
     },
@@ -1601,7 +1615,8 @@
       kind: "item",
       id: "insert-silence",
       label: t("edit.insert_silence"),
-      disabled: !hasDoc || isRecording,
+      disabled: !hasDoc || isRecording || isImporting,
+      title: isImporting ? importingTitle : undefined,
       testid: "waveform-menu-insert-silence",
       onselect: openInsertSilenceDialog,
     },

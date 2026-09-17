@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { dragPosition, wheelQFactor } from "./drag";
+import { dragPosition, wheelNotches, wheelQFactor } from "./drag";
 
-/** Node drag/wheel pixel math tests (S3-07, SPEC-015 §2.6.4). */
+/** Node drag/wheel pixel math tests (S3-07 + H-86, SPEC-015 §2.6.4). */
 
 describe("dragPosition", () => {
   it("adds the raw pointer delta when not fine", () => {
@@ -35,5 +35,13 @@ describe("wheelQFactor", () => {
 
   it("is 1 for a zero delta", () => {
     expect(wheelQFactor(0, false)).toBe(1);
+  });
+});
+
+describe("wheelNotches", () => {
+  it("is 1 up, -1 down, 0 for no movement", () => {
+    expect(wheelNotches(-1)).toBe(1);
+    expect(wheelNotches(1)).toBe(-1);
+    expect(wheelNotches(0)).toBe(0);
   });
 });

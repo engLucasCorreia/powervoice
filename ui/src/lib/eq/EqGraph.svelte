@@ -14,7 +14,7 @@
   import { setParamPlain, setParamPlainDragged } from "../rack/rack.svelte";
   import { totalCurveToScreen } from "./curvePoints";
   import { CoalescedCurveRequest } from "./curveRequest";
-  import { wheelQFactor, dragPosition, type DragStart } from "./drag";
+  import { wheelNotches, wheelQFactor, dragPosition, type DragStart } from "./drag";
   import {
     analyzerBandFreqsHz,
     curveRequestFreqs,
@@ -71,13 +71,15 @@
    * exposing `curve_handles` (currently only the Parametric EQ) — `mode="expanded"` renders the
    * same graph larger inside `EqExpandedView.svelte`.
    *
-   * Still out of scope (S3-07 "Out", not part of H-84 either): Alt+click / reset-on-double-click
-   * split (double-click still toggles the band, per the S3-07 report's deviation — H-84's
-   * keyboard Home key implements the *spec's* reset-to-defaults instead, so the two diverge until
-   * a follow-up reconciles them), the right-click context menu, hover tooltips (H-84 adds the
-   * same Rust-sourced text as `aria-valuetext`/the live region, but not a visual hover tooltip),
-   * and the wheel's HP/LP slope step (§2.6.4 "for HP/LP, the next or previous slope" — the wheel
-   * still only does nothing there; H-84 added slope stepping to the keyboard's ↑/↓ only).
+   * H-86 (SPEC-015 §2.6.4) aligned the mouse gestures with the keyboard's: double-click now
+   * *resets* a band's frequency/gain/Q (or slope) to defaults, same as Home, on/off unchanged;
+   * Alt+click toggles the band on/off (the header toggles still do the same thing); and the wheel
+   * steps HP/LP slope one notch per notch, reusing `keyboardNav.ts`'s `stepSlopeIndex` like ↑/↓
+   * does.
+   *
+   * Still out of scope (S3-07 "Out", not part of H-84 or H-86 either): the right-click context
+   * menu, and hover tooltips (H-84 adds the same Rust-sourced text as `aria-valuetext`/the live
+   * region, but not a visual hover tooltip).
    */
   let {
     slotIndex,
@@ -456,6 +458,16 @@
       return;
     }
     selected = node.component;
+    if (event.altKey) {
+      // Alt+click toggles the band on/off (SPEC-015 §2.6.4); it never starts a drag. Chosen over
+      // inventing a new gesture because it's the mouse toggle the spec itself names, and it was
+      // only ever left unimplemented (S3-07 used double-click for this instead — H-86 corrects
+      // that, see the on/off note above).
+      if (node.enableId !== null) {
+        void setParamPlain(slotIndex, node.enableId, node.enabled ? 0 : 1);
+      }
+      return;
+    }
     dragging = {
       component: node.component,
       startClientX: event.clientX,
@@ -499,12 +511,33 @@
     }
     const { x, y } = pointerPos(event);
     const node = nodeAt(x, y);
-    if (!node || node.qId === null) {
-      return; // empty area, or a band with no Q (HP/LP): let the rack panel scroll as usual
+    if (!node) {
+      return; // empty area: let the rack panel scroll as usual
     }
-    event.preventDefault();
-    const factor = wheelQFactor(event.deltaY, event.shiftKey);
-    void setParamPlain(slotIndex, node.qId, (node.q ?? 1) * factor);
+    if (node.qId !== null) {
+      event.preventDefault();
+      const factor = wheelQFactor(event.deltaY, event.shiftKey);
+      void setParamPlain(slotIndex, node.qId, (node.q ?? 1) * factor);
+      return;
+    }
+    if (node.slopeId !== null) {
+      // HP/LP have no Q — the wheel steps slope instead, one notch per notch (SPEC-015 §2.6.4
+      // "for HP/LP, the next or previous slope"), reusing H-84's keyboard step math so the wheel
+      // and ↑/↓ agree on direction and clamping.
+      const notches = wheelNotches(event.deltaY);
+      if (notches === 0) {
+        return;
+      }
+      const range = paramRangeOf(rackSlot.params, node.slopeId);
+      if (!range) {
+        return;
+      }
+      event.preventDefault();
+      const nextIndex = stepSlopeIndex(node.slope ?? 0, notches, range.max);
+      void setParamPlain(slotIndex, node.slopeId, nextIndex);
+      return;
+    }
+    // A band with neither Q nor slope: leave the wheel free to scroll the panel.
   }
 
   function onDblClick(event: MouseEvent): void {
@@ -513,10 +546,13 @@
     }
     const { x, y } = pointerPos(event);
     const node = nodeAt(x, y);
-    if (!node || node.enableId === null) {
+    if (!node) {
       return;
     }
-    void setParamPlain(slotIndex, node.enableId, node.enabled ? 0 : 1);
+    // SPEC-015 §2.6.4: double-click resets the band's frequency/gain/Q (or slope) to defaults,
+    // same as the keyboard's Home (§2.6.5) — its on/off state is unchanged. S3-07 used
+    // double-click to toggle on/off instead; H-86 corrects that (Alt+click is the mouse toggle).
+    resetNode(node);
   }
 
   function bandLabel(node: EqNode): string {

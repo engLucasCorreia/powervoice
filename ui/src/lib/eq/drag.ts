@@ -26,9 +26,16 @@ export function dragPosition(
   };
 }
 
+/** `1` for a wheel notch up (`deltaY < 0`), `-1` down, `0` for no movement — SPEC-015 §2.6.4
+ * "wheel over a node". Shared by the Q factor below and the HP/LP slope step (H-86), so both
+ * agree on which way is "up". */
+export function wheelNotches(deltaY: number): -1 | 0 | 1 {
+  return deltaY > 0 ? -1 : deltaY < 0 ? 1 : 0;
+}
+
 /** `2^(±1/6)` per wheel notch (Shift: `2^(±1/24)`), SPEC-015 §2.6.4 "wheel over a node". */
 export function wheelQFactor(deltaY: number, fine: boolean): number {
-  const notches = deltaY > 0 ? -1 : deltaY < 0 ? 1 : 0;
+  const notches = wheelNotches(deltaY);
   const exponent = fine ? 1 / 24 : 1 / 6;
   return 2 ** (notches * exponent);
 }

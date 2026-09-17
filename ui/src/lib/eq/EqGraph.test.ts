@@ -68,6 +68,7 @@ function slotFixture(): RackSlotDto {
   const params = [
     param(10, "hp_on", { unit: { kind: "none" }, min: 0, max: 1, default: 0 }),
     param(11, "hp_freq_hz", { default: 80 }),
+    param(14, "hp_slope", { unit: { kind: "none" }, min: 0, max: 7, default: 3 }),
     param(30, "b1_on", { unit: { kind: "none" }, min: 0, max: 1, default: 1 }),
     param(31, "b1_freq_hz", { default: 1_000 }),
     param(32, "b1_gain_db", { unit: { kind: "db" }, min: -24, max: 24, default: 6 }),
@@ -256,7 +257,7 @@ describe("node drag (S3-07, SPEC-015 §2.6.4, AC-18 lean subset)", () => {
   });
 });
 
-describe("wheel = Q (S3-07 ticket scope)", () => {
+describe("wheel = Q or HP/LP slope (S3-07 + H-86, SPEC-015 §2.6.4)", () => {
   it("scrolling over a node with a Q parameter multiplies it by 2^(1/6) per notch", async () => {
     const calls: Array<{ id: number; value: number }> = [];
     mockIPC((cmd, args) => {
@@ -280,17 +281,51 @@ describe("wheel = Q (S3-07 ticket scope)", () => {
     teardown();
   });
 
-  it("does nothing for a band with no Q (HP), leaving the wheel event free to scroll the panel", async () => {
-    const calls: unknown[] = [];
+  it("steps the HP slope one notch per wheel notch instead of a Q (§2.6.4 'for HP/LP, the next or previous slope')", async () => {
+    const calls: Array<{ id: number; value: number }> = [];
     mockIPC((cmd, args) => {
       if (cmd === "rack_response_curve") return EMPTY_CURVE;
-      if (cmd === "param_set_plain") calls.push(args);
+      if (cmd === "param_set_plain") calls.push(args as { id: number; value: number });
       return { slots: [], ab: false, latency_samples: 0 };
     });
     const { canvas, teardown } = render(slotFixture());
     await settle();
 
     const x = xForFreq(80, WIDTH, F_LO, F_HI);
+    const y = HEIGHT / 2;
+    canvas.dispatchEvent(
+      new WheelEvent("wheel", { clientX: x, clientY: y, deltaY: -100, bubbles: true, cancelable: true }),
+    );
+    await settle();
+    expect(calls.find((c) => c.id === 14)!.value).toBe(4); // default index 3 -> one notch steeper
+
+    calls.length = 0;
+    canvas.dispatchEvent(
+      new WheelEvent("wheel", { clientX: x, clientY: y, deltaY: 100, bubbles: true, cancelable: true }),
+    );
+    await settle();
+    expect(calls.find((c) => c.id === 14)!.value).toBe(2); // -> shallower
+    teardown();
+  });
+
+  it("does nothing for a band with neither Q nor slope, leaving the wheel event free to scroll the panel", async () => {
+    const calls: unknown[] = [];
+    const slot = slotFixture();
+    slot.curve_handles = [
+      ...(slot.curve_handles ?? []),
+      { component: 5, freq: 51, gain: null, q: null, enable: null },
+    ];
+    slot.params = [...slot.params, param(51, "gen_freq_hz", { default: 500 })];
+    slot.values = [...slot.values, { id: 51, value: 500, normalized: 0.5, text: "500" }];
+    mockIPC((cmd, args) => {
+      if (cmd === "rack_response_curve") return EMPTY_CURVE;
+      if (cmd === "param_set_plain") calls.push(args);
+      return { slots: [], ab: false, latency_samples: 0 };
+    });
+    const { canvas, teardown } = render(slot);
+    await settle();
+
+    const x = xForFreq(500, WIDTH, F_LO, F_HI);
     const y = HEIGHT / 2;
     const event = new WheelEvent("wheel", { clientX: x, clientY: y, deltaY: -100, bubbles: true, cancelable: true });
     canvas.dispatchEvent(event);
@@ -301,8 +336,58 @@ describe("wheel = Q (S3-07 ticket scope)", () => {
   });
 });
 
-describe("double-click toggles the band (S3-07 ticket scope)", () => {
-  it("double-clicking a node flips its enable parameter", async () => {
+describe("double-click resets the band (H-86, SPEC-015 §2.6.4 — corrects S3-07's toggle)", () => {
+  it("double-clicking a peak node resets its frequency, gain and Q to defaults, leaving on/off alone", async () => {
+    const calls: Array<{ id: number; value: number }> = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "rack_response_curve") return EMPTY_CURVE;
+      if (cmd === "param_set_plain") calls.push(args as { id: number; value: number });
+      return { slots: [], ab: false, latency_samples: 0 };
+    });
+    const slot = slotFixture();
+    // Move band 1 away from its defaults first, so the reset is visible.
+    slot.values = slot.values.map((v) =>
+      v.id === 31 ? { ...v, value: 5_000 } : v.id === 32 ? { ...v, value: -9 } : v.id === 33 ? { ...v, value: 8 } : v,
+    );
+    const { canvas, teardown } = render(slot);
+    await settle();
+
+    const x = xForFreq(5_000, WIDTH, F_LO, F_HI);
+    const y = yForDb(-9, HEIGHT, DEFAULT_RANGE_DB);
+    canvas.dispatchEvent(new MouseEvent("dblclick", { clientX: x, clientY: y, bubbles: true }));
+    await settle();
+
+    expect(calls.find((c) => c.id === 31)!.value).toBe(1_000); // b1_freq_hz default
+    expect(calls.find((c) => c.id === 32)!.value).toBe(6); // b1_gain_db default
+    expect(calls.find((c) => c.id === 33)!.value).toBe(2); // b1_q default
+    expect(calls.some((c) => c.id === 30)).toBe(false); // on/off untouched
+    teardown();
+  });
+
+  it("double-clicking the HP node resets its frequency and slope", async () => {
+    const calls: Array<{ id: number; value: number }> = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "rack_response_curve") return EMPTY_CURVE;
+      if (cmd === "param_set_plain") calls.push(args as { id: number; value: number });
+      return { slots: [], ab: false, latency_samples: 0 };
+    });
+    const { canvas, teardown } = render(slotFixture());
+    await settle();
+
+    const x = xForFreq(80, WIDTH, F_LO, F_HI);
+    const y = HEIGHT / 2;
+    canvas.dispatchEvent(new MouseEvent("dblclick", { clientX: x, clientY: y, bubbles: true }));
+    await settle();
+
+    expect(calls.find((c) => c.id === 11)!.value).toBe(80); // hp_freq_hz default
+    expect(calls.find((c) => c.id === 14)!.value).toBe(3); // hp_slope default
+    expect(calls.some((c) => c.id === 10)).toBe(false); // on/off untouched
+    teardown();
+  });
+});
+
+describe("Alt+click toggles the band (H-86, SPEC-015 §2.6.4)", () => {
+  it("flips the enable parameter without starting a drag", async () => {
     const calls: Array<{ id: number; value: number }> = [];
     mockIPC((cmd, args) => {
       if (cmd === "rack_response_curve") return EMPTY_CURVE;
@@ -314,12 +399,29 @@ describe("double-click toggles the band (S3-07 ticket scope)", () => {
 
     const x = xForFreq(1_000, WIDTH, F_LO, F_HI);
     const y = yForDb(6, HEIGHT, DEFAULT_RANGE_DB);
-    canvas.dispatchEvent(new MouseEvent("dblclick", { clientX: x, clientY: y, bubbles: true }));
+    canvas.dispatchEvent(
+      new PointerEvent("pointerdown", {
+        clientX: x,
+        clientY: y,
+        altKey: true,
+        bubbles: true,
+        pointerId: 3,
+      }),
+    );
     await settle();
 
     const enableCall = calls.find((c) => c.id === 30);
     expect(enableCall).toBeDefined();
     expect(enableCall!.value).toBe(0); // band 1 defaults on (1) -> toggled off
+
+    // No drag started: a subsequent pointermove must not touch the frequency.
+    calls.length = 0;
+    canvas.dispatchEvent(
+      new PointerEvent("pointermove", { clientX: x + 50, clientY: y, bubbles: true, pointerId: 3 }),
+    );
+    flushPendingPlainDrags();
+    await settle();
+    expect(calls).toHaveLength(0);
     teardown();
   });
 });

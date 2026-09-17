@@ -429,6 +429,11 @@
     flex: 1;
     flex-direction: column;
     min-height: 0;
+    /* H-64 follow-up: the row grid below adapts to the panel's own width, not the viewport's —
+       the panel is user-resizable, and at its default width five fixed columns overflowed and
+       squeezed the name column to nothing (the times then rendered under the "Name" header). */
+    container-type: inline-size;
+    container-name: markers-panel;
   }
 
   .markers-toolbar {
@@ -460,7 +465,7 @@
 
   .marker-headers {
     display: grid;
-    grid-template-columns: 1fr 4.5rem 4.5rem 3.75rem 4.25rem;
+    grid-template-columns: minmax(5rem, 1fr) 4.5rem 4.5rem 3.75rem 4.25rem;
     flex: none;
     gap: 1px;
     padding: 0 var(--pv-space-1);
@@ -525,7 +530,7 @@
 
   .marker-row {
     display: grid;
-    grid-template-columns: 1fr 4.5rem 4.5rem 3.75rem 4.25rem;
+    grid-template-columns: minmax(5rem, 1fr) 4.5rem 4.5rem 3.75rem 4.25rem;
     align-items: center;
     gap: 1px;
     width: 100%;
@@ -540,6 +545,32 @@
     font-variant-numeric: tabular-nums;
     text-align: left;
     cursor: default;
+  }
+
+  /* Narrow panel: drop Duration, then End — the name, position and type are what identify a
+     marker; the full set returns as soon as the panel is widened. */
+  @container markers-panel (max-width: 26rem) {
+    .marker-headers,
+    .marker-row {
+      grid-template-columns: minmax(5rem, 1fr) 4.5rem 4.5rem 4.25rem;
+    }
+
+    .sort-header[data-column="duration"],
+    .marker-duration {
+      display: none;
+    }
+  }
+
+  @container markers-panel (max-width: 21rem) {
+    .marker-headers,
+    .marker-row {
+      grid-template-columns: minmax(5rem, 1fr) 4.5rem 4.25rem;
+    }
+
+    .sort-header[data-column="end"],
+    .marker-end {
+      display: none;
+    }
   }
 
   .marker-row:hover {

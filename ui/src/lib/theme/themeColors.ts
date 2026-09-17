@@ -85,6 +85,9 @@ export interface ThemeColors {
     readonly curve: ThemeColor;
     readonly fill: ThemeColor;
     readonly handle: ThemeColor;
+    /** H-77: one colour per section (component), for the threshold handles and the per-section
+     * curve overlays; it wraps for a module with more sections than colours. */
+    readonly components: readonly ThemeColor[];
     readonly labelPatch: ThemeColor;
     readonly labelText: ThemeColor;
   };
@@ -179,6 +182,12 @@ export function readThemeColors(theme: ResolvedTheme): ThemeColors {
       curve,
       fill: color("--eq-fill"),
       handle: color("--pv-accent"),
+      components: [
+        color("--eq-band-1"),
+        color("--eq-band-2"),
+        color("--eq-band-3"),
+        color("--eq-band-4"),
+      ],
       labelPatch: color("--pv-bg-inset"),
       labelText: color("--pv-text-tertiary"),
     },

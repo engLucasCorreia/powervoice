@@ -48,7 +48,6 @@ import type {
   SpectralViewDto,
   SpectroRequestDto,
   StorageInfoDto,
-  TransferCurveDto,
   TransportStateDto,
   WaveformViewDto,
 } from "./bindings";
@@ -319,16 +318,19 @@ export async function rackResponseCurve(
   return invoke<ResponseCurveDto>("rack_response_curve" satisfies CommandName, { slot, points });
 }
 
-/** H-63: the transfer graph's curve over `points` input levels spanning `xMinDb … xMaxDb`
- * (SPEC-016 §4.11), lean-slice JSON — SPEC-016 §4.12's binary `VXTC` frame is T-410's. */
-export async function rackTransferCurve(
+/** H-77: the transfer graph's curve over `points` input levels spanning `xMinDb … xMaxDb` as a
+ * binary `VXTC` frame (SPEC-016 §4.12). `seq` is echoed in the frame, so a response older than
+ * the newest request can be dropped. */
+export async function moduleTransferCurve(
   slot: number,
+  seq: number,
   xMinDb: number,
   xMaxDb: number,
   points: number,
-): Promise<TransferCurveDto> {
-  return invoke<TransferCurveDto>("rack_transfer_curve" satisfies CommandName, {
+): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>("module_transfer_curve" satisfies CommandName, {
     slot,
+    seq,
     xMinDb,
     xMaxDb,
     points,

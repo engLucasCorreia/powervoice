@@ -460,3 +460,44 @@ H-71 implements exactly that — no new channel, no new event.
   same harmless fallback `record_peaks_get` uses for "no active take" — since a request racing the
   job's own completion (the UI switches to plain `peaks_get` once `document_changed` lands) is
   expected, not a bug.
+
+## Amendment 9 — H-77: the binary `VXTC` transfer curve (2026-09-16)
+Adopts SPEC-016 §4.12's second frame and closes Amendment 3's interim-JSON note for this path.
+`rack_transfer_curve` → **`module_transfer_curve(slot, seq, x_min_db, x_max_db, points ≤ 1024)`**,
+answering raw `VXTC` bytes over `ipc::Response` (the `peaks_get`/`VXPK` shape, not a channel: a
+curve is a request/response, not a stream). `rack_response_curve`'s JSON stays as Amendment 3
+describes it — the EQ's own binary frame is still open.
+
+| Off | Type | Field |
+|---|---|---|
+| 0 | `[u8;4]` | `"VXTC"` |
+| 4 | u16 | version = 1 |
+| 6 | u16 | header_len = 40 |
+| 8 | u32 | seq (echo of the request) |
+| 12 | u32 | flags: bit0 `HAS_FALLING` |
+| 16 | f32 | x_min_db |
+| 20 | f32 | x_max_db |
+| 24 | u32 | points P (x_i = x_min + i·(x_max − x_min)/(P − 1); levels are not transmitted) |
+| 28 | u32 | components C |
+| 32 | u32 | handles K |
+| 36 | u32 | reserved = 0 |
+| 40 | f32[P] | Rising output dBFS (−inf allowed, never NaN) |
+| … | f32[P] | Falling output dBFS, only with `HAS_FALLING` |
+| … | f32[C·P] | component gains dB (Rising), component-major |
+| … | K × {u32 param_id, f32 x_dbfs, f32 offset_db, u32 flags (bit0 `ENABLED`)} | handles |
+
+- **−∞ instead of a floor.** JSON had to report a muted level as `min_dbfs` (−200 dBFS); `f32`
+  carries −∞ itself, so the UI breaks the polyline on "not finite" and the `min_dbfs` field is
+  gone with the DTO. NaN is not a legal value: a module that produced one has its level written
+  as −∞.
+- **`seq`** is the client's own request counter, echoed so a response older than the newest
+  request is dropped (SPEC-016 §2.6 "Curve refresh"); the UI's `CoalescedCurveRequest` passes it
+  to the sender.
+- **Errors:** a slot whose module has no `TransferCurve` extension answers
+  `error.rack_no_extension` (`NotFound`; `RackApiError::NoExtension`) — the spec's `no_extension`
+  — and a non-finite or non-increasing range keeps `error.rack_rejected` (`InvalidArgument`).
+- Golden fixtures: `ui/src/lib/ipc/vxtc_fixture.ts` (Rust-generated, with and without
+  `HAS_FALLING`, including muted levels), decoded by `ui/src/lib/ipc/transferCurve.ts`.
+- **Command name.** SPEC-016 §4.12 named it `module_transfer_curve`; H-63's interim JSON shipped
+  as `rack_transfer_curve` (ADR-005 Amendment 6). The spec's name wins now that the frame is the
+  one the spec describes, and it reads with `module_telemetry_subscribe`.

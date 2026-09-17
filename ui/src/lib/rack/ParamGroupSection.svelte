@@ -1,9 +1,10 @@
 <script lang="ts">
   import { Icon } from "../ui";
-  import type { ParamGroupDto, ParamInfoDto, RackSlotDto } from "../ipc/bindings";
+  import type { ParamGroupDto, ParamInfoDto, RackSlotDto, TelemetryChannelDto } from "../ipc/bindings";
   import { localized } from "./localized";
   import ParamControl from "./ParamControl.svelte";
-  import { setParamText } from "./rack.svelte";
+  import { setParamText, slotTelemetry } from "./rack.svelte";
+  import TelemetryWidget from "./TelemetryWidget.svelte";
 
   /**
    * One parameter-group section (SPEC-012 §2.6): a header toggle when the group has an
@@ -11,6 +12,10 @@
    * in the built-ins yet), collapse state, and its body params dimmed (not disabled) while off.
    * `group === null` renders the ungrouped params with no header (SPEC-012 §2.6 "ungrouped
    * parameters come first").
+   *
+   * H-77 (ADR-005 §13, SPEC-016 §2.6): the group's own telemetry channels are widgets in its
+   * header — the section gain-reduction meters and the AutoGate lamp of the Dynamics panel, the
+   * Noise Gate's sidechain level bar, and whatever a later module declares.
    */
   let {
     slotIndex,
@@ -50,6 +55,18 @@
   const enabled = $derived(enableValue ? enableValue.value >= 0.5 : true);
   const bodyParams = $derived(params.filter((p) => p.id !== group?.enable_param));
 
+  /** This group's telemetry channels, with their index into the slot's `VXMT` values. */
+  const channels = $derived(
+    (rackSlot.telemetry ?? [])
+      .map((channel, index) => ({ channel, index }))
+      .filter(({ channel }) => group !== null && channel.group === group.id),
+  );
+  const meterValues = $derived(slotTelemetry(rackSlot.uid));
+
+  function channelValue(entry: { channel: TelemetryChannelDto; index: number }): number | undefined {
+    return meterValues?.[entry.index];
+  }
+
   function toggleEnable(): void {
     if (!enableParam) {
       return;
@@ -77,6 +94,13 @@
         <span class="arrow"><Icon name={collapsed ? "chevronRight" : "chevronDown"} size={12} /></span>
         {title}
       </button>
+      {#if channels.length > 0}
+        <span class="telemetry" data-testid="param-group-telemetry">
+          {#each channels as entry (entry.channel.id)}
+            <TelemetryWidget channel={entry.channel} value={channelValue(entry)} ticks />
+          {/each}
+        </span>
+      {/if}
     </header>
     {#if !collapsed}
       <div class="body" class:dimmed={!enabled}>
@@ -106,6 +130,18 @@
     align-items: center;
     gap: var(--pv-space-2);
     min-height: var(--pv-control-h-sm);
+  }
+
+  /* The group's meters sit at the end of its header, and give way before the title does. */
+  .telemetry {
+    display: flex;
+    flex: 0 1 auto;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--pv-space-2);
+    margin-left: auto;
+    min-width: 0;
+    overflow: hidden;
   }
 
   header input[type="checkbox"] {

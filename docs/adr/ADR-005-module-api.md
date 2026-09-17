@@ -917,8 +917,9 @@ list stays as it was; this is a new, additive `ExtensionId`/`Extension` variant.
   construction like the other pure-function handles) and `SlotInfo::transfer_handles`
   (`Some` exactly when the module answers the extension; the UI's transfer graph renders on it).
 - **Engine / IPC:** `EngineHandle::transfer_curve(index, x_min_db, x_max_db, points)` →
-  `TransferCurvePoints`, exposed as `rack_transfer_curve` → `TransferCurveDto` (JSON, like
-  `rack_response_curve`; ADR-003's interim-JSON note). Points are clamped to 1024; a non-finite or
-  non-increasing range is rejected. SPEC-016 §4.12's binary `VXTC` frame remains T-410's.
+  `TransferCurvePoints`. Points are clamped to 1024; a non-finite or non-increasing range is
+  rejected. *(H-77: first exposed as `rack_transfer_curve` → `TransferCurveDto` (JSON); it is now
+  `module_transfer_curve` → the binary `VXTC` frame of SPEC-016 §4.12, ADR-003 Amendment 9, and
+  a slot without the extension answers `RackApiError::NoExtension`.)*
 - **Implemented by** Dynamics (4 components + 4 handles, SPEC-016 §4.11) and the Noise Gate
   (1 component + 1 handle, SPEC-013 §4.3). A module without the extension simply answers `None`.

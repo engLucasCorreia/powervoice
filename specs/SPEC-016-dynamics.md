@@ -31,19 +31,20 @@
   1:1 diagonal, solid Rising / dashed Falling, draggable threshold handles through
   `set_param_plain`), rendered above the generic parameter panel for any module that answers the
   extension.
-  **Deferred (T-403/T-410 remainder):**
-  - **The binary `VXTC` frame** (§4.12): the curve travels as JSON today
-    (`rack_transfer_curve` → `TransferCurveDto`, ADR-003's interim-JSON note), so AC-23's golden
-    `VXTC` fixture and its 5 ms/512-point timing test are still T-410's.
-  - **The custom Dynamics panel (§2.6, T-410)** — section panels, gain-reduction meters, the
-    latency readout, the always-on handle labels and the live **operating-point dot** (it needs
-    the section makeup, which no Telemetry channel carries) — and the `VXMT` telemetry frame: the
-    rack still shows the module through the generic parameter UI plus the graph, so AC-20,
-    AC-22 – AC-24 describe the target, not current behaviour. AC-21 holds for the parts of the
-    graph H-63 built.
+  **H-77** finished T-410: the **binary `VXTC` frame** (§4.12, ADR-003 Amendment 9) replaced the
+  interim JSON — `module_transfer_curve(slot, seq, x_min_db, x_max_db, points)` over
+  `ipc::Response`, with Rust-generated golden fixtures (with and without `HAS_FALLING`) and
+  AC-23's 5 ms/512-point timing test — and the **custom Dynamics panel** (§2.6): the global row
+  with the look-ahead's latency readout, the graph, the four sections in processing order, a
+  **gain-reduction meter per section** and the **AutoGate lamp** (generic Telemetry widgets in
+  each group header, ADR-005 §13, so the Noise Gate's UI of SPEC-013 §2.7 is the same code), the
+  always-on handle labels, the per-section curve overlays and the live **operating-point dot**.
+  The `VXMT` frame itself shipped with H-03. **AC-20 – AC-23 hold; AC-24 is the owner's manual
+  smoke.**
 
-  Every panel section and wire format below that covers `VXTC`/`VXMT` or the custom panel
-  describes the T-410 target, not current behaviour.
+  **Two deviations from the text below:** a muted level travels as `f32` −∞ rather than a floor
+  (the frame has no `min_dbfs` field, which only JSON needed), and a gain-reduction meter whose
+  channel declares a range narrower than 0 … −30 dB keeps it (SPEC-017 §2.3's limiter meter).
 
 ## 1. Purpose
 A voice-over take swings between loud and soft words, has breaths and room tone between phrases,
@@ -583,7 +584,7 @@ All three are **Decided (autonomous, T-400)** and flagged for amendment.
     `param_changed`, exactly like the other two commands.
   - Shared with the EQ graph handles (SPEC-015). Whichever ticket lands first adds it.
 - **`module_transfer_curve(slot, seq, x_min_db, x_max_db, points ≤ 1024)`** → binary `Response`
-  **`VXTC`**:
+  **`VXTC`** (H-77, as implemented; ADR-003 Amendment 9):
   - It is evaluated on the command thread from the slot's `TransferCurve` handle and the mirror's
     **target** values.
   - Errors: `no_extension` or `bad_request`.
@@ -602,7 +603,7 @@ All three are **Decided (autonomous, T-400)** and flagged for amendment.
   | 28 | u32 | components C |
   | 32 | u32 | handles K |
   | 36 | u32 | reserved = 0 |
-  | 40 | f32[P] | Rising output dBFS (−inf allowed, never NaN) |
+  | 40 | f32[P] | Rising output dBFS (−inf for a muted level, never NaN) |
   | … | f32[P] | Falling output dBFS, only if `HAS_FALLING` |
   | … | f32[C·P] | component gains dB (Rising), component-major |
   | … | K × {u32 param_id, f32 x_dbfs, f32 offset_db, u32 flags (bit0 `ENABLED`)} | handles |

@@ -7,6 +7,8 @@
  * so "−23.0 LUFS" never wraps between number and unit; `%` attaches directly.
  */
 
+import type { UnitDto } from "../ipc/bindings";
+
 export const MINUS = "−";
 const NBSP = " ";
 
@@ -47,6 +49,38 @@ export function formatWithUnit(
     return text;
   }
   return unit === "%" ? `${text}%` : `${text}${NBSP}${unit}`;
+}
+
+/**
+ * The display suffix of a schema unit (H-77): what `formatWithUnit` puts after the number for a
+ * telemetry channel, whose values — unlike parameter values (SPEC-012 §2.6) — arrive as raw
+ * numbers in binary frames and are formatted here.
+ */
+export function unitSuffix(unit: UnitDto): string {
+  switch (unit.kind) {
+    case "db":
+      return "dB";
+    case "dbfs":
+      return "dBFS";
+    case "dbtp":
+      return "dBTP";
+    case "lufs":
+      return "LUFS";
+    case "hz":
+      return "Hz";
+    case "ms":
+      return "ms";
+    case "seconds":
+      return "s";
+    case "percent":
+      return "%";
+    case "samples":
+      return "smp";
+    case "custom":
+      return unit.label;
+    default:
+      return "";
+  }
 }
 
 const UNIT_SUFFIX = /\s*(dbfs|dbtp|db|lufs|lu|ms|s|khz|hz|smp|samples|%)$/i;

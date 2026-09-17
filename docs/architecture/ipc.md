@@ -85,6 +85,7 @@ version or truncated buffer. `u64` values are read as `lo + hi × 2^32`.
 | `VXLT` | Long-term average spectrum (+ noise curve) | 36 | `src-tauri/src/spectrum.rs` | `spectrum_analyze_curve` response | `ui/src/lib/ipc/inspector.ts` |
 | `VXST` | Spectrogram tile: u8 magnitudes, frame-major, `PREVIEW`/`LAST` flags | 64 | `crates/engine/src/spectro/vxst.rs` | `spectro_attach` channel, fed by `spectro_request` | `ui/src/lib/spectrogram/vxst.ts` |
 | `VXPK` | Waveform min/max buckets, or raw samples when zoomed in | 48 | `crates/project/src/vxpk.rs` | `peaks_get` / `record_peaks_get` response | `ui/src/lib/waveform/vxpk.ts` |
+| `VXTC` | Transfer curve: Rising (+ Falling) output levels, component gains and threshold handles | 40 | `crates/engine/src/rack_api.rs` | `module_transfer_curve` response | `ui/src/lib/ipc/transferCurve.ts` |
 
 `analyzer_voice_subscribe` is the one JSON channel (a `VoiceReportDto` a few times a second).
 
@@ -101,8 +102,9 @@ at 60 Hz into silence.
 Test fixtures for every frame are generated from Rust (`export_bindings_*_fixture` tests) into
 `ui/src/lib/ipc/vx*_fixture.ts` and diffed by `just check-types`, so both sides decode the same
 bytes. The EQ response curve is JSON today (`rack_response_curve` → `ResponseCurveDto`); the
-planned `VXRC` frame is not implemented. The dynamics transfer curve follows the same route
-(`rack_transfer_curve` → `TransferCurveDto`, H-63); SPEC-016 §4.12's binary `VXTC` frame is T-410's.
+planned `VXRC` frame is not implemented. The dynamics transfer curve is binary (H-77):
+`module_transfer_curve` answers a `VXTC` frame, so a muted level travels as −∞ instead of a
+JSON floor.
 
 Stale-data rules: `peaks_get` responses carry `audio_rev` and a `request_id`; the waveform drops
 responses from older revisions or older requests. Spectrogram requests cancel the view's older
@@ -152,7 +154,7 @@ is stale. "Reply" is how the result travels: JSON, a binary `Response`, or a str
 | 32 | `param_set_text` | [`rack_commands.rs`](../../src-tauri/src/ipc/rack_commands.rs) | JSON | Sets a parameter from typed text; Rust parses it (SPEC-012 §2.6). |
 | 33 | `param_set_plain` | [`rack_commands.rs`](../../src-tauri/src/ipc/rack_commands.rs) | JSON | Sets a parameter from a plain value (S3-07, SPEC-015 §2.6.6): the EQ graph's draggable nodes send Hz/dB/Q values directly — the inverse of the display axis mapping, not taper code, so this still isn't the UI running filter math. |
 | 34 | `rack_response_curve` | [`rack_commands.rs`](../../src-tauri/src/ipc/rack_commands.rs) | JSON | The EQ graph's response curve at `points` (S3-07, SPEC-015 §2.6.6, lean slice: JSON of ≤ `vox_engine::MAX_RESPONSE_CURVE_POINTS` frequencies — the binary `VXRC` frame is hardening). |
-| 35 | `rack_transfer_curve` | [`rack_commands.rs`](../../src-tauri/src/ipc/rack_commands.rs) | JSON | The transfer graph's curve (H-63, SPEC-016 §4.11, lean slice: JSON of `points` (≤ `vox_engine::MAX_TRANSFER_CURVE_POINTS`) levels evenly spaced over `x_min_db … x_max_db` — the binary `VXTC` frame of §4.12 is T-410). |
+| 35 | `module_transfer_curve` | [`rack_commands.rs`](../../src-tauri/src/ipc/rack_commands.rs) | binary (`Response`) | The transfer graph's curve as a binary `VXTC` frame (H-77, SPEC-016 §4.12): `points` (≤ `vox_engine::MAX_TRANSFER_CURVE_POINTS`) levels evenly spaced over `x_min_db … x_max_db`, the Falling branch when the module reports hysteresis, one row per component and the draggable handles. |
 | 36 | `module_telemetry_subscribe` | [`rack_commands.rs`](../../src-tauri/src/ipc/rack_commands.rs) | stream (`Channel`) | Streams binary `VXMT` module-telemetry frames (H-03, SPEC-016 §4.12: every slot's `Telemetry` values, e.g. the true-peak limiter's gain reduction) at the telemetry rate over `channel`, replacing any previous subscriber. |
 | 37 | `module_presets_list` | [`preset_commands.rs`](../../src-tauri/src/ipc/preset_commands.rs) | JSON | Factory presets first — the built-in's own (`ModuleFactory::presets`, ADR-005 §2), then a `.voxmod` package's `presets/*.vopreset.json` (H-44, ADR-006 §3/§7 step 5; empty unless `module_id` was installed from a package that shipped some) — then user-saved ones (alphabetical) — the slot menu's preset list (SPEC-012 §2.7). |
 | 38 | `module_preset_save` | [`preset_commands.rs`](../../src-tauri/src/ipc/preset_commands.rs) | JSON | Saves slot `slot`'s current committed state as a new user preset named `name`. |

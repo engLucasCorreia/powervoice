@@ -1,21 +1,21 @@
 /**
- * Turns a `TransferCurveDto` into canvas polylines (H-63). Pure and canvas-free so the geometry
- * is testable in jsdom; no level maths of its own — every dB value comes from Rust's
+ * Turns a decoded `VXTC` frame into canvas polylines (H-63, H-77). Pure and canvas-free so the
+ * geometry is testable in jsdom; no level maths of its own — every dB value comes from Rust's
  * `TransferCurve` (SPEC-016 §4.11).
  */
 
-import type { TransferCurveDto } from "../ipc/bindings";
-import { TRANSFER_MIN_DBFS, xForLevel, yForLevel } from "./levelAxis";
+import type { TransferCurveFrame } from "../ipc/transferCurve";
+import { xForLevel, yForLevel } from "./levelAxis";
 
 export interface ScreenPoint {
   x: number;
   y: number;
 }
 
-/** Below this the output is off the bottom of the graph: a muted level (Rust's −∞, reported as
- * `min_dbfs` because JSON has no −∞) breaks the polyline instead of diving to the corner. */
-function isDrawable(db: number, minDbfs: number): boolean {
-  return Number.isFinite(db) && db > Math.max(minDbfs, TRANSFER_MIN_DBFS - 1e-9);
+/** A muted level (Rust's −∞, which `VXTC` carries as an `f32` −∞) breaks the polyline instead of
+ * diving to the corner. */
+function isDrawable(db: number): boolean {
+  return Number.isFinite(db);
 }
 
 /**
@@ -23,18 +23,44 @@ function isDrawable(db: number, minDbfs: number): boolean {
  * new sub-path at each `null`, so a gate's silent region leaves a gap rather than a spike.
  */
 export function branchToScreen(
-  curve: TransferCurveDto,
+  curve: TransferCurveFrame,
   outDb: readonly number[],
   width: number,
   height: number,
 ): (ScreenPoint | null)[] {
-  return curve.in_dbfs.map((inDb, i) => {
+  return curve.inDbfs.map((inDb, i) => {
     const out = outDb[i];
-    if (out === undefined || !Number.isFinite(inDb) || !isDrawable(out, curve.min_dbfs)) {
+    if (out === undefined || !Number.isFinite(inDb) || !isDrawable(out)) {
       return null;
     }
     return { x: xForLevel(inDb, width), y: yForLevel(out, height) };
   });
+}
+
+/**
+ * One component's own contribution as canvas points (H-77, SPEC-016 §2.6 "per-component curve
+ * overlays"): the output the section alone would produce, `input + its gain`, so the overlay
+ * reads on the same axes as the total curve. `null` wherever the section mutes.
+ */
+export function componentToScreen(
+  curve: TransferCurveFrame,
+  gainDb: readonly number[],
+  width: number,
+  height: number,
+): (ScreenPoint | null)[] {
+  return curve.inDbfs.map((inDb, i) => {
+    const gain = gainDb[i];
+    if (gain === undefined || !Number.isFinite(inDb) || !isDrawable(gain)) {
+      return null;
+    }
+    return { x: xForLevel(inDb, width), y: yForLevel(inDb + gain, height) };
+  });
+}
+
+/** True when a component does something at some level (a disabled section contributes exactly
+ * 0 dB everywhere, and drawing that on the 1:1 diagonal is only noise). */
+export function componentIsActive(gainDb: readonly number[], epsilonDb = 1e-6): boolean {
+  return gainDb.some((g) => !Number.isFinite(g) || Math.abs(g) > epsilonDb);
 }
 
 /**

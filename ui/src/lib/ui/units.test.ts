@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatNumber, formatWithUnit, MINUS, parseNumber } from "./units";
+import { formatNumber, formatWithUnit, MINUS, parseNumber, unitSuffix } from "./units";
 
 describe("formatNumber", () => {
   it("uses a true minus sign (U+2212) for negatives and fixed decimals", () => {
@@ -80,5 +80,20 @@ describe("parseNumber", () => {
     expect(parseNumber("abc")).toBeNull();
     expect(parseNumber("1.2.3")).toBeNull();
     expect(parseNumber("--3")).toBeNull();
+  });
+});
+
+describe("unitSuffix (H-77: telemetry values are formatted in the UI)", () => {
+  it("maps every schema unit to its display suffix", () => {
+    expect(unitSuffix({ kind: "db" })).toBe("dB");
+    expect(unitSuffix({ kind: "dbfs" })).toBe("dBFS");
+    expect(unitSuffix({ kind: "none" })).toBe("");
+    expect(unitSuffix({ kind: "ratio" })).toBe("");
+    expect(unitSuffix({ kind: "custom", label: "gr" })).toBe("gr");
+  });
+
+  it("formats a telemetry value with it", () => {
+    // Value and unit are joined by a no-break space (H-25).
+    expect(formatWithUnit(-6, unitSuffix({ kind: "db" }), 1)).toBe("−6.0\u00a0dB");
   });
 });

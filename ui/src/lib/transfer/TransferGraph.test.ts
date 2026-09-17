@@ -1,10 +1,12 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { LocalizedTextDto, ParamInfoDto, RackSlotDto, TransferCurveDto } from "../ipc/bindings";
+import type { LocalizedTextDto, ParamInfoDto, RackSlotDto } from "../ipc/bindings";
 import { flushPendingPlainDrags, resetRackForTest } from "../rack/rack.svelte";
 import { frameScheduler } from "../render/frameScheduler";
 import { rackSlotDto } from "../test/fixtures";
+import { box } from "../test/reactive.svelte";
+import { encodeVxtc, type VxtcFields } from "../test/vxtc";
 import TransferGraph from "./TransferGraph.svelte";
 import { TRANSFER_MAX_DBFS, TRANSFER_MIN_DBFS, levelForX, xForLevel } from "./levelAxis";
 
@@ -77,25 +79,16 @@ function slotFixture(): RackSlotDto {
   });
 }
 
-function curveDto(overrides: Partial<TransferCurveDto> = {}): TransferCurveDto {
-  const inDbfs = [-80, -40, 0, 6];
-  return {
-    in_dbfs: inDbfs,
-    rising_db: [-80, -40, -6, -5],
-    falling_db: null,
-    components_db: [],
+function curveFrame(overrides: Partial<VxtcFields> = {}): ArrayBuffer {
+  return encodeVxtc({
+    xMinDb: TRANSFER_MIN_DBFS,
+    xMaxDb: TRANSFER_MAX_DBFS,
+    rising: [-80, -40, -6, -5],
     handles: [
-      {
-        component: 2,
-        param: COMPRESSOR_THRESHOLD_ID,
-        x_dbfs: -20 + OFFSET_DB,
-        offset_db: OFFSET_DB,
-        enabled: true,
-      },
+      { param: COMPRESSOR_THRESHOLD_ID, xDbfs: -20 + OFFSET_DB, offsetDb: OFFSET_DB },
     ],
-    min_dbfs: -200,
     ...overrides,
-  };
+  });
 }
 
 let widthDescriptor: PropertyDescriptor | undefined;
@@ -142,12 +135,12 @@ async function afterFrame(): Promise<void> {
 }
 
 describe("curve fetch (SPEC-016 §4.11)", () => {
-  it("requests rack_transfer_curve for the slot over the spec's level range", async () => {
+  it("requests module_transfer_curve for the slot over the spec's level range", async () => {
     const calls: unknown[] = [];
     mockIPC((cmd, args) => {
-      if (cmd === "rack_transfer_curve") {
+      if (cmd === "module_transfer_curve") {
         calls.push(args);
-        return curveDto();
+        return curveFrame();
       }
       return { slots: [], ab: false, latency_samples: 0 };
     });
@@ -156,6 +149,7 @@ describe("curve fetch (SPEC-016 §4.11)", () => {
     expect(calls.length).toBeGreaterThan(0);
     expect(calls[0]).toEqual({
       slot: 0,
+      seq: 1,
       xMinDb: TRANSFER_MIN_DBFS,
       xMaxDb: TRANSFER_MAX_DBFS,
       points: SIDE,
@@ -168,11 +162,11 @@ describe("curve fetch (SPEC-016 §4.11)", () => {
   it("keeps the last curve when a request fails (no extension, rack closed)", async () => {
     let fail = false;
     mockIPC((cmd) => {
-      if (cmd === "rack_transfer_curve") {
+      if (cmd === "module_transfer_curve") {
         if (fail) {
           throw new Error("no transfer-curve support");
         }
-        return curveDto();
+        return curveFrame();
       }
       return { slots: [], ab: false, latency_samples: 0 };
     });
@@ -186,10 +180,10 @@ describe("curve fetch (SPEC-016 §4.11)", () => {
   it("notes the dashed falling branch only when the module reports hysteresis", async () => {
     let hysteresis = false;
     mockIPC((cmd) => {
-      if (cmd === "rack_transfer_curve") {
+      if (cmd === "module_transfer_curve") {
         return hysteresis
-          ? curveDto({ falling_db: [-200, -40, -6, -5] })
-          : curveDto();
+          ? curveFrame({ falling: [Number.NEGATIVE_INFINITY, -40, -6, -5] })
+          : curveFrame();
       }
       return { slots: [], ab: false, latency_samples: 0 };
     });
@@ -206,12 +200,85 @@ describe("curve fetch (SPEC-016 §4.11)", () => {
   });
 });
 
+describe("request sequencing (SPEC-016 §2.6 \"Curve refresh\", AC-21)", () => {
+  it("asks again after a parameter change, and ignores a response older than the newest request", async () => {
+    const pending: Array<(frame: ArrayBuffer) => void> = [];
+    const seqs: number[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "module_transfer_curve") {
+        seqs.push((args as { seq: number }).seq);
+        return new Promise<ArrayBuffer>((resolve) => pending.push(resolve));
+      }
+      return { slots: [], ab: false, latency_samples: 0 };
+    });
+    const slot = slotFixture();
+    stubClientWidth(WIDTH);
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const rackSlot = box(slot);
+    const app = mount(TransferGraph, {
+      target,
+      props: {
+        slotIndex: 0,
+        get rackSlot() {
+          return rackSlot.value;
+        },
+      },
+    });
+    flushSync();
+    await afterFrame();
+    expect(seqs).toEqual([1]);
+
+    // A `param_changed` echo replaces the slot's values: exactly one new request follows.
+    rackSlot.value = {
+      ...slot,
+      values: slot.values.map((v) =>
+        v.id === COMPRESSOR_THRESHOLD_ID ? { ...v, value: -26, text: "-26" } : v,
+      ),
+    };
+    flushSync();
+    await afterFrame();
+    expect(seqs).toEqual([1, 2]);
+
+    // The newest request answers first; the stale one that lands afterwards is dropped.
+    pending[1]!(curveFrame({ handles: [{ param: COMPRESSOR_THRESHOLD_ID, xDbfs: -26 }] }));
+    await settle();
+    pending[0]!(curveFrame({ handles: [{ param: COMPRESSOR_THRESHOLD_ID, xDbfs: -20 }] }));
+    await settle();
+
+    // The graph still shows the newest curve: a press at the stale handle position grabs
+    // nothing, one at the new position starts a drag.
+    const calls: Array<{ id: number }> = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "param_set_plain") {
+        calls.push(args as { id: number });
+      }
+      return { slots: [], ab: false, latency_samples: 0 };
+    });
+    const canvas = target.querySelector<HTMLCanvasElement>('[data-testid="transfer-canvas"]')!;
+    const press = (x: number): void => {
+      canvas.dispatchEvent(new PointerEvent("pointerdown", { clientX: x, bubbles: true, pointerId: 1 }));
+      canvas.dispatchEvent(new PointerEvent("pointermove", { clientX: x + 5, bubbles: true, pointerId: 1 }));
+      canvas.dispatchEvent(new PointerEvent("pointerup", { clientX: x + 5, bubbles: true, pointerId: 1 }));
+    };
+    press(xForLevel(-20, SIDE));
+    flushPendingPlainDrags();
+    await settle();
+    expect(calls).toHaveLength(0);
+    press(xForLevel(-26, SIDE));
+    flushPendingPlainDrags();
+    await settle();
+    expect(calls).toHaveLength(1);
+    unmount(app);
+  });
+});
+
 describe("threshold handles (SPEC-016 §2.6)", () => {
   async function mounted() {
     const calls: Array<{ id: number; value: number }> = [];
     mockIPC((cmd, args) => {
-      if (cmd === "rack_transfer_curve") {
-        return curveDto();
+      if (cmd === "module_transfer_curve") {
+        return curveFrame();
       }
       if (cmd === "param_set_plain") {
         calls.push(args as { id: number; value: number });
@@ -237,7 +304,9 @@ describe("threshold handles (SPEC-016 §2.6)", () => {
 
     const call = calls.find((c) => c.id === COMPRESSOR_THRESHOLD_ID);
     expect(call).toBeDefined();
-    expect(call!.value).toBeCloseTo(levelForX(startX + 20, SIDE) - OFFSET_DB, 9);
+    // The handle offset makes the round trip through the frame's `f32`, so the comparison is to
+    // 1e-4 dB — far inside AC-21's "one pixel's dB span".
+    expect(call!.value).toBeCloseTo(levelForX(startX + 20, SIDE) - OFFSET_DB, 4);
     teardown();
   });
 
@@ -258,7 +327,7 @@ describe("threshold handles (SPEC-016 §2.6)", () => {
     flushPendingPlainDrags();
     await settle();
     const call = calls.find((c) => c.id === COMPRESSOR_THRESHOLD_ID)!;
-    expect(call.value).toBeCloseTo(levelForX(startX + 10, SIDE) - OFFSET_DB, 9);
+    expect(call.value).toBeCloseTo(levelForX(startX + 10, SIDE) - OFFSET_DB, 4);
     teardown();
   });
 
@@ -284,9 +353,17 @@ describe("threshold handles (SPEC-016 §2.6)", () => {
   it("does not drag a handle whose section is disabled", async () => {
     const calls: Array<{ id: number }> = [];
     mockIPC((cmd, args) => {
-      if (cmd === "rack_transfer_curve") {
-        const dto = curveDto();
-        return { ...dto, handles: [{ ...dto.handles[0]!, enabled: false }] };
+      if (cmd === "module_transfer_curve") {
+        return curveFrame({
+          handles: [
+            {
+              param: COMPRESSOR_THRESHOLD_ID,
+              xDbfs: -20 + OFFSET_DB,
+              offsetDb: OFFSET_DB,
+              enabled: false,
+            },
+          ],
+        });
       }
       if (cmd === "param_set_plain") {
         calls.push(args as { id: number });

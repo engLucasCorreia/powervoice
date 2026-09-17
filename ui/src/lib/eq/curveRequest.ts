@@ -5,9 +5,10 @@
  * testable without a real animation-frame clock.
  */
 
-/** What one request carries: the EQ graph sends a frequency list, the transfer graph a level
- * range and a point count. */
-export type CurveSender<T, A = number[]> = (args: A) => Promise<T>;
+/** What one request carries: the EQ graph sends a frequency list, the transfer graph a point
+ * count. `seq` is this request's sequence number — a command that echoes it in its response (the
+ * transfer graph's `VXTC` frame, SPEC-016 §4.12) passes it on; the EQ graph ignores it. */
+export type CurveSender<T, A = number[]> = (args: A, seq: number) => Promise<T>;
 
 function defaultSchedule(cb: () => void): number {
   return typeof requestAnimationFrame === "function"
@@ -80,7 +81,7 @@ export class CoalescedCurveRequest<T, A = number[]> {
       return;
     }
     const seq = ++this.#seq;
-    this.#send(pending.args).then(
+    this.#send(pending.args, seq).then(
       (result) => {
         if (seq === this.#seq) {
           this.#onResult(result);

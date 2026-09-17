@@ -372,7 +372,7 @@ fn transfer_curve_reflects_the_mirror_and_reports_no_support_for_other_modules()
     assert!(
         matches!(
             eng.transfer_curve(0, -80.0, 6.0, 8),
-            Err(RackApiError::Rack(_))
+            Err(RackApiError::NoExtension)
         ),
         "Gain has no TransferCurve"
     );
@@ -428,8 +428,8 @@ fn transfer_curve_reflects_the_mirror_and_reports_no_support_for_other_modules()
     let gated = eng.transfer_curve(1, -80.0, 6.0, 5).unwrap();
     assert!(gated.falling_db.is_some());
     assert!(
-        (gated.rising_db[0] - vox_engine::TRANSFER_CURVE_MIN_DBFS).abs() < 1e-9,
-        "JSON has no −inf: digital silence reads the floor, got {}",
+        gated.rising_db[0] == f64::NEG_INFINITY,
+        "a closed gate mutes: the level is −inf (H-77, `VXTC` carries it), got {}",
         gated.rising_db[0]
     );
     assert!(gated.handles[0].enabled);
@@ -467,4 +467,154 @@ fn rack_model_reflects_the_live_rack() {
 
     eng.rack_command(RackCommand::Remove { index: 0 }).unwrap();
     assert!(eng.rack_model().slots.is_empty());
+}
+
+/// Decodes a `VXTC` frame the way the UI's `decodeVxtc` does (H-77, SPEC-016 §4.12), so the
+/// Rust-side tests assert the same field layout the TS golden fixture pins.
+struct Vxtc {
+    seq: u32,
+    flags: u32,
+    x_min_db: f32,
+    x_max_db: f32,
+    rising: Vec<f32>,
+    falling: Option<Vec<f32>>,
+    components: Vec<Vec<f32>>,
+    handles: Vec<(u32, f32, f32, u32)>,
+}
+
+fn decode_vxtc(bytes: &[u8]) -> Vxtc {
+    let u16at = |o: usize| u16::from_le_bytes(bytes[o..o + 2].try_into().unwrap());
+    let u32at = |o: usize| u32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
+    let f32at = |o: usize| f32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
+    assert_eq!(&bytes[0..4], b"VXTC");
+    assert_eq!(u16at(4), 1, "version");
+    let header_len = usize::from(u16at(6));
+    assert_eq!(header_len, vox_engine::VXTC_HEADER_LEN);
+    let flags = u32at(12);
+    let points = u32at(24) as usize;
+    let components = u32at(28) as usize;
+    let handles = u32at(32) as usize;
+    assert_eq!(u32at(36), 0, "reserved");
+    let mut o = header_len;
+    let take = |o: &mut usize| {
+        let v: Vec<f32> = (0..points).map(|i| f32at(*o + 4 * i)).collect();
+        *o += 4 * points;
+        v
+    };
+    let rising = take(&mut o);
+    let falling = (flags & vox_engine::VXTC_HAS_FALLING != 0).then(|| take(&mut o));
+    let components: Vec<Vec<f32>> = (0..components).map(|_| take(&mut o)).collect();
+    let handles: Vec<(u32, f32, f32, u32)> = (0..handles)
+        .map(|k| {
+            let base = o + 16 * k;
+            (
+                u32at(base),
+                f32at(base + 4),
+                f32at(base + 8),
+                u32at(base + 12),
+            )
+        })
+        .collect();
+    assert_eq!(o + 16 * handles.len(), bytes.len(), "no trailing bytes");
+    Vxtc {
+        seq: u32at(8),
+        flags,
+        x_min_db: f32at(16),
+        x_max_db: f32at(20),
+        rising,
+        falling,
+        components,
+        handles,
+    }
+}
+
+/// H-77 (SPEC-016 §4.12, AC-23): the transfer curve travels as a binary `VXTC` frame — every
+/// field in the spec's layout, `HAS_FALLING` only with a hysteresis loop, −∞ for a muted level —
+/// and 512 points are evaluated and framed well inside the 5 ms budget.
+///
+/// The exact float comparisons are wire-format checks against Rust's own encoder (the values
+/// round-trip bit for bit), not measurements.
+#[allow(clippy::float_cmp)]
+#[test]
+fn transfer_curve_encodes_a_vxtc_frame_within_the_time_budget() {
+    let (mut eng, _events) = rig();
+    eng.rack_command(RackCommand::Add {
+        module_id: Dynamics::ID.into(),
+        index: 0,
+    })
+    .unwrap();
+
+    let points = eng.transfer_curve(0, -80.0, 6.0, 9).unwrap();
+    let frame = decode_vxtc(&points.encode(42));
+    assert_eq!(frame.seq, 42, "the request's seq is echoed");
+    assert_eq!(frame.flags, 0, "no hysteresis with the AutoGate off");
+    assert!(frame.falling.is_none());
+    assert_eq!(frame.x_min_db, -80.0);
+    assert_eq!(frame.x_max_db, 6.0);
+    assert_eq!(frame.rising.len(), 9);
+    assert_eq!(frame.components.len(), 4, "one row per section");
+    assert_eq!(frame.handles.len(), 4);
+    for (i, &x) in frame.rising.iter().enumerate() {
+        assert!(
+            (f64::from(x) - points.rising_db[i]).abs() < 1e-3,
+            "level {i} survives the f32 round trip"
+        );
+    }
+    for (row, expected) in frame.components.iter().zip(&points.components_db) {
+        for (i, &x) in row.iter().enumerate() {
+            assert!((f64::from(x) - expected[i]).abs() < 1e-3);
+        }
+    }
+    let compressor = frame.handles[2];
+    assert_eq!(compressor.0, Dynamics::COMPRESSOR_THRESHOLD_DB.0);
+    assert!((f64::from(compressor.1) - points.handles[2].x_dbfs).abs() < 1e-3);
+    assert!((f64::from(compressor.2) - points.handles[2].offset_db).abs() < 1e-3);
+    assert_eq!(
+        compressor.3,
+        vox_engine::VXTC_HANDLE_ENABLED,
+        "on by default"
+    );
+    assert_eq!(frame.handles[0].3, 0, "the AutoGate is off by default");
+
+    // The AutoGate's hysteresis adds the Falling branch, and its closed region is −∞.
+    eng.rack_command(RackCommand::SetParamPlain {
+        index: 0,
+        id: Dynamics::AUTOGATE_ENABLED,
+        value: 1.0,
+    })
+    .unwrap();
+    // 1 dB apart, so the 3 dB hysteresis band around the −50 dBFS threshold is sampled.
+    let gated = eng.transfer_curve(0, -80.0, 6.0, 87).unwrap().encode(43);
+    let gated = decode_vxtc(&gated);
+    assert_eq!(gated.flags, vox_engine::VXTC_HAS_FALLING);
+    let falling = gated.falling.expect("the Falling branch is present");
+    assert_eq!(falling.len(), 87);
+    assert_eq!(
+        gated.rising[0],
+        f32::NEG_INFINITY,
+        "a closed gate mutes: −∞, never NaN"
+    );
+    assert!(
+        gated.rising.iter().chain(&falling).all(|v| !v.is_nan()),
+        "no NaN reaches the UI"
+    );
+    assert!(
+        falling.iter().zip(&gated.rising).any(|(f, r)| f != r),
+        "the hysteresis loop differs from the Rising branch"
+    );
+
+    // AC-23: `module_transfer_curve` answers within 5 ms for 512 points. Measured over 20 runs
+    // so one scheduling hiccup on a loaded CI box doesn't fail the build; a debug build is well
+    // inside the budget already.
+    let mut worst = std::time::Duration::ZERO;
+    for seq in 0..20 {
+        let start = std::time::Instant::now();
+        let bytes = eng.transfer_curve(0, -80.0, 6.0, 512).unwrap().encode(seq);
+        worst = worst.max(start.elapsed());
+        assert_eq!(bytes.len(), 40 + 4 * 512 * (2 + 4) + 16 * 4);
+    }
+    assert!(
+        worst < std::time::Duration::from_millis(5),
+        "512 points took {worst:?}, over SPEC-016 §4.12's 5 ms budget"
+    );
 }

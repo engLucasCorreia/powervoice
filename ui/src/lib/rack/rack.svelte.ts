@@ -332,10 +332,39 @@ export function lastFocusedSlotIndex(): number | null {
   return lastFocusedSlot;
 }
 
+/** H-77 (SPEC-016 §2.6 "Stale"): with no `VXMT` frame for this long — a transport that has gone
+ * idle, or a rack that lost its telemetry — every meter reads 0 and every lamp goes off. */
+export const TELEMETRY_STALE_MS = 250;
+
+/** Whether the last `VXMT` frame is older than {@link TELEMETRY_STALE_MS}. Event-driven (one
+ * timer per frame), so nothing polls while the app is idle (H-43). */
+let telemetryStale = $state(true);
+let staleTimer: ReturnType<typeof setTimeout> | null = null;
+
+function noteTelemetryFrame(): void {
+  telemetryStale = false;
+  if (staleTimer !== null) {
+    clearTimeout(staleTimer);
+  }
+  staleTimer = setTimeout(() => {
+    staleTimer = null;
+    telemetryStale = true;
+  }, TELEMETRY_STALE_MS);
+}
+
+function clearTelemetryFreshness(): void {
+  if (staleTimer !== null) {
+    clearTimeout(staleTimer);
+    staleTimer = null;
+  }
+  telemetryStale = true;
+}
+
 /** H-03: slot `uid`'s telemetry values from the latest `VXMT` frame (in its `telemetry` channel
- * order), or `undefined` before any frame carried it. */
+ * order), or `undefined` before any frame carried it — or once the last frame went stale
+ * (H-77, SPEC-016 §2.6), which is what makes the meters fall back to rest. */
 export function slotTelemetry(uid: number): readonly number[] | undefined {
-  return meters[uid];
+  return telemetryStale ? undefined : meters[uid];
 }
 
 /** Handles one module-telemetry channel message (`VXMT`, SPEC-016 §4.12). */
@@ -345,6 +374,7 @@ export function onModuleTelemetry(message: unknown): void {
   if (!frame) {
     return;
   }
+  noteTelemetryFrame();
   const next: Record<number, readonly number[]> = {};
   for (const record of frame.records) {
     next[record.slotUid] = record.values;
@@ -583,6 +613,7 @@ export function resetRackForTest(): void {
   unavailable = false;
   lastFocusedSlot = null;
   meters = {};
+  clearTelemetryFreshness();
   for (const pending of pendingDrags.values()) {
     cancelFrame(pending.frame);
   }

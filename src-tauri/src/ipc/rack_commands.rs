@@ -2,7 +2,7 @@
 //! `RackCommand` and maps the result to a DTO (ADR-003); Rust — not this layer, not the UI —
 //! parses parameter text and formats it back (`param_set_text`, SPEC-012 §2.6).
 
-use tauri::ipc::{Channel, InvokeResponseBody};
+use tauri::ipc::{Channel, InvokeResponseBody, Response};
 use tauri::{AppHandle, Manager, Runtime, State};
 use vox_engine::{ModuleTelemetryFrame, RackCommand};
 use vox_rack::{EditorRequest, ModuleDescriptor, ParamId};
@@ -10,9 +10,7 @@ use vox_rack::{EditorRequest, ModuleDescriptor, ParamId};
 use crate::audio::AudioEngine;
 use crate::document::DocumentService;
 use crate::ipc::error::{IpcError, IpcErrorCode};
-use crate::ipc::rack_dto::{
-    ModuleDescriptorDto, RackStateDto, ResponseCurveDto, TransferCurveDto, rack_ipc_error,
-};
+use crate::ipc::rack_dto::{ModuleDescriptorDto, RackStateDto, ResponseCurveDto, rack_ipc_error};
 use crate::settings::SettingsStore;
 
 /// H-30: a bake reloads the live rack when it commits (`DocumentService::finish_bake`'s post-job
@@ -317,26 +315,30 @@ pub async fn rack_response_curve(
     Ok(result.map_err(rack_ipc_error)?.into())
 }
 
-/// The transfer graph's curve (H-63, SPEC-016 §4.11, lean slice: JSON of `points`
-/// (≤ `vox_engine::MAX_TRANSFER_CURVE_POINTS`) levels evenly spaced over `x_min_db … x_max_db` —
-/// the binary `VXTC` frame of §4.12 is T-410). Rust evaluates the target slot's `TransferCurve`
-/// extension on the control thread, from the parameter mirror's target values. An oversized
-/// `points` is clamped; a non-increasing or non-finite range is rejected.
+/// The transfer graph's curve as a binary `VXTC` frame (H-77, SPEC-016 §4.12): `points`
+/// (≤ `vox_engine::MAX_TRANSFER_CURVE_POINTS`) levels evenly spaced over `x_min_db … x_max_db`,
+/// the Falling branch when the module reports hysteresis, one row per component and the
+/// draggable handles. Rust evaluates the target slot's `TransferCurve` extension on the control
+/// thread, from the parameter mirror's target values; `seq` is echoed in the frame so the UI can
+/// drop a response older than its newest request. An oversized `points` is clamped; a
+/// non-increasing or non-finite range is rejected (`error.rack_rejected`), and a slot whose
+/// module has no such extension answers `error.rack_no_extension`.
 #[tauri::command]
-pub async fn rack_transfer_curve(
+pub async fn module_transfer_curve(
     engine: State<'_, AudioEngine>,
     slot: usize,
+    seq: u32,
     x_min_db: f64,
     x_max_db: f64,
     points: usize,
-) -> Result<TransferCurveDto, IpcError> {
+) -> Result<Response, IpcError> {
     let handle = engine.handle().clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         handle.transfer_curve(slot, x_min_db, x_max_db, points)
     })
     .await
     .map_err(|e| IpcError::internal(e.to_string()))?;
-    Ok(result.map_err(rack_ipc_error)?.into())
+    Ok(Response::new(result.map_err(rack_ipc_error)?.encode(seq)))
 }
 
 /// Streams binary `VXMT` module-telemetry frames (H-03, SPEC-016 §4.12: every slot's

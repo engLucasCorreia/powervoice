@@ -21,10 +21,14 @@ pub const MAX_RESPONSE_CURVE_POINTS: usize = 512;
 /// (H-63, SPEC-016 §4.12 "points ≤ 1024"). An oversized request is clamped, not rejected.
 pub const MAX_TRANSFER_CURVE_POINTS: usize = 1024;
 
-/// What a [`TransferCurvePoints`] level reads when the module outputs digital silence. The
-/// extension answers −∞ there; JSON has no −∞, so the lean slice reports this instead — far below
-/// any graph range, so it draws the same.
-pub const TRANSFER_CURVE_MIN_DBFS: f64 = -200.0;
+/// Header length of a `VXTC` frame (SPEC-016 §4.12, version 1).
+pub const VXTC_HEADER_LEN: usize = 40;
+
+/// `VXTC` flag bit 0: the frame carries a Falling branch after the Rising one.
+pub const VXTC_HAS_FALLING: u32 = 1;
+
+/// `VXTC` handle flag bit 0: the handle's section is enabled.
+pub const VXTC_HANDLE_ENABLED: u32 = 1;
 
 /// The built-in Noise Reduction module's id (SPEC-014 §2.1, ADR-005 §2). Mirrors
 /// `vox_modules::NoiseReduction::ID`; `vox-engine` doesn't otherwise depend on `vox-modules`
@@ -237,23 +241,92 @@ pub struct TransferCurveHandle {
     pub enabled: bool,
 }
 
-/// What [`crate::EngineHandle::transfer_curve`] returns (H-63, SPEC-016 §4.11; lean slice: a
-/// plain in-memory answer, not yet the binary `VXTC` frame of §4.12 — T-410). Evaluated on the
+/// What [`crate::EngineHandle::transfer_curve`] returns (H-63, SPEC-016 §4.11). Evaluated on the
 /// control thread from the target slot's `TransferCurve` extension at the **target** values of
-/// the parameter mirror, so it reflects a `SetParamPlain` echo immediately.
+/// the parameter mirror, so it reflects a `SetParamPlain` echo immediately. [`Self::encode`]
+/// frames it as `VXTC` for the UI (H-77, SPEC-016 §4.12).
 #[derive(Clone, Debug)]
 pub struct TransferCurvePoints {
     /// Input peak levels (dBFS), `points` values evenly spaced over the requested range.
     pub in_dbfs: Vec<f64>,
-    /// Output peak level (dBFS) on the Rising branch, floored at [`TRANSFER_CURVE_MIN_DBFS`].
+    /// Output peak level (dBFS) on the Rising branch; −∞ where the module mutes, never NaN.
     pub rising_db: Vec<f64>,
     /// The Falling branch, only when the module reports hysteresis for these values.
     pub falling_db: Option<Vec<f64>>,
     /// One row per component (section), in the module's order; empty when it reports none.
-    /// Gains in dB, Rising branch, floored at [`TRANSFER_CURVE_MIN_DBFS`].
+    /// Gains in dB, Rising branch; −∞ where the component mutes, never NaN.
     pub components_db: Vec<Vec<f64>>,
     /// The draggable threshold handles, in the module's `handles()` order.
     pub handles: Vec<TransferCurveHandle>,
+}
+
+impl TransferCurvePoints {
+    /// Little-endian `VXTC` v1 encoding (H-77, SPEC-016 §4.12): a 40-byte header (`"VXTC"`,
+    /// version 1, header_len 40, `seq` echoed from the request, flags
+    /// ([`VXTC_HAS_FALLING`]), x_min_db, x_max_db, point count P, component count C, handle
+    /// count K, reserved 0), then `f32[P]` Rising, `f32[P]` Falling when `HAS_FALLING`,
+    /// `f32[C·P]` component gains (component-major) and K × `{u32 param_id, f32 x_dbfs,
+    /// f32 offset_db, u32 flags}`. Levels are `f32`: −∞ is allowed (digital silence), NaN is
+    /// not — a non-finite positive value would be a module bug and is written as −∞.
+    pub fn encode(&self, seq: u32) -> Vec<u8> {
+        let points = self.in_dbfs.len();
+        let components = self.components_db.len();
+        let handles = self.handles.len();
+        let branches = 1 + usize::from(self.falling_db.is_some());
+        let mut b = Vec::with_capacity(
+            VXTC_HEADER_LEN + 4 * points * (branches + components) + 16 * handles,
+        );
+        let flags = if self.falling_db.is_some() {
+            VXTC_HAS_FALLING
+        } else {
+            0
+        };
+        let x_min = self.in_dbfs.first().copied().unwrap_or(0.0) as f32;
+        let x_max = self.in_dbfs.last().copied().unwrap_or(0.0) as f32;
+        b.extend_from_slice(b"VXTC");
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&(VXTC_HEADER_LEN as u16).to_le_bytes());
+        b.extend_from_slice(&seq.to_le_bytes());
+        b.extend_from_slice(&flags.to_le_bytes());
+        b.extend_from_slice(&x_min.to_le_bytes());
+        b.extend_from_slice(&x_max.to_le_bytes());
+        for n in [points, components, handles] {
+            b.extend_from_slice(&u32::try_from(n).unwrap_or(u32::MAX).to_le_bytes());
+        }
+        b.extend_from_slice(&0u32.to_le_bytes());
+        let mut levels = |v: &[f64]| {
+            for &x in v.iter().take(points) {
+                b.extend_from_slice(&level_f32(x).to_le_bytes());
+            }
+            for _ in v.len()..points {
+                b.extend_from_slice(&f32::NEG_INFINITY.to_le_bytes());
+            }
+        };
+        levels(&self.rising_db);
+        if let Some(falling) = &self.falling_db {
+            levels(falling);
+        }
+        for row in &self.components_db {
+            levels(row);
+        }
+        for h in &self.handles {
+            b.extend_from_slice(&h.param.0.to_le_bytes());
+            b.extend_from_slice(&(h.x_dbfs as f32).to_le_bytes());
+            b.extend_from_slice(&(h.offset_db as f32).to_le_bytes());
+            b.extend_from_slice(&u32::from(h.enabled).to_le_bytes());
+        }
+        b
+    }
+}
+
+/// One `VXTC` level as `f32`: NaN (a module bug) becomes −∞ so the UI draws a gap rather than a
+/// spike (SPEC-016 §4.12 "−inf allowed, never NaN").
+fn level_f32(db: f64) -> f32 {
+    if db.is_nan() {
+        f32::NEG_INFINITY
+    } else {
+        db as f32
+    }
 }
 
 /// Error from a rack command.
@@ -263,6 +336,9 @@ pub enum RackApiError {
     Unavailable,
     /// The rack rejected the command (`vox_rack::RackError`'s message).
     Rack(String),
+    /// The target slot's module doesn't answer the extension the command needs (H-77,
+    /// SPEC-016 §4.12 `no_extension`: e.g. a transfer curve asked of a Gain slot).
+    NoExtension,
     /// The plugin couldn't open its window (T-901; the plugin's or sandbox's reason).
     Editor(String),
 }
@@ -272,6 +348,7 @@ impl std::fmt::Display for RackApiError {
         match self {
             Self::Unavailable => write!(f, "no audio output is open"),
             Self::Rack(msg) => write!(f, "{msg}"),
+            Self::NoExtension => write!(f, "the module has no such extension"),
             Self::Editor(msg) => write!(f, "couldn't open the plugin window: {msg}"),
         }
     }

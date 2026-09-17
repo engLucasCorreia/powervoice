@@ -118,21 +118,10 @@ fn check_cancelled(cancel: &AtomicBool) -> Result<(), IpcError> {
     }
 }
 
+/// The capture path's rack failures map exactly like every other rack command's (H-77: one
+/// match, so a new `RackApiError` variant can't drift between the two).
 fn nr_rack_error(err: RackApiError) -> IpcError {
-    match err {
-        RackApiError::Unavailable => {
-            IpcError::new(IpcErrorCode::Internal, "error.rack_unavailable")
-        }
-        RackApiError::Rack(message) => {
-            IpcError::new(IpcErrorCode::InvalidArgument, "error.rack_rejected")
-                .with_param("message", message)
-        }
-        // T-901: never produced by the capture path (no plugin window is opened here).
-        RackApiError::Editor(reason) => {
-            IpcError::new(IpcErrorCode::Internal, "error.plugin_window.open_failed")
-                .with_param("reason", reason)
-        }
-    }
+    crate::ipc::rack_ipc_error(err)
 }
 
 fn project_read_error(err: vox_project::ProjectError) -> IpcError {

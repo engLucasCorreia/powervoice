@@ -53,7 +53,9 @@ describe("CoalescedCurveRequest", () => {
     req.request([20, 1_000]);
     expect(send).not.toHaveBeenCalled();
     runFrame();
-    expect(send).toHaveBeenCalledWith([20, 1_000]);
+    // H-77: the sender also receives this request's sequence number (the transfer graph passes
+    // it to `module_transfer_curve`, which echoes it in the `VXTC` frame).
+    expect(send).toHaveBeenCalledWith([20, 1_000], 1);
   });
 
   it("coalesces multiple requests before the frame into one call with the latest points", () => {
@@ -67,7 +69,7 @@ describe("CoalescedCurveRequest", () => {
     req.request([3]);
     runFrame();
     expect(send).toHaveBeenCalledTimes(1);
-    expect(send).toHaveBeenCalledWith([3]);
+    expect(send).toHaveBeenCalledWith([3], 1);
   });
 
   it("drops a response whose request is no longer the latest (stale-drop, AC-20)", async () => {
@@ -118,7 +120,7 @@ describe("CoalescedCurveRequest", () => {
 
     req.request([1]);
     req.flushNow();
-    expect(send).toHaveBeenCalledWith([1]);
+    expect(send).toHaveBeenCalledWith([1], 1);
   });
 
   it("cancel drops a queued (not yet sent) request", () => {

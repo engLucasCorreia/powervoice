@@ -69,7 +69,6 @@ import type {
   Settings,
   StorageInfoDto,
   ThemePref,
-  TransferCurveDto,
   TransportStateDto,
   UnitDto,
 } from "../lib/ipc/bindings";
@@ -554,17 +553,95 @@ function rackFixture(withPlugin: boolean): RackStateDto {
     param(1, "range_db", "Range", db, -80, 0, -18, 1),
     param(2, "release_ms", "Release", ms, 5, 1000, 120, 0, true),
   ], { telemetry: [GR(0, -80)] });
-  const comp = slot(3, "org.powervoice.dynamics", "Dynamics", [
-    param(0, "threshold_db", "Threshold", db, -60, 0, -22, 1),
-    param(1, "ratio", "Ratio", { kind: "ratio" }, 1, 20, 3, 1, true),
-    param(2, "attack_ms", "Attack", ms, 0.1, 100, 8, 1, true),
-    param(3, "release_ms", "Release", ms, 10, 1000, 140, 0, true),
-    param(4, "makeup_db", "Make-up gain", db, 0, 24, 4, 1),
-  ], {
-    telemetry: [GR()],
-    // H-63: the Dynamics slot shows the transfer graph (SPEC-016 §2.6).
-    transfer_handles: [{ component: 0, threshold: 0, enable: null }],
+  // H-77: the real SPEC-016 §2.6 panel — the global row, the four sections in processing order
+  // with their own gain-reduction meters, the AutoGate lamp, and the look-ahead's latency.
+  const grChannel = (id: number, key: string, name: string, group: number | null) => ({
+    id,
+    key,
+    name: text(name),
+    unit: db,
+    min: -60,
+    max: 0,
+    kind: "gain_reduction" as const,
+    group,
   });
+  const inGroup = (
+    entry: { info: ParamInfoDto; value: ParamValueDto },
+    group: number,
+    on = true,
+  ): { info: ParamInfoDto; value: ParamValueDto } => ({
+    info: { ...entry.info, group },
+    value: on ? entry.value : entry.value,
+  });
+  const toggle = (id: number, key: string, name: string, group: number, on: boolean) => ({
+    info: {
+      ...param(id, key, name, none, 0, 1, on ? 1 : 0, 0).info,
+      group,
+      flags: { ...FLAGS, boolean: true },
+    },
+    value: { id, value: on ? 1 : 0, normalized: on ? 1 : 0, text: on ? "on" : "off" },
+  });
+  const comp = slot(
+    3,
+    "org.powervoice.dynamics",
+    "Dynamics",
+    [
+      {
+        info: {
+          ...param(1, "detection", "Detection", none, 0, 1, 1, 0).info,
+          enum_labels: [text("Peak"), text("RMS")],
+          step: 1,
+          flags: { ...FLAGS, stepped: true },
+        },
+        value: { id: 1, value: 1, normalized: 1, text: "RMS" },
+      },
+      param(2, "knee_db", "Knee", db, 0, 20, 6, 1),
+      param(3, "lookahead_ms", "Look-ahead", ms, 0, 20, 5, 0),
+      toggle(10, "autogate_enabled", "AutoGate", 1, true),
+      inGroup(param(11, "autogate_threshold_db", "Threshold", db, -80, 0, -50, 1), 1),
+      inGroup(param(12, "autogate_attack_ms", "Attack", ms, 0.1, 100, 2, 1, true), 1),
+      inGroup(param(13, "autogate_hold_ms", "Hold", ms, 0.1, 1000, 50, 1, true), 1),
+      inGroup(param(14, "autogate_release_ms", "Release", ms, 1, 2000, 100, 1, true), 1),
+      toggle(20, "expander_enabled", "Expander", 2, false),
+      inGroup(param(21, "expander_threshold_db", "Threshold", db, -80, 0, -45, 1), 2),
+      inGroup(param(22, "expander_ratio", "Ratio", { kind: "ratio" }, 1, 30, 2, 1, true), 2),
+      toggle(30, "compressor_enabled", "Compressor", 3, true),
+      inGroup(param(31, "compressor_threshold_db", "Threshold", db, -60, 0, -22, 1), 3),
+      inGroup(param(32, "compressor_ratio", "Ratio", { kind: "ratio" }, 1, 30, 3, 1, true), 3),
+      inGroup(param(33, "compressor_attack_ms", "Attack", ms, 0.1, 200, 8, 1, true), 3),
+      inGroup(param(34, "compressor_release_ms", "Release", ms, 1, 2000, 140, 1, true), 3),
+      inGroup(param(35, "compressor_makeup_db", "Makeup", db, 0, 30, 4, 1), 3),
+      toggle(40, "limiter_enabled", "Limiter", 4, true),
+      inGroup(param(41, "limiter_threshold_db", "Threshold", db, -30, 0, -3, 1), 4),
+      inGroup(param(42, "limiter_attack_ms", "Attack", ms, 0.1, 50, 1, 1, true), 4),
+      inGroup(param(43, "limiter_release_ms", "Release", ms, 1, 2000, 100, 1, true), 4),
+    ],
+    {
+      latency_samples: 240,
+      groups: [
+        { id: 1, key: "autogate", name: text("AutoGate"), parent: null, enable_param: 10, collapsed_by_default: false },
+        { id: 2, key: "expander", name: text("Expander"), parent: null, enable_param: 20, collapsed_by_default: true },
+        { id: 3, key: "compressor", name: text("Compressor"), parent: null, enable_param: 30, collapsed_by_default: false },
+        { id: 4, key: "limiter", name: text("Limiter"), parent: null, enable_param: 40, collapsed_by_default: false },
+      ],
+      telemetry: [
+        grChannel(0, "gr_total_db", "Gain reduction", null),
+        grChannel(1, "gr_autogate_db", "AutoGate GR", 1),
+        grChannel(2, "gr_expander_db", "Expander GR", 2),
+        grChannel(3, "gr_compressor_db", "Compressor GR", 3),
+        grChannel(4, "gr_limiter_db", "Limiter GR", 4),
+        { id: 5, key: "input_level_dbfs", name: text("Input level"), unit: { kind: "dbfs" } as UnitDto, min: -100, max: 6, kind: "level" as const, group: null },
+        { id: 6, key: "autogate_open", name: text("Gate open"), unit: none, min: 0, max: 1, kind: "indicator" as const, group: 1 },
+      ],
+      // H-63: the Dynamics slot shows the transfer graph (SPEC-016 §2.6).
+      transfer_handles: [
+        { component: 0, threshold: 11, enable: 10 },
+        { component: 1, threshold: 21, enable: 20 },
+        { component: 2, threshold: 31, enable: 30 },
+        { component: 3, threshold: 41, enable: 40 },
+      ],
+    },
+  );
   const limiter = slot(4, "org.powervoice.true-peak-limiter", "True-peak limiter", [
     param(0, "ceiling_dbtp", "Ceiling", { kind: "dbtp" }, -12, 0, -3, 1),
     param(1, "release_ms", "Release", ms, 1, 500, 50, 0, true),
@@ -686,33 +763,69 @@ function responseCurve(points: number[]): ResponseCurveDto {
   };
 }
 
-/** H-63: the preview Dynamics compressor, mirroring its slot's parameter values. */
-const PREVIEW_COMPRESSOR = { thresholdDb: -22, ratio: 3, makeupDb: 4 };
+/** H-63/H-77: the preview Dynamics sections, mirroring the slot's parameter values below. */
+const PREVIEW_DYNAMICS = {
+  gateThresholdDb: -50,
+  compressorThresholdDb: -22,
+  compressorRatio: 3,
+  makeupDb: 4,
+  limiterThresholdDb: -3,
+};
 
-function transferCurve(xMinDb: number, xMaxDb: number, points: number): TransferCurveDto {
-  const n = Math.max(2, Math.round(points));
-  const inDbfs = Array.from({ length: n }, (_, i) => xMinDb + ((xMaxDb - xMinDb) * i) / (n - 1));
-  const gainDb = (x: number): number => {
-    const over = x - PREVIEW_COMPRESSOR.thresholdDb;
-    const reduction = over > 0 ? -(1 - 1 / PREVIEW_COMPRESSOR.ratio) * over : 0;
-    return reduction + PREVIEW_COMPRESSOR.makeupDb;
-  };
-  return {
-    in_dbfs: inDbfs,
-    rising_db: inDbfs.map((x) => x + gainDb(x)),
-    falling_db: null,
-    components_db: [inDbfs.map(gainDb)],
-    handles: [
-      {
-        component: 0,
-        param: 0,
-        x_dbfs: PREVIEW_COMPRESSOR.thresholdDb,
-        offset_db: 0,
-        enabled: true,
-      },
-    ],
-    min_dbfs: -200,
-  };
+/** The four sections' own gains at one input level, in processing order (SPEC-016 §2.2). */
+function dynamicsGains(x: number): number[] {
+  const d = PREVIEW_DYNAMICS;
+  const gate = x < d.gateThresholdDb ? Number.NEGATIVE_INFINITY : 0;
+  const over = x - d.compressorThresholdDb;
+  const comp = over > 0 ? -(1 - 1 / d.compressorRatio) * over : 0;
+  const afterComp = x + gate + comp + d.makeupDb;
+  const limit = afterComp > d.limiterThresholdDb ? d.limiterThresholdDb - afterComp : 0;
+  return [gate, 0, comp + d.makeupDb, limit];
+}
+
+/** The preview's `VXTC` frame (SPEC-016 §4.12), built the way `TransferCurvePoints::encode`
+ * does — the preview has no engine, so the curve is modelled here. */
+function transferCurveFrame(seq: number, xMinDb: number, xMaxDb: number, points: number): ArrayBuffer {
+  const n = Math.min(1024, Math.max(2, Math.round(points)));
+  const levels = Array.from({ length: n }, (_, i) => xMinDb + ((xMaxDb - xMinDb) * i) / (n - 1));
+  const components = [0, 1, 2, 3].map((c) => levels.map((x) => dynamicsGains(x)[c]!));
+  const rising = levels.map((x, i) =>
+    components.reduce((sum, row) => sum + (row[i] ?? 0), x),
+  );
+  const handles: Array<[number, number, number]> = [
+    [11, PREVIEW_DYNAMICS.gateThresholdDb, 1],
+    [21, -45, 0],
+    [31, PREVIEW_DYNAMICS.compressorThresholdDb + 3.0103, 1],
+    [41, PREVIEW_DYNAMICS.limiterThresholdDb, 1],
+  ];
+  const buf = new ArrayBuffer(40 + 4 * n * (1 + components.length) + 16 * handles.length);
+  const view = new DataView(buf);
+  writeMagic(view, "VXTC");
+  view.setUint16(4, 1, true);
+  view.setUint16(6, 40, true);
+  view.setUint32(8, seq, true);
+  view.setUint32(12, 0, true);
+  view.setFloat32(16, xMinDb, true);
+  view.setFloat32(20, xMaxDb, true);
+  view.setUint32(24, n, true);
+  view.setUint32(28, components.length, true);
+  view.setUint32(32, handles.length, true);
+  view.setUint32(36, 0, true);
+  let offset = 40;
+  for (const row of [rising, ...components]) {
+    for (let i = 0; i < n; i++) {
+      view.setFloat32(offset + 4 * i, row[i] ?? Number.NEGATIVE_INFINITY, true);
+    }
+    offset += 4 * n;
+  }
+  for (const [param, x, enabled] of handles) {
+    view.setUint32(offset, param, true);
+    view.setFloat32(offset + 4, x, true);
+    view.setFloat32(offset + 8, param === 31 ? 3.0103 : 0, true);
+    view.setUint32(offset + 12, enabled, true);
+    offset += 16;
+  }
+  return buf;
 }
 
 const ACX: AcxCheckReportDto = {
@@ -821,6 +934,27 @@ function needsConfirmation(key: string, params: Record<string, string>): IpcErro
 }
 
 type Sink = { onmessage: (message: ArrayBuffer) => void };
+
+/** A `VXMT` module-telemetry frame (SPEC-016 §4.12), as the engine's publisher encodes it. */
+function vxmtFrame(seq: number, records: Array<{ uid: number; values: number[] }>): ArrayBuffer {
+  const body = records.reduce((n, r) => n + 8 + 4 * r.values.length, 0);
+  const buf = new ArrayBuffer(32 + body);
+  const view = new DataView(buf);
+  writeMagic(view, "VXMT");
+  view.setUint16(4, 1, true);
+  view.setUint16(6, 32, true);
+  view.setUint32(8, seq, true);
+  view.setBigUint64(16, BigInt(seq) * 16_666_667n, true);
+  view.setUint32(24, records.length, true);
+  let offset = 32;
+  for (const record of records) {
+    view.setUint32(offset, record.uid, true);
+    view.setUint16(offset + 4, record.values.length, true);
+    record.values.forEach((v, i) => view.setFloat32(offset + 8 + 4 * i, v, true));
+    offset += 8 + 4 * record.values.length;
+  }
+  return buf;
+}
 
 export function installPreviewIpc(options: PreviewOptions): void {
   const { theme, scenes, dialog } = options;
@@ -1029,7 +1163,29 @@ export function installPreviewIpc(options: PreviewOptions): void {
         // T-704: fire-and-forget subscriptions and view persistence the frame-time sweep hits
         // (the default case would log an error for each). `analyzer_subscribe` is with the H-42
         // analyzer cases below (it only streams in `&scene=analyzer…`).
-        case "module_telemetry_subscribe":
+        // H-77: the rack scene's meters and the transfer graph's operating point need frames —
+        // a slow loop of plausible values, so a screenshot shows the panel doing something.
+        case "module_telemetry_subscribe": {
+          const sink = a.channel as Sink;
+          let n = 0;
+          setInterval(() => {
+            n += 1;
+            const phase = Math.sin(n / 12);
+            const level = -26 + 10 * phase;
+            const compressor = Math.min(0, -4.5 - 3 * phase);
+            sink.onmessage(
+              vxmtFrame(n, [
+                { uid: 2, values: [-8 - 4 * phase] },
+                {
+                  uid: 3,
+                  values: [compressor, 0, 0, compressor, 0, level, 1],
+                },
+                { uid: 4, values: [-1.5 - phase] },
+              ]),
+            );
+          }, 100);
+          return null;
+        }
         case "sidecar_view_set_waveform":
         case "sidecar_view_set_spectral":
           return null;
@@ -1068,8 +1224,13 @@ export function installPreviewIpc(options: PreviewOptions): void {
         }
         case "rack_response_curve":
           return responseCurve(a.points as number[]);
-        case "rack_transfer_curve":
-          return transferCurve(a.xMinDb as number, a.xMaxDb as number, a.points as number);
+        case "module_transfer_curve":
+          return transferCurveFrame(
+            a.seq as number,
+            a.xMinDb as number,
+            a.xMaxDb as number,
+            a.points as number,
+          );
         case "module_presets_list":
         case "rack_presets_list":
           return [{ key: "voice_warmth", name: text("Voice warmth"), is_factory: true }, { key: "My booth", name: text("My booth"), is_factory: false }];

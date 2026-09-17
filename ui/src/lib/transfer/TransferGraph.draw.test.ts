@@ -1,10 +1,12 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { RackSlotDto, TransferCurveDto } from "../ipc/bindings";
+import type { RackSlotDto } from "../ipc/bindings";
 import { resetRackForTest } from "../rack/rack.svelte";
 import { frameScheduler } from "../render/frameScheduler";
 import { paramInfoDto, rackSlotDto } from "../test/fixtures";
+import { encodeVxtc, type VxtcFields } from "../test/vxtc";
+import type { OperatingPoint } from "./operatingPoint";
 import TransferGraph from "./TransferGraph.svelte";
 import { xForLevel, yForLevel } from "./levelAxis";
 
@@ -115,20 +117,20 @@ function slotFixture(): RackSlotDto {
   });
 }
 
-/** Rising passes below −40 and compresses above it; Falling is 12 dB higher at −40 only (a
- * hysteresis loop), and −80 is muted. */
-function curveDto(overrides: Partial<TransferCurveDto> = {}): TransferCurveDto {
-  return {
-    in_dbfs: [-80, -40, 0, 6],
-    rising_db: [-200, -40, -6, -5],
-    falling_db: null,
-    components_db: [],
-    handles: [
-      { component: 2, param: THRESHOLD_ID, x_dbfs: -20, offset_db: 0, enabled: true },
-    ],
-    min_dbfs: -200,
+/** `VXTC` levels are evenly spaced over the frame's range, not transmitted: five points over
+ * −80 … 0 dBFS are −80, −60, −40, −20 and 0. Rising passes below −40 and compresses above it;
+ * −80 is muted. */
+const MUTED = Number.NEGATIVE_INFINITY;
+const LEVELS = [-80, -60, -40, -20, 0];
+
+function curveFrame(overrides: Partial<VxtcFields> = {}): ArrayBuffer {
+  return encodeVxtc({
+    xMinDb: LEVELS[0]!,
+    xMaxDb: LEVELS[LEVELS.length - 1]!,
+    rising: [MUTED, -60, -40, -26, -6],
+    handles: [{ param: THRESHOLD_ID, xDbfs: -20 }],
     ...overrides,
-  };
+  });
 }
 
 class FakeResizeObserver {
@@ -185,9 +187,13 @@ afterEach(() => {
   (globalThis as { ResizeObserver?: unknown }).ResizeObserver = originalResizeObserver;
 });
 
-async function draw(curve: TransferCurveDto, onClear?: () => void) {
+async function draw(
+  curve: ArrayBuffer,
+  onClear?: () => void,
+  operatingPoint: OperatingPoint | null = null,
+) {
   mockIPC((cmd) => {
-    if (cmd === "rack_transfer_curve") {
+    if (cmd === "module_transfer_curve") {
       return curve;
     }
     return { slots: [], ab: false, latency_samples: 0 };
@@ -199,7 +205,7 @@ async function draw(curve: TransferCurveDto, onClear?: () => void) {
   document.body.appendChild(target);
   const app = mount(TransferGraph, {
     target,
-    props: { slotIndex: 0, rackSlot: slotFixture() },
+    props: { slotIndex: 0, rackSlot: slotFixture(), operatingPoint },
   });
   flushSync();
   // The curve request is coalesced to an animation frame; then the scheduler redraws.
@@ -213,25 +219,25 @@ async function draw(curve: TransferCurveDto, onClear?: () => void) {
 
 describe("transfer graph drawing (SPEC-016 §2.6)", () => {
   it("puts the curve's vertices on the axis-mapped positions and draws the axis labels", async () => {
-    const { ctx, teardown } = await draw(curveDto());
+    const { ctx, teardown } = await draw(curveFrame());
     const solid = vertices(ctx.ops, false);
     expect(hasVertex(solid, xForLevel(-40, SIDE), yForLevel(-40, SIDE))).toBe(true);
+    expect(hasVertex(solid, xForLevel(-20, SIDE), yForLevel(-26, SIDE))).toBe(true);
     expect(hasVertex(solid, xForLevel(0, SIDE), yForLevel(-6, SIDE))).toBe(true);
-    expect(hasVertex(solid, xForLevel(6, SIDE), yForLevel(-5, SIDE))).toBe(true);
     expect(ctx.ops.filter((op) => op.name === "fillText").length).toBeGreaterThan(0);
     teardown();
   });
 
   it("breaks the line at a muted level instead of diving to the corner", async () => {
-    const { ctx, teardown } = await draw(curveDto());
-    // −80 dBFS reads `min_dbfs`: no vertex is emitted for it, so the polyline starts at −40.
+    const { ctx, teardown } = await draw(curveFrame());
+    // −80 dBFS is muted (−∞): no vertex is emitted for it, so the polyline starts at −40.
     const solid = vertices(ctx.ops, false);
     expect(hasVertex(solid, xForLevel(-80, SIDE), yForLevel(-200, SIDE))).toBe(false);
     teardown();
   });
 
   it("draws the dashed 1:1 diagonal", async () => {
-    const { ctx, teardown } = await draw(curveDto());
+    const { ctx, teardown } = await draw(curveFrame());
     const dashed = vertices(ctx.ops, true);
     expect(hasVertex(dashed, 0, SIDE)).toBe(true);
     expect(hasVertex(dashed, SIDE, 0)).toBe(true);
@@ -240,20 +246,20 @@ describe("transfer graph drawing (SPEC-016 §2.6)", () => {
 
   it("dashes the Falling branch only where it differs from Rising", async () => {
     const { ctx, teardown } = await draw(
-      curveDto({ falling_db: [-200, -28, -6, -5] }),
+      curveFrame({ falling: [MUTED, -60, -28, -26, -6] }),
     );
     const dashed = vertices(ctx.ops, true);
-    // The hysteresis point itself, and the neighbour the range is widened to so the dashed
+    // The hysteresis point itself, and the neighbours the range is widened to so the dashed
     // segment meets the solid curve.
     expect(hasVertex(dashed, xForLevel(-40, SIDE), yForLevel(-28, SIDE))).toBe(true);
-    expect(hasVertex(dashed, xForLevel(0, SIDE), yForLevel(-6, SIDE))).toBe(true);
+    expect(hasVertex(dashed, xForLevel(-20, SIDE), yForLevel(-26, SIDE))).toBe(true);
     // Where the branches agree the falling branch is not drawn again.
-    expect(hasVertex(dashed, xForLevel(6, SIDE), yForLevel(-5, SIDE))).toBe(false);
+    expect(hasVertex(dashed, xForLevel(0, SIDE), yForLevel(-6, SIDE))).toBe(false);
     teardown();
   });
 
   it("draws a handle for an enabled section and none for a disabled one", async () => {
-    const enabled = await draw(curveDto());
+    const enabled = await draw(curveFrame());
     const triangles = enabled.ctx.ops.filter((op) => op.name === "closePath").length;
     expect(triangles).toBe(1);
     expect(
@@ -263,38 +269,81 @@ describe("transfer graph drawing (SPEC-016 §2.6)", () => {
     ).toBe(true);
     enabled.teardown();
 
-    const dto = curveDto();
-    const disabled = await draw({
-      ...dto,
-      handles: [{ ...dto.handles[0]!, enabled: false }],
-    });
+    const disabled = await draw(
+      curveFrame({ handles: [{ param: THRESHOLD_ID, xDbfs: -20, enabled: false }] }),
+    );
     expect(disabled.ctx.ops.filter((op) => op.name === "closePath").length).toBe(0);
     disabled.teardown();
   });
 
-  it("labels the handle with Rust's own text while it is dragged, and not before", async () => {
-    const { ctx, canvas, teardown } = await draw(curveDto());
-    const texts = () =>
-      ctx.ops.filter((op) => op.name === "fillText").map((op) => String(op.args[0]));
-    expect(texts()).not.toContain("-20");
-    canvas.dispatchEvent(
-      new PointerEvent("pointerdown", {
-        clientX: xForLevel(-20, SIDE),
-        bubbles: true,
-        pointerId: 1,
+  it("labels every enabled handle with Rust's own text (H-77: always on)", async () => {
+    const { ctx, teardown } = await draw(curveFrame());
+    // `rackSlotDto`'s value text for the threshold parameter.
+    const texts = ctx.ops.filter((op) => op.name === "fillText").map((op) => String(op.args[0]));
+    expect(texts).toContain("-20");
+    teardown();
+  });
+
+  it("drops a handle label that would collide with one already placed", async () => {
+    const { ctx, teardown } = await draw(
+      curveFrame({
+        handles: [
+          { param: THRESHOLD_ID, xDbfs: -20 },
+          // The same pixel column: the second label has nowhere to go.
+          { param: THRESHOLD_ID, xDbfs: -20 },
+        ],
       }),
     );
-    flushSync();
-    await nextFrame();
-    await nextFrame();
-    // `rackSlotDto`'s value text for the threshold parameter.
-    expect(texts()).toContain("-20");
+    const labels = ctx.ops
+      .filter((op) => op.name === "fillText")
+      .map((op) => String(op.args[0]))
+      .filter((text) => text === "-20");
+    expect(labels).toHaveLength(1);
     teardown();
+  });
+
+  it("draws an overlay per active section and none for an inert one", async () => {
+    const withComponents = await draw(
+      curveFrame({
+        // Two sections: the first does nothing (0 dB everywhere), the second compresses.
+        components: [
+          [0, 0, 0, 0, 0],
+          [0, 0, 0, -6, -11],
+        ],
+        handles: [
+          { param: THRESHOLD_ID, xDbfs: -60 },
+          { param: THRESHOLD_ID, xDbfs: -20 },
+        ],
+      }),
+    );
+    const solid = vertices(withComponents.ctx.ops, false);
+    // The active section's own contribution, input + its gain.
+    expect(hasVertex(solid, xForLevel(-20, SIDE), yForLevel(-20 - 6, SIDE))).toBe(true);
+    expect(hasVertex(solid, xForLevel(0, SIDE), yForLevel(0 - 11, SIDE))).toBe(true);
+    // The inert section would be the 1:1 diagonal; nothing is drawn for it beyond the total
+    // curve's own vertices.
+    withComponents.teardown();
+  });
+
+  it("puts the operating-point dot at (level, level + total GR + makeup), and hides it when stale", async () => {
+    const point: OperatingPoint = { inputDbfs: -12, grTotalDb: -4, makeupDb: 3 };
+    const shown = await draw(curveFrame(), undefined, point);
+    // One dot per frame drawn (the scheduler may have drawn more than one).
+    const arcs = shown.ctx.ops.filter((op) => op.name === "arc");
+    expect(arcs.length).toBeGreaterThan(0);
+    const dot = arcs.at(-1)!;
+    expect(dot.args[0]).toBeCloseTo(xForLevel(-12, SIDE), 6);
+    expect(dot.args[1]).toBeCloseTo(yForLevel(-12 - 4 + 3, SIDE), 6);
+    shown.teardown();
+
+    const hidden = await draw(curveFrame(), undefined, null);
+    expect(hidden.ctx.ops.filter((op) => op.name === "arc")).toHaveLength(0);
+    hidden.teardown();
   });
 
   it("keeps save/restore balanced and retries when a frame's draw throws", async () => {
     let thrown = false;
-    const { ctx, teardown } = await draw(curveDto(), () => {
+    const { ctx, teardown } = await draw(curveFrame(), () => {
       if (!thrown) {
         thrown = true;
         throw new Error("transient");

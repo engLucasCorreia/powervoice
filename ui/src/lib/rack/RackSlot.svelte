@@ -1,15 +1,16 @@
 <script lang="ts">
   import { Button, Icon, IconButton, Menu } from "../ui";
   import type { MenuEntry } from "../ui/menuModel";
+  import DynamicsPanel from "../dynamics/DynamicsPanel.svelte";
   import EqGraph from "../eq/EqGraph.svelte";
   import TransferGraph from "../transfer/TransferGraph.svelte";
   import { t } from "../i18n";
   import type { ParamInfoDto, PresetEntryDto, RackSlotDto } from "../ipc/bindings";
-  import GainReductionMeter from "./GainReductionMeter.svelte";
   import { localized } from "./localized";
   import NoiseReductionSection from "./NoiseReductionSection.svelte";
   import { openPluginManager, pluginCrashCount } from "../plugins/plugins.svelte";
   import ParamGroupSection from "./ParamGroupSection.svelte";
+  import TelemetryWidget from "./TelemetryWidget.svelte";
   import { openManagePresets } from "./managePresets.svelte";
   import {
     closePluginWindow,
@@ -52,6 +53,9 @@
     ondrop: (index: number) => void;
     ondragend: () => void;
   } = $props();
+
+  /** ADR-005 §2 / SPEC-016 §2.1. */
+  const DYNAMICS_MODULE_ID = "org.powervoice.dynamics";
 
   let collapsed = $state(false);
   let menuOpen = $state(false);
@@ -336,14 +340,27 @@
   );
   const ungrouped = $derived(slot.params.filter((p) => p.group === null && shown(p)));
 
-  // H-03 (SPEC-017 §2.3 "Meter", SPEC-016 §4.12): every `gain_reduction` telemetry channel the
-  // module places in its header (`group` null) is a meter here, fed by `VXMT` frames through the
-  // rack store. Generic: any module with such a channel gets one (the true-peak limiter's GR,
-  // Dynamics' total GR, the Noise Gate's gain).
+  /** H-77: the one module with a custom panel so far (SPEC-016 §2.6). It needs the transfer
+   * curve to be worth it — a placeholder or a module that lost its extension falls back to the
+   * generic layout. */
+  const isDynamics = $derived(
+    slot.module_id === DYNAMICS_MODULE_ID && slot.transfer_handles !== null,
+  );
+
+  // H-03/H-77 (SPEC-017 §2.3 "Meter", SPEC-016 §2.6, ADR-005 §13): every telemetry channel the
+  // module places in its header (`group` null) becomes a widget here — a GR meter, level bar,
+  // lamp or readout — fed by `VXMT` frames through the rack store. Generic: the true-peak
+  // limiter's GR, Dynamics' total GR, the Noise Gate's gain and its open lamp.
   const headerMeters = $derived(
     (slot.telemetry ?? [])
       .map((channel, index) => ({ channel, index }))
-      .filter(({ channel }) => channel.kind === "gain_reduction" && channel.group === null),
+      .filter(
+        ({ channel }) =>
+          channel.group === null &&
+          // SPEC-016 §3: in the custom Dynamics panel the input level is the graph's operating
+          // point, "not a header meter". Every other module shows its level channels here.
+          !(isDynamics && channel.kind === "level"),
+      ),
   );
   const meterValues = $derived(slotTelemetry(slot.uid));
 </script>
@@ -472,12 +489,7 @@
     {/if}
     {#if slot.status.kind === "active"}
       {#each headerMeters as { channel, index } (channel.id)}
-        <GainReductionMeter
-          value={meterValues?.[index]}
-          min={channel.min}
-          max={channel.max}
-          name={localized(channel.name)}
-        />
+        <TelemetryWidget {channel} value={meterValues?.[index]} />
       {/each}
     {/if}
     <IconButton
@@ -512,27 +524,42 @@
   {/if}
   {#if !collapsed && slot.status.kind === "active"}
     <div class="body">
-      {#if slot.curve_handles !== null}
-        <EqGraph slotIndex={index} rackSlot={slot} {rateHz} />
-      {/if}
-      {#if slot.transfer_handles !== null}
-        <TransferGraph slotIndex={index} rackSlot={slot} />
-      {/if}
-      {#if slot.noise_profile !== null}
-        <NoiseReductionSection slotIndex={index} status={slot.noise_profile} />
-      {/if}
-      {#if ungrouped.length > 0}
-        <ParamGroupSection slotIndex={index} rackSlot={slot} group={null} {groupsByKey} params={ungrouped} />
-      {/if}
-      {#each visibleGroups as group (group.id)}
-        <ParamGroupSection
+      {#if isDynamics}
+        <!-- H-77: Dynamics has a custom panel (SPEC-016 §2.6, ADR-005 §13) — the global row sits
+             above the graph, and the graph carries the operating point. Every other module,
+             including the Noise Gate, keeps the generic layout below. -->
+        <DynamicsPanel
           slotIndex={index}
-          rackSlot={slot}
-          {group}
+          {slot}
+          {rateHz}
+          {visibleGroups}
           {groupsByKey}
-          params={slot.params.filter((p) => p.group === group.id && shown(p))}
+          {ungrouped}
+          {shown}
         />
-      {/each}
+      {:else}
+        {#if slot.curve_handles !== null}
+          <EqGraph slotIndex={index} rackSlot={slot} {rateHz} />
+        {/if}
+        {#if slot.transfer_handles !== null}
+          <TransferGraph slotIndex={index} rackSlot={slot} />
+        {/if}
+        {#if slot.noise_profile !== null}
+          <NoiseReductionSection slotIndex={index} status={slot.noise_profile} />
+        {/if}
+        {#if ungrouped.length > 0}
+          <ParamGroupSection slotIndex={index} rackSlot={slot} group={null} {groupsByKey} params={ungrouped} />
+        {/if}
+        {#each visibleGroups as group (group.id)}
+          <ParamGroupSection
+            slotIndex={index}
+            rackSlot={slot}
+            {group}
+            {groupsByKey}
+            params={slot.params.filter((p) => p.group === group.id && shown(p))}
+          />
+        {/each}
+      {/if}
     </div>
   {/if}
 </section>

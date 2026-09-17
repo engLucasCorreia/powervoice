@@ -334,10 +334,10 @@ describe("gain-reduction meter (H-03)", () => {
     // The golden fixture carries slot uid 3 at −6.5 dB.
     const { target, teardown } = render({ ...slotFixture(), uid: 3, telemetry: [grChannel] });
     const value = () => target.querySelector('[data-testid="rack-slot-gr-value"]')?.textContent;
-    expect(value()).toBe("0.0");
+    expect(value()).toBe("0.0\u00a0dB");
     onModuleTelemetry(hexToBuffer(VXMT_FIXTURE_HEX));
     flushSync();
-    expect(value()).toBe("−6.5");
+    expect(value()).toBe("−6.5\u00a0dB");
     expect(target.querySelector("header [role=meter]")?.getAttribute("aria-label")).toContain(
       "Gain reduction",
     );

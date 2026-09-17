@@ -52,8 +52,8 @@ use crate::output::{OutputCb, OutputParts, PartsSlot, take_parts};
 use crate::prefs::DevicePrefs;
 use crate::rack_api::{
     MAX_RESPONSE_CURVE_POINTS, MAX_TRANSFER_CURVE_POINTS, NOISE_REDUCTION_MODULE_ID, NrCapturePrep,
-    RackApiError, RackCommand, RackSnapshot, ResponseCurvePoints, TRANSFER_CURVE_MIN_DBFS,
-    TransferCurveHandle, TransferCurvePoints,
+    RackApiError, RackCommand, RackSnapshot, ResponseCurvePoints, TransferCurveHandle,
+    TransferCurvePoints,
 };
 use crate::reader::{self, Reader, ReaderCmd};
 use crate::record::{
@@ -1203,9 +1203,9 @@ impl Control {
             return Err(RackApiError::Unavailable);
         };
         let host = &out.rack;
-        let ext = host.transfer_curve_extension(index).ok_or_else(|| {
-            RackApiError::Rack("the target slot has no transfer-curve support".into())
-        })?;
+        let ext = host
+            .transfer_curve_extension(index)
+            .ok_or(RackApiError::NoExtension)?;
         let info = host.slot_info(index).ok_or(RackApiError::Rack(format!(
             "slot index {index} out of range"
         )))?;
@@ -1217,12 +1217,13 @@ impl Control {
 
         let step = (x_max_db - x_min_db) / (points - 1) as f64;
         let in_dbfs: Vec<f64> = (0..points).map(|i| x_min_db + step * i as f64).collect();
+        // A muted level stays −∞ (the `VXTC` frame carries it, SPEC-016 §4.12); only NaN — which
+        // would be a module bug — is replaced, so the UI never sees one.
         let floor = |v: &mut Vec<f64>| {
             for x in v.iter_mut() {
-                if !x.is_finite() {
-                    *x = TRANSFER_CURVE_MIN_DBFS;
+                if x.is_nan() {
+                    *x = f64::NEG_INFINITY;
                 }
-                *x = x.max(TRANSFER_CURVE_MIN_DBFS);
             }
         };
         let mut rising_db = vec![0.0; points];

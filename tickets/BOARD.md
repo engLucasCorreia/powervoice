@@ -110,7 +110,8 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-84 | EQ graph remainder (T-409): live spectrum overlay, keyboard-operable nodes (SPEC-015 AC-19), expanded view | S | done |
 | H-85 | Noise reduction UI remainder (T-504): profile graph, Clear Noise Print, Ctrl+Shift+P | S | done |
 | H-86 | EQ mouse gestures vs SPEC-015 §2.6.4: double-click should reset a band (it toggles), and the wheel should step HP/LP slope (H-84's open question) | S | done |
-| H-87 | Noise profile graph polish: hover readout, the no-output-device state, distinguishable legend swatches (H-85's deferrals) | S | in progress |
+| H-87 | Noise profile graph polish: hover readout, the no-output-device state, distinguishable legend swatches (H-85's deferrals) | S | done |
+| H-88 | A shared test helper for pushing a live VXSA frame into a mounted component, so live-derived UI can be asserted rather than only its absence (H-87's open question) | S | in progress |
 | H-62 | Sandbox event-ring overflow is silent (H-55 open question): `HostEnd::push_event` / the proxy drop events when the ring is full (counted in `events_dropped`, never surfaced) — another timing-dependent divergence under heavy automation; surface it as a notice/slot status and test it | S | done |
 | H-56 | Insert silence + cross-document clipboard (T-302 remainder, SPEC-008) | S | done |
 | H-57 | Markers: kinds in the core model, drag, region→selection (T-303 remainder, SPEC-009) | S | done |

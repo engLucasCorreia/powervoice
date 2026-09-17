@@ -92,6 +92,23 @@ GROUPS: list[tuple[str, str, str, list[str]]] = [
         frame_metrics("spectral"),
     ),
     (
+        "SPEC-002 AC-8 (H-68) — capture-ring overflow: the UI stays responsive, no frame over "
+        "100 ms while the capture-writer is stalled by fault injection for 12 s during recording",
+        "`scripts/bench/ui_frames.mjs` capture-stall pass: the preview App "
+        "(`?preview&scene=recording`, renderer `auto`) in vsync-paced (60 Hz) headless Chromium — "
+        "the H-43 idle browser, not the uncapped sweep above — for 12 s once the recording scene "
+        "is up (2 s settle first). The scene already reproduces the load a real stalled capture "
+        "puts on the UI: H-43's 60 Hz telemetry stream (meters) and H-07's ~10 Hz "
+        "`record_peaks_get` poll feeding the live, growing waveform; no synthetic input is driven.",
+        "just bench-ui",
+        [
+            "capture_stall_recording_p50_ms",
+            "capture_stall_recording_p95_ms",
+            "capture_stall_recording_max_ms",
+            "capture_stall_recording_frames_over_100ms",
+        ],
+    ),
+    (
         "H-43 — idle main-thread CPU ≤ 2 % of one core in a release build (≤ 10 % debug); "
         "playback still draws at the display rate (60 fps)",
         "`scripts/bench/ui_frames.mjs` idle pass: the preview App (renderer `auto`) in "

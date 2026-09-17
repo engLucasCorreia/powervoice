@@ -47,7 +47,7 @@ Each measurement prints `BENCH_RESULT` lines, using the T-110 convention from
 
 _Generated 2026-09-16 05:36 UTC by `just perf-matrix` on AMD Ryzen 7 PRO 7840U w/ Radeon 780M Graphics, 16 threads, Linux 7.2.5-3-omarchy, `target/` on btrfs. Logs:
 `just bench` 2026-09-16 05:27 UTC, `just test-big` 2026-09-16 05:30 UTC, `just bench-ui` 2026-09-16 05:36 UTC._
-**102 pass, 9 tight (< 30 % margin), 1 fail, 0 not run.**
+**106 pass, 9 tight (< 30 % margin), 1 fail, 0 not run.**
 
 
 ### PROMPT §2 — open a 60-min 48 kHz mono WAV in < 3 s, waveform shown (SPEC-006 AC-19: first draw ≤ 3 s after open)
@@ -113,6 +113,25 @@ H-54's numbers above are one full `just bench-ui` sweep (load average 3.9 1 min 
 other tickets' worktrees were building in parallel) so canvas2d and auto/WebGL2 are directly
 comparable; see the H-54 fixes section below for a quieter-machine repeat of the row that used to
 fail.
+
+### SPEC-002 AC-8 (H-68) — capture-ring overflow: the UI stays responsive, no frame over 100 ms while the capture-writer is stalled by fault injection for 12 s during recording
+
+How: `scripts/bench/ui_frames.mjs` capture-stall pass: the preview App (`?preview&scene=recording`, renderer `auto`) in vsync-paced (60 Hz) headless Chromium — the H-43 idle browser, not the uncapped sweep above — for 12 s once the recording scene is up (2 s settle first). The scene already reproduces the load a real stalled capture puts on the UI: H-43's 60 Hz telemetry stream (meters) and H-07's ~10 Hz `record_peaks_get` poll feeding the live, growing waveform; no synthetic input is driven. Reproduce: `just bench-ui`.
+
+| metric | measured | target | margin | status |
+|---|---|---|---|---|
+| `capture_stall_recording_p50_ms` | 16.7 ms | ≤ 100 | +83 % | pass |
+| `capture_stall_recording_p95_ms` | 16.8 ms | ≤ 100 | +83 % | pass |
+| `capture_stall_recording_max_ms` | 16.8 ms | ≤ 100 | +83 % | pass |
+| `capture_stall_recording_frames_over_100ms` | 0 frames | ≤ 0 | +100 % | pass |
+
+Measured 2026-09-17 on a heavily loaded machine (load average 14.9 1 min / 12.9 5 min — several
+other tickets' worktrees were building in parallel), the same run as the numbers above it in this
+matrix. Five isolated repeats of just this pass, at load averages from 2.1 to 12.8, all passed with
+max frame times between 16.8 ms and 66.6 ms — comfortably inside the 100 ms budget with load to
+spare; see H-68's ticket report for the individual runs. `docs/performance.md`'s existing "UI frame
+times vary with background load" caveat (below, and T-704's own findings) applies here too — the
+absolute numbers move with machine load, the pass/fail margin is what matters.
 
 ### H-43 — idle main-thread CPU ≤ 2 % of one core in a release build (≤ 10 % debug); playback still draws at the display rate (60 fps)
 

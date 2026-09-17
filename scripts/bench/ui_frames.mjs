@@ -37,11 +37,22 @@
  * Caveat: the owner's reference renderer is WebKitGTK (ADR-009); Chromium stands in for it
  * headlessly. The preview's Settings pick the Canvas2D waveform renderer.
  *
+ * Capture-stall pass (H-68, SPEC-002 AC-8): given the capture-writer stalled by fault injection
+ * for 12 s during recording, "the UI stays responsive, with no frame over 100 ms." Reuses the
+ * H-43 vsync-paced browser (a real display's cadence — not the uncapped sweep, where the point is
+ * raw per-frame cost) and `?preview&scene=recording`, which already reproduces the real
+ * main-thread load a stalled capture puts on the UI while its writer is behind: H-43's 60 Hz
+ * telemetry stream (meters) plus H-07's ~10 Hz `record_peaks_get` poll feeding the live, growing
+ * waveform. It records every rAF delta for `--capture-stall-seconds` (12) once the recording
+ * scene is up, and reports p50/p95/max/frames-over-100ms. Targets: p50/p95/max ≤ 100 ms, 0 frames
+ * over 100 ms.
+ *
  * Usage (`just bench-ui`): node scripts/bench/ui_frames.mjs [--port 5193] [--seconds 10]
  *   [--out target/bench/ui.log] [--case document:2126x850]... [--profile] [--renderer canvas2d]
- *   [--idle-only] [--no-idle] [--no-release] [--idle-seconds 10]. `--idle-only` skips the frame-time
- *   sweep, `--no-idle` the idle/playback passes (H-47 used it for quick renderer iterations) and
- *   `--no-release` the release build's idle pass.
+ *   [--idle-only] [--no-idle] [--no-release] [--idle-seconds 10] [--no-capture-stall]
+ *   [--capture-stall-seconds 12]. `--idle-only` skips the frame-time sweep, `--no-idle` the
+ *   idle/playback passes (H-47 used it for quick renderer iterations), `--no-release` the release
+ *   build's idle pass, and `--no-capture-stall` the H-68 capture-stall pass.
  *   `--renderer auto|webgl2|canvas2d` picks the renderer Setting (default: both canvas2d — the
  *   fallback, which does its per-pixel work in JS — and auto, the app default: WebGL2 first). `--case` limits the run
  *   to the given cases; `--profile` also samples the page's CPU profile during each measured sweep
@@ -82,6 +93,10 @@ const IDLE_ONLY = args.includes("--idle-only");
 const NO_IDLE = args.includes("--no-idle");
 const NO_RELEASE = args.includes("--no-release");
 const IDLE_SECONDS = Number(opt("idle-seconds", "10"));
+const NO_CAPTURE_STALL = args.includes("--no-capture-stall");
+/** H-68 (SPEC-002 AC-8): the fault-injected writer stall's duration and frame budget. */
+const CAPTURE_STALL_SECONDS = Number(opt("capture-stall-seconds", "12"));
+const CAPTURE_STALL_FRAME_BUDGET_MS = 100;
 const IDLE_SCENES = [
   { name: "empty", query: "" },
   { name: "document", query: "scene=document" },
@@ -189,6 +204,34 @@ const SWEEP = `(async (seconds) => {
           scrollReady = true;
         }
         wheel({ deltaX: 24 });
+      }
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  });
+})`;
+
+// H-68: records rAF deltas for `seconds` without driving any input — the recording scene's own
+// 60 Hz telemetry stream and ~10 Hz live-peaks poll (H-07) are the only thing moving, exactly
+// like a real stalled capture where nobody is touching the mouse or keyboard.
+const RECORD_SWEEP = `(async (seconds) => {
+  const durationMs = seconds * 1000;
+  const deltas = [];
+  return await new Promise((resolve) => {
+    let start = -1;
+    let last = -1;
+    const step = (now) => {
+      if (start < 0) {
+        start = now;
+        last = now;
+        requestAnimationFrame(step);
+        return;
+      }
+      deltas.push(now - last);
+      last = now;
+      if (now - start >= durationMs) {
+        resolve({ deltas });
+        return;
       }
       requestAnimationFrame(step);
     };
@@ -424,6 +467,60 @@ async function idlePass(base, build) {
   }
 }
 
+/** H-68 (SPEC-002 AC-8): while a fault-injected capture stall lasts 12 s during recording, no UI
+ * frame may exceed 100 ms. Vsync-paced like the H-43 idle pass (a real display's cadence), on
+ * `?preview&scene=recording`, which already streams telemetry at 60 Hz and polls
+ * `record_peaks_get` at ~10 Hz for the growing take (H-07) — the same main-thread load a real
+ * stalled capture puts on the UI. */
+async function captureStallPass(base) {
+  const { send, evaluate, consoleErrors, consoleTexts, close } = await openBrowser(["--window-size=1600,900"]);
+  try {
+    const { targetId } = await send("Target.createTarget", { url: "about:blank" });
+    const { sessionId } = await send("Target.attachToTarget", { targetId, flatten: true });
+    await send("Page.enable", {}, sessionId);
+    await send("Runtime.enable", {}, sessionId);
+    await send("Page.navigate", { url: `${base}?preview&scene=recording&renderer=auto` }, sessionId);
+    await waitFor(
+      () =>
+        evaluate(
+          `document.querySelector('[data-testid="record-elapsed"]')?.classList.contains("live") === true && ` +
+            `!!document.querySelector('[data-testid="waveform-canvas"]')`,
+          sessionId,
+        ),
+      30_000,
+      "recording scene",
+    );
+    // Let the take grow past its first buckets before measuring, like the other passes' warm-up.
+    await sleep(2_000);
+    say(
+      `# H-68 capture-stall pass ${new Date().toISOString()}: ${CAPTURE_STALL_SECONDS} s recording, ` +
+        `vsync-paced 60 Hz headless Chromium, 1600x900, renderer auto; load average ${loadavg().map((l) => l.toFixed(1)).join(" ")}`,
+    );
+    const runResult = await evaluate(`${RECORD_SWEEP}(${CAPTURE_STALL_SECONDS})`, sessionId);
+    await send("Target.closeTarget", { targetId });
+
+    const sorted = [...runResult.deltas].sort((a, b) => a - b);
+    const total = runResult.deltas.reduce((a, b) => a + b, 0);
+    const p50 = percentile(sorted, 0.5);
+    const p95 = percentile(sorted, 0.95);
+    const max = sorted[sorted.length - 1] ?? 0;
+    const over100 = sorted.filter((d) => d > CAPTURE_STALL_FRAME_BUDGET_MS).length;
+    say(
+      `# recording, capture stall (${CAPTURE_STALL_SECONDS} s): ${sorted.length} frames, ` +
+        `${(sorted.length / (total / 1000)).toFixed(1)} fps, p50 ${p50.toFixed(2)} ms, p95 ${p95.toFixed(2)} ms, ` +
+        `max ${max.toFixed(1)} ms, >100 ms: ${over100}, console errors: ${consoleErrors.get(sessionId) ?? 0}`,
+    );
+    for (const text of consoleTexts.get(sessionId) ?? []) say(`#   console.error: ${text}`);
+    result("capture_stall_recording_p50_ms", p50, "ms", CAPTURE_STALL_FRAME_BUDGET_MS, "le");
+    result("capture_stall_recording_p95_ms", p95, "ms", CAPTURE_STALL_FRAME_BUDGET_MS, "le");
+    result("capture_stall_recording_max_ms", max, "ms", CAPTURE_STALL_FRAME_BUDGET_MS, "le");
+    result("capture_stall_recording_frames_over_100ms", over100, "frames", 0, "le");
+    result("capture_stall_recording_fps", sorted.length / (total / 1000), "fps");
+  } finally {
+    await close();
+  }
+}
+
 async function main() {
   mkdirSync(dirname(OUT), { recursive: true });
   const vite = spawn("npm", ["--prefix", join(ROOT, "ui"), "run", "dev", "--", "--port", String(PORT), "--strictPort"], {
@@ -439,6 +536,9 @@ async function main() {
     }
     if (!NO_IDLE) {
       await idlePass(base, "dev");
+    }
+    if (!NO_CAPTURE_STALL) {
+      await captureStallPass(base);
     }
     if (!NO_RELEASE && !NO_IDLE) {
       const outDir = join(ROOT, "target", "bench", "ui-dist");

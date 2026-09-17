@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   EQ_MAX_HZ,
   EQ_MIN_HZ,
+  analyzerBandFreqsHz,
   curveRequestFreqs,
   eqFrequencyTicks,
   freqForX,
@@ -146,5 +147,29 @@ describe("eqFrequencyTicks (H-24 item 8: Hz/kHz labels at the standard decades)"
   it("is empty for a degenerate range or non-positive width", () => {
     expect(eqFrequencyTicks(100, 100, 800, 24, label)).toEqual([]);
     expect(eqFrequencyTicks(EQ_MIN_HZ, EQ_MAX_HZ, 0, 24, label)).toEqual([]);
+  });
+});
+
+describe("analyzerBandFreqsHz (H-84, SPEC-007 §4.9 band centres)", () => {
+  it("computes f0Hz * 2^(k / bandsPerOctave) per band", () => {
+    const freqs = analyzerBandFreqsHz(4, 20, 24);
+    expect(freqs.length).toBe(4);
+    expect(freqs[0]).toBeCloseTo(20, 9);
+    for (let k = 1; k < 4; k++) {
+      expect(freqs[k]).toBeCloseTo(20 * 2 ** (k / 24), 9);
+    }
+  });
+
+  it("is ascending", () => {
+    const freqs = analyzerBandFreqsHz(50, 20, 24);
+    for (let i = 1; i < freqs.length; i++) {
+      expect(freqs[i]!).toBeGreaterThan(freqs[i - 1]!);
+    }
+  });
+
+  it("is empty/zeroed for degenerate inputs, never NaN", () => {
+    expect(analyzerBandFreqsHz(0, 20, 24).length).toBe(0);
+    expect([...analyzerBandFreqsHz(3, 0, 24)].every((v) => Number.isFinite(v))).toBe(true);
+    expect([...analyzerBandFreqsHz(3, 20, 0)].every((v) => Number.isFinite(v))).toBe(true);
   });
 });

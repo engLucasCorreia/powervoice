@@ -24,11 +24,16 @@ import { eqFrequencyTicks } from "./freqAxis";
 import { gainAxisTicks } from "./gainAxis";
 
 export const EQ_AXIS_FONT_PX = 10;
-const LINE_PX = 12;
-/** Distance of the labels from the canvas edge. */
-const INSET_PX = 3;
-/** Clear space kept between labels. */
-const GAP_PX = 3;
+/** A label's line height, px (H-84: also used to keep the expanded view's spectrum-scale labels
+ * clear of this row). */
+export const EQ_AXIS_LINE_PX = 12;
+/** Distance of the labels from the canvas edge (H-84: ditto). */
+export const EQ_AXIS_INSET_PX = 3;
+/** Clear space kept between labels (H-84: ditto). */
+export const EQ_AXIS_GAP_PX = 3;
+const LINE_PX = EQ_AXIS_LINE_PX;
+const INSET_PX = EQ_AXIS_INSET_PX;
+const GAP_PX = EQ_AXIS_GAP_PX;
 /** Frequency and gain labels meeting in the bottom-left corner keep a clearer gap ("−12 50"). */
 const CORNER_GAP_PX = 6;
 /** Gain labels sit on grid lines 20 px apart at the compact graph height; 2 px keeps them all. */

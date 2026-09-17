@@ -41,6 +41,7 @@ import Layers from "@lucide/svelte/icons/layers";
 import LoaderCircle from "@lucide/svelte/icons/loader-circle";
 import Lock from "@lucide/svelte/icons/lock";
 import Maximize from "@lucide/svelte/icons/maximize";
+import Maximize2 from "@lucide/svelte/icons/maximize-2";
 import Mic from "@lucide/svelte/icons/mic";
 import MicOff from "@lucide/svelte/icons/mic-off";
 import Minus from "@lucide/svelte/icons/minus";
@@ -107,6 +108,7 @@ export const ICONS = {
   zoomOut: ZoomOut,
   zoomToSelection: ScanSearch,
   zoomFull: Maximize,
+  expand: Maximize2,
   panelLeft: PanelLeft,
   panelRight: PanelRight,
   panelBottom: PanelBottom,

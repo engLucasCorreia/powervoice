@@ -8,6 +8,8 @@
  * (frequency, dB) pair Rust already computed onto pixels.
  */
 
+import { bandCenterHz } from "../ipc/analyzer";
+
 /** Bottom of the graph's frequency range (SPEC-015 §2.6.2), always. */
 export const EQ_MIN_HZ = 20;
 /** Top of the graph's frequency range when the rate allows it (SPEC-015 §2.6.2). */
@@ -128,6 +130,23 @@ export function eqFrequencyTicks(
     }
   }
   return ticks;
+}
+
+/**
+ * Band-centre frequencies for a `VXSA` analyzer frame (H-84, SPEC-007 §4.9/§4.8.3): delegates to
+ * `ipc/analyzer.ts::bandCenterHz`, whose own doc comment already names this file as its intended
+ * caller ("shared by the analyzer panel and (M4) the EQ graph via `freqAxis.ts`"). The wire frame
+ * carries `f0Hz`/`bandsPerOctave`/`bandCount` only, not the frequencies themselves.
+ */
+export function analyzerBandFreqsHz(bandCount: number, f0Hz: number, bandsPerOctave: number): Float64Array {
+  const out = new Float64Array(Math.max(0, bandCount));
+  if (!(f0Hz > 0) || !(bandsPerOctave > 0)) {
+    return out;
+  }
+  for (let k = 0; k < out.length; k++) {
+    out[k] = bandCenterHz(k, f0Hz, bandsPerOctave);
+  }
+  return out;
 }
 
 /**

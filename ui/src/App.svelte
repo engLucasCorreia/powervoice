@@ -5,6 +5,7 @@
   import { analyzerState, applyAnalyzerPrefs } from "./lib/analyzer/analyzer.svelte";
   import { applyDiagnosticsPrefs } from "./lib/analyzer/diagnostics.svelte";
   import SpectrumInspector from "./lib/analyzer/SpectrumInspector.svelte";
+  import EqExpandedView from "./lib/eq/EqExpandedView.svelte";
   import ChannelChoiceDialog from "./lib/document/ChannelChoiceDialog.svelte";
   import ClipPromptDialog from "./lib/document/ClipPromptDialog.svelte";
   import ConfirmDialog from "./lib/document/ConfirmDialog.svelte";
@@ -536,6 +537,7 @@
 <ShortcutsDialog />
 <CalibrationDialog />
 <SpectrumInspector />
+<EqExpandedView />
 <WelcomeOffer />
 <TourOverlay />
 

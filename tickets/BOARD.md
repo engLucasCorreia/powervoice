@@ -107,6 +107,8 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-81 | Owner-reported bug: turning Loop off keeps looping the old region and the pink loop strip never disappears | S | done |
 | H-82 | Editing during an import: SPEC-005 §2.3 item 4 says it is disabled, but nothing gates it (H-76's open question — a UX gap, not a data bug) | S | done |
 | H-83 | Svelte ownership warning: EditorView's effect writes waveformView's `startSample`/`samplesPerPixel` from outside the owning module (found by H-68's recording harness) | S | done |
+| H-84 | EQ graph remainder (T-409): live spectrum overlay, keyboard-operable nodes (SPEC-015 AC-19), expanded view | S | in progress |
+| H-85 | Noise reduction UI remainder (T-504): profile graph, Clear Noise Print, Ctrl+Shift+P | S | in progress |
 | H-62 | Sandbox event-ring overflow is silent (H-55 open question): `HostEnd::push_event` / the proxy drop events when the ring is full (counted in `events_dropped`, never surfaced) — another timing-dependent divergence under heavy automation; surface it as a notice/slot status and test it | S | done |
 | H-56 | Insert silence + cross-document clipboard (T-302 remainder, SPEC-008) | S | done |
 | H-57 | Markers: kinds in the core model, drag, region→selection (T-303 remainder, SPEC-009) | S | done |
@@ -150,22 +152,22 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-102 | Devices: enumeration, channel deinterleave, hot-plug polling, device lost | W1 | O | M0 | done |
 | T-103 | Rack core: module registry, chain swap/retire, host bypass/crossfade, dual-mono shim, param routing + same-offset/id event coalescing, latency sum, Gain, offline render, `cli render --rack` | W1 | O | M0 | done |
 | T-104 | App infra: tracing log, typed errors→toasts/banners, panic hook, settings, stores, keymap registry, WebKit DMA-BUF default | W1 | S | M0 | done |
-| T-105 | Engine core: control thread, RT callbacks, transport (Stop→play start), reader/prefetch, resampling, heard clock, 60 Hz telemetry | W2 | O | T-101, T-102, T-103 | → S1-01 (subset), rest hardening → remainder ticketed as H-59 |
-| T-106 | Recording: crash-safe WAV, peaks stream, take → undoable edit | W3 | O | T-105 | → S1-04 (subset), rest hardening → remainder ticketed as H-59 |
+| T-105 | Engine core: control thread, RT callbacks, transport (Stop→play start), reader/prefetch, resampling, heard clock, 60 Hz telemetry | W2 | O | T-101, T-102, T-103 | done (hardening remainder: H-59) |
+| T-106 | Recording: crash-safe WAV, peaks stream, take → undoable edit | W3 | O | T-105 | done (hardening remainder: H-59) |
 | T-107 | Monitoring off/dry/through-rack, drift-corrected in→out ring | W3 | O | T-105 | done |
-| T-108 | IPC layer: M1 commands/events, VXTM/VXRP channels, binary decoders + golden fixtures, clock sync | W3 | S | T-104, T-105 | → S1-01/S1-03 (subset), rest hardening → remainder ticketed as H-59 |
+| T-108 | IPC layer: M1 commands/events, VXTM/VXRP channels, binary decoders + golden fixtures, clock sync | W3 | S | T-104, T-105 | done (hardening remainder: H-59) |
 | T-110 | Bench harness (divan, callback-time histogram) | W3 | S | T-105 | done |
-| T-109 | UI: device settings, transport bar, meter bridge, live recording waveform | W4 | S | T-106, T-107, T-108 | → S1-01/S1-04 (subset), rest hardening → remainder ticketed as H-59 |
+| T-109 | UI: device settings, transport bar, meter bridge, live recording waveform | W4 | S | T-106, T-107, T-108 | done (hardening remainder: H-59) |
 
 ## M2 — Editor view
 | ID | Title | Wave | Tier | Deps | Status |
 |---|---|---|---|---|---|
 | T-200 | M2 spec wave: SPEC-005 formats, SPEC-006 waveform view, SPEC-007 spectral & analyzer | W0 | O/S | M0 | done |
-| T-201 | Save pipeline: WAV writer 16/24/32f, TPDF dither, clip policy, cue/adtl markers, atomic save job, FLAC encode | W1 | S+OR | M1 | → S1-02/S1-03 (WAV subset), rest hardening → remainder ticketed as H-60 |
+| T-201 | Save pipeline: WAV writer 16/24/32f, TPDF dither, clip policy, cue/adtl markers, atomic save job, FLAC encode | W1 | S+OR | M1 | done (hardening remainder: H-60) |
 | T-202 | Import pipeline: symphonia decode (WAV variants, FLAC, MP3, M4A, Ogg), downmix, session import job, CLI convert/markers | W1 | S+OR | M1 | done (import job UI + channel-choice dialog → T-209) |
-| T-203 | Per-chunk peak pyramid + binary IPC | W1 | S+OR | M1 | → S1-02/S1-03 (subset), rest hardening → remainder ticketed as H-60 |
+| T-203 | Per-chunk peak pyramid + binary IPC | W1 | S+OR | M1 | done (hardening remainder: H-60) |
 | T-204 | STFT spectrogram tile service | W1 | O | M1 | done |
-| T-205 | Waveform renderer: zoom/scroll, amplitude zoom, rulers, extrapolated playhead | W2 | S | T-203 | → S1-03 (Canvas2D subset), rest hardening → remainder ticketed as H-60 |
+| T-205 | Waveform renderer: zoom/scroll, amplitude zoom, rulers, extrapolated playhead | W2 | S | T-203 | done (hardening remainder: H-60) |
 | T-206 | Selection model, time formats, zero-crossing snap | W3 | S | T-205 | done |
 | T-207 | Spectrogram renderer, log/linear, split view | W3 | S | T-204, T-205 | done |
 | T-208 | Live output analyzer: post-rack tap, FFT worker, 1/24-oct bands, VXSA, bottom-dock UI | W3 | S+OR | T-205 | done (follow-ups → H-16) |
@@ -176,8 +178,8 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 |---|---|---|---|---|---|
 | T-300 | M3 spec wave: SPEC-008, SPEC-009, SPEC-010, SPEC-018, SPEC-022 | W0 | O | M0, SPEC-005 | done |
 | T-301 | Undo/redo, resident memory budget, edit journal, crash recovery | W1 | O | M2 | done (follow-ups → H-17) |
-| T-302 | Cut/copy/paste/delete, trim, silence, insert silence, clipboard | W2 | S+OR | T-301 | → S2-01 (done); rest: insert silence, cross-document clipboard → remainder ticketed as H-56 |
-| T-303 | Markers: kinds, add/region, rename, drag, delete, navigation, Markers panel | W2 | S | T-301 | → S2-03 (done); rest: marker kind in the core model, drag, region→selection → remainder ticketed as H-57 |
+| T-302 | Cut/copy/paste/delete, trim, silence, insert silence, clipboard | W2 | S+OR | T-301 | done (remainder: H-56) |
+| T-303 | Markers: kinds, add/region, rename, drag, delete, navigation, Markers panel | W2 | S | T-301 | done (remainder: H-57, H-64) |
 | T-304 | Record at cursor (Insert/Overwrite) + punch-in + latency offset & calibration | W2 | O | T-301 | done (follow-ups → H-21) |
 | T-305 | Peak normalize favorites | W2 | S+OR | T-301 | done (via S2-02 + H-09) |
 | T-306 | Sidecar `.vo.json`, identity check, sidecar-only saves, recent files, second-instance warning | W3 | S+OR | T-302, T-303 | done (follow-ups → H-12, H-15, T-303) |
@@ -192,10 +194,10 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-404 | True-peak limiter | W1 | O | M3 | done (via S3-05 + H-03) |
 | T-405 | Rack panel + generic parameter UI | W2 | S | T-401 | done (via S3-01) |
 | T-406 | Module & rack presets | W2 | S | T-401 | done (rename/overwrite UX → H-22) |
-| T-407 | Dynamics B: expander + AutoGate | W2 | O | T-403 | → S3-02 (params implemented); rest: verify SPEC-016 part-2 ACs → remainder ticketed as H-58 |
+| T-407 | Dynamics B: expander + AutoGate | W2 | O | T-403 | done (remainder: H-58, H-65) |
 | T-408 | Noise gate (shared envelope/hysteresis) | W3 | O | T-407 | done (via S3-02) |
-| T-409 | EQ graph UI (analyzer + ResponseCurve) | W3 | S | T-402, T-405, T-208 | → S3-07 (done); rest: analyzer overlay, keyboard nodes, expanded view |
-| T-410 | Dynamics UI + gain-reduction meter (Telemetry) | W3 | S | T-405, T-407 | → H-03 (GR meters done); rest: VXTC transfer curve + dynamics graph UI |
+| T-409 | EQ graph UI (analyzer + ResponseCurve) | W3 | S | T-402, T-405, T-208 | in progress (remainder: H-84) |
+| T-410 | Dynamics UI + gain-reduction meter (Telemetry) | W3 | S | T-405, T-407 | done (remainder: H-63, H-77) |
 
 ## M5 — Noise reduction
 | ID | Title | Wave | Tier | Deps | Status |
@@ -204,7 +206,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | T-501 | Offline NR algorithm (decision-directed Wiener + smoothing) + goldens | W1 | O | M4 | done (via S3-04) |
 | T-502 | Noise print capture + profile storage (state blob) | W1 | S | M4 | done (via S3-04 + S3-06) |
 | T-503 | Streaming NR module, latency_changed on FFT size | W2 | O | T-501, T-502 | done (via S3-04) |
-| T-504 | NR UI: capture, profile graph, output-noise-only | W3 | S | T-503 | → S3-06 + H-08 (done); rest: profile graph, Clear Noise Print, Ctrl+Shift+P |
+| T-504 | NR UI: capture, profile graph, output-noise-only | W3 | S | T-503 | in progress (remainder: H-85) |
 
 ## M6 — Loudness & export
 | ID | Title | Wave | Tier | Deps | Status |

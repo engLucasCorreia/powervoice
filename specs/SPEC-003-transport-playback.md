@@ -37,11 +37,12 @@ PowerVoice's transport bar (PROMPT §3.6, top of the app shell) exposes:
   of the current time selection, or from sample 0 when there is no selection.
 - **Return to Start**: seeks the playhead to document sample 0. If playback was in progress, it
   continues playing from 0 (a seek, not a stop); if stopped, the playhead simply moves.
-- **Loop**: toggles looping. When on and a time selection exists, playback loops between the
-  selection's start and end; when on with no selection, loop has no effect until a selection is made
-  (no error — the toggle is just inert). Turning loop off while a looped playback is in progress lets
-  the current pass finish and then stop advancing past the old loop end normally (does not cut off
-  mid-loop).
+- **Loop**: toggles looping. When on and a time selection exists (at least the minimum length,
+  §3), playback loops between the selection's start and end; when on with no selection, or one
+  shorter than the minimum, playback loops the **whole document** (H-80 — supersedes the "no
+  selection: inert" reading below and in §3/AC-4). Turning loop off while a looped playback is in
+  progress lets the current pass finish and then stop advancing past the old loop end normally
+  (does not cut off mid-loop).
 - **Playhead follow**: while playing, the waveform view scrolls to keep the playhead visible (a
   settings/view toggle can disable this so the user can read a static region while audio plays
   underneath — out of scope to fully specify the toggle UI here, but the default is "on").
@@ -124,7 +125,7 @@ Shift+Space = Record without the same caveat, since recording's shortcut is equa
 
 | id | name | unit | range | default | taper/step | notes |
 |---|---|---|---|---|---|---|
-| `loop_enabled` | Loop toggle | bool | on/off | off | n/a | inert with no time selection |
+| `loop_enabled` | Loop toggle | bool | on/off | off | n/a | loops the whole document with no (long-enough) time selection (H-80); inert only with no document |
 | `loop_start_sample` / `loop_end_sample` | Loop region | doc samples (`u64`) | `0..=len_samples` | current selection | n/a | set from the current time selection when loop is enabled |
 | `playhead_follow` | Playhead-follow view toggle | bool | on/off | on | n/a | view-only; does not affect audio |
 | `telemetry_rate_hz` | Playhead/meter update rate | Hz | {30, 60} | 60 | n/a | ADR-003 §1; 60 Hz measured free on WebKitGTK (ADR-009 §3); 30 Hz kept as a Settings option |
@@ -173,7 +174,9 @@ Shift+Space = Record without the same caveat, since recording's shortcut is equa
   playback was in progress it continues playing from 0 without a stop/start gap perceptible as a
   separate Play press (i.e., it behaves as one seek, per §4).
 - **AC-4 (loop selection).** *(Amendment 1 supersedes this AC's rack-reset clause: the seam is
-  seamless with no rack reset — H-37/A-023. The rest of the AC stands.)* Given a time selection
+  seamless with no rack reset — H-37/A-023. Amendment 3 (H-80) adds the whole-document loop when
+  there is no selection (or too short a one); this AC's selection case is otherwise unchanged.)*
+  Given a time selection
   [S, E) and loop enabled with an empty (unity)
   rack, when playback runs for at least 3 loop passes, then the rendered output is **sample-exact**
   equal (max abs difference ≤ 1e-6) to the concatenation source[S..E) ‖ source[S..E) ‖ … — no
@@ -349,3 +352,41 @@ the engine side is ADR-002 Amendment 4, the rack side SPEC-012 §2.5.2.
   play start" for L after a start is gone. The telemetry anchor of a callback in which playback
   starts part-way through is stamped with that frame's heard time.
 - **Export and bake** (offline, SPEC-012 §2.8.1) are unchanged.
+
+## Amendment 3 — H-80 loop the whole document with no selection (2026-09-16, owner-requested)
+
+The owner reported that with nothing selected, turning Loop on and pressing Play ran to the
+document end and stopped, "even though loop playback is active" — exactly §2.1/§3/AC-4's "inert
+with no time selection" reading (H-37, Amendment 1). Confirmed as designed, not a defect; the
+owner asked for it to loop the whole file instead, as Adobe Audition's Loop Playback does. This
+amendment supersedes that reading everywhere it appears (§2.1's "Loop" bullet, the §3 table's
+`loop_enabled` note, and AC-4's introduction) and updates §2.5's "Loop Playback toggle" tooltip via
+the UI story below. Nothing else about H-37/Amendment 1's loop mechanics changes: the seam stays
+seamless with no rack reset, the reader/output packet mechanism (§4) is unaware of *why* the
+effective region is what it is, and loop-off's "finish the pass, then stop at the old end" is
+unchanged.
+
+- **Effective loop region.** While Loop is on: the current time selection, when it is at least the
+  minimum length (10 ms, unchanged); otherwise **the whole document**, `[0, len)` — covering both
+  "no selection" and "a selection shorter than the minimum" the same way, so the Loop toggle's
+  on-state always means "this is actually looping" (never silently inert with a document open).
+  `None` (no effective region) now only means the toggle is off, or there is no document at all.
+  **Choice, and why:** the alternative (a notice explaining a too-short selection is inert) was
+  rejected — it would leave the toggle lit while nothing loops, contradicting the "on-state always
+  means actually looping" requirement, and a silent, visible fallback needs no separate UI: the
+  loop overlay (brace strip, SPEC-006 §2.12) already shows the *effective* region, so covering the
+  whole waveform *is* the notice.
+  - **Toolbar tooltip** (§2.5's "Loop Playback toggle" row): `transport.loop_inert` ("open a file
+    to loop") now shows only with no document loaded; every other case shows the plain
+    `transport.loop` label, since Loop is never inert-with-lit-toggle once a document is open.
+- **Switching the region live.** Making a selection while looping the whole document, or clearing
+  one while looping a selection, switches the effective region the same way any selection edit
+  already does during looped playback (Amendment 1: "applies from the reader's read position,"
+  no epoch change, no rack reset) — no stop, no glitch, seamless either direction. The existing
+  "where looping applies" rule (Amendment 1) covers the edge case where the read position has
+  already passed the new region's end when the switch lands: playback then continues to the
+  document end without looping into the (now behind it) region, exactly as a fresh Play at or
+  after the loop end would — the switch is not a special case, it reuses the same rule.
+- **`loop_region()`'s signature is unchanged** (`crates/engine/src/transport.rs`): only its
+  fallback changed, from `None` to `Some((0, len))`, when the selection is missing or too short
+  (and the document is non-empty).

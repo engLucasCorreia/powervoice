@@ -407,6 +407,9 @@ pub(crate) struct Control {
     /// Control ticks run so far (diagnostics; telemetry frames no longer count them 1:1).
     tick_count: u64,
     last_state: Option<TransportState>,
+    /// H-81: monotonic counter stamped onto `TransportState.revision`, bumped whenever
+    /// `emit_state_if_changed` detects an actual change (never by a plain query).
+    transport_revision: u64,
     /// H-37: the loop region last sent to the reader and the output callback.
     loop_sent: Option<(u64, u64)>,
     // --- Input / recording (S1-04) ---
@@ -537,6 +540,7 @@ impl Control {
             idle_gate: IdleTelemetryGate::default(),
             tick_count: 0,
             last_state: None,
+            transport_revision: 0,
             loop_sent: None,
             threaded,
             in_device_id: None,
@@ -655,6 +659,7 @@ impl Control {
             can_play: self.can_play(),
             loop_enabled: self.transport.loop_enabled(),
             loop_range: self.loop_region(),
+            revision: self.transport_revision,
         }
     }
 
@@ -680,8 +685,13 @@ impl Control {
     }
 
     fn emit_state_if_changed(&mut self) {
-        let state = self.transport_state();
+        let mut state = self.transport_state();
+        // H-81: `PartialEq` ignores `revision`, so this compares content only; bump the counter
+        // (and stamp it) only when something actually changed, so a plain, repeated query never
+        // advances it.
         if self.last_state.as_ref() != Some(&state) {
+            self.transport_revision = self.transport_revision.wrapping_add(1);
+            state.revision = self.transport_revision;
             self.last_state = Some(state.clone());
             (self.events)(EngineEvent::Transport(state));
         }

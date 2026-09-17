@@ -10,20 +10,24 @@ import Toolbar from "./Toolbar.svelte";
 /** H-37 (SPEC-003 §2.1): the toolbar's Loop toggle button. */
 
 let loopEnabled = false;
+// H-80: mirrors the engine — with a document open, loop_range is the selection when it's long
+// enough, else the whole document; `null` only reflects loop being off or no document at all.
+let docLenSamples = 96_000;
 let loopRange: [number, number] | null = null;
 const calls: unknown[] = [];
 
 function stateDto() {
   return transportStateDto({
-    doc_len_samples: 96_000,
-    can_play: true,
+    doc_len_samples: docLenSamples,
+    can_play: docLenSamples > 0,
     loop_enabled: loopEnabled,
-    loop_range: loopEnabled ? loopRange : null,
+    loop_range: loopEnabled && docLenSamples > 0 ? (loopRange ?? [0, docLenSamples]) : null,
   });
 }
 
 beforeEach(() => {
   loopEnabled = false;
+  docLenSamples = 96_000;
   loopRange = null;
   calls.length = 0;
   mockIPC(
@@ -74,8 +78,9 @@ describe("the Loop button", () => {
     await settle();
     expect(calls).toEqual([true]);
     expect(button().getAttribute("aria-pressed")).toBe("true");
-    // Loop on without a selection is inert — the tooltip says why.
-    expect(button().getAttribute("aria-label")).toBe("Loop playback — select a time range to loop");
+    // H-80: loop on without a selection now loops the whole document — never inert with a
+    // document open, so the plain label applies.
+    expect(button().getAttribute("aria-label")).toBe("Loop playback");
 
     button().click();
     await settle();
@@ -98,6 +103,24 @@ describe("the Loop button", () => {
     const button = target.querySelector<HTMLButtonElement>('[data-testid="transport-loop"]')!;
     expect(button.getAttribute("aria-pressed")).toBe("true");
     expect(button.getAttribute("aria-label")).toBe("Loop playback");
+    unmount(app);
+    target.remove();
+    teardown();
+  });
+
+  // H-80: the only remaining inert case is no document at all — a whole-document loop is always
+  // possible once one is open, so the toggle's on-state always means "this is actually looping".
+  it("is inert only with no document open", async () => {
+    loopEnabled = true;
+    docLenSamples = 0;
+    const teardown = await initTransport();
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(Toolbar, { target, props: { version: "1" } });
+    flushSync();
+    const button = target.querySelector<HTMLButtonElement>('[data-testid="transport-loop"]')!;
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    expect(button.getAttribute("aria-label")).toBe("Loop playback — open a file to loop");
     unmount(app);
     target.remove();
     teardown();

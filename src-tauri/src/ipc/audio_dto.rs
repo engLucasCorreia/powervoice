@@ -28,6 +28,12 @@ pub struct TransportStateDto {
     /// H-37: the effective loop region `[start, end)` — the selection while loop is on (`null`:
     /// loop off, or inert without a long-enough selection).
     pub loop_range: Option<(u64, u64)>,
+    /// H-81: a monotonic counter bumped whenever the engine's transport state actually changes.
+    /// A command's response and the `transport_state` event it triggers race independently over
+    /// Tauri's IPC (they're different channels with no ordering guarantee between them), and an
+    /// unrelated concurrent command's response can land later still with an older snapshot — the
+    /// UI drops anything not newer than what it has already applied (`transport.svelte.ts`).
+    pub revision: u64,
 }
 
 impl From<&TransportState> for TransportStateDto {
@@ -41,6 +47,7 @@ impl From<&TransportState> for TransportStateDto {
             can_play: s.can_play,
             loop_enabled: s.loop_enabled,
             loop_range: s.loop_range,
+            revision: s.revision,
         }
     }
 }

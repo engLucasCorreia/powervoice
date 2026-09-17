@@ -57,6 +57,7 @@ const IDLE: TransportStateDto = {
   can_play: false,
   loop_enabled: false,
   loop_range: null,
+  revision: 0,
 };
 
 export interface OutputMeter {
@@ -163,6 +164,15 @@ function applyState(next: TransportStateDto): void {
   // which is why this only showed up sometimes (worse odds the busier the page, e.g. more visible
   // panels at a wider window width delaying one side of the race).
   if (!next) {
+    return;
+  }
+  // H-81: a command's own response and the `transport_state` event it triggers travel over
+  // independent Tauri channels (no ordering guarantee between them), and an unrelated concurrent
+  // command's response can arrive later still, carrying an older snapshot (e.g. a selection sync
+  // still in flight when Loop is toggled off). `revision` is monotonic on the engine side —
+  // dropping anything not newer than what's already applied stops a stale reply from resurrecting
+  // old loop/selection state (the loop toggle appearing stuck on, the loop overlay not clearing).
+  if (next.revision < state.revision) {
     return;
   }
   state = next;

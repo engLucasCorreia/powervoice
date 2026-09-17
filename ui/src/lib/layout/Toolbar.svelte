@@ -49,7 +49,9 @@
     formatDocumentTime(transport.playheadSamples, transport.state.doc_rate_hz, timeFormat.current),
   );
   const playing = $derived(transport.state.playing);
-  // H-37 (SPEC-003 §2.1): loop on with no (long-enough) selection is inert — say so in the tooltip.
+  // H-80 (SPEC-003 §2.1/§3, Amendment 3): loop now always has an effective region once a
+  // document is open (the whole document when there's no selection or too short a one) — the
+  // toggle is inert only with no document loaded at all, which the tooltip says.
   const loopLabel = $derived(
     transport.state.loop_enabled && !transport.state.loop_range ? t("transport.loop_inert") : t("transport.loop"),
   );

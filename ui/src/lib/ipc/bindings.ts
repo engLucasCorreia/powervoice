@@ -1485,7 +1485,15 @@ loop_enabled: boolean,
  * H-37: the effective loop region `[start, end)` — the selection while loop is on (`null`:
  * loop off, or inert without a long-enough selection).
  */
-loop_range: [number, number] | null, };
+loop_range: [number, number] | null, 
+/**
+ * H-81: a monotonic counter bumped whenever the engine's transport state actually changes.
+ * A command's response and the `transport_state` event it triggers race independently over
+ * Tauri's IPC (they're different channels with no ordering guarantee between them), and an
+ * unrelated concurrent command's response can land later still with an older snapshot — the
+ * UI drops anything not newer than what it has already applied (`transport.svelte.ts`).
+ */
+revision: number, };
 
 /**
  * Display unit ([`Unit`]); `Custom` carries the adapter-provided label.

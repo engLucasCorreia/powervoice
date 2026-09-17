@@ -304,7 +304,7 @@
   "transport.play_from_start": "Play from start",
   "transport.return_to_start": "Return to start",
   "transport.loop": "Loop playback",
-  "transport.loop_inert": "Loop playback — select a time range to loop",
+  "transport.loop_inert": "Loop playback — open a file to loop",
 
   "meter.output": "Output level",
   "meter.peak": "Peak {value} dBFS",

@@ -492,38 +492,136 @@ fn turning_loop_on_mid_play_wraps_at_the_selection_end() {
     assert_eq!(r.fake.rt_violations(), 0);
 }
 
-/// SPEC-003 §2.1/§3: loop is inert without a time selection (or with one shorter than the
-/// 10 ms minimum): playback runs to the document end. Clearing the selection mid-loop lets
-/// playback continue past the loop end.
+/// H-80 (SPEC-003 §2.1/§3, Amendment 3): loop with no time selection loops the whole document —
+/// the owner-requested feature (the previous "inert with no selection" reading is superseded).
+/// Three passes over the whole document are sample-exact, the seam is seamless, and playback
+/// never stops at the document end while looping.
 #[test]
-fn loop_is_inert_without_a_selection() {
+fn loop_loops_the_whole_document_without_a_selection() {
     let src = noise(6, 24_000);
+    let mut r = rig(dev_random(), &src, 48_000, empty_rack(), 0);
+    r.run_ms(20);
+    let st = r.eng.set_loop(true);
+    assert!(st.loop_enabled);
+    assert_eq!(
+        st.loop_range,
+        Some((0, src.len() as u64)),
+        "H-80: no selection loops the whole document"
+    );
+    assert!(r.eng.transport(TransportCommand::Play).playing);
+    r.run_ms(2_500);
+    assert!(
+        r.eng.transport_state().playing,
+        "looping repeats until Stop — no stop at the document end"
+    );
+    let rec = r.recorded();
+    let base = pass_base(&rec, &src, 0);
+    let l = src.len();
+    assert!(rec.len() > base + 3 * l, "three passes recorded");
+    for pass in 1..3 {
+        let d = max_diff(&rec, base + pass * l, &src);
+        assert!(d <= 1e-6, "pass {} differs by {d}", pass + 1);
+    }
+    assert!(
+        (rec[base + l] - src[0]).abs() <= 1e-6,
+        "the sample after the document end is the document start"
+    );
+    assert_eq!(r.fake.rt_violations(), 0);
+}
+
+/// H-80: a selection shorter than the 10 ms minimum falls back to the whole document, exactly
+/// like no selection — the same choice as "no selection", so the Loop button's on-state always
+/// means "this is actually looping" (never a silently-inert loop with the toggle lit).
+#[test]
+fn a_selection_under_the_minimum_falls_back_to_the_whole_document() {
+    let src = noise(7, 24_000);
     let mut r = rig(dev_256(), &src, 48_000, empty_rack(), 0);
     r.run_ms(20);
     let st = r.eng.set_loop(true);
     assert!(st.loop_enabled);
-    assert_eq!(st.loop_range, None);
+    assert_eq!(st.loop_range, Some((0, src.len() as u64)));
     assert_eq!(
         r.eng.set_selection(Some((100, 500))).loop_range,
-        None,
-        "shorter than 10 ms"
+        Some((0, src.len() as u64)),
+        "shorter than 10 ms: falls back to the whole document, not inert"
     );
     assert!(r.eng.transport(TransportCommand::Play).playing);
     r.run_ms(700);
-    let st = r.eng.transport_state();
-    assert!(!st.playing, "played to the end");
-    assert_eq!(st.playhead_samples, src.len() as u64);
+    assert!(
+        r.eng.transport_state().playing,
+        "still looping — a too-short selection never silently stops looping"
+    );
+    assert_eq!(r.fake.rt_violations(), 0);
+}
 
-    // Clearing the selection during looped playback: no more wraps, play on to the end.
-    let st = r.eng.set_selection(Some((4_800, 9_600)));
-    assert_eq!(st.loop_range, Some((4_800, 9_600)));
+/// H-80 item 3: making a selection while looping the whole document switches the loop to that
+/// selection; clearing the selection switches back to the whole document. No stop, no glitch at
+/// the switch (playback never pauses, `playing` stays true throughout).
+#[test]
+fn switching_between_a_selection_and_the_whole_document_is_seamless() {
+    let src = noise(8, 48_000);
+    let (s, e) = (20_000u64, 30_000u64);
+    let mut r = rig(dev_256(), &src, 48_000, empty_rack(), 0);
+    r.run_ms(20);
+    let st = r.eng.set_loop(true);
+    assert_eq!(st.loop_range, Some((0, src.len() as u64)));
     assert!(r.eng.transport(TransportCommand::PlayFromStart).playing);
-    r.run_ms(250);
-    assert!(r.eng.transport_state().playing, "looping");
-    assert_eq!(r.eng.set_selection(None).loop_range, None);
-    r.run_ms(700);
-    assert!(!r.eng.transport_state().playing, "ran to the document end");
-    assert_eq!(r.eng.transport_state().playhead_samples, src.len() as u64);
+    r.run_ms(20);
+    assert!(r.eng.transport_state().playing);
+
+    // A selection appears: the loop switches to it without stopping.
+    let st = r.eng.set_selection(Some((s, e)));
+    assert_eq!(st.loop_range, Some((s, e)));
+    assert!(st.playing, "no stop at the switch");
+    r.run_ms(300);
+    assert!(r.eng.transport_state().playing, "looping the selection");
+    let rec_mid = r.recorded();
+
+    // Clearing the selection: back to the whole document, still without stopping.
+    let st = r.eng.set_selection(None);
+    assert_eq!(st.loop_range, Some((0, src.len() as u64)));
+    assert!(st.playing, "no stop at the switch back");
+    r.run_ms(300);
+    assert!(
+        r.eng.transport_state().playing,
+        "looping the whole document again"
+    );
+    assert!(
+        r.recorded().len() > rec_mid.len(),
+        "playback kept advancing across both switches"
+    );
+    assert_eq!(r.fake.rt_violations(), 0);
+}
+
+/// The required tests' last row: loop toggled on during the final second of playback (no
+/// selection, so the whole-document region's end is the document end) wraps back to the start
+/// rather than stopping there.
+#[test]
+fn turning_loop_on_during_the_final_second_of_playback_wraps() {
+    // 3 s, well over the ~200-330 ms read-ahead window, so enabling loop "in the final second"
+    // finds the reader still short of the document end (not already finished / `a.done`).
+    let src = noise(9, 3 * 48_000);
+    let l = src.len();
+    let mut r = rig(dev_256(), &src, 48_000, empty_rack(), 0);
+    r.run_ms(20);
+    assert!(
+        !r.eng
+            .transport(TransportCommand::Seek((l - 48_000) as u64))
+            .playing
+    );
+    assert!(r.eng.transport(TransportCommand::Play).playing);
+    r.run_ms(500);
+    let st = r.eng.set_loop(true);
+    assert_eq!(st.loop_range, Some((0, l as u64)));
+    r.run_ms(1_000);
+    assert!(
+        r.eng.transport_state().playing,
+        "wrapped instead of stopping at the document end"
+    );
+    let rec = r.recorded();
+    // Playback started at `l - 48_000` and never naturally revisits the document start; finding
+    // it in the output is proof the reader wrapped back to 0 instead of stopping at `l`.
+    find(&rec, &src[0..64]).expect("the document start recurs in the output: it wrapped");
     assert_eq!(r.fake.rt_violations(), 0);
 }
 
@@ -611,4 +709,158 @@ fn export_and_bake_are_unaffected_by_loop() {
     )
     .unwrap();
     assert_eq!(rendered, src, "the whole document, once");
+}
+
+/// H-81 (owner-reported "loop off doesn't stop the loop"): a very short loop (well under the
+/// ~200-330 ms read-ahead) means the reader has already generated many passes ahead of what is
+/// heard. Turning loop off must still stop promptly at the *currently heard* pass's end, and
+/// `loop_range` must clear at once (it drives the overlay strip in every pane), not after however
+/// many passes were pre-generated.
+#[test]
+fn h81_turning_loop_off_with_many_passes_already_queued() {
+    let src = noise(8, 48_000);
+    let (s, e) = (12_000usize, 13_000usize);
+    let mut r = rig(dev_256(), &src, 48_000, empty_rack(), 0);
+    r.loop_play(s as u64, e as u64);
+    r.run_ms(500);
+    let st = r.eng.set_loop(false);
+    assert!(!st.loop_enabled, "loop_enabled reflects off immediately");
+    assert_eq!(
+        st.loop_range, None,
+        "loop_range clears immediately (drives the overlay)"
+    );
+    r.run_ms(2_000);
+    let st = r.eng.transport_state();
+    assert!(!st.playing, "must have stopped by now");
+    assert_eq!(
+        st.playhead_samples, e as u64,
+        "stopped exactly at the old loop end"
+    );
+}
+
+/// H-81 regression: the REAL threaded engine (control thread + reader thread + a real output
+/// callback thread via `spawn_driver`), not `ManualEngine`'s inline/deterministic path. Turning
+/// loop off while genuinely playing across real threads must still stop the pass promptly at the
+/// old loop end.
+#[test]
+fn h81_threaded_loop_off_stops_promptly() {
+    use std::time::Duration;
+    use vox_engine::{Engine, EngineHandle};
+
+    assert!(alloc_checks_active());
+    let fake = FakeBackend::new(11);
+    fake.plug(
+        HostId::Alsa,
+        FakeDevice::new("DAC").with_output(dev_256().record_output()),
+    );
+    fake.set_rt_guard(|f| match no_alloc(f) {
+        Ok(()) => 0,
+        Err(n) => n,
+    });
+    let dir = TempDir::new("threaded-loop");
+    let src = noise(9, 96_000);
+    let (s, e) = (12_000u64, 24_000u64);
+    let store = ChunkStore::create(&dir.0, 0, StoreOptions::with_memory_budget(256 << 20)).unwrap();
+    let mut w = ChunkWriter::new(store.clone());
+    w.append(&src).unwrap();
+    let audio = w.finish().unwrap();
+    let snapshot = Arc::new(DocSnapshot::new(48_000, audio.pieces, Vec::new()));
+    let registry = Arc::new(Registry::with_factories(vox_modules::builtin_factories()).unwrap());
+    let mut cfg = EngineConfig::new(Arc::new(fake.clone()), registry);
+    let clock = fake.clone();
+    cfg.clock = Arc::new(move || clock.now_ns());
+    let engine = Engine::start(cfg).unwrap();
+    let h: EngineHandle = engine.handle();
+    let _driver = fake.spawn_driver(Duration::from_millis(1));
+
+    h.set_document(Some(PlaybackDoc {
+        store: store.clone(),
+        snapshot: snapshot.clone(),
+    }));
+
+    let mut opened = false;
+    for _ in 0..500 {
+        if h.transport_state().can_play {
+            opened = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(opened, "the output stream opened");
+
+    h.set_selection(Some((s, e)));
+    let st = h.set_loop(true);
+    assert!(st.loop_enabled);
+    assert_eq!(st.loop_range, Some((s, e)));
+    assert!(h.transport(TransportCommand::PlayFromStart).playing);
+
+    // Let it loop several real passes (250 us/sample at 48 kHz means the 12_000-sample loop is
+    // 250 ms; give it a full second: ~4 passes).
+    std::thread::sleep(Duration::from_millis(1_000));
+    assert!(
+        h.transport_state().playing,
+        "still looping before the toggle"
+    );
+
+    let st = h.set_loop(false);
+    assert!(!st.loop_enabled);
+    assert_eq!(st.loop_range, None, "loop_range clears immediately");
+
+    // Give it generous real time to finish the pass and stop.
+    let mut stopped = false;
+    let mut last = h.transport_state();
+    for _ in 0..200 {
+        std::thread::sleep(Duration::from_millis(10));
+        last = h.transport_state();
+        if !last.playing {
+            stopped = true;
+            break;
+        }
+    }
+    assert!(stopped, "still playing 2s after loop off: {last:?}");
+    assert_eq!(last.playhead_samples, e, "stopped at the old loop end");
+}
+
+/// H-81 (stress regression): unaligned loop boundaries, a non-empty rack (latency in the picture,
+/// so `flush_end`/pending-end interacts with `end_at_wrap`), random callback sizes, and a sweep of
+/// toggle-off timings relative to the seam.
+#[test]
+fn h81_stress_unaligned_loop_off_with_rack_latency() {
+    let src = noise(10, 3 * 48_000);
+    let (s, e) = (13_037usize, 29_999usize);
+    let l = e - s;
+    for before_seam_ms in [1usize, 3, 7, 13, 29, 47, 90, 150, 210] {
+        let mut r = rig(dev_random(), &src, 48_000, delay_rack(), 337);
+        r.loop_play(s as u64, e as u64);
+        r.run_ms(50);
+        let base = pass_base(&r.recorded(), &src, s);
+        let toggle_at = base + 2 * l - before_seam_ms.min(2 * l / 48) * 48;
+        let mut spins = 0;
+        while r.recorded().len() < toggle_at && spins < 5_000 {
+            r.run_ms(1);
+            spins += 1;
+        }
+        let st = r.eng.set_loop(false);
+        assert!(!st.loop_enabled);
+        assert_eq!(
+            st.loop_range, None,
+            "{before_seam_ms}ms: loop_range clears immediately"
+        );
+        r.run_ms(3_000);
+        let st = r.eng.transport_state();
+        assert!(
+            !st.playing,
+            "{before_seam_ms}ms: must have stopped, got playing={}",
+            st.playing
+        );
+        assert_eq!(
+            st.playhead_samples, e as u64,
+            "{before_seam_ms}ms: stopped at the old loop end"
+        );
+        assert_eq!(
+            r.fake.rt_violations(),
+            0,
+            "{before_seam_ms}ms: rt violation"
+        );
+    }
 }

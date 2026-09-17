@@ -149,3 +149,110 @@ describe("the looped extrapolation (SPEC-003 §2.2)", () => {
     stop();
   });
 });
+
+describe("H-81: turning loop off must clear loop_range for the overlay", () => {
+  it("clears loop_range immediately (drives the brace strip in every pane)", async () => {
+    let loopEnabled = true;
+    let loopRange: [number, number] | null = [12_000, 24_000];
+    let revision = 1;
+    mockIPC((cmd, args) => {
+      if (cmd === "clock_now_ns") return performance.now() * 1e6;
+      if (cmd === "transport_get")
+        return transportStateDto({
+          can_play: true,
+          playing: true,
+          loop_enabled: loopEnabled,
+          loop_range: loopRange,
+          revision,
+        });
+      if (cmd === "transport_set_loop") {
+        const enabled = (args as { enabled: boolean }).enabled;
+        loopEnabled = enabled;
+        loopRange = enabled ? [12_000, 24_000] : null;
+        revision += 1;
+        return transportStateDto({
+          can_play: true,
+          playing: true,
+          loop_enabled: loopEnabled,
+          loop_range: loopRange,
+          revision,
+        });
+      }
+      return null;
+    });
+    const stop = await initTransport();
+    expect(transportState().state.loop_range).toEqual([12_000, 24_000]);
+    await toggleLoop();
+    expect(transportState().state.loop_enabled).toBe(false);
+    expect(transportState().state.loop_range).toBeNull();
+    stop();
+  });
+
+  // H-81 root cause: a command's own response and any `transport_state` push event race each
+  // other over independent Tauri channels, and so do two different commands' own responses — the
+  // resolution order of two `invoke()` promises has no relation to the order the engine (a single
+  // serialized control thread) actually processed them in. Concretely: the selection-sync effect
+  // (`initTransport`'s `$effect(() => syncSelection(...))`) can still have a `transport_set_selection`
+  // in flight — carrying a *pre-toggle* snapshot with `loop_enabled: true` — when the user turns
+  // Loop off; if that older reply's promise happens to resolve after the toggle's own (newer)
+  // reply, naively applying "whatever arrived last" resurrects the stale `loop_enabled`/`loop_range`,
+  // which is exactly the owner-reported symptom: the toggle looks (and the overlay stays) stuck on.
+  it("never lets an older, slower reply undo a newer one (the actual race)", async () => {
+    let resolveSelection: ((dto: TransportStateDto) => void) | undefined;
+    mockIPC((cmd, args) => {
+      if (cmd === "clock_now_ns") return performance.now() * 1e6;
+      if (cmd === "transport_get")
+        return transportStateDto({
+          can_play: true,
+          playing: true,
+          loop_enabled: true,
+          loop_range: [12_000, 24_000],
+          revision: 5,
+        });
+      if (cmd === "transport_set_selection") {
+        // Still in flight when Loop is turned off below — its snapshot predates the toggle.
+        return new Promise<TransportStateDto>((resolve) => {
+          resolveSelection = resolve;
+        });
+      }
+      if (cmd === "transport_set_loop") {
+        const enabled = (args as { enabled: boolean }).enabled;
+        return transportStateDto({
+          can_play: true,
+          playing: true,
+          loop_enabled: enabled,
+          loop_range: enabled ? [12_000, 24_000] : null,
+          revision: 6,
+        });
+      }
+      return null;
+    });
+    const stop = await initTransport();
+    expect(transportState().state.loop_range).toEqual([12_000, 24_000]);
+
+    void syncSelection({ startSample: 12_000, endSample: 24_000 });
+    await settle();
+    expect(resolveSelection).toBeDefined();
+
+    // The toggle's own (newer, revision 6) reply lands first and is applied correctly...
+    await toggleLoop();
+    expect(transportState().state.loop_enabled).toBe(false);
+    expect(transportState().state.loop_range).toBeNull();
+
+    // ...then the older (revision 5, pre-toggle) selection reply finally arrives. It must not
+    // undo the toggle.
+    resolveSelection?.(
+      transportStateDto({
+        can_play: true,
+        playing: true,
+        loop_enabled: true,
+        loop_range: [12_000, 24_000],
+        revision: 5,
+      }),
+    );
+    await settle();
+    expect(transportState().state.loop_enabled).toBe(false);
+    expect(transportState().state.loop_range).toBeNull();
+    stop();
+  });
+});

@@ -33,7 +33,7 @@ pub enum TransportCommand {
 
 /// Transport state reported to the UI (`transport_state` event). While playing, the moving
 /// playhead comes from telemetry; `playhead_samples` is then the position playback (re)started at.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct TransportState {
     /// Playback is running.
     pub playing: bool,
@@ -51,7 +51,29 @@ pub struct TransportState {
     pub loop_enabled: bool,
     /// H-37: the effective loop region `[start, end)` (loop on and a long-enough selection).
     pub loop_range: Option<(u64, u64)>,
+    /// H-81: bumped by the control thread every time the state actually changes (never by a
+    /// plain query). Tauri's command responses and its `emit`/`listen` events are independent
+    /// channels with no ordering guarantee relative to each other, so a slower concurrent command
+    /// can otherwise deliver an older snapshot *after* a newer one already landed — the UI's
+    /// `applyState` drops anything not newer than what it already has. Excluded from equality:
+    /// two states are the same state whether or not this counter differs.
+    pub revision: u64,
 }
+
+impl PartialEq for TransportState {
+    fn eq(&self, other: &Self) -> bool {
+        self.playing == other.playing
+            && self.playhead_samples == other.playhead_samples
+            && self.play_start_samples == other.play_start_samples
+            && self.doc_len_samples == other.doc_len_samples
+            && self.doc_rate_hz == other.doc_rate_hz
+            && self.can_play == other.can_play
+            && self.loop_enabled == other.loop_enabled
+            && self.loop_range == other.loop_range
+    }
+}
+
+impl Eq for TransportState {}
 
 /// What the control thread must do after a command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,14 +141,18 @@ impl Transport {
         self.loop_enabled = on;
     }
 
-    /// H-37 (SPEC-003 §3): the effective loop region — the selection while loop is on, when it
-    /// is at least `min_len` samples long (`None`: loop is inert).
+    /// H-37/H-80 (SPEC-003 §3, Amendment 3): the effective loop region — the selection while loop
+    /// is on, when it is at least `min_len` samples long; otherwise the whole document (no
+    /// selection, or one shorter than the minimum). `None` only when loop is off or there is no
+    /// document to loop.
     pub(crate) fn loop_region(&self, min_len: u64) -> Option<(u64, u64)> {
-        if !self.loop_enabled {
+        if !self.loop_enabled || self.len == 0 {
             return None;
         }
-        self.selection
-            .filter(|&(s, e)| e > s && e - s >= min_len.max(1))
+        match self.selection {
+            Some((s, e)) if e - s >= min_len.max(1) => Some((s, e)),
+            _ => Some((0, self.len)),
+        }
     }
 
     /// Applies `cmd`. `heard`: the heard position now (for Pause); `alive`: the output stream
@@ -375,8 +401,10 @@ mod tests {
         assert_eq!(doc(0).command(Play, true, 0, true), None, "empty document");
     }
 
-    /// H-37 (SPEC-003 §2.1/§3): the loop region is the selection while loop is on; inert
-    /// without one or below the minimum length; a document change clamps (not clears) it.
+    /// H-37/H-80 (SPEC-003 §2.1/§3, Amendment 3): the loop region is the selection while loop is
+    /// on, when it's at least the minimum length; otherwise (no selection, or one shorter than
+    /// the minimum) the whole document. `None` only while loop is off, or with no document. A
+    /// document change clamps (not clears) the selection.
     #[test]
     fn loop_region_follows_the_toggle_and_the_selection() {
         let mut t = doc(10_000);
@@ -384,7 +412,11 @@ mod tests {
         assert_eq!(t.loop_region(480), None, "loop off");
         t.set_loop_enabled(true);
         assert_eq!(t.loop_region(480), Some((2_000, 6_000)));
-        assert_eq!(t.loop_region(4_001), None, "shorter than the minimum");
+        assert_eq!(
+            t.loop_region(4_001),
+            Some((0, 10_000)),
+            "shorter than the minimum: falls back to the whole document"
+        );
         t.set_doc(5_000);
         assert_eq!(
             t.loop_region(480),
@@ -394,13 +426,21 @@ mod tests {
         t.set_doc(1_000);
         assert_eq!(
             t.loop_region(1),
-            None,
-            "the selection fell outside the document"
+            Some((0, 1_000)),
+            "the selection fell outside the document: falls back to the whole document"
         );
         t.set_selection(None);
-        assert_eq!(t.loop_region(1), None, "no selection: inert");
+        assert_eq!(
+            t.loop_region(1),
+            Some((0, 1_000)),
+            "no selection: the whole document (H-80)"
+        );
         t.set_loop_enabled(false);
         assert!(!t.loop_enabled());
+        assert_eq!(t.loop_region(1), None, "loop off: inert again");
+        t.set_loop_enabled(true);
+        t.set_doc(0);
+        assert_eq!(t.loop_region(1), None, "no document: nothing to loop");
     }
 
     /// H-37: the end of a pass after loop off stops at its position (Pause semantics).

@@ -599,7 +599,7 @@ label_key: string, id: NoticeActionId, };
  * (`ui/src/lib/notices/noticeActions.ts`) is the only place a new variant needs wiring on the
  * frontend side.
  */
-export type NoticeActionId = "go_to_first_dropout";
+export type NoticeActionId = "go_to_first_dropout" | "undo_marker_delete";
 
 export type NoticeLevel = "info" | "warning" | "error";
 

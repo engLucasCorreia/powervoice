@@ -98,6 +98,12 @@ pub enum NoticeActionId {
     /// SPEC-002 AC-7: moves the cursor to the take's first dropout marker (navigation — must not
     /// touch the time selection, like `markers.svelte.ts::jumpToMarker`).
     GoToFirstDropout,
+    /// H-64 (SPEC-009 §2.6): the "Deleted 37 markers" notice's Undo button after a Delete
+    /// All/Filtered — dispatches the same `history_undo` command as Ctrl+Z. Frontend-only: no
+    /// Rust code constructs this notice (`document_commands.rs` never sees a bulk-delete
+    /// command — the panel computes the id list itself, SPEC-009 §4.2), but the action id still
+    /// comes from this closed enum so `dispatchNoticeAction`'s exhaustiveness check covers it.
+    UndoMarkerDelete,
 }
 
 impl Notice {

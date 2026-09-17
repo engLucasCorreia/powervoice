@@ -1,4 +1,5 @@
 import type { NoticeActionId } from "../ipc/bindings";
+import { undo } from "../state/edit.svelte";
 import { goToFirstDropout } from "../markers/markers.svelte";
 
 /**
@@ -11,6 +12,12 @@ export function dispatchNoticeAction(id: NoticeActionId): void {
   switch (id) {
     case "go_to_first_dropout":
       goToFirstDropout();
+      return;
+    case "undo_marker_delete":
+      // H-64 (SPEC-009 §2.6): the "Deleted N markers" toast's Undo button — the same
+      // `history_undo` command as Ctrl+Z, since the delete is always the top undo entry right
+      // after this toast appears.
+      void undo();
       return;
     default: {
       // Exhaustiveness guard: a new `NoticeActionId` variant fails to compile here until handled.

@@ -28,7 +28,9 @@ menus becomes ⌘ — every table below shows both.
 | Paste | `Ctrl+V` | `⌘V` |
 | Delete selection | `Delete` | `Delete` |
 | Trim to selection (Crop) | `Ctrl+T` | `⌘T` |
+| Rename marker | `/` | `/` |
 | Delete selected marker(s) | `Ctrl+0` | `⌘0` |
+| Delete all markers | `Ctrl+Alt+0` | `⌥⌘0` |
 | Go to next marker | `Ctrl+Alt+→` | `⌥⌘→` |
 | Go to previous marker | `Ctrl+Alt+←` | `⌥⌘←` |
 | Capture Noise Print — provisional binding | `Shift+P` | `⇧P` |

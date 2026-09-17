@@ -161,6 +161,44 @@ describe("Notice.action (H-67, SPEC-002 AC-7)", () => {
     stopMarkers();
   });
 
+  it("a toast with the Undo-marker-delete action dispatches history_undo (H-64, SPEC-009 §2.6)", async () => {
+    const calls: string[] = [];
+    mockIPC((cmd) => {
+      if (cmd === "history_undo") {
+        calls.push(cmd);
+        return { can_undo: false, can_redo: true, undo_label: null, redo_label: "Delete Markers" };
+      }
+      return null;
+    });
+
+    pushNotice({
+      level: "info",
+      key: "notice.markers_deleted",
+      params: { count: "37" },
+      persistent: false,
+      id: null,
+      cleared: false,
+      auto_dismiss_ms: null,
+      action: { label_key: "notice.action.undo", id: "undo_marker_delete" },
+    });
+
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(NoticeHost, { target });
+    flushSync();
+
+    const button = target.querySelector<HTMLButtonElement>('[data-testid="notice-action"]');
+    expect(button?.textContent).toContain("Undo");
+    button?.click();
+    await Promise.resolve();
+    flushSync();
+
+    expect(calls).toEqual(["history_undo"]);
+
+    unmount(app);
+    target.remove();
+  });
+
   it("a persistent banner with an action renders the same button", () => {
     pushNotice({
       level: "warning",

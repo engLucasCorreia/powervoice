@@ -25,7 +25,7 @@ use serde_json::{Map, Value};
 
 use crate::fs_util::{sync_dir, write_all_at};
 use crate::reader::SnapshotReader;
-use crate::snapshot::{DocSnapshot, Marker, MarkerId, Source};
+use crate::snapshot::{DocSnapshot, Marker, MarkerId, MarkerKind, Source};
 use crate::store::ChunkStore;
 use crate::{CHUNK_SAMPLES, ProjectError, Result};
 
@@ -604,6 +604,65 @@ pub fn marker_from_item(item: &MarkerItemModel) -> Marker {
         item.name.as_str(),
     )
     .with_kind(crate::MarkerKind::parse(&item.kind))
+}
+
+// --- SPEC-009 §2.13 case 3 / §4.5: WAV cue projection vs. the sidecar ---------------------------
+
+/// SPEC-009 §4.5's cue projection key for one marker: `(pos_samples, len_samples, name)`,
+/// normalizing the name the same way SPEC-005 §4.6/SPEC-009 §2.4 normalize one read from (or
+/// about to be written to) a WAV `cue `/`LIST adtl` chunk — so a sidecar name that already
+/// satisfies that rule compares equal to itself, and a name read back off the WAV (already
+/// normalized on read) never spuriously differs because of, say, trailing whitespace.
+fn cue_projection_key(pos_samples: u64, len_samples: u64, name: &str) -> (u64, u64, String) {
+    (pos_samples, len_samples, normalize_marker_name(name))
+}
+
+/// SPEC-009 §2.13, case 2 vs. case 3: `true` when `wav_markers`' cue projection exactly equals
+/// `sidecar_markers`' (§4.5: sort both by `(pos, len, name bytes)`, compare element-wise).
+///
+/// Only meaningful for a WAV whose `cue `/`LIST adtl` chunk is readable — the caller doesn't call
+/// this for a non-WAV source (case 1: no cue chunk to compare against) or a malformed one (case 4:
+/// the sidecar wins regardless, see SPEC-009 §2.13's table) — a file with no `cue ` chunk at all
+/// still compares validly (an empty projection), so it can correctly report case 3 when the
+/// sidecar has markers the (now marker-less) file doesn't.
+pub fn cue_projection_matches(wav_markers: &[Marker], sidecar_markers: &[MarkerItemModel]) -> bool {
+    let mut wav: Vec<(u64, u64, String)> = wav_markers
+        .iter()
+        .map(|m| cue_projection_key(m.pos_samples, m.len_samples, &m.name))
+        .collect();
+    let mut side: Vec<(u64, u64, String)> = sidecar_markers
+        .iter()
+        .map(|m| cue_projection_key(m.pos_samples, m.len_samples, &m.name))
+        .collect();
+    wav.sort();
+    side.sort();
+    wav == side
+}
+
+/// SPEC-009 §2.13 case 3's markers: `wav_markers` (already ids `1..=n` in the file's canonical
+/// order, same as case 5 — SPEC-009 §2.13 "ids after open"), each inheriting the `kind` of the
+/// sidecar marker whose `(pos, len, name)` projection matches it exactly — kind isn't
+/// representable in a WAV cue, so this is the only way a dropout marker's kind survives a round
+/// trip through another editor. A WAV marker with no match (the external change added or moved
+/// it) gets `MarkerKind::User`, [`Marker::new`]'s default.
+pub fn markers_with_inherited_kind(
+    wav_markers: &[Marker],
+    sidecar_markers: &[MarkerItemModel],
+) -> Vec<Marker> {
+    let mut kind_by_projection: HashMap<(u64, u64, String), MarkerKind> = HashMap::new();
+    for m in sidecar_markers {
+        kind_by_projection
+            .entry(cue_projection_key(m.pos_samples, m.len_samples, &m.name))
+            .or_insert_with(|| MarkerKind::parse(&m.kind));
+    }
+    wav_markers
+        .iter()
+        .map(|m| {
+            let key = cue_projection_key(m.pos_samples, m.len_samples, &m.name);
+            let kind = kind_by_projection.get(&key).cloned().unwrap_or_default();
+            Marker::new(m.id, m.pos_samples, m.len_samples, &*m.name).with_kind(kind)
+        })
+        .collect()
 }
 
 // --- Write (SPEC-018 §2.3, §2.6.6, §2.8, §2.9) ----------------------------------------------------
@@ -1554,6 +1613,98 @@ mod tests {
         let table = MarkerMetaTable::new();
         let built = table.build_items(&[marker]);
         assert_eq!(built[0].kind, "chapter");
+    }
+
+    // --- SPEC-009 §2.13 case 3 / §4.5: cue projection -------------------------------------------
+
+    fn item(id: u64, pos: u64, len: u64, name: &str, kind: &str) -> MarkerItemModel {
+        MarkerItemModel {
+            id,
+            pos_samples: pos,
+            len_samples: len,
+            name: name.to_string(),
+            kind: kind.to_string(),
+            extra: Map::new(),
+        }
+    }
+
+    fn wav_marker(id: u64, pos: u64, len: u64, name: &str) -> Marker {
+        Marker::new(MarkerId(id), pos, len, name)
+    }
+
+    #[test]
+    fn cue_projection_matches_ignores_id_and_kind_and_normalizes_names() {
+        let wav = [
+            wav_marker(1, 0, 0, "  Intro  "), // WAV names get read-side normalization elsewhere;
+            wav_marker(2, 144_000, 0, "Dropout 10 ms"),
+            wav_marker(3, 200_000, 4_800, "Take 2"),
+        ];
+        // Different ids and kinds than the WAV side — irrelevant to the projection.
+        let sidecar = [
+            item(9, 0, 0, "Intro", "user"),
+            item(4, 144_000, 0, "Dropout 10 ms", "dropout"),
+            item(7, 200_000, 4_800, "Take 2", "user"),
+        ];
+        assert!(cue_projection_matches(&wav, &sidecar));
+    }
+
+    #[test]
+    fn cue_projection_matches_is_order_independent() {
+        let wav = [wav_marker(1, 10, 0, "B"), wav_marker(2, 5, 0, "A")];
+        let sidecar = [item(1, 5, 0, "A", "user"), item(2, 10, 0, "B", "user")];
+        assert!(cue_projection_matches(&wav, &sidecar));
+    }
+
+    #[test]
+    fn cue_projection_differs_when_a_marker_moved_in_another_editor() {
+        // AC-18(b)'s scenario: "Take 2" moved from 200_000 to 210_000 in another program.
+        let wav = [
+            wav_marker(1, 0, 0, "Intro"),
+            wav_marker(2, 144_000, 0, "Dropout 10 ms"),
+            wav_marker(3, 210_000, 4_800, "Take 2"),
+        ];
+        let sidecar = [
+            item(1, 0, 0, "Intro", "user"),
+            item(2, 144_000, 0, "Dropout 10 ms", "dropout"),
+            item(3, 200_000, 4_800, "Take 2", "user"),
+        ];
+        assert!(!cue_projection_matches(&wav, &sidecar));
+    }
+
+    #[test]
+    fn cue_projection_differs_on_an_added_or_removed_marker() {
+        let sidecar = [item(1, 0, 0, "Intro", "user")];
+        assert!(!cue_projection_matches(&[], &sidecar));
+        assert!(!cue_projection_matches(
+            &[
+                wav_marker(1, 0, 0, "Intro"),
+                wav_marker(2, 1_000, 0, "Extra")
+            ],
+            &sidecar
+        ));
+    }
+
+    #[test]
+    fn markers_with_inherited_kind_keeps_dropout_kind_on_an_exact_projection_match() {
+        let wav = [
+            wav_marker(1, 0, 0, "Intro"),
+            wav_marker(2, 144_000, 0, "Dropout 10 ms"),
+            wav_marker(3, 210_000, 4_800, "Take 2"), // moved: no match, gets `User`.
+        ];
+        let sidecar = [
+            item(1, 0, 0, "Intro", "user"),
+            item(2, 144_000, 0, "Dropout 10 ms", "dropout"),
+            item(3, 200_000, 4_800, "Take 2", "user"),
+        ];
+        let out = markers_with_inherited_kind(&wav, &sidecar);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].kind, crate::MarkerKind::User);
+        assert_eq!(out[1].kind, crate::MarkerKind::Dropout);
+        assert_eq!(out[2].kind, crate::MarkerKind::User);
+        // Ids and positions are the WAV's own (§2.13 "ids after open": fresh ids from the file),
+        // never the sidecar's.
+        assert_eq!(out[2].id, MarkerId(3));
+        assert_eq!(out[2].pos_samples, 210_000);
     }
 
     // --- Unknown-field preservation (AC-5) --------------------------------------------------------

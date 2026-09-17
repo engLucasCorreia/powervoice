@@ -2,9 +2,12 @@ import type { ActionId } from "./actions";
 import type { MessageKey } from "../i18n";
 
 /** The subset of `KeyboardEvent` that matching needs — kept minimal so tests can pass a plain
- * object instead of constructing a real `KeyboardEvent`. */
+ * object instead of constructing a real `KeyboardEvent`. `key` (the produced character) is
+ * optional: every existing test builds a plain `code`-matched event without it, and it's only
+ * read for a binding that itself carries `key` (H-64, SPEC-009 §2.4's `/` rename binding). */
 export interface KeyEventLike {
   code: string;
+  key?: string;
   shiftKey: boolean;
   ctrlKey: boolean;
   metaKey: boolean;
@@ -33,20 +36,28 @@ export interface KeyEventLike {
  */
 export type ShortcutScope = "global" | "waveform" | "dialog" | "text-input";
 
-/** One default key binding. `code` is a `KeyboardEvent.code` (physical key, layout-independent —
- * matches how ADR-009's spike input log records keys, e.g. `Ctrl+KeyZ`). `mod` means "the
- * platform's primary modifier": Ctrl on Windows/Linux, ⌘ on macOS (`isPlatformMac` below resolves
- * which — this is how one table expresses "the default binding per platform" (T-701) without
- * duplicating every row). `shift` is a plain, non-platform-dependent modifier.
+/** One default key binding: exactly one of `code`/`key` is set.
+ * - `code` is a `KeyboardEvent.code` (physical key, layout-independent — matches how ADR-009's
+ *   spike input log records keys, e.g. `Ctrl+KeyZ`). Every binding uses this except the one below.
+ * - `key` is a `KeyboardEvent.key` (the *produced character*), for a binding SPEC-009 §2.4 says
+ *   must work "on layouts where [it] needs Shift" (H-64: `/` = rename marker) — matched directly
+ *   against `event.key`, ignoring `shift` (the produced character already reflects it; `mod`/`alt`
+ *   still apply normally).
+ *
+ * `mod` means "the platform's primary modifier": Ctrl on Windows/Linux, ⌘ on macOS
+ * (`isPlatformMac` below resolves which — this is how one table expresses "the default binding
+ * per platform" (T-701) without duplicating every row). `shift` is a plain, non-platform-dependent
+ * modifier (meaningless on a `key` binding, see above).
  *
  * No remapping UI in v1 (ticket) — this table is the only source of bindings.
  */
 export interface KeyBinding {
   action: ActionId;
-  code: string;
+  code?: string;
+  key?: string;
   /** Requires the platform's primary modifier (Ctrl / ⌘). Defaults to not required. */
   mod?: boolean;
-  /** Requires Shift. Defaults to not required. */
+  /** Requires Shift. Defaults to not required. Ignored for a `key` binding. */
   shift?: boolean;
   /** Requires Alt (⌥ on macOS). Defaults to not required (S2-03: Ctrl+Alt+arrow navigation). */
   alt?: boolean;
@@ -183,11 +194,28 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   },
   { action: "waveform.deselect", code: "Escape", scope: "waveform", labelKey: "shortcut.waveform.deselect" },
   {
+    // H-64 (SPEC-009 §2.4): matches the produced character (`key: "/"`), not a physical code, so
+    // it still works on a layout where `/` needs Shift — see `KeyBinding`'s doc comment.
+    action: "marker.rename",
+    key: "/",
+    scope: "global",
+    labelKey: "shortcut.marker.rename",
+  },
+  {
     action: "marker.delete_selected",
     code: "Digit0",
     mod: true,
     scope: "global",
     labelKey: "shortcut.marker.delete_selected",
+  },
+  {
+    // H-64 (SPEC-009 §2.6): Delete All Markers.
+    action: "marker.delete_all",
+    code: "Digit0",
+    mod: true,
+    alt: true,
+    scope: "global",
+    labelKey: "shortcut.marker.delete_all",
   },
   {
     action: "marker.next",
@@ -279,6 +307,18 @@ export function matchBinding(
   }
 
   for (const binding of entries) {
+    if (binding.key !== undefined) {
+      // H-64 (SPEC-009 §2.4): matched on the produced character, not the physical key, so it
+      // still works on a layout where it needs Shift — `shift` is deliberately not checked here.
+      if (
+        binding.key === event.key &&
+        Boolean(binding.mod) === modPressed &&
+        Boolean(binding.alt) === event.altKey
+      ) {
+        return binding.action;
+      }
+      continue;
+    }
     if (
       binding.code === event.code &&
       Boolean(binding.shift) === event.shiftKey &&
@@ -291,9 +331,14 @@ export function matchBinding(
   return null;
 }
 
-/** A binding's unique key: (code, shift, mod, alt). Two default bindings must never share one
- * within the same {@link dispatchGroup}. */
+/** A binding's unique key: (code, shift, mod, alt) for a `code` binding, or (key, mod, alt) for a
+ * `key` one (H-64) — the two schemes never collide since a real `KeyboardEvent.code` and `.key`
+ * value never look alike (`"KeyM"` vs. `"/"`). Two default bindings must never share one within
+ * the same {@link dispatchGroup}. */
 function bindingIdentity(binding: KeyBinding): string {
+  if (binding.key !== undefined) {
+    return `key=${binding.key}|mod=${Boolean(binding.mod)}|alt=${Boolean(binding.alt)}`;
+  }
   return `${binding.code}|shift=${Boolean(binding.shift)}|mod=${Boolean(binding.mod)}|alt=${Boolean(binding.alt)}`;
 }
 

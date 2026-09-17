@@ -863,6 +863,87 @@ describe("WaveformView marker drag (H-57, SPEC-009 §2.5)", () => {
   function selectAllOfDocument(): void {
     setSelectionFromResult([0, 8_000]);
   }
+
+  // H-64 (SPEC-009 §2.5/§3 `drag_autoscroll_rate`): dragging a marker's flag past the canvas edge
+  // scrolls the view at one viewport width per second, through the frame scheduler, and stops
+  // exactly at the document's edge instead of scrolling forever.
+  it("auto-scrolls the view while a marker drag holds the pointer past the right edge, and stops at the document's end", async () => {
+    stubWidth(800);
+    // 16 000 samples: once zoomed to 10 samples/px (below), the 8 000-sample-wide viewport can
+    // scroll at most to `startSample = 8 000` — small enough that a few seconds of fake-timer rAF
+    // frames (at 1 viewport/s, SPEC-009 §3 `drag_autoscroll_rate`) reliably clamps there, without
+    // the test depending on exactly how many frames the fake rAF fires per advanced millisecond.
+    await openFixtureWithMarkers(16_000, [marker(1, 4_000)]);
+
+    let startSample = 0;
+    let samplesPerPixel = 1;
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame", "performance"],
+    });
+    try {
+      const app = mount(WaveformView, {
+        target,
+        props: {
+          get startSample() {
+            return startSample;
+          },
+          set startSample(v: number) {
+            startSample = v;
+          },
+          get samplesPerPixel() {
+            return samplesPerPixel;
+          },
+          set samplesPerPixel(v: number) {
+            samplesPerPixel = v;
+          },
+        },
+      });
+      flushSync();
+
+      // Zoom into [0, 8 000): samplesPerPixel 10, startSample 0, viewportSamples 8 000, maxStart
+      // 16 000 - 8 000 = 8 000.
+      setSelectionFromResult([0, 8_000]);
+      const { dispatchAction } = await import("../shortcuts");
+      dispatchAction("waveform.zoom_to_selection");
+      flushSync();
+      expect(startSample).toBe(0);
+      expect(samplesPerPixel).toBe(10);
+
+      const container = target.querySelector('[data-testid="waveform-canvas"]')!
+        .parentElement as HTMLElement;
+      // The marker's flag sits at px 400 (4 000 samples / 10 samples-per-px).
+      container.dispatchEvent(new PointerEvent("pointerdown", { clientX: 400, clientY: 0, bubbles: true }));
+      // Past the drag threshold, and past the 800 px canvas's right edge.
+      container.dispatchEvent(new PointerEvent("pointermove", { clientX: 900, clientY: 0, bubbles: true }));
+      flushSync();
+
+      // At 1 viewport (8 000 samples) per second, ~200 ms in is partway there but not clamped yet.
+      await vi.advanceTimersByTimeAsync(200);
+      flushSync();
+      expect(startSample).toBeGreaterThan(0);
+      expect(startSample).toBeLessThan(8_000);
+
+      // Holding well past the edge for long enough clamps exactly at the document's end.
+      await vi.advanceTimersByTimeAsync(5_000);
+      flushSync();
+      expect(startSample).toBe(8_000);
+
+      // Continuing to hold never scrolls past it.
+      await vi.advanceTimersByTimeAsync(1_000);
+      flushSync();
+      expect(startSample).toBe(8_000);
+
+      container.dispatchEvent(new PointerEvent("pointerup", { clientX: 900, clientY: 0, bubbles: true }));
+      flushSync();
+      unmount(app);
+    } finally {
+      vi.useRealTimers();
+      target.remove();
+    }
+  });
 });
 
 // T-701/A-020: keyboard nudge (Left/Right Arrow) and extend (Shift+Left/Right Arrow).

@@ -42,7 +42,11 @@ const CODE_LABELS = {
   ArrowRight: "→",
 };
 
-function keyLabel(code) {
+// H-64 (SPEC-009 §2.4): a `key` binding (the produced character, e.g. "/") displays as itself;
+// mirrors ui/src/lib/shortcuts/shortcutLabel.ts's keyLabel.
+function keyLabel(binding) {
+  if (binding.key !== undefined) return binding.key;
+  const code = binding.code;
   if (CODE_LABELS[code]) return CODE_LABELS[code];
   const key = /^Key([A-Z])$/.exec(code);
   if (key) return key[1];
@@ -58,13 +62,13 @@ function formatBinding(binding, isMac) {
     if (binding.shift) label += "⇧";
     if (binding.alt) label += "⌥";
     if (binding.mod) label += "⌘";
-    return label + keyLabel(binding.code);
+    return label + keyLabel(binding);
   }
   const parts = [];
   if (binding.mod) parts.push("Ctrl");
   if (binding.shift) parts.push("Shift");
   if (binding.alt) parts.push("Alt");
-  parts.push(keyLabel(binding.code));
+  parts.push(keyLabel(binding));
   return parts.join("+");
 }
 

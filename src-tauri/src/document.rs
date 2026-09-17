@@ -19,9 +19,10 @@ use vox_project::{
     LufsNormalizeOutcome, Marker, MarkerId, MarkerItemModel, MarkerKind, MarkerMetaTable, MarkerOp,
     NormalizeLufsPlan, NormalizeOutcome, NormalizePeakPlan, OversInfo, Piece, ProjectError, Range,
     RangeError, SaveFormatModel, Session, SessionConfig, SidecarNotice, SnapshotReader,
-    StoreOptions, TakeCapture, TakeId, TakeMode, TakeWriterOptions, WrittenAudio, document_crc32,
-    edit, marker_from_item, normalize_applied_post_edit, overs_check, read_sidecar,
-    save_snapshot_flac, sidecar_path_for, validate_range, write_sidecar,
+    StoreOptions, TakeCapture, TakeId, TakeMode, TakeWriterOptions, WrittenAudio,
+    cue_projection_matches, document_crc32, edit, marker_from_item, markers_with_inherited_kind,
+    normalize_applied_post_edit, overs_check, read_sidecar, save_snapshot_flac, sidecar_path_for,
+    validate_range, write_sidecar,
 };
 
 use crate::ipc::document_dto::{AmplitudeRulerModeDto, TimeRulerFormatDto};
@@ -2067,6 +2068,10 @@ impl DocumentService {
             }
         };
         let mut snapshot = import.snapshot;
+        // SPEC-009 §2.13 case 3: the WAV's own markers, exactly as case 5 built them (fresh ids
+        // `1..=n` in canonical order) — kept aside before the sidecar block below may replace
+        // `snapshot.markers`, so that block can compare cue projections against it.
+        let wav_markers = Arc::clone(&snapshot.markers);
 
         // T-306 (SPEC-018 §2.5): read and classify the sidecar, if any.
         let identity = DocumentIdentity {
@@ -2079,18 +2084,42 @@ impl DocumentService {
         let mut sidecar = SidecarState::none();
         sidecar.needs_backup = load.needs_backup;
         sidecar.audio_crc32 = identity.audio_crc32;
+        // SPEC-009 §2.13 case 3: `true` once a valid, matching sidecar exists AND the WAV's own
+        // readable cue set differs from it — another program changed the markers since the last
+        // save. Only a WAV (`probe.container == "wave"`) with a readable chunk is even compared:
+        // a non-WAV source (case 1) has no cues to differ, and a malformed chunk (case 4) already
+        // falls back to the sidecar unconditionally, independent of this flag.
+        let mut markers_changed_externally = false;
         if let Some(sidecar_doc) = &load.doc {
-            // Markers: re-floor with the sidecar's (authoritative, SPEC-009 §2.13), same
-            // mechanism `import_file` used for the WAV cue markers — valid here because nothing
-            // has edited the document yet (`Session::set_floor`'s only precondition).
-            sidecar.marker_meta = MarkerMetaTable::from_items(&load.markers);
-            let sidecar_markers: Vec<Marker> = load.markers.iter().map(marker_from_item).collect();
+            markers_changed_externally = probe.container == "wave"
+                && !import.wav_markers_malformed
+                && !cue_projection_matches(&wav_markers, &load.markers);
+            // Markers: case 3 uses the file's own markers (kind inherited where a sidecar marker's
+            // projection still matches exactly); otherwise the sidecar's (authoritative, case 2) —
+            // same re-floor mechanism `import_file` used for the WAV cue markers, valid here
+            // because nothing has edited the document yet (`Session::set_floor`'s only
+            // precondition). A case-3 marker's id is fresh (from the file), so its
+            // `MarkerMetaTable` starts empty rather than reusing the sidecar's (SPEC-018 §2.7 extra
+            // fields are meaningless once detached from the sidecar's own ids).
+            let (floor_markers, marker_meta): (Vec<Marker>, MarkerMetaTable) =
+                if markers_changed_externally {
+                    (
+                        markers_with_inherited_kind(&wav_markers, &load.markers),
+                        MarkerMetaTable::new(),
+                    )
+                } else {
+                    (
+                        load.markers.iter().map(marker_from_item).collect(),
+                        MarkerMetaTable::from_items(&load.markers),
+                    )
+                };
+            sidecar.marker_meta = marker_meta;
             let audio = WrittenAudio {
                 pieces: snapshot.pieces.to_vec(),
                 chunks: Vec::new(),
                 len_samples: snapshot.len_samples,
             };
-            if let Ok(reflowed) = session.set_floor(&audio, sidecar_markers) {
+            if let Ok(reflowed) = session.set_floor(&audio, floor_markers) {
                 snapshot = reflowed;
             }
             // Rack (ADR-001 rule 4: `project` keeps `rack` opaque; the conversion is `RackModel`'s
@@ -2105,6 +2134,17 @@ impl DocumentService {
         }
         if let Some(notice) = &load.notice {
             self.push_sidecar_notice(sidecar_notice_info(notice, &sidecar_path));
+        }
+        if markers_changed_externally {
+            self.push_sidecar_notice(SidecarNoticeInfo {
+                key: "notice.open.markers_changed_externally",
+                params: vec![(
+                    "name",
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                )],
+            });
         }
         // H-20 (SPEC-005 §2.6): the source format/depth was mapped to a different save format.
         if format_mapped {
@@ -7115,6 +7155,133 @@ mod tests {
     }
 
     // --- T-306: sidecar round trip, identity, sidecar-only saves, notices --------------------
+
+    /// SPEC-009 §2.13 case 3 (AC-18(b)'s scenario): a WAV whose readable `cue ` set differs from
+    /// its matching sidecar's own copy — another program moved a marker after the last save —
+    /// opens with the **file's** markers, not the sidecar's, with
+    /// `notice.open.markers_changed_externally`. H-64: nothing implemented this before (the open
+    /// path always used the sidecar unconditionally whenever one matched).
+    #[test]
+    fn open_of_a_wav_whose_cues_differ_from_its_sidecar_uses_the_wav_markers() {
+        let (service, _engine, dir) = service("markers-changed-externally");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 5.0, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        service.marker_add(0, 0).unwrap();
+        service
+            .marker_rename(service.markers_get()[0].id, "Intro")
+            .unwrap();
+        service.marker_add(200_000, 4_800).unwrap();
+        service
+            .marker_rename(service.markers_get()[1].id, "Take 2")
+            .unwrap();
+
+        let save_path = dir.join("changed.wav");
+        service
+            .save_as(
+                &save_path,
+                SaveContainer::Wav,
+                BitDepth::Bit32Float,
+                SaveDitherPref::None,
+                false,
+                false,
+            )
+            .unwrap();
+
+        // Another program moves "Take 2" to 210 000, rewriting only the `cue `/`LIST adtl`
+        // chunks — decoding and re-encoding at the same float format keeps the audio (and so the
+        // sidecar's identity fingerprint) bit-exact, "audio untouched" per the AC.
+        let (rate, _channels, mut source) = vox_io::read_wav(&save_path).unwrap();
+        let mut audio = vec![0.0f32; samples.len()];
+        let n = source.read_mono(&mut audio).unwrap();
+        assert_eq!(n, samples.len());
+        let moved_markers = vec![
+            vox_io::WavMarker {
+                pos_samples: 0,
+                len_samples: 0,
+                name: "Intro".to_string(),
+            },
+            vox_io::WavMarker {
+                pos_samples: 210_000,
+                len_samples: 4_800,
+                name: "Take 2".to_string(),
+            },
+        ];
+        vox_io::write_wav_with_markers(
+            &save_path,
+            rate,
+            vox_io::BitDepth::Float32,
+            vox_io::DitherMode::None,
+            &audio,
+            &moved_markers,
+        )
+        .unwrap();
+
+        let reopened = DocumentService::new(dir.join("sessions2"), service.0.engine.clone());
+        reopened.open(&save_path, false).unwrap();
+        let markers = reopened.markers_get();
+        assert_eq!(markers.len(), 2);
+        assert_eq!(markers[0].pos_samples, 0);
+        assert_eq!(markers[0].name, "Intro");
+        assert_eq!(
+            (markers[1].pos_samples, markers[1].len_samples),
+            (210_000, 4_800),
+            "the file's own markers win (case 3), not the sidecar's stale 200_000"
+        );
+        assert_eq!(markers[1].name, "Take 2");
+
+        let notices = reopened.take_sidecar_notices();
+        assert!(
+            notices
+                .iter()
+                .any(|n| n.key == "notice.open.markers_changed_externally"),
+            "got {notices:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// SPEC-009 §2.13 case 2: a WAV whose readable `cue ` set still matches its sidecar exactly
+    /// keeps using the sidecar's markers (ids included) — no `markers_changed_externally` notice.
+    /// This is the counterpart to the case-3 test above: same fixture shape, but the external
+    /// rewrite reproduces the identical cue set instead of moving anything.
+    #[test]
+    fn open_of_a_wav_whose_cues_still_match_its_sidecar_uses_the_sidecar_markers() {
+        let (service, _engine, dir) = service("markers-unchanged");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 1.0, 48_000).unwrap();
+        open_test_doc(&service, &dir, &samples);
+        service.marker_add(0, 0).unwrap();
+        let sidecar_id = service.markers_get()[0].id;
+        service.marker_rename(sidecar_id, "Intro").unwrap();
+
+        let save_path = dir.join("unchanged.wav");
+        service
+            .save_as(
+                &save_path,
+                SaveContainer::Wav,
+                BitDepth::Bit32Float,
+                SaveDitherPref::None,
+                false,
+                false,
+            )
+            .unwrap();
+
+        let reopened = DocumentService::new(dir.join("sessions2"), service.0.engine.clone());
+        reopened.open(&save_path, false).unwrap();
+        let markers = reopened.markers_get();
+        assert_eq!(markers.len(), 1);
+        assert_eq!(markers[0].name, "Intro");
+        assert_eq!(
+            markers[0].id, sidecar_id,
+            "case 2: the sidecar's own id is kept, unlike case 3's fresh ids"
+        );
+        let notices = reopened.take_sidecar_notices();
+        assert!(
+            !notices
+                .iter()
+                .any(|n| n.key == "notice.open.markers_changed_externally"),
+            "an unchanged cue set never posts the case-3 notice, got {notices:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn gain_rack_model(gain_db: f64) -> vox_rack::RackModel {
         vox_rack::RackModel {

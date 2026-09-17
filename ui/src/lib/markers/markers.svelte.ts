@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import type { DocumentDto, EventName, IpcError, MarkerDto, MarkerRangeKindDto } from "../ipc/bindings";
+import type { DocumentDto, EventName, IpcError, MarkerDto, MarkerRangeKindDto, Notice } from "../ipc/bindings";
 import {
   markerAdd,
   markerDelete,
@@ -18,29 +18,65 @@ import {
   seek,
   transportState,
 } from "../state/transport.svelte";
+import {
+  filterMarkers,
+  sortMarkers,
+  type MarkerSortColumn,
+  type MarkerSortDirection,
+  type MarkerTypeFilter,
+} from "./markerListView";
 
 /**
- * Markers store (S2-03, SPEC-009 essential subset): the marker list (`markers_get`, refetched on
+ * Markers store (S2-03/H-64, SPEC-009 §2.2-§2.8): the marker list (`markers_get`, refetched on
  * every `document_changed` — marker commands emit it too, `document_commands.rs`'s `after_edit`),
- * the panel's single selection, add/rename/move-resize/delete, and the keymap actions `marker.add`
- * (M), `marker.delete_selected` (Ctrl+0) and `marker.next`/`marker.prev` (Ctrl+Alt+→/←).
+ * the panel's single selection, filter/sort UI state, add/rename/move-resize/delete (incl. Delete
+ * All/Filtered) and the keymap actions `marker.add` (M), `marker.rename` (`/`),
+ * `marker.delete_selected` (Ctrl+0), `marker.delete_all` (Ctrl+Alt+0) and `marker.next`/
+ * `marker.prev` (Ctrl+Alt+→/←).
  *
- * Drag-to-move on the waveform, Delete All/Filtered, filter/sort and marker `kind` are deferred
- * (ticket "Out" list) — the panel here is a flat, position-sorted list.
+ * H-64 deviation from SPEC-009 §2.8: the sort column/direction and the type filter are kept as
+ * plain in-memory UI state here, not persisted to the sidecar's per-document view state (unlike
+ * `time_ruler_format`, SPEC-018) — doing that needs a `WaveformViewDto`/sidecar schema addition
+ * and a save/reopen round trip, which is a larger, separate change. Flagged in the ticket report
+ * rather than invented here.
  */
 
 /** SPEC-009 §2.7's "previous while playing" grace period, in samples-independent seconds. */
 const NAV_PREV_GRACE_S = 0.5;
+
+/** SPEC-009 §4.6: "`Intl.Collator` created once per locale" — the app has one locale (English)
+ * today (i18n-ready, PROMPT §2), so one instance for the process is exactly that. */
+const NAME_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
 let markers = $state<MarkerDto[]>([]);
 let selectedId = $state<number | null>(null);
 /** H-21: see {@link isTakeMarker}. */
 const takeMarkerIds = new Set<number>();
 
+// --- H-64 (SPEC-009 §2.8): panel filter/sort state --------------------------------------------
+let filterText = $state("");
+let filterType = $state<MarkerTypeFilter>("all");
+let sortColumn = $state<MarkerSortColumn>("start");
+let sortDirection = $state<MarkerSortDirection>("asc");
+
+/** The panel's filtered + sorted rows (§2.8) — never used for anything but the panel's own
+ * display/selection: waveform rendering, drag magnet targets and navigation all read
+ * {@link markersState}'s `list` (the full, canonically-ordered set), unaffected by the filter. */
+function visibleMarkersInternal(): MarkerDto[] {
+  return sortMarkers(filterMarkers(markers, filterText, filterType), sortColumn, sortDirection, NAME_COLLATOR);
+}
+
 /** Read-only accessor for components (the Markers panel). */
 export function markersState(): {
   readonly list: MarkerDto[];
   readonly selectedId: number | null;
+  readonly visibleList: MarkerDto[];
+  readonly filterText: string;
+  readonly filterType: MarkerTypeFilter;
+  readonly sortColumn: MarkerSortColumn;
+  readonly sortDirection: MarkerSortDirection;
+  /** SPEC-009 §2.6: "Delete Filtered Markers" is shown only while a panel filter is active. */
+  readonly isFiltered: boolean;
 } {
   return {
     get list() {
@@ -49,7 +85,47 @@ export function markersState(): {
     get selectedId() {
       return selectedId;
     },
+    get visibleList() {
+      return visibleMarkersInternal();
+    },
+    get filterText() {
+      return filterText;
+    },
+    get filterType() {
+      return filterType;
+    },
+    get sortColumn() {
+      return sortColumn;
+    },
+    get sortDirection() {
+      return sortDirection;
+    },
+    get isFiltered() {
+      return filterText.trim() !== "" || filterType !== "all";
+    },
   };
+}
+
+/** The panel's text filter box (§2.8, AC-14: "updates ≤ 100 ms after the last keystroke" — a
+ * plain reactive assignment is effectively instant, well inside that budget). Not persisted. */
+export function setMarkerFilterText(text: string): void {
+  filterText = text;
+}
+
+/** The panel's type filter dropdown (All/Points/Regions/Dropouts, §2.8). */
+export function setMarkerTypeFilter(type: MarkerTypeFilter): void {
+  filterType = type;
+}
+
+/** Clicking a column header (§2.8): sorts by it, or reverses direction if it's already the sort
+ * column. The default is Start ascending. */
+export function setMarkerSort(column: MarkerSortColumn): void {
+  if (sortColumn === column) {
+    sortDirection = sortDirection === "asc" ? "desc" : "asc";
+  } else {
+    sortColumn = column;
+    sortDirection = "asc";
+  }
 }
 
 /** Row click (SPEC-009 §2.8's essential subset: select and jump; multi-select/range-select on
@@ -179,6 +255,62 @@ export async function deleteSelectedMarker(): Promise<void> {
   }
 }
 
+/** SPEC-009 §2.6: "After a delete of more than one marker, the notice 'Deleted 37 markers' offers
+ * an Undo action" — a single delete (Ctrl+0, the panel Delete button) stays silent, matching the
+ * existing behaviour above. */
+function pushMarkersDeletedNotice(count: number): void {
+  if (count <= 1) {
+    return;
+  }
+  const notice: Notice = {
+    level: "info",
+    key: "notice.markers_deleted",
+    params: { count: String(count) },
+    persistent: false,
+    id: null,
+    cleared: false,
+    auto_dismiss_ms: null,
+    action: { label_key: "notice.action.undo", id: "undo_marker_delete" },
+  };
+  pushNotice(notice);
+}
+
+/** Ctrl+Alt+0 / the panel menu's "Delete All Markers" (SPEC-009 §2.6): deletes every marker as one
+ * undo entry (`marker_delete` already batches every id into a single `Edit`, §4.1). A no-op with
+ * none. */
+export async function deleteAllMarkers(): Promise<void> {
+  const ids = markers.map((m) => m.id);
+  if (ids.length === 0) {
+    return;
+  }
+  try {
+    await markerDelete(ids);
+    markers = [];
+    selectedId = null;
+    pushMarkersDeletedNotice(ids.length);
+  } catch (err) {
+    report(err);
+  }
+}
+
+/** The panel menu's "Delete Filtered Markers (N)" (SPEC-009 §2.6): deletes exactly the rows the
+ * current filter shows, as one undo entry. A no-op if the filter shows none. */
+export async function deleteFilteredMarkers(): Promise<void> {
+  const ids = visibleMarkersInternal().map((m) => m.id);
+  if (ids.length === 0) {
+    return;
+  }
+  try {
+    await markerDelete(ids);
+    const removed = new Set(ids);
+    markers = markers.filter((m) => !removed.has(m.id));
+    selectedId = null;
+    pushMarkersDeletedNotice(ids.length);
+  } catch (err) {
+    report(err);
+  }
+}
+
 /** Navigation (Ctrl+Alt+→/←): selects and moves the cursor/seeks, but never touches the time
  * selection (SPEC-009 §2.7: "this is not an activation"). */
 export function jumpToMarker(id: number): void {
@@ -256,6 +388,7 @@ export async function initMarkers(): Promise<() => void> {
   const cleanups: Array<() => void> = [
     registerAction("marker.add", () => void addMarker()),
     registerAction("marker.delete_selected", () => void deleteSelectedMarker()),
+    registerAction("marker.delete_all", () => void deleteAllMarkers()),
     registerAction("marker.next", () => goToNextMarker()),
     registerAction("marker.prev", () => goToPreviousMarker()),
   ];
@@ -284,4 +417,8 @@ export function resetMarkersForTest(): void {
   markers = [];
   selectedId = null;
   takeMarkerIds.clear();
+  filterText = "";
+  filterType = "all";
+  sortColumn = "start";
+  sortDirection = "asc";
 }

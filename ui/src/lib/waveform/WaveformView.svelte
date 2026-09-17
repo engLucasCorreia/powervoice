@@ -44,6 +44,7 @@
   import { amplitudeTicksDbfs, amplitudeTicksPercent, centerlineY } from "./amplitudeAxis";
   import { extendSelectionEdge, hitTestHandle, normalizeSelection, nudgeSelectionRange } from "./selection";
   import {
+    advanceMarkerAutoscroll,
     DRAG_THRESHOLD_PX as MARKER_DRAG_THRESHOLD_PX,
     dragPointMarker,
     dragRegionEnd,
@@ -51,6 +52,7 @@
     dragRegionWhole,
     FLAG_HIT_HEIGHT_PX,
     hitTestMarkerFlag,
+    markerAutoscrollDirection,
     markerMagnetTargets,
     snapToMarkerMagnet,
     type MarkerFlagEdge,
@@ -215,6 +217,24 @@
     preview: { pos_samples: number; len_samples: number };
     moved: boolean;
   } | null>(null);
+  /** H-64 (SPEC-009 §2.5/§3 `drag_autoscroll_rate`): `-1`/`1` while the pointer sits beyond the
+   * canvas's left/right edge during a marker drag, `0` otherwise — recomputed on every
+   * pointermove (`updateMarkerDragPreview`) and consumed by the frame scheduler client below,
+   * which is the only thing that actually moves `startSample` (so scrolling continues even while
+   * the pointer itself isn't moving). Not `$state`: read only from within the frame callback and
+   * pointer handlers, never from a template. */
+  let markerAutoscrollDir: -1 | 0 | 1 = 0;
+  /** The last frame's timestamp while auto-scrolling, so each tick advances by a real `dt` instead
+   * of an assumed frame period — `null` right after auto-scroll starts (that first tick only
+   * records `now`, per H-43's frame contract of never assuming a fixed frame rate). */
+  let autoscrollLastNow: number | null = null;
+  /** The pointer position auto-scroll re-evaluates the drag preview against every tick, since the
+   * document sample under an unmoving pointer changes as the view scrolls underneath it. */
+  let lastMarkerPointerClientX: number | null = null;
+  let lastMarkerPointerAltKey = false;
+  /** H-64: the pointer id captured for the current marker drag (`null` otherwise), released on
+   * drag end/cancel. */
+  let markerDragPointerId: number | null = null;
   /** H-07: the last `record_peaks_get` response applied (`null`: none polled yet). */
   let liveBuckets = $state<Array<[number, number]>>([]);
   let liveStartSample = $state(0);
@@ -246,9 +266,42 @@
   // moves or a take records. A draw that throws is retried by the scheduler, and any later change
   // draws again.
   const frames = createFrameClient(
-    () => {
+    (now) => {
       draw();
-      return isPlayheadMoving() || isRecording;
+      // H-64 (SPEC-009 §2.5): while a marker drag holds the pointer beyond the canvas edge, keep
+      // scrolling every frame — not just on pointermove, since the pointer itself isn't moving.
+      let stillAutoscrolling = false;
+      if (markerDrag?.moved && markerAutoscrollDir !== 0) {
+        const last = autoscrollLastNow;
+        autoscrollLastNow = now;
+        if (last !== null) {
+          const dt = (now - last) / 1000;
+          const next = advanceMarkerAutoscroll(
+            startSample,
+            markerAutoscrollDir,
+            dt,
+            samplesPerPixel,
+            lenSamples,
+            viewportPx,
+          );
+          if (next !== startSample) {
+            startSample = next;
+            if (lastMarkerPointerClientX !== null) {
+              applyMarkerDragPreview(lastMarkerPointerClientX, lastMarkerPointerAltKey);
+            }
+            stillAutoscrolling = true;
+          } else {
+            // Already at the document edge in this direction: nothing left to animate until the
+            // pointer moves again (which re-evaluates the direction from scratch).
+            markerAutoscrollDir = 0;
+          }
+        } else {
+          stillAutoscrolling = true; // first tick: only the baseline timestamp was recorded
+        }
+      } else {
+        autoscrollLastNow = null;
+      }
+      return isPlayheadMoving() || isRecording || stillAutoscrolling;
     },
     { name: "waveform" },
   );
@@ -1262,24 +1315,26 @@
     );
   }
 
-  /** Recomputes the drag preview from the pointer's current position (H-57, SPEC-009 §2.5): an
-   * *absolute* target every time (`sampleAtClientX` + the grab offset), never an accumulated
-   * delta, so there is no drift at any zoom. Applies the magnet (cursor/selection/other markers'
-   * edges within `MARKER_MAGNET_PX`) unless Alt is held, then the shape-specific clamp. Never
-   * reads audio samples — SPEC-009 §2.5: markers have no zero-crossing snap. */
-  function updateMarkerDragPreview(event: PointerEvent): void {
+  /** Recomputes the drag preview from a client-x position (H-57, SPEC-009 §2.5): an *absolute*
+   * target every time (`sampleAtClientX` + the grab offset), never an accumulated delta, so there
+   * is no drift at any zoom. Applies the magnet (cursor/selection/other markers' edges within
+   * `MARKER_MAGNET_PX`) unless Alt is held, then the shape-specific clamp. Never reads audio
+   * samples — SPEC-009 §2.5: markers have no zero-crossing snap. Shared by `updateMarkerDragPreview`
+   * (a real pointermove) and the auto-scroll frame tick below (H-64: the view moves under an
+   * unmoving pointer, so the preview must be recomputed even without a new pointer event). */
+  function applyMarkerDragPreview(clientX: number, altKey: boolean): void {
     const drag = markerDrag;
     if (!drag) {
       return;
     }
-    const pointerSample = sampleAtClientX(event.clientX);
+    const pointerSample = sampleAtClientX(clientX);
     if (pointerSample === null) {
       return;
     }
     const raw = pointerSample + drag.grabOffsetSamples;
     const cursorSample = transport.state.playing ? null : transport.playheadSamples;
     const targets = markerMagnetTargets(drag.id, markers.list, cursorSample, selection.current);
-    const snapped = event.altKey ? raw : snapToMarkerMagnet(raw, targets, samplesPerPixel);
+    const snapped = altKey ? raw : snapToMarkerMagnet(raw, targets, samplesPerPixel);
     let preview: { pos_samples: number; len_samples: number };
     if (drag.edge === "point") {
       preview = dragPointMarker(snapped, lenSamples);
@@ -1293,9 +1348,45 @@
     markerDrag = { ...drag, preview };
   }
 
+  /** A real pointermove during a marker drag: applies the preview, then re-evaluates auto-scroll
+   * (H-64, SPEC-009 §2.5) from the pointer's raw (unclamped) canvas-relative x — beyond the left
+   * or right edge scrolls the view every frame (below) until it moves back inside or the drag
+   * ends. */
+  function updateMarkerDragPreview(event: PointerEvent): void {
+    if (!markerDrag) {
+      return;
+    }
+    lastMarkerPointerClientX = event.clientX;
+    lastMarkerPointerAltKey = event.altKey;
+    applyMarkerDragPreview(event.clientX, event.altKey);
+    const rawPx = pxAtClientX(event.clientX);
+    markerAutoscrollDir = rawPx === null ? 0 : markerAutoscrollDirection(rawPx, viewportPx);
+    if (markerAutoscrollDir !== 0) {
+      autoscrollLastNow = null; // a fresh baseline, so the very next tick doesn't use a stale dt
+      frames.invalidate();
+    }
+  }
+
+  /** Resets every auto-scroll tracking field and releases the drag's captured pointer, if any
+   * (drag end/cancel, H-64). */
+  function resetMarkerAutoscroll(): void {
+    markerAutoscrollDir = 0;
+    autoscrollLastNow = null;
+    lastMarkerPointerClientX = null;
+    if (markerDragPointerId !== null) {
+      try {
+        containerEl?.releasePointerCapture?.(markerDragPointerId);
+      } catch {
+        // Already released (e.g. the browser auto-released it on pointerup) — harmless.
+      }
+      markerDragPointerId = null;
+    }
+  }
+
   /** Esc mid-drag (SPEC-009 §2.5): cancels without committing anything. */
   function cancelMarkerDrag(): void {
     markerDrag = null;
+    resetMarkerAutoscroll();
   }
 
   /** Pointerup on a marker drag (SPEC-009 §2.5): a release before the drag threshold is a click
@@ -1306,6 +1397,7 @@
   function finishMarkerDrag(): void {
     const drag = markerDrag;
     markerDrag = null;
+    resetMarkerAutoscroll();
     if (!drag) {
       return;
     }
@@ -1484,6 +1576,7 @@
     dragging = false;
     handleDragActive = false;
     markerDrag = null;
+    resetMarkerAutoscroll();
     // H-57 (SPEC-009 §2.5): a flag hit takes priority over the selection handle/plain-drag
     // hit-testing below, and works during recording too (only the drag itself is disabled then).
     const flagHit = recordState().state.recording ? null : flagHitAtClient(event.clientX, event.clientY);
@@ -1500,6 +1593,11 @@
           preview: { pos_samples: marker.pos_samples, len_samples: marker.len_samples },
           moved: false,
         };
+        markerDragPointerId = event.pointerId;
+        // H-64: keeps pointermove/pointerup targeting this element even once the pointer strays
+        // outside it (off-window included) — otherwise auto-scroll (SPEC-009 §2.5) would stop the
+        // moment the cursor left the canvas, instead of continuing while held past its edge.
+        containerEl?.setPointerCapture?.(event.pointerId);
       }
       return;
     }

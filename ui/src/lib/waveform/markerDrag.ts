@@ -10,7 +10,7 @@
  * compound rounding error.
  */
 
-import { pixelAtSample } from "./coords";
+import { clampStartSample, pixelAtSample } from "./coords";
 
 /** The marker shape this module needs (a subset of `MarkerDto`). */
 export interface DragMarker {
@@ -191,4 +191,54 @@ export function dragRegionWhole(
   delta = Math.max(delta, -original.pos_samples);
   delta = Math.min(delta, lenSamplesDoc - (original.pos_samples + original.len_samples));
   return { pos_samples: original.pos_samples + delta, len_samples: original.len_samples };
+}
+
+// --- H-64 (SPEC-009 §2.5/§3 `drag_autoscroll_rate`): auto-scroll while dragging -------------------
+
+/** SPEC-009 §3 `drag_autoscroll_rate`: one viewport width per second. */
+export const DRAG_AUTOSCROLL_RATE_VIEWPORTS_PER_S = 1;
+
+/**
+ * SPEC-009 §2.5: "while the pointer is beyond the left or right canvas edge during a drag" —
+ * `px` is the pointer's raw device-pixel x relative to the canvas (as {@link pixelAtSample}'s
+ * inverse would read it, *not* clamped to `[0, viewportPx]`, unlike a document-sample lookup).
+ * `-1`/`1` beyond the left/right edge, `0` inside it (or with no known viewport width yet).
+ */
+export function markerAutoscrollDirection(px: number, viewportPx: number): -1 | 0 | 1 {
+  if (viewportPx <= 0) {
+    return 0;
+  }
+  if (px < 0) {
+    return -1;
+  }
+  if (px > viewportPx) {
+    return 1;
+  }
+  return 0;
+}
+
+/**
+ * One frame of auto-scroll (SPEC-009 §2.5, `drag_autoscroll_rate`): advances `startSample` by
+ * `direction * rate * viewportSamples * dtSeconds` — "one viewport width per second" — and clamps
+ * the result through {@link clampStartSample}, the same clamp every other viewport write in this
+ * codebase uses, so a drag can never scroll past either end of the document ("stops at the
+ * document edges"). A `direction` of `0`, a non-positive `dtSeconds` (the first tick after a
+ * scroll starts, before two timestamps exist) or an unknown viewport width (`viewportPx <= 0`)
+ * are no-ops, returning `startSample` unchanged.
+ */
+export function advanceMarkerAutoscroll(
+  startSample: number,
+  direction: -1 | 0 | 1,
+  dtSeconds: number,
+  samplesPerPixel: number,
+  lenSamples: number,
+  viewportPx: number,
+  rate: number = DRAG_AUTOSCROLL_RATE_VIEWPORTS_PER_S,
+): number {
+  if (direction === 0 || dtSeconds <= 0 || viewportPx <= 0) {
+    return startSample;
+  }
+  const viewportSamples = viewportPx * samplesPerPixel;
+  const next = startSample + direction * rate * viewportSamples * dtSeconds;
+  return clampStartSample(next, samplesPerPixel, lenSamples, viewportPx);
 }

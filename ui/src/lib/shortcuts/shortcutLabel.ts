@@ -23,10 +23,15 @@ const CODE_LABELS: Record<string, string> = {
   ArrowRight: "→",
 };
 
-/** `KeyboardEvent.code` → a short display label: the mapped table above, else the trailing letter
- * of `KeyX`/digit of `DigitN`, else the raw code as a last resort (never seen today — every
- * binding in {@link SHORTCUTS} is covered by one of the first two cases). */
-function keyLabel(code: string): string {
+/** A binding's display label: for a `key` binding (H-64, SPEC-009 §2.4) the produced character
+ * itself (e.g. `/`); for a `code` one, the mapped table above, else the trailing letter of
+ * `KeyX`/digit of `DigitN`, else the raw code as a last resort (never seen today — every `code`
+ * binding in {@link SHORTCUTS} is covered by one of those two cases). */
+function keyLabel(binding: Pick<KeyBinding, "code" | "key">): string {
+  if (binding.key !== undefined) {
+    return binding.key;
+  }
+  const code = binding.code!;
   const mapped = CODE_LABELS[code];
   if (mapped) {
     return mapped;
@@ -56,7 +61,7 @@ export function formatBinding(binding: KeyBinding, isMac: boolean): string {
     if (binding.mod) {
       label += "⌘";
     }
-    return label + keyLabel(binding.code);
+    return label + keyLabel(binding);
   }
   const parts: string[] = [];
   if (binding.mod) {
@@ -68,7 +73,7 @@ export function formatBinding(binding: KeyBinding, isMac: boolean): string {
   if (binding.alt) {
     parts.push("Alt");
   }
-  parts.push(keyLabel(binding.code));
+  parts.push(keyLabel(binding));
   return parts.join("+");
 }
 

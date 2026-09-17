@@ -91,8 +91,8 @@ pub use session::{
 };
 pub use sidecar::{
     DocumentIdentity, MarkerItemModel, MarkerMeta, MarkerMetaTable, SaveFormatModel, SidecarDoc,
-    SidecarLoad, SidecarNotice, WriteInput, document_crc32, marker_from_item, read_sidecar,
-    sidecar_path_for, write_sidecar,
+    SidecarLoad, SidecarNotice, WriteInput, cue_projection_matches, document_crc32,
+    marker_from_item, markers_with_inherited_kind, read_sidecar, sidecar_path_for, write_sidecar,
 };
 pub use snapshot::{DocSnapshot, Marker, MarkerId, MarkerKind, Piece, Source};
 pub use store::{

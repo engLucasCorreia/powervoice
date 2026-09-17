@@ -11,10 +11,14 @@ import { findDuplicateBindings, isPlatformMac, matchBinding, SHORTCUTS } from ".
 
 function key(
   code: string,
-  mods: Partial<{ shift: boolean; ctrl: boolean; meta: boolean; alt: boolean }> = {}
+  mods: Partial<{ shift: boolean; ctrl: boolean; meta: boolean; alt: boolean; producedKey: string }> = {}
 ) {
   return {
     code,
+    // H-64 (SPEC-009 §2.4): the produced character, for a `key`-matched binding (e.g. "/") —
+    // `undefined` (as for every existing call site here) never matches one, exactly like a real
+    // `KeyboardEvent` from an unrelated key press wouldn't.
+    key: mods.producedKey,
     shiftKey: Boolean(mods.shift),
     ctrlKey: Boolean(mods.ctrl),
     metaKey: Boolean(mods.meta),
@@ -115,6 +119,28 @@ describe("default keymap bindings", () => {
     expect(matchBinding(key("Digit0", { meta: true }), true)).toBe("marker.delete_selected");
     expect(matchBinding(key("ArrowRight", { meta: true, alt: true }), true)).toBe("marker.next");
     expect(matchBinding(key("ArrowLeft", { meta: true, alt: true }), true)).toBe("marker.prev");
+  });
+
+  // H-64, SPEC-009 §2.6/§2.4: Ctrl+Alt+0 Delete All Markers, `/` rename (produced-character
+  // matched, not a physical code — AC-20).
+  it("resolves marker.delete_all, distinct from marker.delete_selected (Ctrl+0 alone)", () => {
+    expect(matchBinding(key("Digit0", { ctrl: true, alt: true }), false)).toBe("marker.delete_all");
+    expect(matchBinding(key("Digit0", { meta: true, alt: true }), true)).toBe("marker.delete_all");
+    expect(matchBinding(key("Digit0", { ctrl: true }), false)).toBe("marker.delete_selected");
+  });
+
+  it("resolves marker.rename on the produced character '/', regardless of its physical code", () => {
+    // US layout: '/' is physical key "Slash", no Shift. A different layout might need Shift and
+    // report a different `code` — either way, `event.key` is what SPEC-009 §2.4 requires matching.
+    expect(matchBinding(key("Slash", { producedKey: "/" }), false)).toBe("marker.rename");
+    expect(matchBinding(key("IntlBackslash", { producedKey: "/", shift: true }), false)).toBe(
+      "marker.rename",
+    );
+    // A held Ctrl/⌘ or Alt still blocks it (no binding requires a modifier for this one).
+    expect(matchBinding(key("Slash", { producedKey: "/", ctrl: true }), false)).toBeNull();
+    expect(matchBinding(key("Slash", { producedKey: "/", alt: true }), false)).toBeNull();
+    // A different produced character never matches.
+    expect(matchBinding(key("Digit7", { producedKey: "7" }), false)).toBeNull();
   });
 
   it("every default binding is unique by (code, shift, mod, alt) within its dispatch group", () => {

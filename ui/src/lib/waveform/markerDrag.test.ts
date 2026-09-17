@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  advanceMarkerAutoscroll,
   dragPointMarker,
   dragRegionEnd,
   dragRegionStart,
   dragRegionWhole,
+  DRAG_AUTOSCROLL_RATE_VIEWPORTS_PER_S,
   FLAG_HIT_HEIGHT_PX,
   hitTestMarkerFlag,
+  markerAutoscrollDirection,
   markerMagnetTargets,
   snapToMarkerMagnet,
   type DragMarker,
@@ -136,5 +139,53 @@ describe("drag shape functions (SPEC-009 §2.5, AC-7)", () => {
       pos_samples: DOC_LEN - 10_000,
       len_samples: 10_000,
     });
+  });
+});
+
+// H-64 (SPEC-009 §2.5/§3 `drag_autoscroll_rate`): auto-scroll while dragging a marker flag past
+// the canvas edge.
+describe("marker drag auto-scroll (SPEC-009 §2.5/§3)", () => {
+  const VIEWPORT_PX = 1000;
+
+  it("markerAutoscrollDirection: 0 inside the canvas, -1/1 beyond its left/right edge", () => {
+    expect(markerAutoscrollDirection(0, VIEWPORT_PX)).toBe(0);
+    expect(markerAutoscrollDirection(500, VIEWPORT_PX)).toBe(0);
+    expect(markerAutoscrollDirection(VIEWPORT_PX, VIEWPORT_PX)).toBe(0); // exactly at the edge
+    expect(markerAutoscrollDirection(-1, VIEWPORT_PX)).toBe(-1);
+    expect(markerAutoscrollDirection(VIEWPORT_PX + 1, VIEWPORT_PX)).toBe(1);
+    expect(markerAutoscrollDirection(-1, 0)).toBe(0); // no known viewport width yet
+  });
+
+  it("advances startSample at exactly one viewport width per second", () => {
+    // viewportSamples = 1000 px * 200 spp = 200 000; half a second -> half a viewport width.
+    const next = advanceMarkerAutoscroll(0, 1, 0.5, SPP, DOC_LEN * 1000, VIEWPORT_PX);
+    expect(next).toBe(100_000);
+    expect(DRAG_AUTOSCROLL_RATE_VIEWPORTS_PER_S).toBe(1);
+  });
+
+  it("scrolls left (negative direction) the same way", () => {
+    const start = 150_000;
+    const next = advanceMarkerAutoscroll(start, -1, 0.5, SPP, DOC_LEN * 1000, VIEWPORT_PX);
+    expect(next).toBe(50_000);
+  });
+
+  it("stops exactly at the document's right edge instead of overshooting", () => {
+    const lenSamples = 210_000; // maxStart = 210_000 - 200_000 (viewport) = 10_000
+    const next = advanceMarkerAutoscroll(0, 1, 10, SPP, lenSamples, VIEWPORT_PX);
+    expect(next).toBe(10_000);
+    // Continuing to hold beyond the edge never goes past it.
+    expect(advanceMarkerAutoscroll(next, 1, 10, SPP, lenSamples, VIEWPORT_PX)).toBe(10_000);
+  });
+
+  it("stops exactly at the document's left edge (0), never negative", () => {
+    const next = advanceMarkerAutoscroll(5_000, -1, 10, SPP, DOC_LEN * 1000, VIEWPORT_PX);
+    expect(next).toBe(0);
+  });
+
+  it("is a no-op with no direction, a non-positive dt, or an unknown viewport width", () => {
+    expect(advanceMarkerAutoscroll(1_000, 0, 1, SPP, DOC_LEN * 1000, VIEWPORT_PX)).toBe(1_000);
+    expect(advanceMarkerAutoscroll(1_000, 1, 0, SPP, DOC_LEN * 1000, VIEWPORT_PX)).toBe(1_000);
+    expect(advanceMarkerAutoscroll(1_000, 1, -1, SPP, DOC_LEN * 1000, VIEWPORT_PX)).toBe(1_000);
+    expect(advanceMarkerAutoscroll(1_000, 1, 1, SPP, DOC_LEN * 1000, 0)).toBe(1_000);
   });
 });

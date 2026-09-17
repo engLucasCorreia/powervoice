@@ -2,6 +2,9 @@
 //! and maps the result to a DTO or, for `peaks_get`, raw `VXPK` bytes over `ipc::Response`
 //! (ADR-003 §2; CLAUDE.md — bulk IPC data is binary, never JSON float arrays).
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use tauri::ipc::Response;
 use tauri::{AppHandle, Emitter, Runtime, State};
 use vox_project::{ImportProbe, PEAKS_RAW_SPP, VxpkHeader, encode_vxpk};
@@ -334,9 +337,14 @@ pub async fn document_probe(path: String) -> Result<DocumentProbeDto, IpcError> 
 /// `document_save`/`document_save_as` since both now run as a job (`JobKind::Save`) once their
 /// pre-flight (`begin_save`/`begin_save_as`) has passed. H-50 ordering: on success the document's
 /// own result (`document_changed` + any sidecar notices) goes out before the terminal `Done`; on
-/// a real failure the error notice goes out before `Failed` — mirrors T-602's bake service. A
-/// `NeedsConfirmation`/busy rejection never reaches here at all: `begin_save`/`begin_save_as`
-/// return those before any job_progress is ever emitted (see `document_save`'s doc comment).
+/// a real failure the error notice goes out before `Failed` — mirrors T-602's bake service.
+///
+/// H-75: `NeedsConfirmation` (the clip/multichannel prompts) is treated like `Cancelled` here too
+/// — no error toast, since the UI is about to show its own confirmation dialog and re-issue, not
+/// report a failure. Usually that rejection never reaches here at all (`begin_save`/
+/// `begin_save_as` return it before any job_progress is ever emitted, see `document_save`'s doc
+/// comment) — this only matters when the overs pre-flight's exact counting pass (SPEC-005 §2.8)
+/// had already made the job visible before finding the overs that need confirming.
 fn emit_save_job_result<R: Runtime>(
     app: &AppHandle<R>,
     doc: &DocumentService,
@@ -362,7 +370,9 @@ fn emit_save_job_result<R: Runtime>(
             Ok(info)
         }
         Err(err) => {
-            let state = if err.code == IpcErrorCode::Cancelled {
+            let state = if err.code == IpcErrorCode::Cancelled
+                || err.code == IpcErrorCode::NeedsConfirmation
+            {
                 JobState::Cancelled
             } else {
                 JobState::Failed
@@ -414,9 +424,15 @@ fn emit_save_job_started<R: Runtime>(app: &AppHandle<R>, job_id: u32) {
 /// this writes exactly the document's audio.
 ///
 /// Pre-flight (`DocumentService::begin_save`: the busy/untitled/changed-on-disk/permission/
-/// disk-space/WAV-size/clip/multichannel checks, SPEC-005 §2.7's ordered checklist) runs first
-/// and, on any refusal, returns at once — no job ever starts, so the progress dialog never
-/// appears for a confirmation the UI is about to re-issue.
+/// disk-space/WAV-size/clip/multichannel checks, SPEC-005 §2.7's ordered checklist) runs first,
+/// against the same job/cancel token the write itself uses. Every check but one is effectively
+/// instant, so it stays quiet: on any refusal, this returns at once and no job/progress event
+/// was ever emitted, exactly as before H-75. The exception is the overs pre-flight's exact
+/// counting pass (SPEC-005 §2.8, only run when the peak pyramid already shows a peak `> 1.0`) —
+/// that can run long enough on a large document to need its own progress and cancel, so *if* it
+/// reports any progress, this job's dialog appears for it too; a clip/multichannel confirmation
+/// reached that way closes the dialog quietly (no error toast, `emit_save_job_result`'s
+/// `NeedsConfirmation`-as-`Cancelled` case) rather than leaving it stuck.
 ///
 /// T-209: `confirm_clip` bypasses SPEC-005 §2.8's clip prompt (the UI re-issues with `true` after
 /// "Clip and save"; `dialog.overs`'s `count`/`peak_dbfs` params come from the first refusal).
@@ -433,18 +449,55 @@ pub async fn document_save<R: Runtime>(
     let doc = (*doc).clone();
     let doc_for_notice = doc.clone();
 
+    let (job_id, cancel) = doc.register_save_job();
+    // H-75: set the first time the overs pre-flight's `on_progress` actually fires — only then
+    // has the job become visible, so only then does a `NeedsConfirmation`/`Cancelled` outcome
+    // need a terminal `job_progress` event to close its dialog (the common, fast pre-flight
+    // never ticks this, so it stays exactly as quiet as before H-75).
+    let began = Arc::new(AtomicBool::new(false));
+
     let begin_doc = doc.clone();
-    run_blocking(move || {
+    let begin_cancel = cancel.clone();
+    let began_for_begin = Arc::clone(&began);
+    let app_for_begin = app.clone();
+    let begin_result = run_blocking(move || {
+        let mut last_fraction = 0.0f32;
         begin_doc.begin_save(
             overwrite,
             confirm_clip,
             confirm_multichannel,
             &vox_project::SystemFreeSpace,
+            &begin_cancel,
+            move |fraction| {
+                if !began_for_begin.swap(true, Ordering::Relaxed) {
+                    emit_save_job_started(&app_for_begin, job_id);
+                }
+                if fraction - last_fraction >= 0.001 || fraction >= 1.0 {
+                    last_fraction = fraction;
+                    if let Err(error) = emit_job_progress(
+                        &app_for_begin,
+                        JobProgressDto {
+                            job_id,
+                            kind: JobKind::Save,
+                            state: JobState::Running,
+                            fraction,
+                        },
+                    ) {
+                        tracing::warn!(%error, "emitting save job_progress (overs pre-flight) failed");
+                    }
+                }
+            },
         )
     })
-    .await?;
+    .await;
+    if let Err(err) = begin_result {
+        doc.unregister_save_job(job_id);
+        if began.load(Ordering::Relaxed) {
+            return emit_save_job_result(&app, &doc_for_notice, job_id, Err(err));
+        }
+        return Err(err);
+    }
 
-    let (job_id, cancel) = doc.register_save_job();
     emit_save_job_started(&app, job_id);
     let finish_doc = doc.clone();
     let app_for_job = app.clone();
@@ -507,9 +560,17 @@ pub async fn document_save_as<R: Runtime>(
     let path_buf = std::path::PathBuf::from(&path);
     let container_val: SaveContainer = container.into();
 
+    let (job_id, cancel) = doc.register_save_job();
+    // H-75: see `document_save`'s doc comment.
+    let began = Arc::new(AtomicBool::new(false));
+
     let begin_doc = doc.clone();
     let begin_path = path_buf.clone();
-    run_blocking(move || {
+    let begin_cancel = cancel.clone();
+    let began_for_begin = Arc::clone(&began);
+    let app_for_begin = app.clone();
+    let begin_result = run_blocking(move || {
+        let mut last_fraction = 0.0f32;
         begin_doc.begin_save_as(
             &begin_path,
             container_val,
@@ -517,11 +578,37 @@ pub async fn document_save_as<R: Runtime>(
             confirm_clip,
             confirm_multichannel,
             &vox_project::SystemFreeSpace,
+            &begin_cancel,
+            move |fraction| {
+                if !began_for_begin.swap(true, Ordering::Relaxed) {
+                    emit_save_job_started(&app_for_begin, job_id);
+                }
+                if fraction - last_fraction >= 0.001 || fraction >= 1.0 {
+                    last_fraction = fraction;
+                    if let Err(error) = emit_job_progress(
+                        &app_for_begin,
+                        JobProgressDto {
+                            job_id,
+                            kind: JobKind::Save,
+                            state: JobState::Running,
+                            fraction,
+                        },
+                    ) {
+                        tracing::warn!(%error, "emitting save job_progress (overs pre-flight) failed");
+                    }
+                }
+            },
         )
     })
-    .await?;
+    .await;
+    if let Err(err) = begin_result {
+        doc.unregister_save_job(job_id);
+        if began.load(Ordering::Relaxed) {
+            return emit_save_job_result(&app, &doc_for_notice, job_id, Err(err));
+        }
+        return Err(err);
+    }
 
-    let (job_id, cancel) = doc.register_save_job();
     emit_save_job_started(&app, job_id);
     let finish_doc = doc.clone();
     let finish_path = path_buf.clone();

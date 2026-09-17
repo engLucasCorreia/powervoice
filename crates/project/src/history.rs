@@ -316,8 +316,24 @@ impl History {
     }
 
     /// Records that the current state was saved.
+    ///
+    /// H-75: convenience for a save that never releases the document lock across its write (a
+    /// throwaway `CancelToken`, tests, recovery-adjacent callers) — equivalent to
+    /// `self.mark_saved_at(self.current_seq())`. A save whose write runs *without* the lock held
+    /// (SPEC-005 §2.7: "editing and playback continue") must call [`Self::mark_saved_at`] instead,
+    /// with the seq the snapshot it actually wrote had *before* the write started: by the time the
+    /// write finishes, `current_seq()` may have moved on to an edit that landed mid-write, and
+    /// that edit's bytes are never in the file this call is recording as saved.
     pub fn mark_saved(&mut self) {
-        self.saved_seq = self.current_seq();
+        self.mark_saved_at(self.current_seq());
+    }
+
+    /// Records that the state as of `seq` was saved (H-75). `seq` must be a seq this history
+    /// actually produced (normally captured via [`Self::current_seq`] before a lock-free write
+    /// started) — see [`Self::mark_saved`]'s doc comment for why this must not always be
+    /// "whatever is current now".
+    pub fn mark_saved_at(&mut self, seq: u64) {
+        self.saved_seq = seq;
     }
 
     /// A marker id no marker has used yet.
@@ -429,9 +445,11 @@ impl History {
         }
     }
 
-    /// Sets the saved seq (journal `saved` replay).
+    /// Sets the saved seq (journal `saved` replay). Same primitive as [`Self::mark_saved_at`],
+    /// named separately for its own call site (replay already knows the exact `seq` a past
+    /// `Record::Saved` recorded, not a live snapshot).
     pub(crate) fn set_saved_seq(&mut self, seq: u64) {
-        self.saved_seq = seq;
+        self.mark_saved_at(seq);
     }
 
     /// Removes the `count` oldest undo entries (SPEC-004 §2.5 OD-1 = A): the oldest remaining

@@ -928,6 +928,11 @@ impl Session {
 
     /// [`Self::mark_saved_with_sidecar`], also recording the written file's `(size, mtime)` so
     /// crash recovery can tell a later change on disk from this save (T-301, SPEC-004 §2.7).
+    ///
+    /// Records the state as of *now* (`self.history.current_seq()`) — only correct for a caller
+    /// that held the document lock for the whole write, so nothing could have changed underneath
+    /// it. A save whose write ran without the lock held must call [`Self::mark_saved_file_at`]
+    /// instead (H-75).
     pub fn mark_saved_file(
         &mut self,
         path: &Path,
@@ -936,9 +941,33 @@ impl Session {
         sidecar: Option<bool>,
         file_facts: Option<(u64, u64)>,
     ) -> Result<()> {
+        self.mark_saved_file_at(
+            self.history.current_seq(),
+            path,
+            format,
+            audio_crc32,
+            sidecar,
+            file_facts,
+        )
+    }
+
+    /// [`Self::mark_saved_file`], but records the state as of `seq` rather than whatever is
+    /// current when this is called (H-75, SPEC-005 §2.7: "editing and playback continue" while a
+    /// save writes). `seq` must be [`History::current_seq`] as captured *before* the write started
+    /// — using the caller's actual current seq here would wrongly clear the dirty flag for an
+    /// edit that landed mid-write, whose bytes are not in the file this call records as saved.
+    pub fn mark_saved_file_at(
+        &mut self,
+        seq: u64,
+        path: &Path,
+        format: &str,
+        audio_crc32: Option<String>,
+        sidecar: Option<bool>,
+        file_facts: Option<(u64, u64)>,
+    ) -> Result<()> {
         let record = Record::Saved {
             path: path.to_string_lossy().into_owned(),
-            seq: self.history.current_seq(),
+            seq,
             format: format.to_owned(),
             audio_crc32,
             sidecar,
@@ -946,7 +975,7 @@ impl Session {
             file_mtime_unix_ms: file_facts.map(|f| f.1),
         };
         self.journal.append(std::slice::from_ref(&record))?;
-        self.history.mark_saved();
+        self.history.mark_saved_at(seq);
         self.last_saved = Some(record);
         Ok(())
     }

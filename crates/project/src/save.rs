@@ -155,10 +155,17 @@ pub struct OversInfo {
 /// under-reports (ADR-004 §5), so a pyramid peak `<= 1.0` proves there are no overs with no exact
 /// pass; only a pyramid peak `> 1.0` triggers one exact counting pass over the whole document
 /// (SPEC-005 §2.8 "detection cost").
+///
+/// H-75: that exact pass is "a cancellable job with progress" (§2.8) — `cancel` is checked once
+/// per [`CHUNK_SAMPLES`] block (same grain every other job's cancel contract uses) and
+/// `on_progress` reports `[0.0, 1.0]` over it, monotonically non-decreasing. The pyramid pass
+/// itself never reports progress: it only consults cached per-chunk peaks (no sample-level scan),
+/// so it is never the slow part this needs to make cancellable.
 pub fn overs_check(
     store: &ChunkStore,
     snapshot: &DocSnapshot,
     cancel: &CancelToken,
+    mut on_progress: impl FnMut(f32),
 ) -> Result<Option<OversInfo>> {
     let range = Range {
         start: 0,
@@ -169,6 +176,7 @@ pub fn overs_check(
         return Ok(None);
     }
 
+    let total = snapshot.len_samples.max(1) as f32;
     let mut buf = vec![0.0f32; CHUNK_SAMPLES];
     let mut pos = 0u64;
     let mut count = 0u64;
@@ -190,7 +198,9 @@ pub fn overs_check(
             peak = peak.max(a);
         }
         pos += n as u64;
+        on_progress(pos as f32 / total);
     }
+    on_progress(1.0);
     Ok(Some(OversInfo {
         count,
         peak_dbfs: 20.0 * peak.log10(),
@@ -600,7 +610,7 @@ mod tests {
         let snapshot = snapshot_of(&store, &samples);
 
         let cancel = CancelToken::new();
-        let overs = overs_check(&store, &snapshot, &cancel).unwrap();
+        let overs = overs_check(&store, &snapshot, &cancel, |_| {}).unwrap();
         assert!(overs.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -618,7 +628,8 @@ mod tests {
         let snapshot = snapshot_of(&store, &samples);
 
         let cancel = CancelToken::new();
-        let overs = overs_check(&store, &snapshot, &cancel)
+        let mut progress = Vec::new();
+        let overs = overs_check(&store, &snapshot, &cancel, |f| progress.push(f))
             .unwrap()
             .expect("a peak above 1.0 must report Some");
         assert_eq!(overs.count, 3);
@@ -627,6 +638,9 @@ mod tests {
             "peak_dbfs = {}",
             overs.peak_dbfs
         );
+        // H-75 (SPEC-005 §2.8): the exact counting pass reports progress, ending at 1.0.
+        assert_eq!(progress.last().copied(), Some(1.0));
+        assert!(progress.is_sorted());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -641,8 +655,37 @@ mod tests {
 
         let cancel = CancelToken::new();
         cancel.cancel();
-        let err = overs_check(&store, &snapshot, &cancel).unwrap_err();
+        let err = overs_check(&store, &snapshot, &cancel, |_| {}).unwrap_err();
         assert!(matches!(err, ProjectError::Cancelled));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// H-75 (SPEC-005 §2.8): cancelling mid-scan (not just before the first chunk) stops the
+    /// exact counting pass — a document big enough for more than one [`CHUNK_SAMPLES`] block, cancel
+    /// flips only after the first block's worth of progress has been reported.
+    #[test]
+    fn overs_check_is_cancellable_mid_scan() {
+        let dir = tmp_dir("overs-cancel-mid");
+        let store = ChunkStore::create(&dir, 0, StoreOptions::with_memory_budget(64 * 1024 * 1024))
+            .unwrap();
+        let mut samples = vec![0.0f32; CHUNK_SAMPLES * 4];
+        samples[0] = 1.5; // forces the exact pass to run past the pyramid check
+        let snapshot = snapshot_of(&store, &samples);
+
+        let cancel = CancelToken::new();
+        let mut progress = Vec::new();
+        let err = overs_check(&store, &snapshot, &cancel, |f| {
+            progress.push(f);
+            if progress.len() == 1 {
+                cancel.cancel();
+            }
+        })
+        .unwrap_err();
+        assert!(matches!(err, ProjectError::Cancelled));
+        assert!(
+            progress.len() < 4,
+            "cancelling after the first block must stop before the scan finishes, got {progress:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

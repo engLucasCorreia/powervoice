@@ -15,7 +15,7 @@ use vox_engine::record::DropoutMark;
 use vox_engine::spectro::SpectroService;
 use vox_engine::{EngineHandle, PlaybackDoc, RackCommand, TransportCommand};
 use vox_project::{
-    CancelToken, DocumentIdentity, Edit, EditTarget, FinishedTake, ImportProbe,
+    CancelToken, DocSnapshot, DocumentIdentity, Edit, EditTarget, FinishedTake, ImportProbe,
     LufsNormalizeOutcome, Marker, MarkerId, MarkerItemModel, MarkerKind, MarkerMetaTable, MarkerOp,
     NormalizeLufsPlan, NormalizeOutcome, NormalizePeakPlan, OversInfo, Piece, ProjectError, Range,
     RangeError, SaveFormatModel, Session, SessionConfig, SidecarNotice, SnapshotReader,
@@ -1064,12 +1064,22 @@ fn check_wav_size(
 
 /// SPEC-005 §2.8's clip pre-flight: `None` for a float target (32-bit float is bit-exact, overs
 /// are kept, never a clip) or when [`overs_check`] found nothing above 0 dBFS.
-fn check_overs(doc: &OpenDocument, bits: BitDepth) -> Result<Option<OversInfo>, IpcError> {
+///
+/// H-75: `cancel`/`on_progress` are the save job's own (the caller passes the same ones
+/// [`DocumentService::finish_save`]/[`Self::finish_save_as`] will use for the write) — the exact
+/// counting pass this can run is "a cancellable job with progress" per SPEC-005 §2.8, not a
+/// throwaway, uncancellable scan.
+fn check_overs(
+    doc: &OpenDocument,
+    bits: BitDepth,
+    cancel: &CancelToken,
+    on_progress: &mut dyn FnMut(f32),
+) -> Result<Option<OversInfo>, IpcError> {
     if bits == BitDepth::Bit32Float {
         return Ok(None);
     }
     let snapshot = doc.session.current();
-    overs_check(doc.session.store(), &snapshot, &CancelToken::new()).map_err(document_error)
+    overs_check(doc.session.store(), &snapshot, cancel, on_progress).map_err(document_error)
 }
 
 /// SPEC-005 §2.8: "12 samples are above 0 dBFS (peak +1.8 dBFS) and will be clipped in a 16-bit
@@ -2314,13 +2324,16 @@ impl DocumentService {
         confirm_clip: bool,
         confirm_multichannel: bool,
     ) -> Result<DocumentInfo, IpcError> {
+        let cancel = CancelToken::new();
         self.begin_save(
             overwrite,
             confirm_clip,
             confirm_multichannel,
             &vox_project::SystemFreeSpace,
+            &cancel,
+            |_| {},
         )?;
-        self.finish_save(&CancelToken::new(), |_| {})
+        self.finish_save(&cancel, |_| {})
     }
 
     /// H-70 (SPEC-005 §4.10): the validating half of [`Self::save`] — every pre-flight check
@@ -2331,12 +2344,19 @@ impl DocumentService {
     /// every check passes does this set the busy flag (`error.save.in_progress` for a second
     /// caller); [`Self::finish_save`] always clears it, whatever the write's outcome. `free` is
     /// H-11's `FreeSpaceProvider` (real callers pass `SystemFreeSpace`; tests, `FixedFreeSpace`).
+    ///
+    /// H-75 (SPEC-005 §2.8): `cancel`/`on_progress` are the same ones [`Self::finish_save`] will
+    /// use for the write — the overs pre-flight's exact counting pass (only run when the peak
+    /// pyramid already shows a peak `> 1.0`) is itself "a cancellable job with progress", not a
+    /// throwaway, uncancellable scan.
     pub fn begin_save(
         &self,
         overwrite: bool,
         confirm_clip: bool,
         confirm_multichannel: bool,
         free: &dyn vox_project::FreeSpaceProvider,
+        cancel: &CancelToken,
+        mut on_progress: impl FnMut(f32),
     ) -> Result<(), IpcError> {
         let mut busy = self.0.save_running.lock().unwrap();
         if *busy {
@@ -2355,7 +2375,7 @@ impl DocumentService {
         check_folder_writable(&path)?;
         check_free_space(doc, bits, &path, free)?;
         check_wav_size(doc, container, bits)?;
-        if !confirm_clip && let Some(overs) = check_overs(doc, bits)? {
+        if !confirm_clip && let Some(overs) = check_overs(doc, bits, cancel, &mut on_progress)? {
             return Err(clip_confirmation_error(overs));
         }
         if !confirm_multichannel && doc.source_channels > 1 && !doc.multichannel_warned {
@@ -2370,6 +2390,14 @@ impl DocumentService {
     /// real job failure or cancellation, never `NeedsConfirmation`). `cancel` is checked inside
     /// the write loop (best-effort, like every other job); `on_progress` reports `[0.0, 1.0]`.
     /// Always clears the busy flag, whatever the outcome.
+    ///
+    /// H-75 (SPEC-005 §2.7): "editing and playback continue" while a save runs, so the document
+    /// lock is held only twice, briefly — once to capture everything the write needs
+    /// ([`prepare_save`]), including the seq the *snapshot being written* corresponds to, and
+    /// once after the write to record the outcome ([`Self::apply_save_outcome`]) — never across
+    /// the write itself. An edit committed in between lands normally and leaves the document
+    /// dirty: [`Session::mark_saved_file_at`] is told to record exactly the captured seq, not
+    /// whatever `doc.session`'s current seq is by the time this re-locks.
     pub fn finish_save(
         &self,
         cancel: &CancelToken,
@@ -2378,36 +2406,46 @@ impl DocumentService {
         // T-901: state a plugin window changed outside the plugin's parameters reaches the rack's
         // committed blobs before the sidecar is written (round trips off the document lock).
         self.0.engine.rack_capture_plugin_states();
-        let mut guard = self.0.open.lock().unwrap();
-        let result = (|| -> Result<DocumentInfo, IpcError> {
-            let doc = guard.as_mut().ok_or_else(no_document)?;
+
+        let (path, container, bits, dither, prep) = {
+            let guard = self.0.open.lock().unwrap();
+            let doc = guard.as_ref().ok_or_else(no_document)?;
             let path = doc.path.clone().ok_or_else(untitled)?;
             let container = doc.save_container;
             let bits = doc.save_bits;
             let dither = doc.save_dither;
-            // SPEC-007 §4.1 (H-30): tiles use at most half of the workers while a save writes,
-            // like export/bake.
-            let background = self.0.spectro.get().map(|s| s.begin_background_job());
-            let notices = save_to(
-                doc,
-                &self.0.engine,
-                &path,
-                container,
-                bits,
-                dither,
-                cancel,
-                &mut on_progress,
-            );
-            drop(background);
-            for notice in notices? {
-                self.push_sidecar_notice(notice);
-            }
+            let prep = prepare_save(doc, &self.0.engine, &path, container, bits, dither, false);
+            (path, container, bits, dither, prep)
+        };
+
+        // SPEC-007 §4.1 (H-30): tiles use at most half of the workers while a save writes, like
+        // export/bake.
+        let background = self.0.spectro.get().map(|s| s.begin_background_job());
+        let write_result = write_save(
+            &prep,
+            &path,
+            container,
+            bits,
+            dither,
+            cancel,
+            &mut on_progress,
+        );
+        drop(background);
+
+        let result = (|| -> Result<DocumentInfo, IpcError> {
+            let outcome = write_result?;
+            let mut guard = self.0.open.lock().unwrap();
             let doc = guard.as_mut().ok_or_else(no_document)?;
-            doc.multichannel_warned = true;
-            doc.recovered = false;
+            if doc.session.id() != prep.session_id {
+                // H-75: the document was closed or replaced while this save's write ran (no
+                // document lock was held for it). The file on disk is still correct for the
+                // snapshot that was saved — there's just no open document left to record it
+                // against.
+                return Err(no_document());
+            }
+            self.apply_save_outcome(doc, &prep, &path, container, bits, outcome)?;
             Ok(info_of(&self.0.engine, guard.as_ref()))
         })();
-        drop(guard);
         *self.0.save_running.lock().unwrap() = false;
         result
     }
@@ -2427,6 +2465,7 @@ impl DocumentService {
         confirm_clip: bool,
         confirm_multichannel: bool,
     ) -> Result<DocumentInfo, IpcError> {
+        let cancel = CancelToken::new();
         self.begin_save_as(
             path,
             container,
@@ -2434,14 +2473,18 @@ impl DocumentService {
             confirm_clip,
             confirm_multichannel,
             &vox_project::SystemFreeSpace,
+            &cancel,
+            |_| {},
         )?;
-        self.finish_save_as(path, container, bits, dither, &CancelToken::new(), |_| {})
+        self.finish_save_as(path, container, bits, dither, &cancel, |_| {})
     }
 
     /// H-70: the validating half of [`Self::save_as`] — see [`Self::begin_save`]'s doc comment;
     /// same contract, checked against the requested `path`/`container`/`bits` (an arbitrary new
     /// target a native file dialog can't guarantee is writable, and a format change can newly
     /// trip the WAV size limit — H-60's "keep `save`/`save_as` pre-flight checklists in sync").
+    /// H-75: `cancel`/`on_progress` — see [`Self::begin_save`]'s doc comment, same contract.
+    #[allow(clippy::too_many_arguments)]
     pub fn begin_save_as(
         &self,
         path: &Path,
@@ -2450,6 +2493,8 @@ impl DocumentService {
         confirm_clip: bool,
         confirm_multichannel: bool,
         free: &dyn vox_project::FreeSpaceProvider,
+        cancel: &CancelToken,
+        mut on_progress: impl FnMut(f32),
     ) -> Result<(), IpcError> {
         if container == SaveContainer::Flac && bits == BitDepth::Bit32Float {
             return Err(invalid_flac_bit_depth());
@@ -2463,7 +2508,7 @@ impl DocumentService {
         check_folder_writable(path)?;
         check_free_space(doc, bits, path, free)?;
         check_wav_size(doc, container, bits)?;
-        if !confirm_clip && let Some(overs) = check_overs(doc, bits)? {
+        if !confirm_clip && let Some(overs) = check_overs(doc, bits, cancel, &mut on_progress)? {
             return Err(clip_confirmation_error(overs));
         }
         if !confirm_multichannel && doc.source_channels > 1 && !doc.multichannel_warned {
@@ -2474,7 +2519,12 @@ impl DocumentService {
     }
 
     /// H-70: the writing half of [`Self::save_as`] — see [`Self::finish_save`]'s doc comment;
-    /// [`Self::begin_save_as`] must have succeeded first. Always clears the busy flag.
+    /// [`Self::begin_save_as`] must have succeeded first. Always clears the busy flag. H-75: same
+    /// lock-released-during-the-write shape as [`Self::finish_save`] — see its doc comment.
+    /// `force_full = true` in [`prepare_save`] (a different path, and potentially format, is
+    /// never a sidecar-only write) — previously done by bumping `doc.sidecar.last_saved_audio_rev`
+    /// back one before calling the old shared `save_to`, which needed a `doc` mutation to force
+    /// its generic "did anything change" check; the split prepare/write no longer does.
     pub fn finish_save_as(
         &self,
         path: &Path,
@@ -2486,43 +2536,103 @@ impl DocumentService {
     ) -> Result<DocumentInfo, IpcError> {
         // T-901: see `finish_save`.
         self.0.engine.rack_capture_plugin_states();
-        let mut guard = self.0.open.lock().unwrap();
+
+        let prep = {
+            let guard = self.0.open.lock().unwrap();
+            let doc = guard.as_ref().ok_or_else(no_document)?;
+            prepare_save(doc, &self.0.engine, path, container, bits, dither, true)
+        };
+
+        // SPEC-007 §4.1 (H-30): tiles use at most half of the workers while a save writes, like
+        // export/bake.
+        let background = self.0.spectro.get().map(|s| s.begin_background_job());
+        let write_result = write_save(
+            &prep,
+            path,
+            container,
+            bits,
+            dither,
+            cancel,
+            &mut on_progress,
+        );
+        drop(background);
+
         let result = (|| -> Result<DocumentInfo, IpcError> {
+            let outcome = write_result?;
+            let mut guard = self.0.open.lock().unwrap();
             let doc = guard.as_mut().ok_or_else(no_document)?;
-            // Force a full save: a different path (or, potentially, format) is never a
-            // sidecar-only write. Bumping the recorded audio_rev back one guarantees `save_to`'s
-            // "audio changed" check fires even when Save As targets the very same content just
-            // saved in place.
-            doc.sidecar.last_saved_audio_rev = doc.sidecar.last_saved_audio_rev.wrapping_sub(1);
-            // SPEC-007 §4.1 (H-30): tiles use at most half of the workers while a save writes,
-            // like export/bake.
-            let background = self.0.spectro.get().map(|s| s.begin_background_job());
-            let notices = save_to(
-                doc,
-                &self.0.engine,
-                path,
-                container,
-                bits,
-                dither,
-                cancel,
-                &mut on_progress,
-            );
-            drop(background);
-            for notice in notices? {
-                self.push_sidecar_notice(notice);
+            if doc.session.id() != prep.session_id {
+                // H-75: see `finish_save`'s doc comment.
+                return Err(no_document());
             }
-            let doc = guard.as_mut().ok_or_else(no_document)?;
+            self.apply_save_outcome(doc, &prep, path, container, bits, outcome)?;
             doc.path = Some(path.to_path_buf());
             doc.save_bits = bits;
             doc.save_container = container;
             doc.save_dither = dither;
-            doc.multichannel_warned = true;
-            doc.recovered = false;
             Ok(info_of(&self.0.engine, guard.as_ref()))
         })();
-        drop(guard);
         *self.0.save_running.lock().unwrap() = false;
         result
+    }
+
+    /// H-75: applies a finished save write's outcome to `doc` (already re-locked, and confirmed
+    /// to still be the same session `prep` was captured from) — sidecar bookkeeping, the
+    /// metadata-dropped notice (needs `doc.had_foreign_metadata`/`metadata_notice_shown`, decided
+    /// here rather than during the lock-free write since it's a once-per-document flag the
+    /// document lock must serialize), and the actual "this state is saved" record via
+    /// [`vox_project::Session::mark_saved_file_at`] at `prep.seq_at_snapshot` — never `doc.
+    /// session`'s live current seq, which may have moved on if an edit landed while the write ran.
+    /// Shared by [`Self::finish_save`]/[`Self::finish_save_as`]; the latter additionally rebinds
+    /// `doc.path`/`save_bits`/`save_container`/`save_dither` itself afterwards.
+    fn apply_save_outcome(
+        &self,
+        doc: &mut OpenDocument,
+        prep: &SavePrep,
+        path: &Path,
+        container: SaveContainer,
+        bits: BitDepth,
+        outcome: SaveWriteOutcome,
+    ) -> Result<(), IpcError> {
+        for notice in outcome.notices {
+            self.push_sidecar_notice(notice);
+        }
+        doc.sidecar.audio_crc32 = outcome.audio_crc32;
+        doc.sidecar.file_size_bytes = outcome.file_facts.map(|f| f.0).unwrap_or(0);
+        doc.sidecar.file_mtime_unix_ms = outcome.file_facts.map(|f| f.1).unwrap_or(0);
+        doc.sidecar.last_saved_audio_rev = prep.snapshot.audio_rev;
+        if outcome.sidecar_written {
+            doc.sidecar.needs_backup = false;
+            doc.sidecar.last_written_markers = prep.markers.clone();
+            doc.sidecar.persisted_digest = outcome.persisted_digest;
+        }
+        // H-20 (SPEC-005 §2.10): "the first Save over a source that had such metadata" — shown
+        // once per document, whether the audio was actually rewritten this call or not (a
+        // sidecar-only save still counts as "a Save" for this purpose).
+        if doc.had_foreign_metadata && !doc.metadata_notice_shown {
+            doc.metadata_notice_shown = true;
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            self.push_sidecar_notice(SidecarNoticeInfo {
+                key: "notice.save.metadata_dropped",
+                params: vec![("name", name)],
+            });
+        }
+        doc.session
+            .mark_saved_file_at(
+                prep.seq_at_snapshot,
+                path,
+                format_tag(container, bits),
+                Some(vox_project::sidecar::crc32_to_hex(outcome.audio_crc32)),
+                Some(outcome.sidecar_written),
+                outcome.file_facts,
+            )
+            .map_err(document_error)?;
+        doc.multichannel_warned = true;
+        doc.recovered = false;
+        Ok(())
     }
 
     /// `(audio_rev, sample_rate_hz, buckets)` for `[start, start + count)` at `spp` (S1-02
@@ -3881,54 +3991,122 @@ fn saved_file_crc32(path: &Path, container: SaveContainer) -> vox_io::Result<u32
     }
 }
 
-/// Writes the current revision to `path` (SPEC-005 §2.7, extended by SPEC-018 §2.3/§2.4/§2.8/
-/// §2.9): the audio only when [`Self`]... — see [`DocumentService::save`]'s doc comment for the
-/// "needs a full save" rule. The sidecar is always (re)written. On success, `Ok(None)`; on a
-/// sidecar-write failure *after* a successful (or skipped, unchanged) audio write, `Ok(Some(_))`
-/// with the notice the caller should surface — the save itself is not an error (SPEC-018 §2.9:
-/// "the audio save stands... `sidecar_dirty` stays set").
+/// FLAC's two supported bit depths — `save_as`/`save` refuse `Flac` + `Bit32Float` before this is
+/// ever reached (`invalid_flac_bit_depth`); 24-bit is the only other FLAC depth (SPEC-005 §2.6/
+/// §2.11).
 fn flac_bits(bits: BitDepth) -> vox_io::FlacBitDepth {
     match bits {
         BitDepth::Bit16 => vox_io::FlacBitDepth::Int16,
-        // `save_as`/`save` refuse `Flac` + `Bit32Float` before this is ever reached
-        // (`invalid_flac_bit_depth`); 24-bit is the only other FLAC depth (SPEC-005 §2.6/§2.11).
         BitDepth::Bit24 | BitDepth::Bit32Float => vox_io::FlacBitDepth::Int24,
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn save_to(
-    doc: &mut OpenDocument,
+/// H-75: everything a save's write ([`write_save`]) and its outcome ([`DocumentService::
+/// apply_save_outcome`]) need from `doc`, captured once while the document lock is held —
+/// [`DocumentService::finish_save`]/[`Self::finish_save_as`] release the lock for the write
+/// itself (SPEC-005 §2.7: "editing and playback continue"), so nothing here may be read from
+/// `doc` again until they re-lock afterwards.
+struct SavePrep {
+    /// [`vox_project::Session::id`] at prepare time — if it differs by the time the write
+    /// finishes, the document was closed or replaced mid-save (a new `document_open`); the save
+    /// still wrote a correct file, but there is no document left to record it against.
+    session_id: String,
+    store: Arc<vox_project::ChunkStore>,
+    snapshot: Arc<DocSnapshot>,
+    /// The seq [`vox_project::History::current_seq`] reported for `snapshot` (H-75): the *only*
+    /// value [`vox_project::Session::mark_saved_file_at`] may record as saved once the write
+    /// finishes. An edit committed after this was captured bumps the session's real current seq,
+    /// but its bytes are never in the file this save writes — recording anything later than this
+    /// would wrongly clear the dirty flag for that edit.
+    seq_at_snapshot: u64,
+    sample_rate_hz: u32,
+    markers: Vec<MarkerItemModel>,
+    rack: serde_json::Value,
+    view: serde_json::Value,
+    needs_backup: bool,
+    /// The previous save's fingerprint — [`write_save`]'s fallback if re-reading the just-written
+    /// file back fails (matches the pre-H-75 `save_to`'s `.unwrap_or(doc.sidecar.audio_crc32)`).
+    prior_audio_crc32: u32,
+    /// Whether this write needs to touch the audio file at all (SPEC-018 §2.3/§2.4) — decided
+    /// here, against `doc`'s sidecar bookkeeping, since that's only safe to read under the lock.
+    needs_full: bool,
+}
+
+/// Captures a [`SavePrep`] for a save that will write `path` in `container`/`bits`/`dither`.
+/// `force_full` is Save As's "a different target (or format) is never a sidecar-only write" (was
+/// previously done by bumping `doc.sidecar.last_saved_audio_rev` back one before calling the old,
+/// single-locked `save_to` — a `doc` mutation whose only job was to force this same decision).
+fn prepare_save(
+    doc: &OpenDocument,
     engine: &EngineHandle,
+    path: &Path,
+    container: SaveContainer,
+    bits: BitDepth,
+    dither: SaveDitherPref,
+    force_full: bool,
+) -> SavePrep {
+    let snapshot = doc.session.current();
+    let markers = current_marker_items(doc);
+    let needs_full = force_full
+        || snapshot.audio_rev != doc.sidecar.last_saved_audio_rev
+        || markers != doc.sidecar.last_written_markers
+        || bits != doc.save_bits
+        || container != doc.save_container
+        || dither != doc.save_dither
+        || std::fs::metadata(path).is_err();
+    SavePrep {
+        session_id: doc.session.id().to_string(),
+        store: Arc::clone(doc.session.store()),
+        seq_at_snapshot: doc.session.history().current_seq(),
+        sample_rate_hz: doc.session.sample_rate_hz(),
+        rack: current_rack_value(engine),
+        view: doc.sidecar.view.clone(),
+        needs_backup: doc.sidecar.needs_backup,
+        prior_audio_crc32: doc.sidecar.audio_crc32,
+        needs_full,
+        markers,
+        snapshot,
+    }
+}
+
+/// H-75: a finished save write's outcome — everything [`DocumentService::apply_save_outcome`]
+/// needs to update `doc` and the session's saved-seq bookkeeping once it has re-locked.
+struct SaveWriteOutcome {
+    audio_crc32: u32,
+    /// `(size, mtime_unix_ms)` of the file on disk after the write, `None` if it couldn't be
+    /// stat'd (mirrors the pre-H-75 `save_to`'s `file_meta`-derived `written_facts`).
+    file_facts: Option<(u64, u64)>,
+    sidecar_written: bool,
+    /// Only meaningful when `sidecar_written`.
+    persisted_digest: u32,
+    notices: Vec<SidecarNoticeInfo>,
+}
+
+/// Runs a save's write against `prep` (SPEC-005 §2.7, extended by SPEC-018 §2.3/§2.4/§2.8/§2.9):
+/// the audio only when `prep.needs_full`, the sidecar always. H-75: no `OpenDocument`/document
+/// lock access at all — everything needed was captured by [`prepare_save`] while the lock was
+/// held, and the document may be edited (or closed) by another command while this runs.
+#[allow(clippy::too_many_arguments)]
+fn write_save(
+    prep: &SavePrep,
     path: &Path,
     container: SaveContainer,
     bits: BitDepth,
     dither: SaveDitherPref,
     cancel: &CancelToken,
     on_progress: &mut dyn FnMut(f32),
-) -> Result<Vec<SidecarNoticeInfo>, IpcError> {
-    let snapshot = doc.session.current();
+) -> Result<SaveWriteOutcome, IpcError> {
     let save_format = save_format_model(container, bits, dither);
-    let markers = current_marker_items(doc);
-    let rack = current_rack_value(engine);
-
-    let needs_full = snapshot.audio_rev != doc.sidecar.last_saved_audio_rev
-        || markers != doc.sidecar.last_written_markers
-        || bits != doc.save_bits
-        || container != doc.save_container
-        || dither != doc.save_dither
-        || std::fs::metadata(path).is_err();
 
     // SPEC-004 §2.6, AC-12: leftovers of an interrupted save by a dead process go first.
     if let Some(parent) = path.parent() {
         vox_project::gc::remove_stale_temp_files(parent);
     }
-    if needs_full {
-        let mut reader =
-            SnapshotReader::new(Arc::clone(doc.session.store()), Arc::clone(&snapshot));
+    if prep.needs_full {
+        let mut reader = SnapshotReader::new(Arc::clone(&prep.store), Arc::clone(&prep.snapshot));
         match container {
             SaveContainer::Wav => {
-                let wav_markers: Vec<Marker> = markers.iter().map(marker_from_item).collect();
+                let wav_markers: Vec<Marker> = prep.markers.iter().map(marker_from_item).collect();
                 vox_project::save_snapshot_wav(
                     &mut reader,
                     path,
@@ -3936,7 +4114,7 @@ fn save_to(
                     dither.into(),
                     &wav_markers,
                     cancel,
-                    &mut *on_progress,
+                    on_progress,
                 )
                 .map_err(|err| match err {
                     ProjectError::Wav(io_err) => io_save_error(io_err),
@@ -3950,7 +4128,7 @@ fn save_to(
                     flac_bits(bits),
                     dither.into(),
                     cancel,
-                    &mut *on_progress,
+                    on_progress,
                 )
                 .map_err(|err| match err {
                     ProjectError::Wav(io_err) => io_save_error(io_err),
@@ -3965,13 +4143,13 @@ fn save_to(
     }
 
     // T-209: SPEC-005 §2.9's "other containers" — FLAC carries no markers.
-    let markers_not_in_flac = container == SaveContainer::Flac && !markers.is_empty();
+    let markers_not_in_flac = container == SaveContainer::Flac && !prep.markers.is_empty();
 
     // Re-reads the just-written file rather than hashing the in-memory snapshot: 16/24-bit
     // targets (WAV or FLAC) are TPDF-dithered, so the bytes on disk are not bit-identical to the
     // pre-quantization f32 samples — the sidecar's fingerprint (SPEC-018 §4.2) must match what a
     // later open would decode, or every 16/24-bit save would wrongly look "changed" at reopen.
-    let audio_crc32 = saved_file_crc32(path, container).unwrap_or(doc.sidecar.audio_crc32);
+    let audio_crc32 = saved_file_crc32(path, container).unwrap_or(prep.prior_audio_crc32);
     let file_meta = std::fs::metadata(path).ok();
     let write_input = vox_project::WriteInput {
         file_name: path
@@ -3984,45 +4162,18 @@ fn save_to(
             .and_then(|m| m.modified().ok())
             .map(vox_project::sidecar::system_time_to_rfc3339)
             .unwrap_or_default(),
-        sample_rate_hz: doc.session.sample_rate_hz(),
-        len_samples: snapshot.len_samples,
+        sample_rate_hz: prep.sample_rate_hz,
+        len_samples: prep.snapshot.len_samples,
         audio_crc32,
         save_format: save_format.clone(),
-        markers: &markers,
-        rack: rack.clone(),
-        view: doc.sidecar.view.clone(),
+        markers: &prep.markers,
+        rack: prep.rack.clone(),
+        view: prep.view.clone(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         written_at: vox_project::sidecar::system_time_to_rfc3339(std::time::SystemTime::now()),
     };
     let sidecar_path = sidecar_path_for(path);
-    let sidecar_written =
-        write_sidecar(&sidecar_path, &write_input, doc.sidecar.needs_backup).is_ok();
-
-    // Journal `saved` regardless of the sidecar outcome (SPEC-018 §2.9): the audio save (or the
-    // decision to keep its bytes) stands either way.
-    // T-301: the file's size/mtime too, so crash recovery can tell a later change on disk from
-    // this save (SPEC-004 §2.7).
-    let written_facts = file_meta
-        .as_ref()
-        .map(|m| (m.len(), m.modified().map(unix_ms_of).unwrap_or(0)));
-    doc.session
-        .mark_saved_file(
-            path,
-            format_tag(container, bits),
-            Some(vox_project::sidecar::crc32_to_hex(audio_crc32)),
-            Some(sidecar_written),
-            written_facts,
-        )
-        .map_err(document_error)?;
-
-    doc.sidecar.audio_crc32 = audio_crc32;
-    doc.sidecar.file_size_bytes = file_meta.as_ref().map(std::fs::Metadata::len).unwrap_or(0);
-    doc.sidecar.file_mtime_unix_ms = file_meta
-        .as_ref()
-        .and_then(|m| m.modified().ok())
-        .map(unix_ms_of)
-        .unwrap_or(0);
-    doc.sidecar.last_saved_audio_rev = snapshot.audio_rev;
+    let sidecar_written = write_sidecar(&sidecar_path, &write_input, prep.needs_backup).is_ok();
 
     let name = || {
         path.file_name()
@@ -4030,23 +4181,22 @@ fn save_to(
             .unwrap_or_default()
     };
     let mut notices = Vec::new();
+    let mut persisted_digest = 0;
     if sidecar_written {
-        doc.sidecar.needs_backup = false;
-        doc.sidecar.last_written_markers = markers.clone();
-        doc.sidecar.persisted_digest =
-            vox_project::sidecar::persisted_digest(&save_format, &markers, &rack);
+        persisted_digest =
+            vox_project::sidecar::persisted_digest(&save_format, &prep.markers, &prep.rack);
         // T-209 (SPEC-005 §2.9): only shown when the sidecar write itself succeeded — a failed
         // sidecar write already has a more urgent notice below, and the sidecar (M3+) is where
         // markers actually survive a FLAC save, so that notice matters more when it's missing too.
         if markers_not_in_flac {
             notices.push(SidecarNoticeInfo {
                 key: "notice.save.markers_not_in_flac",
-                params: vec![("name", name()), ("count", markers.len().to_string())],
+                params: vec![("name", name()), ("count", prep.markers.len().to_string())],
             });
         }
     } else {
-        // `sidecar.persisted_digest`/`needs_backup` are left untouched: `sidecar_dirty` stays
-        // set, and the next Save retries a sidecar-only write (SPEC-018 §2.9).
+        // `sidecar.persisted_digest`/`needs_backup` are left untouched (by the caller): `
+        // sidecar_dirty` stays set, and the next Save retries a sidecar-only write (SPEC-018 §2.9).
         let key = if save_format.container == "flac" {
             "notice.save.sidecar_failed.flac"
         } else {
@@ -4057,17 +4207,21 @@ fn save_to(
             params: vec![("name", name())],
         });
     }
-    // H-20 (SPEC-005 §2.10): "the first Save over a source that had such metadata" — shown once
-    // per document, whether the audio was actually rewritten this call or not (a sidecar-only
-    // save still counts as "a Save" for this purpose).
-    if doc.had_foreign_metadata && !doc.metadata_notice_shown {
-        doc.metadata_notice_shown = true;
-        notices.push(SidecarNoticeInfo {
-            key: "notice.save.metadata_dropped",
-            params: vec![("name", name())],
-        });
-    }
-    Ok(notices)
+
+    // Journal `saved` regardless of the sidecar outcome (SPEC-018 §2.9): the audio save (or the
+    // decision to keep its bytes) stands either way. T-301: the file's size/mtime too, so crash
+    // recovery can tell a later change on disk from this save (SPEC-004 §2.7).
+    let file_facts = file_meta
+        .as_ref()
+        .map(|m| (m.len(), m.modified().map(unix_ms_of).unwrap_or(0)));
+
+    Ok(SaveWriteOutcome {
+        audio_crc32,
+        file_facts,
+        sidecar_written,
+        persisted_digest,
+        notices,
+    })
 }
 
 #[cfg(test)]
@@ -8122,7 +8276,9 @@ mod tests {
         open_sine(&service, &dir);
 
         let tiny = vox_project::FixedFreeSpace::new(1024);
-        let err = service.begin_save(false, false, false, &tiny).unwrap_err();
+        let err = service
+            .begin_save(false, false, false, &tiny, &CancelToken::new(), |_| {})
+            .unwrap_err();
         assert_eq!(err.code, IpcErrorCode::Io);
         assert_eq!(err.key, "error.save.disk_full");
         assert!(
@@ -8131,7 +8287,9 @@ mod tests {
         );
 
         let plenty = vox_project::FixedFreeSpace::new(1024 * 1024 * 1024);
-        service.begin_save(false, false, false, &plenty).unwrap();
+        service
+            .begin_save(false, false, false, &plenty, &CancelToken::new(), |_| {})
+            .unwrap();
         assert!(service.is_save_running(), "begin_save set the busy flag");
         service.finish_save(&CancelToken::new(), |_| {}).unwrap();
         assert!(!service.is_save_running(), "finish_save cleared it");
@@ -8146,6 +8304,8 @@ mod tests {
                 false,
                 false,
                 &tiny,
+                &CancelToken::new(),
+                |_| {},
             )
             .unwrap_err();
         assert_eq!(err.key, "error.save.disk_full");
@@ -8159,6 +8319,8 @@ mod tests {
                 false,
                 false,
                 &plenty,
+                &CancelToken::new(),
+                |_| {},
             )
             .unwrap();
         service
@@ -8202,6 +8364,8 @@ mod tests {
                 false,
                 false,
                 &vox_project::SystemFreeSpace,
+                &CancelToken::new(),
+                |_| {},
             )
             .unwrap();
         let mut progress = Vec::new();
@@ -8249,6 +8413,8 @@ mod tests {
                 false,
                 false,
                 &vox_project::SystemFreeSpace,
+                &CancelToken::new(),
+                |_| {},
             )
             .unwrap();
         let cancel = CancelToken::new();
@@ -8269,6 +8435,161 @@ mod tests {
             !service.is_save_running(),
             "finish_save_as always clears the busy flag"
         );
+    }
+
+    /// H-75 (SPEC-005 §2.8): the overs pre-flight's exact counting pass (only run once the peak
+    /// pyramid shows a peak `> 1.0`) uses the *real* cancel token `begin_save_as` was given, not
+    /// a throwaway one — cancelling mid-scan (from inside `on_progress`) stops it with
+    /// `Cancelled`, never reaches the clip confirmation, and never sets the busy flag or writes
+    /// anything.
+    #[test]
+    fn begin_save_as_overs_pre_flight_is_cancellable_mid_scan() {
+        let (service, _engine, dir) = service("save-overs-cancel");
+        let mut samples = vec![0.0f32; vox_project::CHUNK_SAMPLES * 4];
+        samples[0] = 1.5; // above 0 dBFS: forces the exact pass past the pyramid check
+        let wav_path = dir.join("in.wav");
+        write_fixture_wav(
+            &wav_path,
+            &samples,
+            vox_testkit::wav::BitDepth::Float32,
+            48_000,
+        );
+        service.open(&wav_path, false).unwrap();
+
+        let out_path = dir.join("out.wav");
+        let cancel = CancelToken::new();
+        let mut progress = Vec::new();
+        let err = service
+            .begin_save_as(
+                &out_path,
+                SaveContainer::Wav,
+                BitDepth::Bit24,
+                false,
+                false,
+                &vox_project::SystemFreeSpace,
+                &cancel,
+                |fraction| {
+                    progress.push(fraction);
+                    if progress.len() == 1 {
+                        cancel.cancel();
+                    }
+                },
+            )
+            .unwrap_err();
+        assert_eq!(err.code, IpcErrorCode::Cancelled);
+        assert!(
+            progress.len() < 4,
+            "cancelling after the first report must stop the scan early, got {progress:?}"
+        );
+        assert!(
+            !service.is_save_running(),
+            "a cancelled pre-flight never sets the busy flag"
+        );
+        assert!(!out_path.exists(), "no file was written");
+    }
+
+    /// H-75 (SPEC-005 §2.7): "editing and playback continue" while a save writes. The document
+    /// lock is released for the write itself, so an edit committed from `on_progress` — running
+    /// on this same thread, mid-write, exactly like `finish_save_as`'s real caller would see a
+    /// concurrent edit land — must leave the document dirty, must never appear in the file this
+    /// save writes (it's already reading the pre-edit snapshot), and must leave undo history
+    /// intact. Save As (rather than plain Save) guarantees a multi-block *full* write to exercise
+    /// regardless of the fixture's dirty state (mirrors `finish_save_as_reports_progress_from_
+    /// zero_to_one`'s fixture); the target format stays 32-bit float so the comparison below is
+    /// bit-exact (no TPDF dither to account for).
+    #[test]
+    fn an_edit_during_the_write_leaves_the_document_dirty_and_the_file_matches_the_pre_edit_snapshot()
+     {
+        let (service, _engine, dir) = service("save-concurrent-edit");
+        let samples = vox_testkit::signal::sine(440.0, -6.0, 5.0, 48_000).unwrap();
+        assert!(samples.len() > vox_project::CHUNK_SAMPLES * 3);
+        let wav_path = dir.join("in.wav");
+        write_fixture_wav(
+            &wav_path,
+            &samples,
+            vox_testkit::wav::BitDepth::Float32,
+            48_000,
+        );
+        service.open(&wav_path, false).unwrap();
+        assert!(!service.info().dirty);
+
+        let out_path = dir.join("out.wav");
+        let cancel = CancelToken::new();
+        service
+            .begin_save_as(
+                &out_path,
+                SaveContainer::Wav,
+                BitDepth::Bit32Float,
+                false,
+                false,
+                &vox_project::SystemFreeSpace,
+                &cancel,
+                |_| {},
+            )
+            .unwrap();
+
+        let mut edited = false;
+        let mut progress_after_edit = Vec::new();
+        let info = service
+            .finish_save_as(
+                &out_path,
+                SaveContainer::Wav,
+                BitDepth::Bit32Float,
+                SaveDitherPref::Tpdf,
+                &cancel,
+                |fraction| {
+                    if !edited {
+                        edited = true;
+                        // H-75: the document lock is not held here (`finish_save_as` released it
+                        // before calling into the write) — this is a normal, successful edit, not
+                        // a race.
+                        service.edit_delete(0, 1_000).unwrap();
+                    } else {
+                        progress_after_edit.push(fraction);
+                    }
+                },
+            )
+            .unwrap();
+        assert!(
+            edited,
+            "on_progress never fired — the fixture isn't long enough to exercise this"
+        );
+        assert!(
+            !progress_after_edit.is_empty(),
+            "the write must keep running (and reporting progress) after the edit landed"
+        );
+
+        // The edit landed normally: the document is dirty and shorter than what was saved.
+        assert!(
+            info.dirty,
+            "an edit that lands mid-write must leave the document dirty (H-75)"
+        );
+        assert_eq!(info.len_samples, samples.len() as u64 - 1_000);
+
+        // The file on disk matches the snapshot as it was when the save started — the deleted
+        // samples are still in it, bit-exact (32-bit float never dithers).
+        let (_, _, mut source) = vox_io::read_wav(&out_path).unwrap();
+        let mut on_disk = vec![0.0f32; samples.len() + 1];
+        let n = source.read_mono(&mut on_disk).unwrap();
+        assert_eq!(
+            n,
+            samples.len(),
+            "the saved file must have the pre-edit length"
+        );
+        assert_eq!(
+            &on_disk[..n],
+            &samples[..],
+            "the saved file must match the pre-edit snapshot exactly, not the edited document"
+        );
+
+        // Undo history is intact: undoing the mid-write edit returns to the saved, clean state.
+        service.history_undo().unwrap();
+        let after_undo = service.info();
+        assert!(
+            !after_undo.dirty,
+            "undoing the mid-write edit returns to exactly the saved state"
+        );
+        assert_eq!(after_undo.len_samples, samples.len() as u64);
     }
 
     // --- T-301: crash recovery, session cleanup, memory budget, state journaling -------------

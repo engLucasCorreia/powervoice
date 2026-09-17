@@ -134,6 +134,13 @@ pub enum RackCommand {
     },
     /// Closes every plugin window (T-901: document close).
     CloseAllEditors,
+    /// Clears slot `index`'s noise print (H-85, SPEC-014 §2.3 "Clear noise print"): the module
+    /// keeps its parameters but drops the blob, so the replacement instance passes audio
+    /// unchanged. Not undoable; no confirmation (SPEC-004 table).
+    ClearNoisePrint {
+        /// Slot index.
+        index: usize,
+    },
 }
 
 /// One slot's schema/status plus its current mirrored values (index-aligned with
@@ -223,6 +230,21 @@ pub struct ResponseCurvePoints {
     /// One row per component (band), in the module's `handles()` order; empty when the module
     /// reports zero components.
     pub components_db: Vec<Vec<f64>>,
+}
+
+/// What [`crate::EngineHandle::noise_profile_curve`] returns (H-85, SPEC-014 §2.8 item 2,
+/// §4.10): slot `index`'s `NoiseProfile::describe()` points, on the SPEC-007 analyzer's band
+/// centres, evaluated from the slot's **committed** blob (not the parameter mirror — the print
+/// is independent of the module's parameters, §2.4). Empty (both vectors) when the slot has no
+/// blob, or when the stored one fails validation (§2.5) — the graph draws nothing either way;
+/// the panel's status line already carries the reason.
+#[derive(Clone, Debug, Default)]
+pub struct NoiseProfileCurvePoints {
+    /// Band-centre frequencies (Hz), `f_k = 20·2^(k/24)` up to `min(fs_c/2, 24 kHz)`.
+    pub freqs_hz: Vec<f64>,
+    /// The print's level at each band (dBFS, the analyzer's convention); same length as
+    /// `freqs_hz`.
+    pub levels_dbfs: Vec<f64>,
 }
 
 /// One draggable threshold handle of a [`TransferCurvePoints`] (SPEC-016 §4.11/§4.12), already

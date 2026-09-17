@@ -51,9 +51,9 @@ use crate::monitor::{
 use crate::output::{OutputCb, OutputParts, PartsSlot, take_parts};
 use crate::prefs::DevicePrefs;
 use crate::rack_api::{
-    MAX_RESPONSE_CURVE_POINTS, MAX_TRANSFER_CURVE_POINTS, NOISE_REDUCTION_MODULE_ID, NrCapturePrep,
-    RackApiError, RackCommand, RackSnapshot, ResponseCurvePoints, TransferCurveHandle,
-    TransferCurvePoints,
+    MAX_RESPONSE_CURVE_POINTS, MAX_TRANSFER_CURVE_POINTS, NOISE_REDUCTION_MODULE_ID,
+    NoiseProfileCurvePoints, NrCapturePrep, RackApiError, RackCommand, RackSnapshot,
+    ResponseCurvePoints, TransferCurveHandle, TransferCurvePoints,
 };
 use crate::reader::{self, Reader, ReaderCmd};
 use crate::record::{
@@ -955,6 +955,7 @@ impl Control {
                     host.close_all_editors();
                     Ok(())
                 }
+                RackCommand::ClearNoisePrint { index } => host.clear_noise_print(index),
             };
             (result, host.take_notices())
         };
@@ -1266,6 +1267,43 @@ impl Control {
             falling_db,
             components_db,
             handles,
+        })
+    }
+
+    /// The NR profile graph's noise-print curve (H-85, SPEC-014 §2.8 item 2, §4.10): slot
+    /// `index`'s `NoiseProfile::describe()` points from its **committed** blob (`slot_state`,
+    /// not the parameter mirror — the print is independent of the module's parameters). Empty
+    /// (not an error) with no blob, or one that fails validation; the panel's status line
+    /// already reports why. Read-only: never touches the audio thread.
+    pub(crate) fn noise_profile_curve(
+        &self,
+        index: usize,
+    ) -> Result<NoiseProfileCurvePoints, RackApiError> {
+        let Some(out) = self.output.as_ref() else {
+            return Err(RackApiError::Unavailable);
+        };
+        let host = &out.rack;
+        let ext = host
+            .noise_profile_extension(index)
+            .ok_or(RackApiError::NoExtension)?;
+        let state = host
+            .slot_state(index)
+            .map_err(|e| RackApiError::Rack(e.to_string()))?;
+        let mut points = Vec::new();
+        if let Some(blob) = state.blob.as_deref()
+            && ext.describe(blob, &mut points).is_err()
+        {
+            points.clear();
+        }
+        let mut freqs_hz = Vec::with_capacity(points.len());
+        let mut levels_dbfs = Vec::with_capacity(points.len());
+        for (f, l) in points {
+            freqs_hz.push(f64::from(f));
+            levels_dbfs.push(f64::from(l));
+        }
+        Ok(NoiseProfileCurvePoints {
+            freqs_hz,
+            levels_dbfs,
         })
     }
 

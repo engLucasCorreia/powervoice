@@ -6,7 +6,7 @@ import { noticeFromIpcError } from "../notices/fromIpcError";
 import { pushNotice } from "../state/notices.svelte";
 import { recordState } from "../state/record.svelte";
 import { hasSelection, selectionState } from "../state/selection.svelte";
-import { lastFocusedSlotIndex } from "./rack.svelte";
+import { addModule, lastFocusedSlotIndex, rackState, requestSlotFocus } from "./rack.svelte";
 
 /**
  * Capture Noise Print (S3-06, SPEC-014 §2.3): Shift+P and the NR slot panel's Capture button.
@@ -110,11 +110,54 @@ export function cancelCapture(): void {
   }
 }
 
-/** Wires the Shift+P keymap action. Returns the teardown. */
+/** SPEC-014 §2.3: mirrors `vox_engine::NOISE_REDUCTION_MODULE_ID` — `RackSlot.svelte`'s
+ * `DYNAMICS_MODULE_ID` sets the precedent for repeating a module id client-side rather than
+ * reaching into the Rust crate. */
+const NOISE_REDUCTION_MODULE_ID = "org.powervoice.noise-reduction";
+
+/**
+ * Ctrl+Shift+P (SPEC-014 §2.3 "Decided"): shows the Noise Reduction panel — the last-focused NR
+ * slot, else the first one in the rack, else a newly inserted one — expanding it and scrolling
+ * it into view (`RackSlot.svelte`'s `slotFocusRequestState` effect). Unlike Shift+P this never
+ * starts a capture.
+ */
+export async function showNoiseReductionPanel(): Promise<void> {
+  const slots = rackState().state.slots;
+  const hint = lastFocusedSlotIndex();
+  let index = hint !== null && slots[hint]?.noise_profile !== null ? hint : -1;
+  if (index < 0) {
+    index = slots.findIndex((s) => s.noise_profile !== null);
+  }
+  if (index < 0) {
+    // SPEC-014 §2.3 item 3: inserted as the first slot; `addModule` reports a failure itself
+    // (e.g. no live rack yet), so there's nothing further to focus.
+    const before = rackState().state.slots.length;
+    await addModule(NOISE_REDUCTION_MODULE_ID, 0);
+    if (rackState().state.slots.length <= before) {
+      return;
+    }
+    index = 0;
+    pushNotice({
+      level: "info",
+      key: "notice.nr_capture.slot_added",
+      params: {},
+      persistent: false,
+      id: null,
+      cleared: false,
+      auto_dismiss_ms: null,
+      action: null,
+    });
+  }
+  requestSlotFocus(index);
+}
+
+/** Wires the Shift+P/Ctrl+Shift+P keymap actions. Returns the teardown. */
 export function initNrCapture(): () => void {
   const unregister = registerAction("nr.capture_noise_print", () => void startCapture(null));
+  const unregisterShow = registerAction("nr.show_panel", () => void showNoiseReductionPanel());
   return () => {
     unregister();
+    unregisterShow();
     unlistenProgress?.();
     unlistenProgress = null;
   };

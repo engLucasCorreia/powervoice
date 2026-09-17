@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { Button, Icon, IconButton, Menu } from "../ui";
   import type { MenuEntry } from "../ui/menuModel";
   import DynamicsPanel from "../dynamics/DynamicsPanel.svelte";
@@ -7,13 +8,16 @@
   import { t } from "../i18n";
   import type { ParamInfoDto, PresetEntryDto, RackSlotDto } from "../ipc/bindings";
   import { localized } from "./localized";
+  import NoiseProfileGraph from "./NoiseProfileGraph.svelte";
   import NoiseReductionSection from "./NoiseReductionSection.svelte";
   import { openPluginManager, pluginCrashCount } from "../plugins/plugins.svelte";
   import ParamGroupSection from "./ParamGroupSection.svelte";
   import TelemetryWidget from "./TelemetryWidget.svelte";
   import { openManagePresets } from "./managePresets.svelte";
   import {
+    clearNoisePrint,
     closePluginWindow,
+    clearSlotFocusRequest,
     deleteModulePreset,
     listModulePresets,
     loadModulePreset,
@@ -24,6 +28,7 @@
     restartSlot,
     saveModulePreset,
     setBypass,
+    slotFocusRequestState,
     slotTelemetry,
     trySaveModulePreset,
   } from "./rack.svelte";
@@ -60,6 +65,19 @@
   let collapsed = $state(false);
   let menuOpen = $state(false);
   let menuTrigger: HTMLButtonElement | undefined = $state();
+  let sectionEl: HTMLElement | undefined = $state();
+
+  // H-85 (SPEC-014 §2.3 "Ctrl+Shift+P shows the Noise Reduction panel"): a request naming this
+  // slot's own index expands it (if collapsed) and scrolls it into view.
+  $effect(() => {
+    const request = slotFocusRequestState();
+    if (!request || request.index !== index) {
+      return;
+    }
+    collapsed = false;
+    clearSlotFocusRequest();
+    void tick().then(() => sectionEl?.scrollIntoView({ behavior: "smooth", block: "nearest" }));
+  });
 
   // T-802: a sandboxed plugin's status (Running / Restarting / Plugin failed), or "Not installed"
   // for a slot whose module isn't registered. In-process modules show no badge while active.
@@ -307,6 +325,19 @@
         },
       );
     }
+    if (slot.noise_profile !== null) {
+      list.push({
+        kind: "item",
+        id: "clear-noise-print",
+        label: t("rack.slot.menu.clear_noise_print"),
+        title: t("rack.slot.menu.clear_noise_print.hint"),
+        testid: "rack-slot-clear-noise-print",
+        // SPEC-014 §2.3 "Clear noise print": no confirmation dialog (the spec rules one out) —
+        // the item's own tooltip says it isn't undoable instead. The status line (below, via
+        // `noise_profile`) reflects the drop immediately, so no separate toast either.
+        onselect: () => void clearNoisePrint(index),
+      });
+    }
     return list;
   });
 
@@ -414,6 +445,7 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <section
+  bind:this={sectionEl}
   class="slot"
   class:drag-over={dragOver}
   class:bypassed={slot.bypass}
@@ -546,6 +578,7 @@
         {/if}
         {#if slot.noise_profile !== null}
           <NoiseReductionSection slotIndex={index} status={slot.noise_profile} />
+          <NoiseProfileGraph slotIndex={index} rackSlot={slot} status={slot.noise_profile} />
         {/if}
         {#if ungrouped.length > 0}
           <ParamGroupSection slotIndex={index} rackSlot={slot} group={null} {groupsByKey} params={ungrouped} />

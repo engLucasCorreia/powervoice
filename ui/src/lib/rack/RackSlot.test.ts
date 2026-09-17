@@ -10,7 +10,7 @@ import type {
 } from "../ipc/bindings";
 import { VXMT_FIXTURE_HEX } from "../ipc/vxmt_fixture";
 import { rackSlotDto, rackStateDto } from "../test/fixtures";
-import { onModuleTelemetry, resetRackForTest } from "./rack.svelte";
+import { onModuleTelemetry, requestSlotFocus, resetRackForTest } from "./rack.svelte";
 import RackSlot from "./RackSlot.svelte";
 
 /**
@@ -447,5 +447,109 @@ describe("loading slot (T-803)", () => {
     } finally {
       teardown();
     }
+  });
+});
+
+// H-85 (SPEC-014 §2.3 "Clear noise print"): slot-menu item, only for a module exposing
+// `NoiseProfile`, with no confirmation dialog — the spec rules one out — so the tooltip carries
+// "not undoable" instead.
+describe("Clear Noise Print menu item (H-85)", () => {
+  function renderWithCommands(slot: RackSlotDto, onCommand: (cmd: string, args: unknown) => unknown) {
+    mockIPC((cmd, args) => {
+      if (cmd === "rack_get") {
+        return rackStateDto();
+      }
+      return onCommand(cmd, args);
+    });
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(RackSlot, {
+      target,
+      props: {
+        slot,
+        index: 1,
+        rateHz: 48_000,
+        dragOver: false,
+        ondragstart: () => {},
+        ondragover: () => {},
+        ondrop: () => {},
+        ondragend: () => {},
+      },
+    });
+    flushSync();
+    return { target, teardown: () => unmount(app) };
+  }
+
+  it("is absent for a slot with no NoiseProfile extension", () => {
+    const { target, teardown } = render(slotFixture());
+    target.querySelector<HTMLButtonElement>('[data-testid="rack-slot-menu"]')!.click();
+    flushSync();
+    expect(target.querySelector('[data-testid="rack-slot-clear-noise-print"]')).toBeNull();
+    teardown();
+  });
+
+  it("sends rack_clear_noise_print for this slot, with a tooltip that says it isn't undoable", async () => {
+    const calls: Array<[string, unknown]> = [];
+    const slot: RackSlotDto = { ...slotFixture(), noise_profile: "loaded" };
+    const { target, teardown } = renderWithCommands(slot, (cmd, args) => {
+      // The NR profile graph (H-85) also mounts and issues its own `noise_profile_curve` /
+      // `analyzer_subscribe` calls — irrelevant to this test, so only the menu command is kept.
+      if (cmd === "rack_clear_noise_print") {
+        calls.push([cmd, args]);
+        return rackStateDto();
+      }
+      if (cmd === "noise_profile_curve") {
+        return { freqs_hz: [], levels_dbfs: [] };
+      }
+      if (cmd === "analyzer_subscribe") {
+        throw new Error("no real Tauri window");
+      }
+      throw new Error(`unexpected command ${cmd}`);
+    });
+    target.querySelector<HTMLButtonElement>('[data-testid="rack-slot-menu"]')!.click();
+    flushSync();
+    const item = target.querySelector<HTMLElement>('[data-testid="rack-slot-clear-noise-print"]')!;
+    expect(item.title.toLowerCase()).toContain("not undoable");
+    item.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toEqual([["rack_clear_noise_print", { slot: 1 }]]);
+    teardown();
+  });
+});
+
+// H-85 (SPEC-014 §2.3 "Ctrl+Shift+P shows the Noise Reduction panel"): a focus request for this
+// slot's own index expands it and scrolls it into view.
+describe("slot-focus request (H-85, Ctrl+Shift+P)", () => {
+  it("expands a collapsed slot and scrolls it into view when the request names its index", async () => {
+    const { target, teardown } = render(slotFixture());
+    const section = target.querySelector<HTMLElement>('[data-testid="rack-slot"]')!;
+    // Collapse it first, mirroring a user who collapsed it earlier.
+    target.querySelector<HTMLButtonElement>('[aria-label="Collapse"]')!.click();
+    flushSync();
+    expect(target.querySelector(".body")).toBeNull();
+
+    let scrolled = false;
+    section.scrollIntoView = () => {
+      scrolled = true;
+    };
+    requestSlotFocus(0);
+    flushSync();
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+    expect(target.querySelector(".body")).not.toBeNull();
+    expect(scrolled).toBe(true);
+    teardown();
+  });
+
+  it("ignores a request for a different slot index", () => {
+    const { target, teardown } = render(slotFixture());
+    target.querySelector<HTMLButtonElement>('[aria-label="Collapse"]')!.click();
+    flushSync();
+    expect(target.querySelector(".body")).toBeNull();
+    requestSlotFocus(7); // this instance is index 0
+    flushSync();
+    expect(target.querySelector(".body")).toBeNull();
+    teardown();
   });
 });

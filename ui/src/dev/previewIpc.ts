@@ -55,6 +55,7 @@ import type {
   IpcError,
   MarkerDto,
   ModuleDescriptorDto,
+  NoiseProfileCurveDto,
   ParamInfoDto,
   ParamValueDto,
   PluginEntryDto,
@@ -642,6 +643,39 @@ function rackFixture(withPlugin: boolean): RackStateDto {
       ],
     },
   );
+  // H-85 (SPEC-014 §2.8): a captured print, so the profile graph and Clear Noise Print have
+  // something to show in a screenshot.
+  const pct = { kind: "percent" } as UnitDto;
+  const noiseOnly: { info: ParamInfoDto; value: ParamValueDto } = {
+    info: {
+      id: 2,
+      key: "noise_only",
+      name: text("Output noise only"),
+      group: null,
+      unit: none,
+      min: 0,
+      max: 1,
+      default: 0,
+      taper: { kind: "linear" },
+      step: null,
+      enum_labels: [],
+      decimals: 0,
+      smoothing_ms: 20,
+      flags: { ...FLAGS, boolean: true },
+    },
+    value: { id: 2, value: 0, normalized: 0, text: "off" },
+  };
+  const nr = slot(
+    6,
+    "org.powervoice.noise-reduction",
+    "Noise Reduction",
+    [
+      param(0, "reduction_db", "Reduce by", db, 0, 40, 12, 1),
+      param(1, "amount_pct", "Noise reduction", pct, 0, 100, 100, 0),
+      noiseOnly,
+    ],
+    { noise_profile: "loaded", latency_samples: 96 },
+  );
   const limiter = slot(4, "org.powervoice.true-peak-limiter", "True-peak limiter", [
     param(0, "ceiling_dbtp", "Ceiling", { kind: "dbtp" }, -12, 0, -3, 1),
     param(1, "release_ms", "Release", ms, 1, 500, 50, 0, true),
@@ -651,7 +685,7 @@ function rackFixture(withPlugin: boolean): RackStateDto {
     param(0, "p0", "Reduction", db, -30, 0, -12, 1),
     param(1, "p1", "Sensitivity", none, 0, 100, 60, 0),
   ], { sandboxed: true, has_editor: true, latency_samples: 256 });
-  const slots = withPlugin ? [eq, gate, comp, limiter, breath] : [eq, gate, comp, limiter];
+  const slots = withPlugin ? [eq, gate, nr, comp, limiter, breath] : [eq, gate, nr, comp, limiter];
   return rackStateDto(slots, false, withPlugin ? 320 : 64);
 }
 
@@ -761,6 +795,22 @@ function responseCurve(points: number[]): ResponseCurveDto {
     total_db: points.map((_, i) => components.reduce((sum, c) => sum + c[i]!, 0)),
     components_db: components,
   };
+}
+
+/** H-85 (SPEC-014 §2.8 item 2, §4.10): a plausible captured room-tone print — pink-ish, rolling
+ * off toward the top octaves like real HVAC/room noise — on the SPEC-007 analyzer's own band
+ * ladder (`f_k = 20·2^(k/24)`), so the preview graph looks like a real capture. */
+function noiseProfileCurve(): NoiseProfileCurveDto {
+  const freqs_hz: number[] = [];
+  const levels_dbfs: number[] = [];
+  for (let k = 0; 20 * 2 ** (k / 24) <= Math.min(24_000, PREVIEW_RATE_HZ / 2); k++) {
+    const f = 20 * 2 ** (k / 24);
+    // -42 dBFS at 100 Hz, sloping down ~4.5 dB/octave, with a little ripple for realism.
+    const level = -42 - 4.5 * Math.log2(f / 100) + 1.5 * Math.sin(k / 3);
+    freqs_hz.push(f);
+    levels_dbfs.push(level);
+  }
+  return { freqs_hz, levels_dbfs };
 }
 
 /** H-63/H-77: the preview Dynamics sections, mirroring the slot's parameter values below. */
@@ -1224,6 +1274,13 @@ export function installPreviewIpc(options: PreviewOptions): void {
         }
         case "rack_response_curve":
           return responseCurve(a.points as number[]);
+        case "noise_profile_curve":
+          return noiseProfileCurve();
+        case "rack_clear_noise_print": {
+          const i = a.slot as number;
+          rack = { ...rack, slots: rack.slots.map((s, j) => (j === i ? { ...s, noise_profile: "none" } : s)) };
+          return rack;
+        }
         case "module_transfer_curve":
           return transferCurveFrame(
             a.seq as number,

@@ -4,6 +4,7 @@
 
 vox_module_api::install_test_allocator!();
 
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use vox_engine::backend::fake::{FakeBackend, FakeDevice, FakeDirection};
@@ -11,8 +12,8 @@ use vox_engine::{
     EngineConfig, EngineEvent, HostId, ManualEngine, ModuleTelemetryFrame, RackApiError,
     RackCommand,
 };
-use vox_modules::{Dynamics, Gain, NoiseGate, ParametricEq, TruePeakLimiter};
-use vox_rack::{RackNotice, Registry, SlotStatus};
+use vox_modules::{Dynamics, Gain, NoiseGate, NoiseReduction, ParametricEq, TruePeakLimiter};
+use vox_rack::{NoiseProfileStatus, RackNotice, Registry, SlotStatus};
 
 fn dev() -> FakeDirection {
     FakeDirection::new(2, &[48_000], 48_000).default_buffer(256)
@@ -616,5 +617,90 @@ fn transfer_curve_encodes_a_vxtc_frame_within_the_time_budget() {
     assert!(
         worst < std::time::Duration::from_millis(5),
         "512 points took {worst:?}, over SPEC-016 §4.12's 5 ms budget"
+    );
+}
+
+/// Seeded white noise in `[-amp, amp)` (xorshift64*, no extra test dependency — mirrors
+/// `nr_capture.rs`'s helper, kept local since integration test binaries don't share code).
+fn white_noise(seed: u64, amp: f32, n: usize) -> Vec<f32> {
+    let mut s = seed | 1;
+    (0..n)
+        .map(|_| {
+            s ^= s >> 12;
+            s ^= s << 25;
+            s ^= s >> 27;
+            let u = (s.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64;
+            amp * (2.0 * u - 1.0) as f32
+        })
+        .collect()
+}
+
+/// H-85 (SPEC-014 §2.8 item 2): `noise_profile_curve` reports no support for a module without
+/// the `NoiseProfile` extension, empty points before any print exists, the real `describe()`
+/// points once one is captured and applied, and empty again after `ClearNoisePrint` — matching
+/// the panel's "empty with no print" rule (§2.8).
+#[test]
+fn noise_profile_curve_tracks_the_committed_print() {
+    let (mut eng, _events) = rig();
+    eng.rack_command(RackCommand::Add {
+        module_id: Gain::ID.into(),
+        index: 0,
+    })
+    .unwrap();
+    let err = eng.noise_profile_curve(0);
+    assert!(
+        matches!(err, Err(RackApiError::NoExtension)),
+        "Gain has no NoiseProfile extension"
+    );
+
+    eng.rack_command(RackCommand::Add {
+        module_id: NoiseReduction::ID.into(),
+        index: 1,
+    })
+    .unwrap();
+    let empty = eng.noise_profile_curve(1).unwrap();
+    assert!(empty.freqs_hz.is_empty(), "no print yet");
+    assert!(empty.levels_dbfs.is_empty());
+
+    let prep = eng.nr_capture_prepare(Some(1)).unwrap();
+    assert_eq!(prep.index, 1);
+    assert!(!prep.inserted, "the slot already existed");
+    let noise = white_noise(3, 0.01, 48_000);
+    let blob = prep
+        .extension
+        .capture(&noise, 48_000.0, &prep.values, &AtomicBool::new(false))
+        .unwrap();
+    let snap = eng.nr_capture_apply(1, blob).unwrap();
+    assert_eq!(
+        snap.slots[1].info.noise_profile,
+        Some(NoiseProfileStatus::Loaded)
+    );
+
+    let curve = eng.noise_profile_curve(1).unwrap();
+    assert_eq!(curve.freqs_hz.len(), curve.levels_dbfs.len());
+    assert!(!curve.freqs_hz.is_empty(), "the print now describes points");
+    assert!(
+        curve.freqs_hz.windows(2).all(|w| w[0] < w[1]),
+        "band centres rise monotonically (SPEC-007 §4.10's ladder)"
+    );
+    assert!(
+        curve
+            .levels_dbfs
+            .iter()
+            .all(|d| d.is_finite() || *d == f64::NEG_INFINITY),
+        "no NaN reaches the UI"
+    );
+
+    let cleared = eng
+        .rack_command(RackCommand::ClearNoisePrint { index: 1 })
+        .unwrap();
+    assert_eq!(
+        cleared.slots[1].info.noise_profile,
+        Some(NoiseProfileStatus::None)
+    );
+    let after_clear = eng.noise_profile_curve(1).unwrap();
+    assert!(
+        after_clear.freqs_hz.is_empty(),
+        "Clear Noise Print empties the graph"
     );
 }

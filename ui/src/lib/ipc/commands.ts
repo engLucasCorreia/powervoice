@@ -28,6 +28,7 @@ import type {
   ModuleDescriptorDto,
   ModulePresetImportedDto,
   Notice,
+  NoiseProfileCurveDto,
   NormalizeJobStartedDto,
   NrCaptureStartedDto,
   PeaksRequestDto,
@@ -316,6 +317,18 @@ export async function rackResponseCurve(
   points: number[],
 ): Promise<ResponseCurveDto> {
   return invoke<ResponseCurveDto>("rack_response_curve" satisfies CommandName, { slot, points });
+}
+
+/** H-85: the NR profile graph's noise-print curve (SPEC-014 §2.8 item 2), on the SPEC-007
+ * analyzer's band centres. Empty (not an error) with no print. */
+export async function noiseProfileCurve(slot: number): Promise<NoiseProfileCurveDto> {
+  return invoke<NoiseProfileCurveDto>("noise_profile_curve" satisfies CommandName, { slot });
+}
+
+/** H-85: Clear Noise Print (SPEC-014 §2.3) — drops the slot's committed blob, live, not
+ * undoable. */
+export async function rackClearNoisePrint(slot: number): Promise<RackStateDto> {
+  return invoke<RackStateDto>("rack_clear_noise_print" satisfies CommandName, { slot });
 }
 
 /** H-77: the transfer graph's curve over `points` input levels spanning `xMinDb … xMaxDb` as a

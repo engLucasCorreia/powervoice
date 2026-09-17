@@ -103,7 +103,8 @@ pub use preset_commands::*;
 pub use preset_dto::{ModulePresetImportedDto, PresetEntryDto, PresetRefDto};
 pub use rack_commands::*;
 pub use rack_dto::{
-    NoiseProfileStatusDto, ParamChangedDto, RackLatencyDto, RackStateDto, rack_ipc_error,
+    NoiseProfileCurveDto, NoiseProfileStatusDto, ParamChangedDto, RackLatencyDto, RackStateDto,
+    rack_ipc_error,
 };
 pub use recent_files_commands::*;
 pub use recent_files_dto::RecentFileDto;
@@ -167,6 +168,8 @@ crate::ipc_commands!(
     param_set_text,
     param_set_plain,
     rack_response_curve,
+    noise_profile_curve,
+    rack_clear_noise_print,
     module_transfer_curve,
     module_telemetry_subscribe,
     module_presets_list,
@@ -306,6 +309,8 @@ crate::ipc_commands!(
     param_set_text,
     param_set_plain,
     rack_response_curve,
+    noise_profile_curve,
+    rack_clear_noise_print,
     module_transfer_curve,
     module_telemetry_subscribe,
     module_presets_list,

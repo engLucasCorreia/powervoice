@@ -240,6 +240,16 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     scope: "global",
     labelKey: "shortcut.nr.capture_noise_print",
   },
+  {
+    // H-85 (SPEC-014 §2.3 "Decided"): shows the Noise Reduction panel — secondary sources give
+    // this as Audition's "open Noise Reduction effect" key, provisional for SPEC-019.
+    action: "nr.show_panel",
+    code: "KeyP",
+    mod: true,
+    shift: true,
+    scope: "global",
+    labelKey: "shortcut.nr.show_panel",
+  },
   { action: "spectral.toggle", code: "KeyD", shift: true, scope: "global", labelKey: "shortcut.spectral.toggle" },
   {
     action: "selection.nudge_left",

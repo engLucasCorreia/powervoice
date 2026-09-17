@@ -34,6 +34,7 @@ menus becomes ⌘ — every table below shows both.
 | Go to next marker | `Ctrl+Alt+→` | `⌥⌘→` |
 | Go to previous marker | `Ctrl+Alt+←` | `⌥⌘←` |
 | Capture Noise Print — provisional binding | `Shift+P` | `⇧P` |
+| Show Noise Reduction — provisional binding | `Ctrl+Shift+P` | `⇧⌘P` |
 | Show/hide the spectral pane | `Shift+D` | `⇧D` |
 
 ### Waveform view

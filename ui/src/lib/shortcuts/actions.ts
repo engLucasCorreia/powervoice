@@ -44,6 +44,9 @@ export type ActionId =
   | "waveform.select_all"
   | "waveform.deselect"
   | "nr.capture_noise_print"
+  // H-85 (SPEC-014 §2.3 "Decided"): shows the Noise Reduction panel (last-focused NR slot, else
+  // the first one, else a newly inserted one) — never starts a capture.
+  | "nr.show_panel"
   | "spectral.toggle"
   // T-701 / A-020: keyboard nudge (move the cursor, or the whole selection, by one step) and
   // extend (grow the selection by one step from the given edge) — no spec named a binding, no

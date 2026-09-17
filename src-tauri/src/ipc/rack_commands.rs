@@ -10,7 +10,9 @@ use vox_rack::{EditorRequest, ModuleDescriptor, ParamId};
 use crate::audio::AudioEngine;
 use crate::document::DocumentService;
 use crate::ipc::error::{IpcError, IpcErrorCode};
-use crate::ipc::rack_dto::{ModuleDescriptorDto, RackStateDto, ResponseCurveDto, rack_ipc_error};
+use crate::ipc::rack_dto::{
+    ModuleDescriptorDto, NoiseProfileCurveDto, RackStateDto, ResponseCurveDto, rack_ipc_error,
+};
 use crate::settings::SettingsStore;
 
 /// H-30: a bake reloads the live rack when it commits (`DocumentService::finish_bake`'s post-job
@@ -313,6 +315,40 @@ pub async fn rack_response_curve(
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
     Ok(result.map_err(rack_ipc_error)?.into())
+}
+
+/// The NR profile graph's noise-print curve (H-85, SPEC-014 §2.8 item 2, §4.10): slot `slot`'s
+/// committed noise print, described on the SPEC-007 analyzer's band centres — JSON, like
+/// `rack_response_curve`'s lean slice (at most 246 points at 48 kHz). Empty (not an error) with
+/// no print, or one that fails validation; a slot whose module has no `NoiseProfile` extension
+/// answers `error.rack_no_extension`.
+#[tauri::command]
+pub async fn noise_profile_curve(
+    engine: State<'_, AudioEngine>,
+    slot: usize,
+) -> Result<NoiseProfileCurveDto, IpcError> {
+    let handle = engine.handle().clone();
+    let result = tauri::async_runtime::spawn_blocking(move || handle.noise_profile_curve(slot))
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+    Ok(result.map_err(rack_ipc_error)?.into())
+}
+
+/// Clears slot `slot`'s noise print (H-85, SPEC-014 §2.3 "Clear noise print"): drops the
+/// committed blob, so the module passes audio unchanged from the next crossfade. No
+/// confirmation, not undoable (SPEC-004 table).
+#[tauri::command]
+pub async fn rack_clear_noise_print(
+    engine: State<'_, AudioEngine>,
+    documents: State<'_, DocumentService>,
+    slot: usize,
+) -> Result<RackStateDto, IpcError> {
+    apply(
+        &engine,
+        &documents,
+        RackCommand::ClearNoisePrint { index: slot },
+    )
+    .await
 }
 
 /// The transfer graph's curve as a binary `VXTC` frame (H-77, SPEC-016 §4.12): `points`

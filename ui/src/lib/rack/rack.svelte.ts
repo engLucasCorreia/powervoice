@@ -27,6 +27,7 @@ import {
   rackAb,
   rackAdd,
   rackBypass,
+  rackClearNoisePrint,
   rackEditorClose,
   rackEditorCloseAll,
   rackEditorOpen,
@@ -147,6 +148,9 @@ export const setBypass = (index: number, on: boolean): Promise<void> =>
   run(() => rackBypass(index, on));
 export const setAb = (on: boolean): Promise<void> => run(() => rackAb(on));
 export const restartSlot = (index: number): Promise<void> => run(() => rackRestart(index));
+/** H-85 (SPEC-014 §2.3): Clear Noise Print — drops the slot's committed blob, live, not
+ * undoable, no confirmation. */
+export const clearNoisePrint = (index: number): Promise<void> => run(() => rackClearNoisePrint(index));
 
 // --- Plugin windows (T-901) ---------------------------------------------------------------------
 
@@ -330,6 +334,27 @@ export function noteSlotFocused(index: number): void {
 /** The last-focused slot's index, or `null` (nothing focused yet this session). */
 export function lastFocusedSlotIndex(): number | null {
   return lastFocusedSlot;
+}
+
+/** H-85 (SPEC-014 §2.3 "Ctrl+Shift+P shows the Noise Reduction panel"): a request for slot
+ * `index`'s own `RackSlot` to expand itself and scroll into view. `token` bumps on every call so
+ * a repeat request for an already-expanded slot still re-triggers the scroll. */
+let slotFocusRequest = $state<{ index: number; token: number } | null>(null);
+
+/** Requests that slot `index`'s panel be shown (uncollapsed, scrolled into view). */
+export function requestSlotFocus(index: number): void {
+  slotFocusRequest = { index, token: (slotFocusRequest?.token ?? 0) + 1 };
+}
+
+/** Read-only accessor for `RackSlot.svelte`'s effect (a plain getter so its `$effect` re-runs on
+ * every new request, matched or not). */
+export function slotFocusRequestState(): { index: number; token: number } | null {
+  return slotFocusRequest;
+}
+
+/** Consumes the pending request once slot `index` has acted on it. */
+export function clearSlotFocusRequest(): void {
+  slotFocusRequest = null;
 }
 
 /** H-77 (SPEC-016 §2.6 "Stale"): with no `VXMT` frame for this long — a transport that has gone
@@ -612,6 +637,7 @@ export function resetRackForTest(): void {
   loading = true;
   unavailable = false;
   lastFocusedSlot = null;
+  slotFocusRequest = null;
   meters = {};
   clearTelemetryFreshness();
   for (const pending of pendingDrags.values()) {

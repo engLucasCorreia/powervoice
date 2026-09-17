@@ -13,8 +13,8 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use vox_engine::{
-    RackApiError, RackSlot as EngineRackSlot, RackSnapshot as EngineRackSnapshot,
-    ResponseCurvePoints,
+    NoiseProfileCurvePoints, RackApiError, RackSlot as EngineRackSlot,
+    RackSnapshot as EngineRackSnapshot, ResponseCurvePoints,
 };
 use vox_rack::{
     CurveHandle, LocalizedText, ModuleDescriptor, NoiseProfileStatus, ParamFlags, ParamGroup,
@@ -431,6 +431,26 @@ impl From<ResponseCurvePoints> for ResponseCurveDto {
             sample_rate_hz: p.sample_rate_hz,
             total_db: p.total_db,
             components_db: p.components_db,
+        }
+    }
+}
+
+/// `noise_profile_curve`'s response (H-85, SPEC-014 §2.8 item 2, §4.10): the committed noise
+/// print's `describe()` points, on the SPEC-007 analyzer's band centres — JSON, like
+/// `rack_response_curve`'s lean slice (at most 246 points at 48 kHz, well under a binary
+/// frame's justification). Empty (both vectors) with no print, or one that fails validation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct NoiseProfileCurveDto {
+    pub freqs_hz: Vec<f64>,
+    pub levels_dbfs: Vec<f64>,
+}
+
+impl From<NoiseProfileCurvePoints> for NoiseProfileCurveDto {
+    fn from(p: NoiseProfileCurvePoints) -> Self {
+        Self {
+            freqs_hz: p.freqs_hz,
+            levels_dbfs: p.levels_dbfs,
         }
     }
 }

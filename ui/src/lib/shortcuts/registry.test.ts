@@ -68,6 +68,20 @@ describe("default keymap bindings", () => {
     expect(matchBinding(key("KeyP"), false)).toBeNull();
   });
 
+  // H-85, SPEC-014 §2.3: Ctrl+Shift+P shows the NR panel — distinct from Shift+P's capture and
+  // from plain Ctrl+P (non-mac: Ctrl as the primary modifier; mac: ⌘).
+  it("resolves Ctrl+Shift+P to nr.show_panel, distinct from Shift+P and Ctrl+P", () => {
+    expect(matchBinding(key("KeyP", { ctrl: true, shift: true }), false)).toBe("nr.show_panel");
+    expect(matchBinding(key("KeyP", { shift: true }), false)).toBe("nr.capture_noise_print");
+    expect(matchBinding(key("KeyP", { ctrl: true }), false)).toBeNull();
+  });
+
+  it("resolves ⌘+Shift+P to nr.show_panel on mac", () => {
+    expect(matchBinding(key("KeyP", { meta: true, shift: true }), true)).toBe("nr.show_panel");
+    // The "other" platform's modifier must not satisfy the mod binding on mac either.
+    expect(matchBinding(key("KeyP", { ctrl: true, shift: true }), true)).toBeNull();
+  });
+
   // T-207, SPEC-007 §2.1: Shift+D toggles the spectral pane (verified Audition binding).
   it("resolves Shift+D to spectral.toggle, distinct from plain D", () => {
     expect(matchBinding(key("KeyD", { shift: true }), false)).toBe("spectral.toggle");

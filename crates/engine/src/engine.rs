@@ -27,8 +27,8 @@ use crate::device_state::DeviceStatus;
 use crate::devices::DeviceNotice;
 use crate::prefs::DevicePrefs;
 use crate::rack_api::{
-    NrCapturePrep, RackApiError, RackCommand, RackSnapshot, ResponseCurvePoints,
-    TransferCurvePoints,
+    NoiseProfileCurvePoints, NrCapturePrep, RackApiError, RackCommand, RackSnapshot,
+    ResponseCurvePoints, TransferCurvePoints,
 };
 use crate::record::{
     CalibrationError, CalibrationStatus, LiveTakePeaks, MonitorMode, RecordDone, RecordError,
@@ -539,6 +539,17 @@ impl EngineHandle {
             .unwrap_or(Err(RackApiError::Unavailable))
     }
 
+    /// The NR profile graph's noise-print curve (H-85, SPEC-014 §2.8 item 2): slot `index`'s
+    /// `NoiseProfile::describe()` points from its committed blob. Empty (not an error) with no
+    /// blob or an unreadable one. Read-only; call from any thread.
+    pub fn noise_profile_curve(
+        &self,
+        index: usize,
+    ) -> Result<NoiseProfileCurvePoints, RackApiError> {
+        self.call(move |c| c.noise_profile_curve(index))
+            .unwrap_or(Err(RackApiError::Unavailable))
+    }
+
     /// The committed state of slot `index` (T-406: what "Save as preset" reads). Read-only.
     pub fn rack_slot_state(&self, index: usize) -> Result<ModuleState, RackApiError> {
         self.call(move |c| c.rack_slot_state(index))
@@ -805,6 +816,14 @@ impl ManualEngine {
     ) -> Result<TransferCurvePoints, RackApiError> {
         self.control
             .transfer_curve(index, x_min_db, x_max_db, points)
+    }
+
+    /// See [`EngineHandle::noise_profile_curve`].
+    pub fn noise_profile_curve(
+        &self,
+        index: usize,
+    ) -> Result<NoiseProfileCurvePoints, RackApiError> {
+        self.control.noise_profile_curve(index)
     }
 
     /// See [`EngineHandle::rack_slot_state`].

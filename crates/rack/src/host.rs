@@ -2243,6 +2243,24 @@ impl RackHost {
         self.replace_with(index, Some(state))
     }
 
+    /// Clears slot `index`'s committed noise print (H-85, SPEC-014 §2.3 "Clear noise print"): a
+    /// live replacement through the same crossfade as [`Self::replace_noise_print`], whose new
+    /// instance holds no blob, so the module passes audio unchanged. Parameter values are
+    /// unchanged. Not undoable — cheap, and the only way back to "no print" short of removing
+    /// the slot.
+    pub fn clear_noise_print(&mut self, index: usize) -> Result<(), RackError> {
+        let hs = self.slots.get(index).ok_or(RackError::IndexOutOfRange {
+            index,
+            len: self.slots.len(),
+        })?;
+        let Kind::Loaded(l) = &hs.kind else {
+            return Err(RackError::NotLoaded { index });
+        };
+        let mut state = committed_state(l);
+        state.blob = None;
+        self.replace_with(index, Some(state))
+    }
+
     /// Replaces the whole rack (document open): every current slot fades out, the new slots
     /// fade in; placeholders for missing modules; the A/B flag is reset to off.
     pub fn load_model(&mut self, model: &RackModel) -> Result<(), RackError> {

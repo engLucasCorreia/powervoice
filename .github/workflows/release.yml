@@ -65,11 +65,18 @@ jobs:
         with:
           prerelease: true
           generate_release_notes: true
+          # H-89: the previous wording claimed the Linux packages were "built and tested by the
+          # maintainer (Arch, PipeWire)". They were built by this workflow on Ubuntu and, before
+          # v0.3.1, had never been installed on any machine — v0.3.0 shipped broken on every
+          # non-Ubuntu distribution. Say only what is true. If a release has hand-written notes,
+          # pass them with `gh release edit <tag> --notes-file …` after the workflow finishes.
           body: |
-            Linux packages below are built and tested by the maintainer (Arch, PipeWire). Windows
-            and macOS installers, if this release has any, are **unverified — never run by the
-            maintainer** (see the Windows/macOS jobs of this workflow run for what happened); use
-            them at your own risk and please report what you find.
+            Built by CI on Ubuntu. The AppImage and .deb are smoke-tested by the maintainer on
+            Arch/PipeWire before a release is announced; if this tag is newer than that check, treat
+            them as untested. Windows and macOS installers, if this release has any, are
+            **unverified — never run by the maintainer** (see the Windows/macOS jobs of this
+            workflow run for what happened); use them at your own risk and please report what you
+            find.
           files: |
             target/release/bundle/appimage/*.AppImage
             target/release/bundle/deb/*.deb

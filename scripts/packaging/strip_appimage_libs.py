@@ -145,7 +145,17 @@ def strip_one(path: Path) -> bool:
 
 
 def main() -> int:
-    paths = [Path(p) for p in sys.argv[1:]] or find_appimages(REPO_ROOT / "target")
+    args = sys.argv[1:]
+    if any(a in ("-h", "--help") for a in args):
+        print(f"usage: {Path(sys.argv[0]).name} [APPIMAGE ...]")
+        print("Strips denylisted libraries (see appimage_denylist.py) from each AppImage and")
+        print("repacks it. With no arguments, acts on target/*/bundle/appimage/*.AppImage.")
+        return 0
+    missing = [a for a in args if not Path(a).exists()]
+    if missing:
+        print(f"error: no such file: {', '.join(missing)}", file=sys.stderr)
+        return 1
+    paths = [Path(p) for p in args] or find_appimages(REPO_ROOT / "target")
     if not paths:
         print("no AppImage found under target/*/bundle/appimage/ — nothing to strip.")
         return 0

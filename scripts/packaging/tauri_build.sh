@@ -22,6 +22,27 @@ if [ "${OS:-}" = "Windows_NT" ]; then
     export npm_config_script_shell="$(command -v bash)"
 fi
 
+# H-89 follow-up: linuxdeploy (which Tauri drives to build the AppImage) is itself an AppImage and
+# assumes a Debian/Ubuntu host. On other distributions it fails in three different ways, so make the
+# two fixable ones automatic and the unfixable one explain itself instead of printing
+# "failed to run linuxdeploy" and nothing else:
+#   1. it needs FUSE 2 to mount itself   -> APPIMAGE_EXTRACT_AND_RUN
+#   2. its bundled `strip` is older than modern binutils and chokes on `.relr.dyn` sections
+#      (seen on Arch with libwebp) -> NO_STRIP; note the value must be "true", not "1"
+#   3. its GTK plugin hardcodes the gdk-pixbuf loader-module layout, which gdk-pixbuf 2.44 (Arch) no
+#      longer ships -> needs the PKG_CONFIG_PATH stub documented in docs/building.md.
+if [[ "${1:-}" != *deb* ]] && [[ "$*" == *appimage* || "$*" != *--bundles* ]]; then
+    if ! ldconfig -p 2>/dev/null | grep -q 'libfuse\.so\.2'; then
+        export APPIMAGE_EXTRACT_AND_RUN=1
+    fi
+    export NO_STRIP="${NO_STRIP:-true}"
+    if [ ! -d /usr/lib/gdk-pixbuf-2.0 ] && [ ! -d /usr/lib/x86_64-linux-gnu/gdk-pixbuf-2.0 ]; then
+        echo "note: no gdk-pixbuf-2.0 loader directory on this host, so linuxdeploy's GTK plugin" >&2
+        echo "      will fail with \"cp: cannot stat .../gdk-pixbuf-2.0/2.10.0\". Use the" >&2
+        echo "      PKG_CONFIG_PATH stub in docs/building.md, or let CI build the AppImage." >&2
+    fi
+fi
+
 npm --prefix ui run tauri build -- \
     --config '{"bundle":{"externalBin":["binaries/powervoice-sandbox"]}}' \
     "$@"

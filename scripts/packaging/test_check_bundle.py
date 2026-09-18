@@ -44,6 +44,72 @@ class FindUsrBinTests(unittest.TestCase):
             self.assertIsNone(check_bundle.find_usr_bin(root))
 
 
+class CheckDenylistedLibsTests(unittest.TestCase):
+    """H-89: a denylisted library (e.g. libpipewire-0.3.so.0) anywhere in the tree fails the
+    build, regardless of where it landed."""
+
+    def test_clean_tree_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_tree(root, app=True, sandbox=True)
+            self.assertEqual(check_bundle.check_denylisted_libs(root), [])
+
+    def test_denylisted_library_in_usr_lib_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_tree(root, app=True, sandbox=True)
+            lib_dir = root / "usr" / "lib"
+            lib_dir.mkdir()
+            (lib_dir / "libpipewire-0.3.so.0").write_bytes(b"")
+            errors = check_bundle.check_denylisted_libs(root)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("libpipewire-0.3.so.0", errors[0])
+
+    def test_versioned_filename_still_matches_glob(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_tree(root, app=True, sandbox=True)
+            lib_dir = root / "usr" / "lib"
+            lib_dir.mkdir()
+            (lib_dir / "libpipewire-0.3.so.0.123.0").write_bytes(b"")
+            errors = check_bundle.check_denylisted_libs(root)
+            self.assertEqual(len(errors), 1)
+
+    def test_unrelated_library_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_tree(root, app=True, sandbox=True)
+            lib_dir = root / "usr" / "lib"
+            lib_dir.mkdir()
+            (lib_dir / "libasound.so.2").write_bytes(b"")
+            self.assertEqual(check_bundle.check_denylisted_libs(root), [])
+
+    def test_check_tree_fails_even_with_binaries_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_tree(root, app=True, sandbox=True)
+            lib_dir = root / "usr" / "lib"
+            lib_dir.mkdir()
+            (lib_dir / "libpipewire-0.3.so.0").write_bytes(b"")
+            errors = check_bundle.check_tree(root)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("libpipewire-0.3.so.0", errors[0])
+
+    def test_check_macos_tree_also_checks_denylist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "PowerVoice.app"
+            bin_dir = root / "Contents" / "MacOS"
+            bin_dir.mkdir(parents=True)
+            (bin_dir / check_bundle.APP_BINARY).write_bytes(b"")
+            (bin_dir / check_bundle.SANDBOX_BINARY).write_bytes(b"")
+            lib_dir = root / "Contents" / "Frameworks"
+            lib_dir.mkdir()
+            (lib_dir / "libpipewire-0.3.so.0").write_bytes(b"")
+            errors = check_bundle.check_macos_tree(root)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("libpipewire-0.3.so.0", errors[0])
+
+
 class CheckTreeTests(unittest.TestCase):
     def test_both_present_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -25,3 +25,11 @@ fi
 npm --prefix ui run tauri build -- \
     --config '{"bundle":{"externalBin":["binaries/powervoice-sandbox"]}}' \
     "$@"
+
+# H-89: strip libraries that must never be vendored (see appimage_denylist.py — e.g.
+# libpipewire-0.3.so.0, bundled without its distro-specific spa-0.2 plugin directory, breaks every
+# non-Ubuntu AppImage user) out of whatever AppImage the build above just produced, and repack it.
+# A no-op (prints a message, exits 0) if this invocation didn't build an AppImage at all (the
+# Windows/macOS release jobs pass --bundles msi,nsis / app,dmg). Shared by `just build` and
+# release.yml for the same one-source-of-truth reason as the rest of this script.
+python3 "$(dirname "${BASH_SOURCE[0]}")/strip_appimage_libs.py"

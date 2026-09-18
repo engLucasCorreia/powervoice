@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fails if a built Linux/macOS bundle lacks the plugin sandbox (H-45 packaging check; H-61 added
 the macOS half — Windows has its own sibling script, `check_bundle_windows.py`, since MSI/NSIS
-need Windows-only tools to open).
+need Windows-only tools to open) or ships a denylisted library (H-89; see `appimage_denylist.py`).
 
 The app finds the sandbox beside its own executable
 (`vox_plugin_host::SandboxOptions::beside_current_exe`), so every bundle this project ships must
@@ -35,6 +35,9 @@ import sys
 import tarfile
 import tempfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from appimage_denylist import DENYLISTED_LIBS  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 APP_BINARY = "powervoice-app"
@@ -74,12 +77,31 @@ def check_usr_bin(usr_bin: Path) -> list[str]:
     return errors
 
 
+def check_denylisted_libs(root: Path) -> list[str]:
+    """H-89 guard: fails if any library on `appimage_denylist.DENYLISTED_LIBS` shipped inside the
+    bundle. These are libraries that, like a graphics driver, must match something running on the
+    end user's system (a daemon, a plugin ecosystem with a distro-specific path) rather than be
+    vendored — bundling one broke every non-Ubuntu AppImage user (`libpipewire-0.3.so.0`; see that
+    module's docstring). Scans the whole tree, not just `usr/lib`, so it also catches an
+    unexpected location and keeps working if a future bundle layout moves libraries around.
+    """
+    errors = []
+    for pattern in DENYLISTED_LIBS:
+        for match in sorted(root.rglob(pattern)):
+            if match.is_file() or match.is_symlink():
+                errors.append(
+                    f"denylisted library bundled: {match.relative_to(root)} "
+                    f"(matches {pattern!r} in appimage_denylist.DENYLISTED_LIBS — H-89)"
+                )
+    return errors
+
+
 def check_tree(root: Path) -> list[str]:
     """Checks an already-extracted bundle tree (a `.deb`'s data.tar, an AppImage's AppDir, ...)."""
     usr_bin = find_usr_bin(root)
     if usr_bin is None:
         return [f"no usr/bin directory found under {root}"]
-    return check_usr_bin(usr_bin)
+    return check_usr_bin(usr_bin) + check_denylisted_libs(root)
 
 
 def find_macos_bin_dir(root: Path) -> Path | None:
@@ -113,7 +135,7 @@ def check_macos_tree(root: Path) -> list[str]:
     bin_dir = find_macos_bin_dir(root)
     if bin_dir is None:
         return [f"no Contents/MacOS directory found under {root}"]
-    return check_macos_bin_dir(bin_dir)
+    return check_macos_bin_dir(bin_dir) + check_denylisted_libs(root)
 
 
 # --- extraction: real .deb / AppImage / .dmg archives -> a tree check_tree() can look at ---------

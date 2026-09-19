@@ -88,3 +88,38 @@ export function balancedReport(overrides: Partial<VoiceReportDto> = {}): VoiceRe
     ...overrides,
   };
 }
+
+/**
+ * The report `vox_dsp::diagnostics::voice::analyze_buffer` measures from the owner's own
+ * `ExampleRecording.wav` (mono, 48 kHz, 31.49 s) — H-95's acceptance case, kept here so the
+ * prose (H-94) can be golden-tested against a real voice and not only against synthetic ones.
+ *
+ * These are measurements, not choices: they were read off the analysis of that file, and the
+ * exported `spectrum.csv` beside it is the same take as a spectrum. The pair belong together —
+ * the report's pitch range is what makes H3 and above unresolvable on that curve.
+ */
+export function ownerReport(): VoiceReportDto {
+  return {
+    f0: {
+      current_hz: null,
+      median_hz: 103.55245394584392,
+      low_hz: 87.35162005146897,
+      high_hz: 128.7643899309691,
+      voiced_fraction: 0.5592264302981467,
+      confidence: 0.8979129033152974,
+      octave_corrected: 0.17723342939481268,
+    },
+    tone: {
+      mud_db: 10.25368201413109,
+      presence_db: -1.3040057584519502,
+      air_db: -22.142890990671418,
+    },
+    sibilance: { ratio_db: -20.12022744792852, centre_hz: 4826.018123202088 },
+    hum: null,
+    rumble_db: -28.286414326847876,
+    noise_floor_dbfs: -102.98359327588132,
+    active_level_dbfs: -27.319906799500224,
+    snr_db: 75.66368647638109,
+    span_s: 31.49,
+  };
+}

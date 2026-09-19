@@ -34,6 +34,35 @@ export {
  */
 export const SIGNIFICANT_MARGIN_DB = 6;
 
+/**
+ * How close to the threshold it crossed a measurement may sit and still be phrased
+ * conservatively (dB). H-94: `attention` is not one thing. A reading 0.7 dB past its threshold
+ * and a reading 5 dB past it are both "a threshold was crossed", but only the second is evidence
+ * of anything a listener would hear — microphone response and a few centimetres of working
+ * distance move a band level by more than this on their own. Within this margin the prose says
+ * the measurement is barely across, and offers no correction.
+ */
+export const NEAR_THRESHOLD_DB = 1;
+
+/**
+ * A broadband RMS noise floor below this (dBFS) is reported as *probably processed* rather than
+ * as an achievement (H-94 §5). A microphone's own self-noise, the preamp behind it and any real
+ * room put the quietest 500 ms of a take well above this; a file that reads lower has almost
+ * always been gated or noise-reduced, and then the floor — and the SNR measured against it —
+ * describes the file rather than the recording space. The feature must not congratulate a user
+ * for a number that is an artefact of processing.
+ */
+export const IMPLAUSIBLE_NOISE_FLOOR_DBFS = -80;
+
+/**
+ * The largest static tone-shaping move the prose will ever suggest (dB, H-94 §3). A measurement
+ * of a voice does not justify more: a bigger move is a production decision, not a correction,
+ * and the measurement cannot tell the two apart. Corrective filters aimed at something that is
+ * not the voice — a mains notch, a high-pass under 80 Hz — are not tone shaping and are not
+ * capped by this.
+ */
+export const MAX_SUGGESTED_TONE_GAIN_DB = 3;
+
 /** Harmonics H1…H{@link HARMONIC_COUNT} are looked for (H-91 §2). */
 export const HARMONIC_COUNT = 6;
 

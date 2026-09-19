@@ -3,6 +3,7 @@ import type { EventName, IpcError, JobProgressDto, NormalizeResultDto } from "..
 import { editNormalizeLufsCancel, editNormalizeLufsStart } from "../ipc/commands";
 import { documentState } from "../document/document.svelte";
 import { noticeFromIpcError } from "../notices/fromIpcError";
+import { startJobStatusPoll } from "./jobStatusPoll";
 import { pushNotice } from "./notices.svelte";
 import { hasSelection, selectionState, setSelectionFromResult } from "./selection.svelte";
 import { formatNumber, parseNumber } from "../ui/units";
@@ -44,6 +45,11 @@ let dialog = $state<DialogState>({ text: formatTarget(DEFAULT_TARGET_LUFS), vali
 let job = $state<NormalizeLufsJobState | null>(null);
 let unlistenProgress: (() => void) | null = null;
 let unlistenResult: (() => void) | null = null;
+/** H-96: see `export.svelte.ts`'s own `starting`/`early` for what this covers. */
+let starting = false;
+let early: JobProgressDto[] = [];
+/** H-96 item 2: stops the belt-and-braces `job_status` recovery poll for the current job. */
+let stopStatusPoll: (() => void) | null = null;
 
 /** Read-only accessor for components. */
 export function normalizeLufsState(): {
@@ -105,12 +111,30 @@ async function run(targetLufs: number): Promise<void> {
   if (!range) {
     return;
   }
+  // H-96: subscribe *before* starting the job (see `export.svelte.ts::startExport`'s comment).
+  await ensureListening();
+  starting = true;
+  early = [];
   try {
     const started = await editNormalizeLufsStart(range[0], range[1], targetLufs);
     job = { jobId: started.job_id, fraction: 0, state: "running" };
-    await ensureListening();
+    starting = false;
+    const buffered = early;
+    early = [];
+    for (const payload of buffered) {
+      applyNormalizeLufsJobProgress(payload);
+    }
+    stopStatusPoll?.();
+    stopStatusPoll = startJobStatusPoll(
+      started.job_id,
+      () => job !== null && job.jobId === started.job_id && job.state === "running",
+      applyNormalizeLufsJobProgress,
+    );
   } catch (err) {
     report(err);
+  } finally {
+    starting = false;
+    early = [];
   }
 }
 
@@ -155,9 +179,18 @@ export async function applyNormalizeLufsDialog(): Promise<void> {
   await run(value);
 }
 
-/** Applies one `job_progress` event to the store (kind `normalize_lufs` only). */
+/** Applies one `job_progress` event to the store (kind `normalize_lufs` only). H-96: while a job
+ * is starting (the command sent, its id not yet known locally), a matching event is buffered
+ * rather than dropped — see `run`. */
 export function applyNormalizeLufsJobProgress(payload: JobProgressDto): void {
-  if (payload.kind !== "normalize_lufs" || !job || payload.job_id !== job.jobId) {
+  if (payload.kind !== "normalize_lufs") {
+    return;
+  }
+  if (starting) {
+    early.push(payload);
+    return;
+  }
+  if (!job || payload.job_id !== job.jobId) {
     return;
   }
   job = { jobId: payload.job_id, fraction: payload.fraction, state: payload.state };
@@ -197,6 +230,8 @@ async function ensureListening(): Promise<void> {
 
 /** Dismisses a finished job's progress panel (Done/Cancelled/Failed). */
 export function dismissNormalizeLufsJob(): void {
+  stopStatusPoll?.();
+  stopStatusPoll = null;
   job = null;
 }
 
@@ -212,6 +247,10 @@ export function resetNormalizeLufsForTest(): void {
   dialogOpen = false;
   dialog = { text: formatTarget(DEFAULT_TARGET_LUFS), valid: true };
   job = null;
+  starting = false;
+  early = [];
+  stopStatusPoll?.();
+  stopStatusPoll = null;
   unlistenProgress?.();
   unlistenProgress = null;
   unlistenResult?.();

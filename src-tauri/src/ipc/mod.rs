@@ -23,6 +23,7 @@ mod error;
 mod events;
 pub mod export_commands;
 pub mod export_dto;
+mod job_status_commands;
 pub mod loudness_commands;
 pub mod loudness_dto;
 mod macros;
@@ -86,6 +87,7 @@ pub use export_dto::{
     ExportFormatDto, ExportFormatsDto, ExportRangeDto, ExportRequestDto, ExportStartedDto,
     Mp3SettingsDto,
 };
+pub use job_status_commands::*;
 pub use loudness_commands::*;
 pub use loudness_dto::{
     LoudnessAnalyzeRequestDto, LoudnessAnalyzeStartedDto, LoudnessReportDto, LoudnessSourceDto,
@@ -248,6 +250,7 @@ crate::ipc_commands!(
     export_formats,
     export_start,
     export_cancel,
+    job_status,
     nr_capture_start,
     nr_capture_cancel,
     loudness_analyze_start,
@@ -389,6 +392,7 @@ crate::ipc_commands!(
     export_formats,
     export_start,
     export_cancel,
+    job_status,
     nr_capture_start,
     nr_capture_cancel,
     loudness_analyze_start,

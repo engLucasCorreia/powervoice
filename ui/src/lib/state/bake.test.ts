@@ -1,5 +1,5 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { JobProgressDto, RackSlotDto } from "../ipc/bindings";
 import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import { loadRack, resetRackForTest } from "../rack/rack.svelte";
@@ -172,6 +172,51 @@ describe("startBake", () => {
     mockBake(7, () => applyBakeJobProgress(progress({ state: "done", fraction: 1 })));
     await startBake();
     expect(bakeState().job?.state).toBe("done");
+  });
+
+  /** H-96: a *previous* bake finishing but not being dismissed left `job` non-null, and the old
+   * `applyBakeJobProgress` gated buffering on `!job` rather than on `starting` — so the new job's
+   * own early events (its job id differs from the stale one still in `job`) fell through to the
+   * `payload.job_id !== job.jobId` check and were silently dropped instead of buffered. */
+  it("keeps a second job's early terminal event even with a previous, undismissed job still in state", async () => {
+    await openDoc();
+    await setRack([rackSlotDto()]);
+    mockBake(7);
+    await startBake();
+    applyBakeJobProgress(progress({ state: "done", fraction: 1 }));
+    expect(bakeState().job?.state).toBe("done");
+    // Deliberately not dismissed — `job` still holds the first, finished bake when the second
+    // one starts.
+
+    mockBake(8, () =>
+      applyBakeJobProgress(progress({ job_id: 8, state: "done", fraction: 1 })),
+    );
+    await startBake();
+    expect(bakeState().job).toEqual({ jobId: 8, fraction: 1, state: "done" });
+  });
+
+  it("recovers via job_status if the terminal event is missed entirely (belt and braces)", async () => {
+    vi.useFakeTimers();
+    try {
+      await openDoc();
+      await setRack([rackSlotDto()]);
+      mockIPC((cmd) => {
+        if (cmd === "edit_bake_start") {
+          return { job_id: 21 };
+        }
+        if (cmd === "job_status") {
+          return { job_id: 21, kind: "bake", state: "done", fraction: 1 };
+        }
+        throw new Error(`unmocked command: ${cmd}`);
+      });
+      await startBake();
+      expect(bakeState().job?.state).toBe("running");
+
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(bakeState().job).toEqual({ jobId: 21, fraction: 1, state: "done" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("reports a refused start as a notice and runs no job", async () => {

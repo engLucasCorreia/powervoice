@@ -168,8 +168,10 @@ describe("EffectsMenu (H-19)", () => {
       target
         .querySelector<HTMLButtonElement>('[data-testid="menu-favorites-normalize-1-0db"]')!
         .click();
-      await Promise.resolve();
-      await Promise.resolve();
+      // H-96: `run()` now awaits `ensureListening()` *before* the start command (subscribe
+      // before starting the job), landing a couple of microtask ticks later than a fixed
+      // `await Promise.resolve()` pair assumed.
+      await vi.waitFor(() => expect(started).toBe(true));
       flushSync();
 
       expect(started).toBe(true);

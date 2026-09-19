@@ -9,6 +9,7 @@ import type {
 import { editNormalizePeakCancel, editNormalizePeakStart } from "../ipc/commands";
 import { documentState } from "../document/document.svelte";
 import { noticeFromIpcError } from "../notices/fromIpcError";
+import { startJobStatusPoll } from "./jobStatusPoll";
 import { pushNotice } from "./notices.svelte";
 import { saveSettings, settingsState } from "./settings.svelte";
 import { hasSelection, selectionState, setSelectionFromResult } from "./selection.svelte";
@@ -54,6 +55,11 @@ let dialog = $state<DialogState>({ text: formatTarget(-1, "db"), unit: "db", val
 let job = $state<NormalizeJobState | null>(null);
 let unlistenProgress: (() => void) | null = null;
 let unlistenResult: (() => void) | null = null;
+/** H-96: see `export.svelte.ts`'s own `starting`/`early` for what this covers. */
+let starting = false;
+let early: JobProgressDto[] = [];
+/** H-96 item 2: stops the belt-and-braces `job_status` recovery poll for the current job. */
+let stopStatusPoll: (() => void) | null = null;
 
 /** Read-only accessor for components. */
 export function normalizeState(): {
@@ -131,12 +137,31 @@ async function run(targetDb: number | null, targetPct: number | null): Promise<v
   if (!range) {
     return;
   }
+  // H-96: subscribe *before* starting the job (see `export.svelte.ts::startExport`'s comment for
+  // the race this closes and why `starting`/`early` still matter for the residual gap).
+  await ensureListening();
+  starting = true;
+  early = [];
   try {
     const started = await editNormalizePeakStart(range[0], range[1], targetDb, targetPct);
     job = { jobId: started.job_id, fraction: 0, state: "running" };
-    await ensureListening();
+    starting = false;
+    const buffered = early;
+    early = [];
+    for (const payload of buffered) {
+      applyNormalizeJobProgress(payload);
+    }
+    stopStatusPoll?.();
+    stopStatusPoll = startJobStatusPoll(
+      started.job_id,
+      () => job !== null && job.jobId === started.job_id && job.state === "running",
+      applyNormalizeJobProgress,
+    );
   } catch (err) {
     report(err);
+  } finally {
+    starting = false;
+    early = [];
   }
 }
 
@@ -216,9 +241,18 @@ export async function applyNormalizeDialog(): Promise<void> {
 }
 
 /** Applies one `job_progress` event to the store (kind `normalize_peak` only) — a pure function
- * so it's directly testable (mirrors `export.svelte.ts`'s `applyJobProgress`). */
+ * so it's directly testable (mirrors `export.svelte.ts`'s `applyJobProgress`). H-96: while a job
+ * is starting (the command sent, its id not yet known locally), a matching event is buffered
+ * rather than dropped — see `run`. */
 export function applyNormalizeJobProgress(payload: JobProgressDto): void {
-  if (payload.kind !== "normalize_peak" || !job || payload.job_id !== job.jobId) {
+  if (payload.kind !== "normalize_peak") {
+    return;
+  }
+  if (starting) {
+    early.push(payload);
+    return;
+  }
+  if (!job || payload.job_id !== job.jobId) {
     return;
   }
   job = { jobId: payload.job_id, fraction: payload.fraction, state: payload.state };
@@ -259,6 +293,8 @@ async function ensureListening(): Promise<void> {
 
 /** Dismisses a finished job's progress panel (Done/Cancelled/Failed). */
 export function dismissNormalizeJob(): void {
+  stopStatusPoll?.();
+  stopStatusPoll = null;
   job = null;
 }
 
@@ -274,6 +310,10 @@ export function resetNormalizeForTest(): void {
   dialogOpen = false;
   dialog = { text: formatTarget(-1, "db"), unit: "db", valid: true };
   job = null;
+  starting = false;
+  early = [];
+  stopStatusPoll?.();
+  stopStatusPoll = null;
   unlistenProgress?.();
   unlistenProgress = null;
   unlistenResult?.();

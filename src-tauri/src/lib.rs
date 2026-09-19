@@ -10,6 +10,7 @@ pub mod document;
 pub mod export;
 pub mod housekeeping;
 pub mod ipc;
+pub mod job_status;
 pub mod logging;
 pub mod loudness;
 pub mod normalize;
@@ -89,6 +90,12 @@ pub fn run() {
             ));
             // H-30 (SPEC-007 §4.1): "save" is the third job the spec lists alongside export/bake.
             documents.set_spectro(std::sync::Arc::clone(&spectro));
+            // H-96 "belt and braces": every job-progress-emitting service below records its
+            // latest tick here, so a UI that ever misses a `job_progress` event (the ordering bug
+            // this ticket fixes, or any future one like it) can still recover by polling
+            // `job_status(job_id)` instead of showing "running" forever. One registry, shared by
+            // every job kind, bounded to a small number of recent jobs (`JobStatusRegistry::new`).
+            let job_status = job_status::JobStatusRegistry::new(64);
             // S4-04/H-08: the export job service (its own registry instance — modules are
             // stateless per-instance, so sharing the engine's would only save one small
             // allocation) renders the live rack via `EngineHandle::rack_model()`.
@@ -97,6 +104,7 @@ pub fn run() {
                 documents.clone(),
                 engine.handle().clone(),
                 std::sync::Arc::clone(&spectro),
+                job_status.clone(),
             )?;
             // S3-06: the Capture Noise Print job service.
             let nr_capture = nr_capture::start(
@@ -119,7 +127,8 @@ pub fn run() {
             )?;
             // H-09: the normalize job service (peak + LUFS) — no engine handle needed, unlike
             // export/nr_capture/loudness (SPEC-010 never touches the rack).
-            let normalize = normalize::start(app.handle().clone(), documents.clone())?;
+            let normalize =
+                normalize::start(app.handle().clone(), documents.clone(), job_status.clone())?;
             // T-602: the Bake rack job service (renders the live rack like export; halves the
             // spectrogram's tile workers while it runs, SPEC-007 §4.1).
             let bake = bake::start(
@@ -127,6 +136,7 @@ pub fn run() {
                 documents.clone(),
                 engine.handle().clone(),
                 std::sync::Arc::clone(&spectro),
+                job_status.clone(),
             )?;
             // T-304 (SPEC-022 §2.14): the loopback latency calibration job.
             let calibration = calibration::start(app.handle(), engine.handle().clone());
@@ -141,6 +151,7 @@ pub fn run() {
             app.manage(spectrum);
             app.manage(normalize);
             app.manage(bake);
+            app.manage(job_status);
             // T-301: rack/view state journaling (2 s) and the disk budget check (10 s / after
             // every edit, SPEC-004 §2.5).
             let housekeeping = housekeeping::start(

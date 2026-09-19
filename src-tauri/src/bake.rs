@@ -35,6 +35,7 @@ use crate::ipc::{
     EventName, IpcError, IpcErrorCode, JobKind, JobProgressDto, JobState, Notice, NoticeLevel,
     emit_job_progress, emit_notice,
 };
+use crate::job_status::JobStatusRegistry;
 
 /// ADR-003: at most ~10 `job_progress` events per second per job.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
@@ -63,6 +64,9 @@ struct Inner {
     emit: BakeEmitter,
     next_id: AtomicU32,
     jobs: Mutex<HashMap<u32, CancelToken>>,
+    /// H-96: the last known status of every job this service starts, for `job_status` recovery
+    /// queries.
+    status: JobStatusRegistry,
 }
 
 /// Cheaply cloneable (an `Arc` inside), managed as Tauri state like `NormalizeService`.
@@ -76,6 +80,7 @@ pub fn start<R: Runtime>(
     documents: DocumentService,
     engine: EngineHandle,
     spectro: Arc<SpectroService>,
+    status: JobStatusRegistry,
 ) -> anyhow::Result<BakeService> {
     let registry = crate::plugins::registry()?;
     let emit: BakeEmitter = Arc::new(move |event| forward(&app, event));
@@ -87,6 +92,7 @@ pub fn start<R: Runtime>(
         emit,
         next_id: AtomicU32::new(1),
         jobs: Mutex::new(HashMap::new()),
+        status,
     })))
 }
 
@@ -153,6 +159,13 @@ impl BakeService {
         let job_id = self.0.next_id.fetch_add(1, Ordering::Relaxed);
         let cancel = CancelToken::new();
         self.0.jobs.lock().unwrap().insert(job_id, cancel.clone());
+        // H-96: recorded before the job thread spawns (mirrors `export.rs::start_job`).
+        self.0.status.record(JobProgressDto {
+            job_id,
+            kind: JobKind::Bake,
+            state: JobState::Running,
+            fraction: 0.0,
+        });
         let inner = Arc::clone(&self.0);
         let spawned = std::thread::Builder::new()
             .name("bake-job".into())
@@ -174,13 +187,18 @@ impl BakeService {
     }
 }
 
-fn progress_event(job_id: u32, state: JobState, fraction: f32) -> BakeEvent {
-    BakeEvent::Progress(JobProgressDto {
+/// Builds the progress event *and* records it in the recovery cache (H-96) — every caller wants
+/// both, so there is exactly one place a progress tick can be recorded without being emitted (or
+/// vice versa).
+fn progress_event(inner: &Inner, job_id: u32, state: JobState, fraction: f32) -> BakeEvent {
+    let dto = JobProgressDto {
         job_id,
         kind: JobKind::Bake,
         state,
         fraction,
-    })
+    };
+    inner.status.record(dto);
+    BakeEvent::Progress(dto)
 }
 
 fn run_job(
@@ -190,6 +208,9 @@ fn run_job(
     model: RackModel,
     cancel: CancelToken,
 ) {
+    // H-96 item 4: bracket every bake with a start/finish log line (mirrors `export.rs`).
+    let started_at = Instant::now();
+    tracing::info!(job_id, "bake started");
     // SPEC-007 §4.1: tiles use at most half of the workers while the bake runs.
     let background = inner.spectro.as_ref().map(|s| s.begin_background_job());
     let emit = Arc::clone(&inner.emit);
@@ -207,14 +228,14 @@ fn run_job(
         |fraction| {
             if last_progress.is_none_or(|t| t.elapsed() >= PROGRESS_INTERVAL) {
                 last_progress = Some(Instant::now());
-                emit(progress_event(job_id, JobState::Running, fraction));
+                emit(progress_event(&inner, job_id, JobState::Running, fraction));
             }
         },
     );
     drop(background);
     inner.jobs.lock().unwrap().remove(&job_id);
 
-    match plan {
+    let final_state = match plan {
         // SPEC-004 OD-4 default: after the bake the rack is reset (empty).
         Ok(edit) => match inner
             .documents
@@ -232,20 +253,28 @@ fn run_job(
                     NoticeLevel::Info,
                     "notice.bake.done",
                 )));
-                (inner.emit)(progress_event(job_id, JobState::Done, 1.0));
+                (inner.emit)(progress_event(&inner, job_id, JobState::Done, 1.0));
+                JobState::Done
             }
             Err(err) => fail_job(&inner, job_id, &err),
         },
         Err(err) => {
             inner.documents.abandon_bake_job();
-            fail_job(&inner, job_id, &bake_error(err));
+            fail_job(&inner, job_id, &bake_error(err))
         }
-    }
+    };
+    tracing::info!(
+        job_id,
+        ?final_state,
+        elapsed_ms = started_at.elapsed().as_millis() as u64,
+        "bake finished"
+    );
 }
 
 /// A cancelled job reports `Cancelled` with no notice (the user asked for it); a failure
-/// reports `Failed` plus an error notice naming the reason.
-fn fail_job(inner: &Inner, job_id: u32, err: &IpcError) {
+/// reports `Failed` plus an error notice naming the reason. Returns the terminal state, so
+/// `run_job` can log it.
+fn fail_job(inner: &Inner, job_id: u32, err: &IpcError) -> JobState {
     let state = if err.code == IpcErrorCode::Cancelled {
         JobState::Cancelled
     } else {
@@ -256,7 +285,8 @@ fn fail_job(inner: &Inner, job_id: u32, err: &IpcError) {
     if state == JobState::Failed {
         (inner.emit)(BakeEvent::Notice(notice_from_error(err)));
     }
-    (inner.emit)(progress_event(job_id, state, 0.0));
+    (inner.emit)(progress_event(inner, job_id, state, 0.0));
+    state
 }
 
 #[cfg(test)]
@@ -419,6 +449,7 @@ mod tests {
             emit,
             next_id: AtomicU32::new(1),
             jobs: Mutex::new(HashMap::new()),
+            status: JobStatusRegistry::new(64),
         }));
         Harness {
             service,
@@ -718,6 +749,7 @@ mod tests {
             emit: Arc::new(|_| {}),
             next_id: AtomicU32::new(1),
             jobs: Mutex::new(HashMap::new()),
+            status: JobStatusRegistry::new(64),
         }));
         assert_eq!(
             service.start_job(0, 10).unwrap_err().key,
@@ -734,5 +766,23 @@ mod tests {
             slots: vec![slot(Gain::ID, true, &[], None)],
         };
         assert!(!rack_is_active(&bypassed));
+    }
+
+    /// H-96 item 2 (belt and braces): the status registry reflects a bake's terminal state, so a
+    /// UI that missed the terminal `job_progress` event can still recover via `job_status`.
+    #[test]
+    fn the_status_registry_reflects_the_terminal_state() {
+        let x = voice();
+        let len = x.len() as u64;
+        let h = harness("status-registry", &x, builtins());
+        load_rack(&h.handle, &ac16_rack());
+
+        let job_id = h.service.start_job(0, len).unwrap();
+        assert_eq!(wait_for_finish(&h.events), JobState::Done);
+
+        let got = h.service.0.status.get(job_id).expect("status recorded");
+        assert_eq!(got.state, JobState::Done);
+        assert!((got.fraction - 1.0).abs() < 1e-6);
+        assert!(h.service.0.status.get(job_id + 1000).is_none());
     }
 }

@@ -5,6 +5,7 @@ import { documentState } from "../document/document.svelte";
 import { rackHasNoiseOnlyOn } from "../export/export.svelte";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { rackState } from "../rack/rack.svelte";
+import { startJobStatusPoll } from "./jobStatusPoll";
 import { pushNotice } from "./notices.svelte";
 import { recordState } from "./record.svelte";
 import { hasSelection, selectionState } from "./selection.svelte";
@@ -32,8 +33,13 @@ let confirm = $state<{ range: [number, number] } | null>(null);
 /** `true` between `edit_bake_start` being sent and its job id arriving. */
 let starting = false;
 /** `job_progress` events of a bake that arrived before its job id did (a short bake can finish
- * before the start command resolves); applied once the id is known. */
+ * before the start command resolves); applied once the id is known. H-96: gated on `starting`
+ * alone, not on `job` being null — a *previous*, already-finished bake can still be sitting in
+ * `job` (not yet dismissed) when a new one starts, and its stale, non-matching id must not stop
+ * the new job's own early events from being buffered (see `applyBakeJobProgress`). */
 let early: JobProgressDto[] = [];
+/** H-96 item 2: stops the belt-and-braces `job_status` recovery poll for the current job. */
+let stopStatusPoll: (() => void) | null = null;
 let unlistenProgress: (() => void) | null = null;
 
 /** Read-only accessor for components. */
@@ -125,9 +131,18 @@ async function run(range: [number, number]): Promise<void> {
   try {
     const started = await editBakeStart(range[0], range[1]);
     job = { jobId: started.job_id, fraction: 0, state: "running" };
-    for (const payload of early) {
+    starting = false;
+    const buffered = early;
+    early = [];
+    for (const payload of buffered) {
       applyBakeJobProgress(payload);
     }
+    stopStatusPoll?.();
+    stopStatusPoll = startJobStatusPoll(
+      started.job_id,
+      () => job !== null && job.jobId === started.job_id && job.state === "running",
+      applyBakeJobProgress,
+    );
   } catch (err) {
     report(err);
   } finally {
@@ -136,18 +151,20 @@ async function run(range: [number, number]): Promise<void> {
   }
 }
 
-/** Applies one `job_progress` event (kind `bake` only) — pure, so it's directly testable. */
+/** Applies one `job_progress` event (kind `bake` only) — pure, so it's directly testable. H-96:
+ * buffers while `starting` regardless of whether `job` currently holds a *previous*, already-
+ * finished bake (not yet dismissed) — gating on `!job` instead would let that stale job's
+ * non-matching id fall through to the `payload.job_id !== job.jobId` check below and silently
+ * drop the new job's own early events. */
 export function applyBakeJobProgress(payload: JobProgressDto): void {
   if (payload.kind !== "bake") {
     return;
   }
-  if (!job) {
-    if (starting) {
-      early.push(payload);
-    }
+  if (starting) {
+    early.push(payload);
     return;
   }
-  if (payload.job_id !== job.jobId) {
+  if (!job || payload.job_id !== job.jobId) {
     return;
   }
   job = { jobId: payload.job_id, fraction: payload.fraction, state: payload.state };
@@ -168,6 +185,8 @@ async function ensureListening(): Promise<void> {
 
 /** Clears a finished job (the progress dialog calls it on Done/Cancelled/Failed). */
 export function dismissBakeJob(): void {
+  stopStatusPoll?.();
+  stopStatusPoll = null;
   job = null;
 }
 
@@ -184,6 +203,8 @@ export function resetBakeForTest(): void {
   confirm = null;
   starting = false;
   early = [];
+  stopStatusPoll?.();
+  stopStatusPoll = null;
   unlistenProgress?.();
   unlistenProgress = null;
 }

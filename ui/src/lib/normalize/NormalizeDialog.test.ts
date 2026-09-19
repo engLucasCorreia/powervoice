@@ -1,6 +1,6 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import { clearNotices } from "../state/notices.svelte";
 import { openNormalizeDialog, resetNormalizeForTest } from "../state/normalize.svelte";
@@ -103,8 +103,10 @@ describe("NormalizeDialog (S2-02, SPEC-010 §2.4/AC-14)", () => {
       throw new Error(`unmocked command: ${cmd}`);
     });
     target.querySelector<HTMLButtonElement>('[data-testid="normalize-dialog-apply"]')!.click();
-    await Promise.resolve();
-    await Promise.resolve();
+    // H-96: `run()` now awaits `ensureListening()` *before* the start command (subscribe before
+    // starting the job), so the start command lands a couple of microtask ticks later than a
+    // fixed `await Promise.resolve()` pair assumed — `vi.waitFor` instead of counting ticks.
+    await vi.waitFor(() => expect(calls.length).toBeGreaterThan(0));
     flushSync();
 
     expect(calls).toEqual([

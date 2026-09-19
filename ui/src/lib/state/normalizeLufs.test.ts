@@ -1,5 +1,5 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DocumentDto, NormalizeResultDto } from "../ipc/bindings";
 import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import { clearNotices } from "./notices.svelte";
@@ -248,5 +248,51 @@ describe("Normalize (LUFS)… dialog", () => {
     setNormalizeLufsDialogText("-14.0");
     expect(normalizeLufsState().dialogValid).toBe(true);
     expect(parseTargetLufs(`${MINUS}14.0`)).toBe(-14);
+  });
+});
+
+describe("H-96: job_progress ordering and recovery", () => {
+  /** Mirrors `normalize.test.ts`'s own H-96 regression test: `edit_normalize_lufs_start`'s mock
+   * applies the terminal event before resolving, standing in for a fast job that finishes before
+   * the old code's post-start `ensureListening()` would ever have attached. */
+  it("keeps a terminal event that fires before the start command resolves", async () => {
+    await openFixture();
+    mockIPC((cmd) => {
+      if (cmd === "edit_normalize_lufs_start") {
+        applyNormalizeLufsJobProgress({
+          job_id: 11,
+          kind: "normalize_lufs",
+          state: "done",
+          fraction: 1,
+        });
+        return { job_id: 11 };
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    await normalizeLufsFavorite(-19);
+    expect(normalizeLufsState().job).toEqual({ jobId: 11, fraction: 1, state: "done" });
+  });
+
+  it("recovers via job_status if the terminal event is missed entirely (belt and braces)", async () => {
+    vi.useFakeTimers();
+    try {
+      await openFixture();
+      mockIPC((cmd) => {
+        if (cmd === "edit_normalize_lufs_start") {
+          return { job_id: 21 };
+        }
+        if (cmd === "job_status") {
+          return { job_id: 21, kind: "normalize_lufs", state: "done", fraction: 1 };
+        }
+        throw new Error(`unmocked command: ${cmd}`);
+      });
+      await normalizeLufsFavorite(-19);
+      expect(normalizeLufsState().job?.state).toBe("running");
+
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(normalizeLufsState().job).toEqual({ jobId: 21, fraction: 1, state: "done" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

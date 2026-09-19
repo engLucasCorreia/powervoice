@@ -1,5 +1,5 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DocumentDto, NormalizeResultDto, Settings } from "../ipc/bindings";
 import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import { clearNotices } from "./notices.svelte";
@@ -208,6 +208,81 @@ describe("applyNormalizeJobProgress / applyNormalizeResult", () => {
     };
     applyNormalizeResult(result);
     expect(selectionState().current).toEqual({ startSample: 10, endSample: 20 });
+  });
+});
+
+describe("H-96: job_progress ordering and recovery", () => {
+  /** The regression test: `edit_normalize_peak_start`'s mock applies the terminal event as a
+   * side effect of resolving, standing in for a fast job whose backend thread runs the whole
+   * scan+write and emits every `job_progress` tick — Done included — before the start command's
+   * own promise resolves. Before the fix, `ensureListening()` only ran *after* this point, so
+   * the event above was undeliverable — this failed with `job?.state === "running"`. */
+  it("keeps a terminal event that fires before the start command resolves", async () => {
+    await openFixture();
+    mockIPC((cmd) => {
+      if (cmd === "edit_normalize_peak_start") {
+        applyNormalizeJobProgress({
+          job_id: 11,
+          kind: "normalize_peak",
+          state: "done",
+          fraction: 1,
+        });
+        return { job_id: 11 };
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    await normalizeFavorite(-1);
+    expect(normalizeState().job).toEqual({ jobId: 11, fraction: 1, state: "done" });
+  });
+
+  it("recovers via job_status if the terminal event is missed entirely (belt and braces)", async () => {
+    vi.useFakeTimers();
+    try {
+      await openFixture();
+      mockIPC((cmd) => {
+        if (cmd === "edit_normalize_peak_start") {
+          return { job_id: 21 };
+        }
+        if (cmd === "job_status") {
+          return { job_id: 21, kind: "normalize_peak", state: "done", fraction: 1 };
+        }
+        throw new Error(`unmocked command: ${cmd}`);
+      });
+      await normalizeFavorite(-1);
+      expect(normalizeState().job?.state).toBe("running");
+
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(normalizeState().job).toEqual({ jobId: 21, fraction: 1, state: "done" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops polling once the job is dismissed (no leaked timers)", async () => {
+    vi.useFakeTimers();
+    try {
+      await openFixture();
+      let statusCalls = 0;
+      mockIPC((cmd) => {
+        if (cmd === "edit_normalize_peak_start") {
+          return { job_id: 31 };
+        }
+        if (cmd === "job_status") {
+          statusCalls += 1;
+          return { job_id: 31, kind: "normalize_peak", state: "running", fraction: 0.2 };
+        }
+        throw new Error(`unmocked command: ${cmd}`);
+      });
+      await normalizeFavorite(-1);
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(statusCalls).toBe(1);
+
+      dismissNormalizeJob();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(statusCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

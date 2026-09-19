@@ -1,5 +1,5 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExportRequestDto, JobProgressDto, ParamInfoDto, RackSlotDto, RackStateDto } from "../ipc/bindings";
 import { loadRack, resetRackForTest } from "../rack/rack.svelte";
 import { clearNotices } from "../state/notices.svelte";
@@ -402,5 +402,89 @@ describe("confirmExport noise-only confirmation (SPEC-014 §2.6)", () => {
 
     expect(exportState().noiseOnlyConfirm).toBeNull();
     expect(exportState().job).toEqual({ jobId: 4, fraction: 0, state: "running" });
+  });
+});
+
+describe("H-96: job_progress ordering and recovery", () => {
+  /** The regression test named by the ticket: a job whose terminal event fires before the
+   * listener would have attached. `export_start`'s mock applies the event as a side effect of
+   * resolving — standing in for a fast export whose backend thread runs to completion and emits
+   * `Done` before the start command's own promise resolves. Before the ordering fix,
+   * `ensureListening()` only ran *after* this point (`await exportStart(...)` then
+   * `await ensureListening()`), so this event was undeliverable and the store stayed stuck at
+   * `running` — this test must fail against that code. */
+  it("keeps a terminal event that fires before the start command resolves", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "plugin:dialog|save") {
+        return "/home/user/out.wav";
+      }
+      if (cmd === "export_start") {
+        applyJobProgress({ job_id: 9, kind: "export", state: "done", fraction: 1 });
+        return { job_id: 9 };
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    openExportDialog("take");
+    await confirmExport({ kind: "wav", bits: "24" }, 48_000);
+    expect(exportState().job).toEqual({ jobId: 9, fraction: 1, state: "done" });
+  });
+
+  /** Belt and braces (item 2): even with the ordering fix, a UI that somehow still misses the
+   * terminal event must recover — polling `job_status` on a timeout rather than trusting
+   * `job_progress` alone. */
+  it("recovers via job_status if the terminal event is missed entirely", async () => {
+    vi.useFakeTimers();
+    try {
+      mockIPC((cmd) => {
+        if (cmd === "plugin:dialog|save") {
+          return "/home/user/out.wav";
+        }
+        if (cmd === "export_start") {
+          return { job_id: 21 };
+        }
+        if (cmd === "job_status") {
+          return { job_id: 21, kind: "export", state: "done", fraction: 1 };
+        }
+        throw new Error(`unmocked command: ${cmd}`);
+      });
+      openExportDialog("take");
+      await confirmExport({ kind: "wav", bits: "24" }, 48_000);
+      expect(exportState().job?.state).toBe("running");
+
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(exportState().job).toEqual({ jobId: 21, fraction: 1, state: "done" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops polling once the job is dismissed (no leaked timers)", async () => {
+    vi.useFakeTimers();
+    try {
+      let statusCalls = 0;
+      mockIPC((cmd) => {
+        if (cmd === "plugin:dialog|save") {
+          return "/home/user/out.wav";
+        }
+        if (cmd === "export_start") {
+          return { job_id: 31 };
+        }
+        if (cmd === "job_status") {
+          statusCalls += 1;
+          return { job_id: 31, kind: "export", state: "running", fraction: 0.2 };
+        }
+        throw new Error(`unmocked command: ${cmd}`);
+      });
+      openExportDialog("take");
+      await confirmExport({ kind: "wav", bits: "24" }, 48_000);
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(statusCalls).toBe(1);
+
+      dismissExportJob();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(statusCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

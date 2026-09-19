@@ -21,6 +21,7 @@ import type {
   ExportFormatsDto,
   ExportRequestDto,
   ExportStartedDto,
+  JobProgressDto,
   LoudnessAnalyzeRequestDto,
   LoudnessAnalyzeStartedDto,
   MarkerDto,
@@ -787,6 +788,17 @@ export async function exportStart(request: ExportRequestDto): Promise<ExportStar
 /** S4-04: cancels a running export job (best-effort). */
 export async function exportCancel(jobId: number): Promise<void> {
   return invoke<void>("export_cancel" satisfies CommandName, { jobId });
+}
+
+/**
+ * H-96 "belt and braces": the last known status of any job (any kind — export, normalize
+ * peak/LUFS, bake), or `null` for an id this app session never started or has long since
+ * finished and evicted from the backend's small recovery cache. The UI polls this on a timeout
+ * while a job's store still shows `running`, in case the terminal `job_progress` event for it was
+ * ever missed (ADR-003, MEMORY.md H-96).
+ */
+export async function jobStatusGet(jobId: number): Promise<JobProgressDto | null> {
+  return invoke<JobProgressDto | null>("job_status" satisfies CommandName, { jobId });
 }
 
 /**

@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use tauri::{AppHandle, Emitter as _, Runtime};
 use vox_project::{CancelToken, plan_normalize_lufs, plan_normalize_peak, target_pct_to_db};
@@ -29,6 +30,7 @@ use crate::ipc::{
     EventName, IpcError, IpcErrorCode, JobKind, JobProgressDto, JobState, NormalizeResultDto,
     Notice, NoticeLevel, emit_job_progress, emit_normalize_result, emit_notice,
 };
+use crate::job_status::JobStatusRegistry;
 
 // A handful of events per normalize job, moved once into the emitter — the `DocumentChanged`
 // variant's size (DocumentDto grew with H-12's view state and T-301's `recovered`) doesn't
@@ -58,6 +60,9 @@ struct Inner {
     emit: NormalizeEmitter,
     next_id: AtomicU32,
     jobs: Mutex<HashMap<u32, JobHandle>>,
+    /// H-96: the last known status of every job this service starts, for `job_status` recovery
+    /// queries.
+    status: JobStatusRegistry,
 }
 
 /// Cheaply cloneable (an `Arc` inside), managed as Tauri state like `ExportService`.
@@ -68,6 +73,7 @@ pub struct NormalizeService(Arc<Inner>);
 pub fn start<R: Runtime>(
     app: AppHandle<R>,
     documents: DocumentService,
+    status: JobStatusRegistry,
 ) -> anyhow::Result<NormalizeService> {
     let emit: NormalizeEmitter = Arc::new(move |event| forward(&app, event));
     Ok(NormalizeService(Arc::new(Inner {
@@ -75,6 +81,7 @@ pub fn start<R: Runtime>(
         emit,
         next_id: AtomicU32::new(1),
         jobs: Mutex::new(HashMap::new()),
+        status,
     })))
 }
 
@@ -134,6 +141,13 @@ impl NormalizeService {
                 cancel: cancel.clone(),
             },
         );
+        // H-96: recorded before the job thread spawns (mirrors `export.rs::start_job`).
+        self.0.status.record(JobProgressDto {
+            job_id,
+            kind: JobKind::NormalizePeak,
+            state: JobState::Running,
+            fraction: 0.0,
+        });
         let inner = Arc::clone(&self.0);
         std::thread::Builder::new()
             .name("normalize-peak-job".into())
@@ -155,6 +169,13 @@ impl NormalizeService {
                 cancel: cancel.clone(),
             },
         );
+        // H-96: recorded before the job thread spawns (mirrors `export.rs::start_job`).
+        self.0.status.record(JobProgressDto {
+            job_id,
+            kind: JobKind::NormalizeLufs,
+            state: JobState::Running,
+            fraction: 0.0,
+        });
         let inner = Arc::clone(&self.0);
         std::thread::Builder::new()
             .name("normalize-lufs-job".into())
@@ -172,6 +193,25 @@ impl NormalizeService {
     }
 }
 
+/// Builds the progress event *and* records it in the recovery cache (H-96) — every caller wants
+/// both (mirrors `bake.rs::progress_event`).
+fn progress_event(
+    inner: &Inner,
+    job_id: u32,
+    kind: JobKind,
+    state: JobState,
+    fraction: f32,
+) -> NormalizeEvent {
+    let dto = JobProgressDto {
+        job_id,
+        kind,
+        state,
+        fraction,
+    };
+    inner.status.record(dto);
+    NormalizeEvent::Progress(dto)
+}
+
 fn run_peak_job(
     inner: Arc<Inner>,
     job_id: u32,
@@ -179,6 +219,9 @@ fn run_peak_job(
     target_db: f64,
     cancel: CancelToken,
 ) {
+    // H-96 item 4: bracket every normalize job with a start/finish log line (mirrors `export.rs`).
+    let started_at = Instant::now();
+    tracing::info!(job_id, kind = "normalize_peak", "normalize started");
     let emit = Arc::clone(&inner.emit);
     let plan_result = plan_normalize_peak(
         &source.store,
@@ -188,17 +231,18 @@ fn run_peak_job(
         target_db,
         &cancel,
         |fraction| {
-            emit(NormalizeEvent::Progress(JobProgressDto {
+            emit(progress_event(
+                &inner,
                 job_id,
-                kind: JobKind::NormalizePeak,
-                state: JobState::Running,
+                JobKind::NormalizePeak,
+                JobState::Running,
                 fraction,
-            }));
+            ));
         },
     );
     inner.jobs.lock().unwrap().remove(&job_id);
 
-    match plan_result {
+    let final_state = match plan_result {
         Ok(plan) => match inner.documents.finish_normalize_peak(&source, plan) {
             Ok(outcome) => {
                 // H-50: mirrors `fail_job`'s H-30 ordering — every event that answers "what
@@ -224,12 +268,14 @@ fn run_peak_job(
                     kind: JobKind::NormalizePeak,
                     result: outcome.result.into(),
                 }));
-                (inner.emit)(NormalizeEvent::Progress(JobProgressDto {
+                (inner.emit)(progress_event(
+                    &inner,
                     job_id,
-                    kind: JobKind::NormalizePeak,
-                    state: JobState::Done,
-                    fraction: 1.0,
-                }));
+                    JobKind::NormalizePeak,
+                    JobState::Done,
+                    1.0,
+                ));
+                JobState::Done
             }
             Err(err) => fail_job(&inner, job_id, JobKind::NormalizePeak, err),
         },
@@ -240,9 +286,16 @@ fn run_peak_job(
                 job_id,
                 JobKind::NormalizePeak,
                 document_error(project_err),
-            );
+            )
         }
-    }
+    };
+    tracing::info!(
+        job_id,
+        kind = "normalize_peak",
+        ?final_state,
+        elapsed_ms = started_at.elapsed().as_millis() as u64,
+        "normalize finished"
+    );
 }
 
 fn run_lufs_job(
@@ -252,6 +305,8 @@ fn run_lufs_job(
     target_lufs: f64,
     cancel: CancelToken,
 ) {
+    let started_at = Instant::now();
+    tracing::info!(job_id, kind = "normalize_lufs", "normalize started");
     let emit = Arc::clone(&inner.emit);
     let plan_result = plan_normalize_lufs(
         &source.store,
@@ -261,17 +316,18 @@ fn run_lufs_job(
         target_lufs,
         &cancel,
         |fraction| {
-            emit(NormalizeEvent::Progress(JobProgressDto {
+            emit(progress_event(
+                &inner,
                 job_id,
-                kind: JobKind::NormalizeLufs,
-                state: JobState::Running,
+                JobKind::NormalizeLufs,
+                JobState::Running,
                 fraction,
-            }));
+            ));
         },
     );
     inner.jobs.lock().unwrap().remove(&job_id);
 
-    match plan_result {
+    let final_state = match plan_result {
         Ok(plan) => match inner.documents.finish_normalize_lufs(&source, plan) {
             Ok(outcome) => {
                 // H-50: same success-path ordering as `run_peak_job` above.
@@ -295,12 +351,14 @@ fn run_lufs_job(
                     kind: JobKind::NormalizeLufs,
                     result: outcome.result.into(),
                 }));
-                (inner.emit)(NormalizeEvent::Progress(JobProgressDto {
+                (inner.emit)(progress_event(
+                    &inner,
                     job_id,
-                    kind: JobKind::NormalizeLufs,
-                    state: JobState::Done,
-                    fraction: 1.0,
-                }));
+                    JobKind::NormalizeLufs,
+                    JobState::Done,
+                    1.0,
+                ));
+                JobState::Done
             }
             Err(err) => fail_job(&inner, job_id, JobKind::NormalizeLufs, err),
         },
@@ -311,9 +369,16 @@ fn run_lufs_job(
                 job_id,
                 JobKind::NormalizeLufs,
                 document_error(project_err),
-            );
+            )
         }
-    }
+    };
+    tracing::info!(
+        job_id,
+        kind = "normalize_lufs",
+        ?final_state,
+        elapsed_ms = started_at.elapsed().as_millis() as u64,
+        "normalize finished"
+    );
 }
 
 /// Common tail for a cancelled or failed job (either pass 1/2's own `ProjectError::Cancelled`, or
@@ -321,8 +386,8 @@ fn run_lufs_job(
 /// `job_progress` reports `Cancelled`/`Failed`, and a cancellation posts no notice (the user asked
 /// for it) while a real failure does. H-30: the notice goes out before the terminal progress
 /// event (bake.rs's `fail_job` convention), so anything that sees `Failed` — the UI's job store,
-/// tests — already has the reason.
-fn fail_job(inner: &Inner, job_id: u32, kind: JobKind, err: IpcError) {
+/// tests — already has the reason. Returns the terminal state, so the caller can log it.
+fn fail_job(inner: &Inner, job_id: u32, kind: JobKind, err: IpcError) -> JobState {
     let state = if err.code == IpcErrorCode::Cancelled {
         JobState::Cancelled
     } else {
@@ -331,12 +396,8 @@ fn fail_job(inner: &Inner, job_id: u32, kind: JobKind, err: IpcError) {
     if state == JobState::Failed {
         (inner.emit)(NormalizeEvent::Notice(notice_from_error(&err)));
     }
-    (inner.emit)(NormalizeEvent::Progress(JobProgressDto {
-        job_id,
-        kind,
-        state,
-        fraction: 0.0,
-    }));
+    (inner.emit)(progress_event(inner, job_id, kind, state, 0.0));
+    state
 }
 
 #[cfg(test)]
@@ -426,6 +487,7 @@ mod tests {
             emit,
             next_id: AtomicU32::new(1),
             jobs: Mutex::new(HashMap::new()),
+            status: JobStatusRegistry::new(64),
         });
         (NormalizeService(inner), documents, engine, dir, events)
     }
@@ -667,6 +729,7 @@ mod tests {
             emit,
             next_id: AtomicU32::new(1),
             jobs: Mutex::new(HashMap::new()),
+            status: JobStatusRegistry::new(64),
         });
         let service = NormalizeService(inner);
 
@@ -681,6 +744,34 @@ mod tests {
             "the notice must already be present once `Failed` is observed: {got:?}"
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// H-96 item 2 (belt and braces): the status registry reflects a normalize job's terminal
+    /// state (peak and LUFS both), so a UI that missed the terminal `job_progress` event can
+    /// still recover via `job_status`.
+    #[test]
+    fn the_status_registry_reflects_the_terminal_state_for_both_kinds() {
+        let samples = vox_testkit::signal::sine(440.0, -12.0, 0.2, 48_000).unwrap();
+        let len = samples.len() as u64;
+        let (service, documents, _engine, dir, events) =
+            service_with_doc("status-registry-peak", &samples);
+        let job_id = service.start_peak_job(0, len, Some(-1.0), None).unwrap();
+        assert_eq!(wait_for_finish(&events), JobState::Done);
+        let got = service.0.status.get(job_id).expect("status recorded");
+        assert_eq!(got.state, JobState::Done);
+        assert!(!documents.is_normalize_busy());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let samples = vox_testkit::signal::sine(440.0, -12.0, 0.2, 48_000).unwrap();
+        let len = samples.len() as u64;
+        let (service, _documents, _engine, dir, events) =
+            service_with_doc("status-registry-lufs", &samples);
+        let job_id = service.start_lufs_job(0, len, -19.0).unwrap();
+        assert_eq!(wait_for_finish(&events), JobState::Done);
+        let got = service.0.status.get(job_id).expect("status recorded");
+        assert_eq!(got.state, JobState::Done);
+        assert!(service.0.status.get(job_id + 1000).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

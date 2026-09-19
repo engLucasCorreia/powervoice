@@ -36,6 +36,7 @@ use crate::ipc::{
     IpcError, IpcErrorCode, JobKind, JobProgressDto, JobState, Notice, NoticeLevel,
     emit_job_progress, emit_notice,
 };
+use crate::job_status::JobStatusRegistry;
 
 /// Output format + its settings (mirrors `vox_io`'s per-format types).
 #[derive(Debug, Clone, Copy)]
@@ -79,6 +80,9 @@ struct Inner {
     emit: ExportEmitter,
     next_id: AtomicU32,
     jobs: Mutex<std::collections::HashMap<u32, JobHandle>>,
+    /// H-96: the last known status of every job this service starts, for `job_status` recovery
+    /// queries (belt and braces against a UI that missed the terminal `job_progress` event).
+    status: JobStatusRegistry,
 }
 
 /// Cheaply cloneable (an `Arc` inside), managed as Tauri state (like [`DocumentService`]).
@@ -92,6 +96,7 @@ pub fn start<R: Runtime>(
     documents: DocumentService,
     engine: EngineHandle,
     spectro: Arc<SpectroService>,
+    status: JobStatusRegistry,
 ) -> anyhow::Result<ExportService> {
     let registry = crate::plugins::registry()?;
     let emit: ExportEmitter = Arc::new(move |event| forward(&app, event));
@@ -103,6 +108,7 @@ pub fn start<R: Runtime>(
         emit,
         next_id: AtomicU32::new(1),
         jobs: Mutex::new(std::collections::HashMap::new()),
+        status,
     })))
 }
 
@@ -142,6 +148,15 @@ impl ExportService {
                 cancel: cancel.clone(),
             },
         );
+        // H-96: recorded before the job thread even spawns, so a `job_status` query racing the
+        // very start of the job (however unlikely) never sees "unknown" for a job id the caller
+        // just received.
+        self.0.status.record(JobProgressDto {
+            job_id,
+            kind: JobKind::Export,
+            state: JobState::Running,
+            fraction: 0.0,
+        });
         let inner = Arc::clone(&self.0);
         std::thread::Builder::new()
             .name("export-job".into())
@@ -242,6 +257,18 @@ fn run_job(
     target_rate_hz: u32,
     cancel: CancelToken,
 ) {
+    // H-96 item 4: the owner's log had no export line at all, so a completed export was
+    // indistinguishable from a lost one. One start line and one finish line, at the level an
+    // operator actually reads (`info`), bracket every export regardless of outcome.
+    let started_at = std::time::Instant::now();
+    tracing::info!(
+        job_id,
+        path = %path.display(),
+        start,
+        end,
+        target_rate_hz,
+        "export started"
+    );
     // SPEC-007 §4.1 (H-30): tiles use at most half of the workers while the export runs (mirrors
     // bake.rs's own guard).
     let background = inner.spectro.as_ref().map(|s| s.begin_background_job());
@@ -257,12 +284,14 @@ fn run_job(
         target_rate_hz,
         &cancel,
         |fraction| {
-            emit(ExportEvent::Progress(JobProgressDto {
+            let dto = JobProgressDto {
                 job_id,
                 kind: JobKind::Export,
                 state: JobState::Running,
                 fraction,
-            }));
+            };
+            inner.status.record(dto);
+            emit(ExportEvent::Progress(dto));
         },
     );
     drop(background);
@@ -291,12 +320,21 @@ fn run_job(
             Notice::toast(NoticeLevel::Info, "notice.export.done").with_param("name", name),
         ));
     }
-    (inner.emit)(ExportEvent::Progress(JobProgressDto {
+    tracing::info!(
+        job_id,
+        path = %path.display(),
+        ?state,
+        elapsed_ms = started_at.elapsed().as_millis() as u64,
+        "export finished"
+    );
+    let dto = JobProgressDto {
         job_id,
         kind: JobKind::Export,
         state,
         fraction,
-    }));
+    };
+    inner.status.record(dto);
+    (inner.emit)(ExportEvent::Progress(dto));
 }
 
 /// Renders `[start, end)` of `source`'s snapshot through `model` into memory (T-602: the render
@@ -870,6 +908,7 @@ mod tests {
             emit,
             next_id: AtomicU32::new(1),
             jobs: Mutex::new(std::collections::HashMap::new()),
+            status: JobStatusRegistry::new(64),
         });
         let service = ExportService(inner);
 
@@ -942,6 +981,7 @@ mod tests {
             emit: Arc::new(|_| {}),
             next_id: AtomicU32::new(1),
             jobs: Mutex::new(std::collections::HashMap::new()),
+            status: JobStatusRegistry::new(64),
         });
 
         let out_path = dir.join("out.wav");
@@ -1052,6 +1092,7 @@ mod tests {
             emit,
             next_id: AtomicU32::new(1),
             jobs: Mutex::new(std::collections::HashMap::new()),
+            status: JobStatusRegistry::new(64),
         });
 
         let out_path = dir.join("out.wav");
@@ -1080,6 +1121,59 @@ mod tests {
                 .any(|e| matches!(e, SuccessTestEvent::Notice(key) if key == "notice.export.done")),
             "the done notice must already be present once Done is observed: {got:?}"
         );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// H-96 item 2 (belt and braces): even if the UI never received a single `job_progress`
+    /// event for this job (the exact race the ticket describes — a fast job finishes before the
+    /// listener attaches), `JobStatusRegistry` still answers a `job_status` query with the job's
+    /// actual terminal state, recovering the stuck panel.
+    #[test]
+    fn the_status_registry_reflects_the_terminal_state_even_with_no_listener() {
+        let dir = tmp_dir("status-registry");
+        let fake = FakeBackend::new(1);
+        let engine_registry =
+            Arc::new(Registry::with_factories(vox_modules::builtin_factories()).unwrap());
+        let engine = Engine::start(EngineConfig::new(Arc::new(fake), engine_registry)).unwrap();
+        let documents = DocumentService::new(dir.join("sessions"), engine.handle());
+
+        let samples = vox_testkit::signal::sine(440.0, -12.0, 0.05, 48_000).unwrap();
+        let len = samples.len() as u64;
+        let source = source_from(&dir, &samples, 48_000);
+
+        let status = JobStatusRegistry::new(64);
+        let inner = Arc::new(Inner {
+            documents,
+            engine: engine.handle(),
+            registry: Arc::new(registry()),
+            spectro: None,
+            // No listener at all — mirrors a UI that missed every `job_progress` event for this
+            // job, terminal one included.
+            emit: Arc::new(|_| {}),
+            next_id: AtomicU32::new(1),
+            jobs: Mutex::new(std::collections::HashMap::new()),
+            status: status.clone(),
+        });
+
+        let out_path = dir.join("out.wav");
+        run_job(
+            inner,
+            42,
+            source,
+            RackModel::default(),
+            0,
+            len,
+            out_path,
+            ExportFormat::Wav(vox_io::BitDepth::Int24),
+            48_000,
+            CancelToken::new(),
+        );
+
+        let got = status.get(42).expect("the job's status was recorded");
+        assert_eq!(got.state, JobState::Done);
+        assert!((got.fraction - 1.0).abs() < 1e-6);
+        assert!(status.get(999).is_none(), "an unknown job id is None");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

@@ -146,6 +146,51 @@ describe("BakeDialogs (T-602)", () => {
     unmount(app);
   });
 
+  /**
+   * H-96 (owner escalation): the owner's frozen instance wasn't just showing a stale panel — the
+   * WebView was unresponsive (Cancel did nothing, the window's close shortcut did nothing) and
+   * the process ignored SIGTERM, which only happens if something is spinning hard enough to
+   * starve the event loop. This mounts the real dialog tree and simulates the worst case a lost
+   * terminal event (or a still-failing `job_status` recovery poll) can produce — a job wedged in
+   * `running` for a long stretch of simulated time — and asserts the opposite: no reactive loop
+   * (Svelte's `effect_update_depth_exceeded` guard would show up as a `console.error`), and the
+   * Cancel button stays clickable and still tears down the panel.
+   */
+  it("stays responsive with a job wedged in running for a long time — Cancel still works", async () => {
+    await setUp([rackSlotDto()]);
+    const calls = mockBake();
+    const { target, app } = mountDialogs();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await startBake();
+    flushSync();
+    vi.advanceTimersByTime(260);
+    flushSync();
+    expect(q(target, "bake-progress-dialog")).not.toBeNull();
+
+    // No further `job_progress` ever arrives (the exact wedge H-96 describes), and `job_status`
+    // is unmocked (rejects), so the belt-and-braces poll can't recover it either — the worst
+    // case. Advance well past many poll intervals.
+    await vi.advanceTimersByTimeAsync(60_000);
+    flushSync();
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(bakeState().job?.state).toBe("running");
+    const cancelBtn = q(target, "bake-progress-cancel") as HTMLButtonElement | null;
+    expect(cancelBtn).not.toBeNull();
+    expect(cancelBtn!.disabled).toBe(false);
+    cancelBtn!.click();
+    await Promise.resolve();
+    expect(calls).toContainEqual(["edit_bake_cancel", { jobId: 3 }]);
+
+    // The panel still tears down once the (real) cancellation is acknowledged.
+    applyBakeJobProgress({ job_id: 3, kind: "bake", state: "cancelled", fraction: 0 });
+    flushSync();
+    expect(q(target, "bake-progress-dialog")).toBeNull();
+
+    errorSpy.mockRestore();
+    unmount(app);
+  });
+
   it("a bake that finishes within 250 ms never shows the progress dialog", async () => {
     await setUp([rackSlotDto()]);
     mockBake();

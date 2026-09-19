@@ -12,6 +12,7 @@ import type {
 import { exportCancel, exportFormats, exportStart } from "../ipc/commands";
 import { noticeFromIpcError } from "../notices/fromIpcError";
 import { rackState } from "../rack/rack.svelte";
+import { startJobStatusPoll } from "../state/jobStatusPoll";
 import { pushNotice } from "../state/notices.svelte";
 
 /**
@@ -44,6 +45,15 @@ let mp3Available = $state(false);
 let job = $state<ExportJobState | null>(null);
 let noiseOnlyConfirm = $state<NoiseOnlyConfirmState | null>(null);
 let unlistenProgress: (() => void) | null = null;
+/** H-96: `true` between `exportStart` being sent and its job id arriving — a `job_progress`
+ * event for it can arrive in that gap (the listener is now attached *before* the start command,
+ * but the start command's own promise can still resolve after an event the backend already sent
+ * for a very fast job). Events that arrive then are buffered in `early` and replayed once `job`
+ * is set (mirrors `state/bake.svelte.ts`'s own early-event buffer). */
+let starting = false;
+let early: JobProgressDto[] = [];
+/** H-96 item 2: stops the belt-and-braces `job_status` recovery poll for the current job. */
+let stopStatusPoll: (() => void) | null = null;
 
 /** Read-only accessor for components. */
 export function exportState(): {
@@ -172,19 +182,49 @@ async function startExport(
   }
   prompt = null;
   const request: ExportRequestDto = { path, format, sample_rate_hz: sampleRateHz, range };
+  // H-96: subscribe *before* starting the job — a fast export can emit every `job_progress`
+  // event, terminal one included, before a listener attached after `exportStart` would ever be
+  // registered (the owner's reported bug: a short export completed but the UI never left
+  // "running"). `starting`/`early` cover the residual gap between the start command being sent
+  // and its job id becoming known locally.
+  await ensureListening();
+  starting = true;
+  early = [];
   try {
     const started = await exportStart(request);
     job = { jobId: started.job_id, fraction: 0, state: "running" };
-    await ensureListening();
+    starting = false;
+    const buffered = early;
+    early = [];
+    for (const payload of buffered) {
+      if (payload.job_id === job.jobId) {
+        job = { jobId: payload.job_id, fraction: payload.fraction, state: payload.state };
+      }
+    }
+    stopStatusPoll?.();
+    stopStatusPoll = startJobStatusPoll(
+      started.job_id,
+      () => job !== null && job.jobId === started.job_id && job.state === "running",
+      applyJobProgress,
+    );
   } catch (err) {
     report(err);
+  } finally {
+    starting = false;
+    early = [];
   }
 }
 
 /** Applies one `job_progress` event to the store — a pure function so it's directly testable
  * without a real Tauri event transport (mirrors `document.svelte.ts`'s untested `listen` wiring:
- * the side effect is best-effort, the logic it drives is not). */
+ * the side effect is best-effort, the logic it drives is not). H-96: while a job is starting (the
+ * command sent, its id not yet known locally), a matching event is buffered rather than dropped —
+ * see `startExport`. */
 export function applyJobProgress(payload: JobProgressDto): void {
+  if (starting) {
+    early.push(payload);
+    return;
+  }
   if (!job || payload.job_id !== job.jobId) {
     return;
   }
@@ -208,6 +248,8 @@ async function ensureListening(): Promise<void> {
 
 /** Dismisses a finished job's progress panel (Done/Cancelled/Failed). */
 export function dismissExportJob(): void {
+  stopStatusPoll?.();
+  stopStatusPoll = null;
   job = null;
 }
 
@@ -224,6 +266,10 @@ export function resetExportStateForTest(): void {
   mp3Available = false;
   job = null;
   noiseOnlyConfirm = null;
+  starting = false;
+  early = [];
+  stopStatusPoll?.();
+  stopStatusPoll = null;
   unlistenProgress?.();
   unlistenProgress = null;
 }

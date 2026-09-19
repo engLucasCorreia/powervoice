@@ -317,7 +317,17 @@ high_hz: number,
 /**
  * 0 … 1.
  */
-voiced_fraction: number, };
+voiced_fraction: number, 
+/**
+ * H-91: `1 − median aperiodicity` of the voiced frames, 0 … 1 — how periodic the voice
+ * actually was, so a firm reading can be told from a breathy guess.
+ */
+confidence: number, 
+/**
+ * H-91: share of the voiced frames that were an octave off the robust centre and were
+ * folded onto it, 0 … 1.
+ */
+octave_corrected: number, };
 
 /**
  * S2-01: the Edit menu's Undo/Redo state (`history_state` event). Labels are i18n keys

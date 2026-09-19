@@ -105,6 +105,12 @@ pub struct F0StatsDto {
     pub high_hz: f64,
     /// 0 … 1.
     pub voiced_fraction: f64,
+    /// H-91: `1 − median aperiodicity` of the voiced frames, 0 … 1 — how periodic the voice
+    /// actually was, so a firm reading can be told from a breathy guess.
+    pub confidence: f64,
+    /// H-91: share of the voiced frames that were an octave off the robust centre and were
+    /// folded onto it, 0 … 1.
+    pub octave_corrected: f64,
 }
 
 /// Per-octave densities relative to the 1 kHz octave (dB), SPEC-007 §8.7.
@@ -165,6 +171,8 @@ impl From<&VoiceReport> for VoiceReportDto {
                 low_hz: f.low_hz,
                 high_hz: f.high_hz,
                 voiced_fraction: f.voiced_fraction,
+                confidence: f.confidence,
+                octave_corrected: f.octave_corrected,
             }),
             tone: r.tone.map(|t| ToneBalanceDto {
                 mud_db: t.mud_db,

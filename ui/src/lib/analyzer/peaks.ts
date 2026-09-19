@@ -53,6 +53,21 @@ export const DEFAULT_PEAK_SPACING_OCT = 1 / 6;
 export const DEFAULT_PEAK_PROMINENCE_DB = 6;
 export const DEFAULT_PROMINENCE_WINDOW_OCT = 1 / 3;
 
+/**
+ * Index of the first point whose frequency is at or above `freqHz`, within `[lo, hi)` of an
+ * ascending `freqsHz`. Exported because every consumer that has to look a frequency up in a
+ * curve — peak picking here, the harmonic windows of H-91's voice report — needs the same
+ * search, and two of them would drift apart.
+ */
+export function firstIndexAtOrAbove(
+  freqs: ArrayLike<number>,
+  freqHz: number,
+  lo = 0,
+  hi = freqs.length,
+): number {
+  return lowerBound(freqs, freqHz, lo, hi);
+}
+
 function lowerBound(freqs: ArrayLike<number>, f: number, lo: number, hi: number): number {
   let a = lo;
   let b = hi;
@@ -98,6 +113,25 @@ function interpolatedFreq(freqs: ArrayLike<number>, i: number, delta: number): n
   // Geometric interpolation: right for log-spaced bands, indistinguishable from linear for
   // closely spaced FFT bins.
   return f * (neighbour / f) ** Math.abs(delta);
+}
+
+/**
+ * The maximum at `index` refined by parabolic interpolation of the three points around it
+ * (geometric in frequency, as SPEC-007 §8.2 specifies for the peak labels). Exported for the
+ * same reason as {@link firstIndexAtOrAbove}: H-91's harmonic measurement refines the maximum
+ * it finds inside a harmonic's band exactly the way a labelled peak is refined.
+ */
+export function refinePeakAt(
+  curve: SpectrumCurveLike,
+  index: number,
+): { freqHz: number; levelDb: number } {
+  const { freqsHz: freqs, levelsDb: levels } = curve;
+  const n = Math.min(freqs.length, levels.length);
+  if (index <= 0 || index >= n - 1) {
+    return { freqHz: freqs[index] ?? 0, levelDb: levels[index] ?? -Infinity };
+  }
+  const { delta, level } = refine(levels, index);
+  return { freqHz: interpolatedFreq(freqs, index, delta), levelDb: level };
 }
 
 /** The loudest well-separated peaks of `curve`, loudest first. */
@@ -147,8 +181,7 @@ export function findPeaks(curve: SpectrumCurveLike, options: PeakOptions = {}): 
     if (!(prominence >= minProminence)) {
       continue;
     }
-    const { delta, level } = refine(levels, i);
-    const freqHz = interpolatedFreq(freqs, i, delta);
+    const { freqHz, levelDb: level } = refinePeakAt(curve, i);
     if (kept.some((p) => Math.abs(Math.log2(freqHz / p.freqHz)) < spacing)) {
       continue;
     }

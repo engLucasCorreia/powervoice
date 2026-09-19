@@ -182,7 +182,7 @@ export function vxltFrame(jobId: number, index: number, fs: number, fft: number,
 }
 
 export const PREVIEW_VOICE_REPORT: VoiceReportDto = {
-  f0: { current_hz: 131.4, median_hz: 128.9, low_hz: 112.3, high_hz: 151.7, voiced_fraction: 0.64 },
+  f0: { current_hz: 131.4, median_hz: 128.9, low_hz: 112.3, high_hz: 151.7, voiced_fraction: 0.64, confidence: 0.9, octave_corrected: 0 },
   tone: { mud_db: 7.2, presence_db: -9.1, air_db: -24.5 },
   sibilance: { ratio_db: -14.8, centre_hz: 6310 },
   hum: { mains_hz: 50, harmonics: [1, 2, 3], strongest_hz: 100.1, prominence_db: 21.4, level_db: -71.2 },
@@ -196,13 +196,13 @@ export const PREVIEW_VOICE_REPORT: VoiceReportDto = {
 export const PREVIEW_AVERAGE_REPORTS: Record<"source" | "processed", VoiceReportDto> = {
   source: {
     ...PREVIEW_VOICE_REPORT,
-    f0: { current_hz: null, median_hz: 129.6, low_hz: 110.8, high_hz: 154.2, voiced_fraction: 0.61 },
+    f0: { current_hz: null, median_hz: 129.6, low_hz: 110.8, high_hz: 154.2, voiced_fraction: 0.61, confidence: 0.9, octave_corrected: 0 },
     tone: { mud_db: 10.4, presence_db: -11.2, air_db: -27.9 },
     span_s: 94.6,
   },
   processed: {
     ...PREVIEW_VOICE_REPORT,
-    f0: { current_hz: null, median_hz: 129.6, low_hz: 110.8, high_hz: 154.2, voiced_fraction: 0.61 },
+    f0: { current_hz: null, median_hz: 129.6, low_hz: 110.8, high_hz: 154.2, voiced_fraction: 0.61, confidence: 0.9, octave_corrected: 0 },
     tone: { mud_db: 3.1, presence_db: -6.4, air_db: -19.8 },
     hum: null,
     noise_floor_dbfs: -71.9,

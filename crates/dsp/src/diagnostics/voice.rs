@@ -23,9 +23,13 @@
 //! F0 (YIN, [`super::pitch`]) every 10 ms live, 20 ms offline. Statistics over the voiced
 //! frames: median, 10th and 90th percentiles (the "range"), and the voiced fraction of the
 //! frames with signal. Live, "current" is the median of the voiced frames of the last 0.3 s.
+//! The frames are aggregated by [`super::f0_profile`] (H-91), which folds YIN's octave errors
+//! onto the robust centre first — a few slipped frames would otherwise move the percentiles by
+//! an octave — and reports how confident the estimate was and how much of it needed correcting.
 
 use std::collections::VecDeque;
 
+use super::f0_profile::{self, F0Frame};
 use super::features::{self, Hum, Sibilance, SpectrumView, ToneBalance};
 use super::pitch::Yin;
 use super::spectrum::{PowerSpectrum, power_db};
@@ -55,6 +59,8 @@ pub const SPECTRUM_TAU_S: f64 = 3.0;
 pub const CURRENT_F0_SPAN_S: f64 = 0.3;
 /// Fewer voiced frames than this → no F0 statistics.
 pub const MIN_VOICED_FRAMES: usize = 5;
+/// Fewer voiced frames than this in the last [`CURRENT_F0_SPAN_S`] → no live "now" readout.
+pub const MIN_CURRENT_FRAMES: usize = 3;
 /// Fewer quiet frames than this → no hum verdict (not enough room tone heard yet).
 pub const MIN_QUIET_FRAMES: u64 = 3;
 /// Live: the room-tone average restarts when the noise floor drops by more than this (dB) —
@@ -81,6 +87,12 @@ pub struct F0Stats {
     pub high_hz: f64,
     /// Voiced frames / frames with signal, 0 … 1.
     pub voiced_fraction: f64,
+    /// `1 − median aperiodicity` of the voiced frames, 0 … 1 (H-91): how periodic the voice
+    /// actually was, so the reader can tell a firm reading from a breathy guess.
+    pub confidence: f64,
+    /// Share of the voiced frames that were an octave off the robust centre and were folded onto
+    /// it (H-91, [`super::f0_profile`]), 0 … 1.
+    pub octave_corrected: f64,
 }
 
 /// Everything the diagnostics panel shows. `None` = not measurable (silence, too little audio,
@@ -143,17 +155,30 @@ fn percentile(sorted: &[f64], q: f64) -> f64 {
     sorted[i.min(sorted.len() - 1)]
 }
 
-fn f0_stats(voiced: &mut [f64], signal_frames: usize, current_hz: Option<f64>) -> Option<F0Stats> {
+/// The profile of `voiced` (every voiced frame of the statistics window) plus, live, the "now"
+/// readout from `recent` (the voiced frames of the last [`CURRENT_F0_SPAN_S`]) — each of those
+/// folded onto the profile's octave first, so one slipped frame can't make the readout jump.
+fn f0_stats(voiced: &[F0Frame], signal_frames: usize, recent: &[F0Frame]) -> Option<F0Stats> {
     if voiced.len() < MIN_VOICED_FRAMES {
         return None;
     }
-    voiced.sort_by(f64::total_cmp);
+    let profile = f0_profile::profile(voiced)?;
+    let current_hz = (recent.len() >= MIN_CURRENT_FRAMES).then(|| {
+        let mut folded: Vec<f64> = recent
+            .iter()
+            .map(|f| f0_profile::fold_toward(f.f0_hz, profile.centre_log2))
+            .collect();
+        folded.sort_by(f64::total_cmp);
+        percentile(&folded, 0.5)
+    });
     Some(F0Stats {
         current_hz,
-        median_hz: percentile(voiced, 0.5),
-        low_hz: percentile(voiced, 0.1),
-        high_hz: percentile(voiced, 0.9),
+        median_hz: profile.median_hz,
+        low_hz: profile.low_hz,
+        high_hz: profile.high_hz,
         voiced_fraction: voiced.len() as f64 / signal_frames.max(voiced.len()) as f64,
+        confidence: profile.confidence,
+        octave_corrected: profile.octave_corrected,
     })
 }
 
@@ -235,7 +260,7 @@ pub struct VoiceTracker {
     levels: VecDeque<f64>,
     level_cap: usize,
     /// Per YIN hop: > 0 voiced F0 (Hz), 0 unvoiced with signal, < 0 silent.
-    f0s: VecDeque<f32>,
+    f0s: VecDeque<F0Sample>,
     f0_cap: usize,
     active: Vec<f64>,
     active_frames: u64,
@@ -244,7 +269,34 @@ pub struct VoiceTracker {
     /// The noise floor the room-tone average was started at (see [`QUIET_RESTART_DB`]).
     quiet_floor_db: Option<f64>,
     alpha: f64,
-    f0_scratch: Vec<f64>,
+    f0_scratch: Vec<F0Frame>,
+    recent_scratch: Vec<F0Frame>,
+}
+
+/// One YIN hop as the tracker keeps it: the estimate (with the sentinels above) and, for a
+/// voiced frame, its aperiodicity — [`super::f0_profile`] needs both.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct F0Sample {
+    f0: f32,
+    aperiodicity: f32,
+}
+
+impl F0Sample {
+    const UNVOICED: Self = Self {
+        f0: 0.0,
+        aperiodicity: 1.0,
+    };
+    const SILENT: Self = Self {
+        f0: -1.0,
+        aperiodicity: 1.0,
+    };
+
+    fn frame(self) -> F0Frame {
+        F0Frame {
+            f0_hz: f64::from(self.f0),
+            aperiodicity: f64::from(self.aperiodicity),
+        }
+    }
 }
 
 impl VoiceTracker {
@@ -285,6 +337,7 @@ impl VoiceTracker {
             quiet_floor_db: None,
             alpha: 1.0 - (-LIVE_SPECTRUM_HOP_S / SPECTRUM_TAU_S).exp(),
             f0_scratch: Vec::with_capacity(f0_cap),
+            recent_scratch: Vec::new(),
         }
     }
 
@@ -358,13 +411,16 @@ impl VoiceTracker {
     fn run_yin(&mut self) {
         let n = self.yin.frame_len();
         let value = if self.total_samples < n as u64 {
-            -1.0
+            F0Sample::SILENT
         } else {
             self.latest(n);
             match self.yin.estimate(&self.scratch[..n]) {
-                Some(p) => p.f0_hz as f32,
-                None if self.yin.last_had_signal() => 0.0,
-                None => -1.0,
+                Some(p) => F0Sample {
+                    f0: p.f0_hz as f32,
+                    aperiodicity: p.aperiodicity as f32,
+                },
+                None if self.yin.last_had_signal() => F0Sample::UNVOICED,
+                None => F0Sample::SILENT,
             }
         };
         self.f0s.push_back(value);
@@ -428,26 +484,20 @@ impl VoiceTracker {
         };
 
         let recent = (CURRENT_F0_SPAN_S / LIVE_YIN_HOP_S).round() as usize;
-        self.f0_scratch.clear();
-        self.f0_scratch.extend(
+        self.recent_scratch.clear();
+        self.recent_scratch.extend(
             self.f0s
                 .iter()
                 .rev()
                 .take(recent)
-                .filter(|&&v| v > 0.0)
-                .map(|&v| f64::from(v)),
+                .filter(|s| s.f0 > 0.0)
+                .map(|s| s.frame()),
         );
-        let current = if self.f0_scratch.len() >= 3 {
-            self.f0_scratch.sort_by(f64::total_cmp);
-            Some(percentile(&self.f0_scratch, 0.5))
-        } else {
-            None
-        };
-        let signal_frames = self.f0s.iter().filter(|&&v| v >= 0.0).count();
+        let signal_frames = self.f0s.iter().filter(|s| s.f0 >= 0.0).count();
         self.f0_scratch.clear();
         self.f0_scratch
-            .extend(self.f0s.iter().filter(|&&v| v > 0.0).map(|&v| f64::from(v)));
-        report.f0 = f0_stats(&mut self.f0_scratch, signal_frames, current);
+            .extend(self.f0s.iter().filter(|s| s.f0 > 0.0).map(|s| s.frame()));
+        report.f0 = f0_stats(&self.f0_scratch, signal_frames, &self.recent_scratch);
 
         fill_levels(&mut report, level_stats(self.levels.iter().copied()));
 
@@ -591,13 +641,16 @@ pub fn analyze_buffer(
     // 4. F0.
     let mut yin = Yin::new(config.sample_rate_hz);
     let hop = ((OFFLINE_YIN_HOP_S * fs).round() as usize).max(1);
-    let mut voiced = Vec::new();
+    let mut voiced: Vec<F0Frame> = Vec::new();
     let mut signal_frames = 0usize;
     let mut end = yin.frame_len();
     let mut since_progress = 0usize;
     while end <= samples.len() {
         if let Some(p) = yin.estimate(&samples[..end]) {
-            voiced.push(p.f0_hz);
+            voiced.push(F0Frame {
+                f0_hz: p.f0_hz,
+                aperiodicity: p.aperiodicity,
+            });
         }
         if yin.last_had_signal() {
             signal_frames += 1;
@@ -614,7 +667,7 @@ pub fn analyze_buffer(
 
     let mut report = VoiceReport {
         span_s: blocks.iter().filter(|&&ms| ms > 0.0).count() as f64 * LEVEL_BLOCK_S,
-        f0: f0_stats(&mut voiced, signal_frames, None),
+        f0: f0_stats(&voiced, signal_frames, &[]),
         ..VoiceReport::default()
     };
     fill_levels(&mut report, levels);
@@ -724,6 +777,65 @@ mod tests {
         assert!((r.span_s - STATS_WINDOW_S).abs() < 1e-9);
         // Ends in a pause (12 s = 6 × (1.2 + 0.8)): no current F0.
         assert_eq!(r.f0.unwrap().current_hz, None);
+    }
+
+    /// Alternating the amplitude of every other pitch period doubles the waveform's period
+    /// without changing the voice's pitch — the classic way a real tracker is talked into
+    /// reporting F0/2 (diplophonia / creak). `strength` 0 leaves the signal alone.
+    fn period_double(x: &[f32], f0: f64, strength: f64) -> Vec<f32> {
+        let period = f64::from(FS) / f0;
+        x.iter()
+            .enumerate()
+            .map(|(i, &s)| {
+                let odd = ((i as f64 / period).floor() as i64).rem_euclid(2) == 1;
+                if odd {
+                    (f64::from(s) * (1.0 - strength)) as f32
+                } else {
+                    s
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn octave_slips_do_not_move_the_pitch_profile() {
+        // 8 s of a 140 Hz voice; the middle 2 s are period-doubled, which YIN reads as 70 Hz.
+        let clean = voice_like(140.0, 8.0, FS);
+        let start = 3 * FS as usize;
+        let end = 5 * FS as usize;
+        let mut slipped = clean.clone();
+        let patch = period_double(&clean[start..end], 140.0, 0.55);
+        slipped[start..end].copy_from_slice(&patch);
+
+        let config = OfflineConfig {
+            sample_rate_hz: FS,
+            fft_size: 4096,
+            window: WindowKind::Hann,
+        };
+        let f0 = |x: &[f32]| {
+            analyze_buffer(x, config, |_| true)
+                .unwrap()
+                .report
+                .f0
+                .unwrap()
+        };
+        let reference = f0(&clean);
+        let guarded = f0(&slipped);
+
+        // The patch really does slip the tracker — otherwise this test proves nothing.
+        assert!(
+            guarded.octave_corrected > 0.05,
+            "no slip to guard against: {guarded:?}"
+        );
+        // …and the profile is the same voice as the clean take, percentiles included.
+        for (a, b, name) in [
+            (guarded.median_hz, reference.median_hz, "median"),
+            (guarded.low_hz, reference.low_hz, "low"),
+            (guarded.high_hz, reference.high_hz, "high"),
+        ] {
+            assert!(cents(a, b).abs() < 50.0, "{name}: {a} vs {b} ({guarded:?})");
+        }
+        assert!(cents(guarded.low_hz, 140.0).abs() < 200.0, "{guarded:?}");
     }
 
     #[test]

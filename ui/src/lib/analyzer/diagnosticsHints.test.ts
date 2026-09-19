@@ -4,7 +4,7 @@ import { assessReport, formatFreqShort, HUM_NOTCH_GAIN_DB, type Finding } from "
 
 function report(overrides: Partial<VoiceReportDto> = {}): VoiceReportDto {
   return {
-    f0: { current_hz: 131, median_hz: 128, low_hz: 110, high_hz: 152, voiced_fraction: 0.6 },
+    f0: { current_hz: 131, median_hz: 128, low_hz: 110, high_hz: 152, voiced_fraction: 0.6, confidence: 0.9, octave_corrected: 0 },
     tone: { mud_db: 3, presence_db: -7, air_db: -22 },
     sibilance: { ratio_db: -26, centre_hz: 6300 },
     hum: null,

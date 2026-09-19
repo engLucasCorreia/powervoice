@@ -8,7 +8,7 @@ import DiagnosticsPanel from "./DiagnosticsPanel.svelte";
 import { EQ_IDS, EQ_MODULE_ID } from "./eqSuggest";
 
 const report: VoiceReportDto = {
-  f0: { current_hz: 131, median_hz: 128.9, low_hz: 112, high_hz: 152, voiced_fraction: 0.64 },
+  f0: { current_hz: 131, median_hz: 128.9, low_hz: 112, high_hz: 152, voiced_fraction: 0.64, confidence: 0.9, octave_corrected: 0 },
   tone: { mud_db: 11, presence_db: -9, air_db: -24 },
   sibilance: { ratio_db: -15, centre_hz: 6310 },
   hum: { mains_hz: 50, harmonics: [1, 2, 3], strongest_hz: 100.1, prominence_db: 21, level_db: -71 },

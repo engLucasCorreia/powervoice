@@ -25,6 +25,24 @@ has no such linuxdeploy plugin.
   (the app talks to PipeWire through `cpal`/`vox-engine`, dynamically linked against the *system*
   libpipewire — same model as `libasound2`/ALSA, already a `.deb` dependency rather than bundled).
 
+- H-90: `libwayland-client.so.0` — the Wayland protocol client. Every Wayland-facing library in
+  the process (system Mesa/EGL, the GTK backend, WebKitGTK's renderer) must share **one** copy,
+  and it is the compositor's peer, so it belongs to the host exactly as a graphics driver does —
+  it is on upstream's canonical never-bundle list (pkg2appimage `excludelist`) for that reason.
+  Bundled here (built on Ubuntu) against a newer system stack, EGL failed with `EGL_BAD_ALLOC` and
+  **`WebKitWebProcess` aborted on every launch**: the window opened and stayed completely empty,
+  with nothing in the log but `Could not create surfaceless EGL display`. Proven on the owner's
+  Arch machine by removing this one file from v0.3.1's AppImage and repacking: the full UI renders
+  and the renderer stops crashing. The other bundled `libwayland-*` (cursor, egl, server) are
+  **not** listed: removing this one alone is sufficient, and the module's own rule is not to
+  denylist speculatively.
+
+  **How this was missed in H-89:** that audit looked for libraries whose *plugin directories* were
+  missing, which is how PipeWire failed. This one fails differently — a singleton that must match
+  the host, with no plugins involved. When auditing a bundle, check it against the upstream
+  `excludelist` as well as reasoning about plugin lookup; of the 160 libraries bundled here, that
+  list flagged exactly this one.
+
 **Audited but NOT denylisted (H-89), for a future ticket if either turns out to matter:**
 - `libenchant-2.so.2` — same shape of risk as PipeWire (its provider-backend plugin directory,
   typically `<libdir>/enchant-2/`, isn't bundled alongside it either), but enchant's providers are
@@ -50,4 +68,5 @@ from __future__ import annotations
 # are caught too, not just the unversioned symlink name).
 DENYLISTED_LIBS: list[str] = [
     "libpipewire-0.3.so*",
+    "libwayland-client.so*",
 ]

@@ -113,6 +113,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-87 | Noise profile graph polish: hover readout, the no-output-device state, distinguishable legend swatches (H-85's deferrals) | S | done |
 | H-88 | A shared test helper for pushing a live VXSA frame into a mounted component, so live-derived UI can be asserted rather than only its absence (H-87's open question) | S | done |
 | H-89 | RELEASE BLOCKER, owner-reported: the AppImage bundles libpipewire without its spa plugins, so it fails on every non-Ubuntu distro (flood of pw.loop errors) — stop bundling it and guard against it | S | done |
+| H-90 | RELEASE BLOCKER, owner-reported: the AppImage bundles libwayland-client, so WebKitWebProcess aborts and the window renders empty on a newer Wayland stack — denylisted (found via the upstream excludelist, which H-89's audit had not consulted) | S | done |
 | H-62 | Sandbox event-ring overflow is silent (H-55 open question): `HostEnd::push_event` / the proxy drop events when the ring is full (counted in `events_dropped`, never surfaced) — another timing-dependent divergence under heavy automation; surface it as a notice/slot status and test it | S | done |
 | H-56 | Insert silence + cross-document clipboard (T-302 remainder, SPEC-008) | S | done |
 | H-57 | Markers: kinds in the core model, drag, region→selection (T-303 remainder, SPEC-009) | S | done |

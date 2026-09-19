@@ -65,6 +65,31 @@ class CheckDenylistedLibsTests(unittest.TestCase):
             self.assertEqual(len(errors), 1)
             self.assertIn("libpipewire-0.3.so.0", errors[0])
 
+    def test_wayland_client_fails(self) -> None:
+        """H-90: libwayland-client bundled against a newer host stack made WebKitWebProcess abort
+        and the window render empty. It must never ship inside the bundle."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_tree(root, app=True, sandbox=True)
+            lib_dir = root / "usr" / "lib"
+            lib_dir.mkdir()
+            (lib_dir / "libwayland-client.so.0").write_bytes(b"")
+            errors = check_bundle.check_denylisted_libs(root)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("libwayland-client.so.0", errors[0])
+
+    def test_other_wayland_libraries_are_allowed(self) -> None:
+        """Only the client library is denylisted: removing it alone fixed the blank window, and
+        this module's rule is not to denylist speculatively (H-90)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_tree(root, app=True, sandbox=True)
+            lib_dir = root / "usr" / "lib"
+            lib_dir.mkdir()
+            for name in ("libwayland-cursor.so.0", "libwayland-egl.so.1", "libwayland-server.so.0"):
+                (lib_dir / name).write_bytes(b"")
+            self.assertEqual(check_bundle.check_denylisted_libs(root), [])
+
     def test_versioned_filename_still_matches_glob(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

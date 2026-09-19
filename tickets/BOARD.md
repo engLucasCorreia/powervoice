@@ -114,7 +114,8 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-88 | A shared test helper for pushing a live VXSA frame into a mounted component, so live-derived UI can be asserted rather than only its absence (H-87's open question) | S | done |
 | H-89 | RELEASE BLOCKER, owner-reported: the AppImage bundles libpipewire without its spa plugins, so it fails on every non-Ubuntu distro (flood of pw.loop errors) — stop bundling it and guard against it | S | done |
 | H-90 | RELEASE BLOCKER, owner-reported: the AppImage bundles libwayland-client, so WebKitWebProcess aborts and the window renders empty on a newer Wayland stack — denylisted (found via the upstream excludelist, which H-89's audit had not consulted) | S | done |
-| H-96 | Owner-reported: the export UI hangs at "exporting" after the export has actually finished — `job_progress` is subscribed *after* the job starts, so a fast job's terminal event is lost (same pattern in normalize, LUFS normalize and bake) | S | in progress |
+| H-96 | Owner-reported: the export UI hangs at "exporting" after the export has actually finished — `job_progress` is subscribed *after* the job starts, so a fast job's terminal event is lost (same pattern in normalize, LUFS normalize and bake) | S | done |
+| H-98 | The unreproduced half of the export freeze: Cancel unresponsive, SIGTERM ignored, 72% CPU — needs a real-app repro harness and a profile at the moment of the freeze (H-96 fixed the lost event but could not reproduce the spin) | S | todo |
 | H-91 | Explain My Voice: frozen analysis snapshot, harmonic/peak reasoning, octave-error guard, findings model (engine only) | O | done |
 | H-92 | Explain My Voice: the modal and the annotated log-frequency graph (raw + smoothed envelope, F0/harmonics, voice bands, hover, responsive) | S | in progress |
 | H-93 | Explain My Voice: collision-aware annotation layout solver (pure geometry) | S | done |

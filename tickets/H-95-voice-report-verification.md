@@ -60,7 +60,32 @@ magnitude means the feature, not this table, is wrong.
 own measurements, in its own words:
 - the strongest peak is **not** the fundamental (a ~100 Hz voice with a dominant H2 at 199 Hz);
 - low-mid/body energy is genuinely elevated — this is the headline tonal finding;
-- presence sits slightly below the reference: balanced-to-recessed, **not** harsh;
+- presence sits below the 1 kHz reference — **not** harsh;
 - the air band rolls off normally — nothing to fix;
 - **no mains hum**: no harmonic stands above its neighbours convincingly, so a hum finding here
   would be a false positive and a test must guard against it.
+
+
+## Correction and the one real discrepancy to resolve (orchestrator, after H-94)
+
+My "balanced-to-recessed" gloss above was too strong a reading of my own crude arithmetic — treat
+the table as numbers, not as a verdict.
+
+**The numbers to reconcile.** From the CSV I measured presence (2–5 kHz) at **−4.4 dB** relative to
+the 707–1414 Hz octave after a plain log-width normalisation. The app measures **−1.30 dB**, and
+since its usual window runs −14 … −2 dB, it classifies that as *just* above the window. Both are
+negative — there is **no sign conflict**, contrary to H-94's report — but they differ by ~3.1 dB,
+and that gap decides whether this voice gets an `attention` finding at all.
+
+Plausible causes, to be tested rather than assumed:
+1. **Different normalisation.** Mine divides band power by log-width; the app normalises so pink
+   noise reads 0 dB, using the analyser's ENBW. These are not the same correction.
+2. **Different material.** The app's tone balance is measured over active speech; `spectrum.csv` is
+   an exported average that may include the pauses between phrases. Silence pulls the bands down
+   unequally.
+3. A genuine defect in one of the two.
+
+**What to do:** compute the app's own definition directly from the CSV (same normalisation, same
+band edges, same reference) and see whether it lands on −1.3 dB. If it does, cause 2 is the
+explanation and this table simply measures something slightly different — say so here. If it does
+not, find out why before trusting any tone number the feature prints.

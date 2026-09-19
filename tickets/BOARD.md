@@ -114,6 +114,11 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-88 | A shared test helper for pushing a live VXSA frame into a mounted component, so live-derived UI can be asserted rather than only its absence (H-87's open question) | S | done |
 | H-89 | RELEASE BLOCKER, owner-reported: the AppImage bundles libpipewire without its spa plugins, so it fails on every non-Ubuntu distro (flood of pw.loop errors) — stop bundling it and guard against it | S | done |
 | H-90 | RELEASE BLOCKER, owner-reported: the AppImage bundles libwayland-client, so WebKitWebProcess aborts and the window renders empty on a newer Wayland stack — denylisted (found via the upstream excludelist, which H-89's audit had not consulted) | S | done |
+| H-91 | Explain My Voice: frozen analysis snapshot, harmonic/peak reasoning, octave-error guard, findings model (engine only) | O | in progress |
+| H-92 | Explain My Voice: the modal and the annotated log-frequency graph (raw + smoothed envelope, F0/harmonics, voice bands, hover, responsive) | S | todo |
+| H-93 | Explain My Voice: collision-aware annotation layout solver (pure geometry) | S | in progress |
+| H-94 | Explain My Voice: finding prose, engineering summary, conservative EQ advice — measurement separated from interpretation | O | todo |
+| H-95 | Explain My Voice: verification against real voices (the owner's 8 cases + their own recording) | S | todo |
 | H-62 | Sandbox event-ring overflow is silent (H-55 open question): `HostEnd::push_event` / the proxy drop events when the ring is full (counted in `events_dropped`, never surfaced) — another timing-dependent divergence under heavy automation; surface it as a notice/slot status and test it | S | done |
 | H-56 | Insert silence + cross-document clipboard (T-302 remainder, SPEC-008) | S | done |
 | H-57 | Markers: kinds in the core model, drag, region→selection (T-303 remainder, SPEC-009) | S | done |

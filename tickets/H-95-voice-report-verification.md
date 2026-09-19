@@ -14,7 +14,16 @@ Work through the owner's own test list against the built feature, using real or 
 - **G.** A quiet recording with poor SNR — noise analysis works from the broadband RMS floor, independent of the FFT bins.
 - **H.** A pitch tracker octave error — a short false reading must not redefine the median profile.
 
-Also check the owner's `spectrum.csv` and any recording they leave in the repo root; if a recording is present, run the real feature on it and include a screenshot of the modal.
+**The owner's own recording is in the repo root: `ExampleRecording.wav`** — mono, 48 kHz, 24-bit,
+31.5 s of their real voice. Open it in PowerVoice, run the feature on it, and include a screenshot
+of the modal plus every number the feature reports. Their exported `spectrum.csv` (8 186 points,
+`frequency_hz,level_db`) is the same voice as a spectrum and is the natural fixture for the pure
+engine tests. **Sanity-check the feature's output against that CSV independently** (compute the
+band levels and the strongest peak yourself from the CSV and compare) — if the feature and the raw
+data disagree, the feature is wrong.
+
+This recording is the owner's own voice: treat its analysis as the acceptance case for the whole
+feature, not as one test among eight.
 
 ## Deliverable
 A written report: for each case, what was fed in, what the feature said, and whether an audio engineer would consider the interpretation defensible. Fix what is wrong; where a fix belongs in H-91/92/94's code, make it there rather than papering over it in a test.

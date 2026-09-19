@@ -29,3 +29,38 @@ feature, not as one test among eight.
 A written report: for each case, what was fed in, what the feature said, and whether an audio engineer would consider the interpretation defensible. Fix what is wrong; where a fix belongs in H-91/92/94's code, make it there rather than papering over it in a test.
 
 `just check` must pass.
+
+## Independent ground truth from the owner's `spectrum.csv`
+
+Computed by the orchestrator straight from the CSV (8 186 points, 2.93 Hz bins, 20.5 Hz – 24 kHz),
+summing power per band, **before** any of this feature existed. The feature's own numbers must be
+explainable against these; where a convention differs (the app's band levels are normalised so pink
+noise reads 0 dB, these are raw band power and a bandwidth-normalised comparison against the
+707–1414 Hz octave), the *relationships* must still agree — and any disagreement in sign or
+magnitude means the feature, not this table, is wrong.
+
+| Measure | Value from the CSV |
+|---|---|
+| Strongest bin | **199.2 Hz at −31.3 dB** |
+| Next strongest low peaks | 170 Hz/−39.2, 114 Hz/−42.7, 135 Hz/−43.0, 146 Hz/−43.3, 229 Hz/−43.6, 302 Hz/−44.6 |
+| Sub-80 Hz band power | −53.0 dB |
+| 80–200 Hz | −24.0 dB |
+| 200–500 Hz | −26.9 dB |
+| 500 Hz–2 kHz | −39.4 dB |
+| 2–5 kHz | −46.9 dB |
+| 4–10 kHz | −58.0 dB |
+| 10–16 kHz | −67.9 dB |
+| 200–500 Hz vs the 1 kHz octave (bandwidth-normalised) | **+15.5 dB** |
+| 2–5 kHz, same basis | **−4.5 dB** |
+| 10–16 kHz, same basis | **−22.5 dB** |
+| 50 Hz vs its neighbours | +1.5 dB (100 Hz −7.6, 150 Hz −1.8) |
+| 60 Hz vs its neighbours | −2.0 dB (120 Hz +0.2, 180 Hz −3.7) |
+
+**What this voice is, in plain terms** — the feature should reach these same conclusions from its
+own measurements, in its own words:
+- the strongest peak is **not** the fundamental (a ~100 Hz voice with a dominant H2 at 199 Hz);
+- low-mid/body energy is genuinely elevated — this is the headline tonal finding;
+- presence sits slightly below the reference: balanced-to-recessed, **not** harsh;
+- the air band rolls off normally — nothing to fix;
+- **no mains hum**: no harmonic stands above its neighbours convincingly, so a hum finding here
+  would be a false positive and a test must guard against it.

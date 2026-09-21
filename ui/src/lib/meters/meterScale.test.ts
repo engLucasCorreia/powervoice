@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { spansOverlap } from "../ui/axisLabels";
 import {
   HOT_ZONE_DB,
+  INPUT_METER_FLOOR_CHOICES_DB,
   LOUD_ZONE_DB,
   METER_FLOOR_DB,
   METER_LABEL_GAP_PX,
@@ -31,6 +32,32 @@ describe("meterFraction", () => {
     // fail loudly rather than the zones silently drifting.
     expect(meterFraction(LOUD_ZONE_DB)).toBeCloseTo(0.7, 6);
     expect(meterFraction(HOT_ZONE_DB)).toBeCloseTo(0.95, 6);
+  });
+
+  // H-112: the input meter's selectable floor reuses this same function with an explicit
+  // `floorDb` — the zones move (in fraction terms) with the floor, but the absolute dBFS
+  // thresholds (`LOUD_ZONE_DB`/`HOT_ZONE_DB`) never change.
+  describe("with an explicit floor (H-112 selectable input meter floor)", () => {
+    it("maps 0 dBFS to 1 and the given floor to 0, for every offered floor", () => {
+      for (const floorDb of INPUT_METER_FLOOR_CHOICES_DB) {
+        expect(meterFraction(0, floorDb)).toBe(1);
+        expect(meterFraction(floorDb, floorDb)).toBe(0);
+      }
+    });
+
+    it("a deeper floor pushes a given dB value further up the scale (smaller fraction)", () => {
+      expect(meterFraction(-60, -60)).toBe(0);
+      expect(meterFraction(-60, -80)).toBeCloseTo(0.25, 6);
+      expect(meterFraction(-60, -120)).toBeCloseTo(0.5, 6);
+    });
+
+    it("still clamps beyond either end and treats -Infinity as the floor", () => {
+      for (const floorDb of INPUT_METER_FLOOR_CHOICES_DB) {
+        expect(meterFraction(5, floorDb)).toBe(1);
+        expect(meterFraction(floorDb - 20, floorDb)).toBe(0);
+        expect(meterFraction(Number.NEGATIVE_INFINITY, floorDb)).toBe(0);
+      }
+    });
   });
 });
 
@@ -135,6 +162,51 @@ describe("meterScaleTicks", () => {
         expect(ticks.some((t) => t.db === 0)).toBe(true);
         expect(ticks.some((t) => t.db === Number.NEGATIVE_INFINITY)).toBe(true);
       }
+    });
+  });
+
+  // H-112: the input meter's selectable floor (−60/−80/−120 dBFS) reuses this tick fitting, via
+  // an explicit 4th `floorDb` argument.
+  describe("with an explicit floor (H-112 selectable input meter floor)", () => {
+    it("the default floor (-60, passed explicitly) is identical to the implicit default", () => {
+      expect(meterScaleTicks(400, LINE_H, METER_LABEL_GAP_PX, METER_FLOOR_DB)).toEqual(meterScaleTicks(400, LINE_H));
+    });
+
+    it("includes the floor's own dBFS value as a finite tick, in addition to -∞", () => {
+      for (const floorDb of INPUT_METER_FLOOR_CHOICES_DB) {
+        const ticks = meterScaleTicks(400, LINE_H, METER_LABEL_GAP_PX, floorDb);
+        expect(ticks.some((t) => t.db === floorDb)).toBe(true);
+        expect(ticks.some((t) => t.db === Number.NEGATIVE_INFINITY)).toBe(true);
+      }
+    });
+
+    it("a deeper floor still pins 0 dBFS to the top and -∞ to the absolute bottom", () => {
+      for (const floorDb of INPUT_METER_FLOOR_CHOICES_DB) {
+        const ticks = meterScaleTicks(400, LINE_H, METER_LABEL_GAP_PX, floorDb);
+        const zero = ticks.find((t) => t.db === 0);
+        const inf = ticks.find((t) => t.db === Number.NEGATIVE_INFINITY);
+        expect(zero?.y).toBe(0);
+        expect(inf?.y).toBe(400);
+      }
+    });
+
+    it("never lets any two labels collide, at any offered floor", () => {
+      for (const floorDb of INPUT_METER_FLOOR_CHOICES_DB) {
+        const ticks = meterScaleTicks(500, LINE_H, METER_LABEL_GAP_PX, floorDb);
+        for (let i = 0; i < ticks.length; i += 1) {
+          for (let j = i + 1; j < ticks.length; j += 1) {
+            const a = { start: ticks[i]!.y - LINE_H / 2, end: ticks[i]!.y + LINE_H / 2 };
+            const b = { start: ticks[j]!.y - LINE_H / 2, end: ticks[j]!.y + LINE_H / 2 };
+            expect(spansOverlap(a, b, METER_LABEL_GAP_PX - 0.5)).toBe(false);
+          }
+        }
+      }
+    });
+
+    it("degenerates gracefully at a tiny height for the deepest floor too", () => {
+      expect(() => meterScaleTicks(5, LINE_H, METER_LABEL_GAP_PX, -120)).not.toThrow();
+      const ticks = meterScaleTicks(5, LINE_H, METER_LABEL_GAP_PX, -120);
+      expect(ticks.some((t) => t.db === Number.NEGATIVE_INFINITY)).toBe(true);
     });
   });
 });

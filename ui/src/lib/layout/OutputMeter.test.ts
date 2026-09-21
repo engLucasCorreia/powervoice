@@ -145,14 +145,14 @@ describe("OutputMeter readouts and clip lamp", () => {
     const root = render();
     onTelemetry(buildVxtmFrame({ outPeakDbfs: -6, outRmsDbfs: -9 }));
     flushSync();
-    expect(root.querySelector('[data-testid="meter-peak"]')?.textContent).toBe("Peak −6.0 dBFS");
-    expect(root.querySelector('[data-testid="meter-rms"]')?.textContent).toBe("RMS −9.0 dBFS");
+    expect(root.querySelector('[data-testid="output-meter-peak"]')?.textContent).toBe("Peak −6.0 dBFS");
+    expect(root.querySelector('[data-testid="output-meter-rms"]')?.textContent).toBe("RMS −9.0 dBFS");
     stop();
   });
 
   it("shows silence as the localized dash, not -Infinity or NaN", () => {
     render();
-    expect(document.querySelector('[data-testid="meter-peak"]')?.textContent).toBe("Peak −∞ dBFS");
+    expect(document.querySelector('[data-testid="output-meter-peak"]')?.textContent).toBe("Peak −∞ dBFS");
   });
 
   it("lights the clip lamp on OUT_CLIP and clears it on click", async () => {

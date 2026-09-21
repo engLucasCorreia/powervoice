@@ -29,7 +29,7 @@ import {
 import { VXTM_FLAGS, type TelemetryFrame } from "../ipc/telemetry";
 import { registerAction } from "../shortcuts";
 import { noticeFromIpcError } from "../notices/fromIpcError";
-import { nowMs, PeakBallistics } from "../meters/ballistics";
+import { nowMs, PeakBallistics, READOUT_SMOOTHING_TAU_MS, SmoothedDb, ThrottledReadout } from "../meters/ballistics";
 import { DISK_WARN_MINUTES } from "../record/format";
 import { DEFAULT_RECORD_PREFS, parseOffsetText } from "../record/punch";
 import { pushNotice } from "./notices.svelte";
@@ -81,6 +81,12 @@ export interface InputMeterView {
   holdDbfs: number;
   /** 300 ms RMS. */
   rmsDbfs: number;
+  /** H-112: the hold value, throttled to ~4-5 Hz for a legible numeric readout (matches the
+   * output meter's `peakReadoutDbfs`, `transport.svelte.ts`). */
+  peakReadoutDbfs: number;
+  /** H-112: the RMS value, smoothed and throttled to ~4-5 Hz for a legible numeric readout
+   * (matches the output meter's `rmsReadoutDbfs`). */
+  rmsReadoutDbfs: number;
   /** Highest peak since arming or the last reset (numeric readout). */
   maxDbfs: number;
 }
@@ -100,6 +106,8 @@ const SILENT: InputMeterView = {
   peakDbfs: Number.NEGATIVE_INFINITY,
   holdDbfs: Number.NEGATIVE_INFINITY,
   rmsDbfs: Number.NEGATIVE_INFINITY,
+  peakReadoutDbfs: Number.NEGATIVE_INFINITY,
+  rmsReadoutDbfs: Number.NEGATIVE_INFINITY,
   maxDbfs: Number.NEGATIVE_INFINITY,
 };
 
@@ -125,6 +133,11 @@ let offset = $state<RecordOffsetDto | null>(null);
 /** T-304: the calibration dialog (`null`: closed). */
 let calibration = $state<CalibrationView | null>(null);
 const ballistics = new PeakBallistics();
+// H-112: same readout-pacing classes the output meter uses (`transport.svelte.ts`) — reused, not
+// reimplemented (`ui/src/lib/meters/ballistics.ts`).
+const rmsSmoothed = new SmoothedDb(Number.NEGATIVE_INFINITY, READOUT_SMOOTHING_TAU_MS);
+const peakReadout = new ThrottledReadout(Number.NEGATIVE_INFINITY);
+const rmsReadout = new ThrottledReadout(Number.NEGATIVE_INFINITY);
 
 /** Read-only accessor for components. */
 export function recordState(): {
@@ -195,6 +208,9 @@ function applyState(next: RecordStateDto): void {
   if (!next.input_open && state.input_open) {
     // Disarmed: the meter restarts empty on the next arm ("highest peak since arming").
     ballistics.reset();
+    rmsSmoothed.reset(Number.NEGATIVE_INFINITY);
+    peakReadout.reset(Number.NEGATIVE_INFINITY);
+    rmsReadout.reset(Number.NEGATIVE_INFINITY);
     meter = { ...SILENT };
   }
   state = next;
@@ -225,10 +241,15 @@ export function onInputTelemetry(frame: TelemetryFrame, atMs: number = nowMs()):
     }
   }
   ballistics.update(frame.inPeakDbfs, atMs);
+  rmsSmoothed.update(frame.inRmsDbfs, atMs);
+  peakReadout.update(ballistics.hold, atMs);
+  rmsReadout.update(rmsSmoothed.value, atMs);
   const next: InputMeterView = {
     peakDbfs: ballistics.bar,
     holdDbfs: ballistics.hold,
     rmsDbfs: frame.inRmsDbfs,
+    peakReadoutDbfs: peakReadout.value,
+    rmsReadoutDbfs: rmsReadout.value,
     maxDbfs: Math.max(meter.maxDbfs, frame.inPeakDbfs),
   };
   // H-43: an unchanged meter (e.g. no input open: every frame reads −∞) is not written again, so
@@ -237,6 +258,8 @@ export function onInputTelemetry(frame: TelemetryFrame, atMs: number = nowMs()):
     next.peakDbfs !== meter.peakDbfs ||
     next.holdDbfs !== meter.holdDbfs ||
     next.rmsDbfs !== meter.rmsDbfs ||
+    next.peakReadoutDbfs !== meter.peakReadoutDbfs ||
+    next.rmsReadoutDbfs !== meter.rmsReadoutDbfs ||
     next.maxDbfs !== meter.maxDbfs
   ) {
     meter = next;
@@ -600,6 +623,9 @@ export function resetRecordForTest(): void {
   offset = null;
   calibration = null;
   ballistics.reset();
+  rmsSmoothed.reset(Number.NEGATIVE_INFINITY);
+  peakReadout.reset(Number.NEGATIVE_INFINITY);
+  rmsReadout.reset(Number.NEGATIVE_INFINITY);
   setSelectionLocked(false);
 }
 

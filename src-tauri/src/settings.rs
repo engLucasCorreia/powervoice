@@ -574,6 +574,40 @@ pub enum ThemePref {
     HighContrast,
 }
 
+// --- Input meter floor (H-112, SPEC-002 §2.1 amended) --------------------------------------------
+
+/// The input meter's selectable scale floor (owner request, H-112: "options to change the mic
+/// scale's minimum to −60, −80 or −120, so I can see the level of the mic input well"). `−60`
+/// dBFS is the SPEC-002 §2.1 factory default (unchanged); `−80`/`−120` trade scale resolution near
+/// 0 dBFS for visibility of a quiet mic or the room's noise floor. Stored as the dBFS value itself
+/// (rather than a bare enum name) so the TS binding is a literal-number-string union a `<select>`
+/// can bind to directly, the same convention as [`BitDepth`] above.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub enum InputMeterFloorPref {
+    #[serde(rename = "-60")]
+    #[ts(rename = "-60")]
+    #[default]
+    Floor60,
+    #[serde(rename = "-80")]
+    #[ts(rename = "-80")]
+    Floor80,
+    #[serde(rename = "-120")]
+    #[ts(rename = "-120")]
+    Floor120,
+}
+
+impl InputMeterFloorPref {
+    /// The scale floor in dBFS (always negative).
+    pub fn floor_dbfs(self) -> i32 {
+        match self {
+            Self::Floor60 => -60,
+            Self::Floor80 => -80,
+            Self::Floor120 => -120,
+        }
+    }
+}
+
 // --- Plugins (T-804, ADR-008 §5/§6) ---------------------------------------------------------------
 
 /// Settings → Plugins (T-804): extra folders scanned in addition to the standard per-format
@@ -704,6 +738,9 @@ pub struct Settings {
     /// H-42 (SPEC-007 §8): analyzer peak labels / diagnostics panel / Spectrum Inspector
     /// settings. Additive field — the settings version stays 1.
     pub analyzer_diagnostics: AnalyzerDiagnosticsPrefsDto,
+    /// H-112 (SPEC-002 §2.1 amended): the input meter's selectable scale floor (−60/−80/−120
+    /// dBFS). Additive field — the settings version stays 1.
+    pub input_meter_floor: InputMeterFloorPref,
     #[serde(flatten)]
     #[ts(skip)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -737,6 +774,7 @@ impl Default for Settings {
             tours: ToursSettingsDto::default(),
             snap_to_zero_crossing: false,
             analyzer_diagnostics: AnalyzerDiagnosticsPrefsDto::default(),
+            input_meter_floor: InputMeterFloorPref::default(),
             extra: serde_json::Map::new(),
         }
     }
@@ -1435,6 +1473,37 @@ mod tests {
         let json = serde_json::to_string(&Settings::default()).unwrap();
         let parsed: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, Settings::default());
+    }
+
+    /// H-112 (SPEC-002 §2.1 amended "options to change the mic scale's minimum"): round-trips
+    /// through save/load, and an older settings file with no `input_meter_floor` key falls back
+    /// to −60 dBFS (container-level `#[serde(default)]`, same convention as `save_dither`).
+    #[test]
+    fn input_meter_floor_round_trips_and_falls_back_to_minus_60() {
+        let dir = temp_dir("input-meter-floor");
+        let path = dir.join("settings.json");
+
+        let settings = Settings {
+            input_meter_floor: InputMeterFloorPref::Floor120,
+            ..Settings::default()
+        };
+        save(&path, &settings).unwrap();
+        let loaded = load_or_default(&path);
+        assert_eq!(loaded.input_meter_floor, InputMeterFloorPref::Floor120);
+        assert_eq!(loaded.input_meter_floor.floor_dbfs(), -120);
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            raw.contains(r#""input_meter_floor": "-120""#)
+                || raw.contains(r#""input_meter_floor":"-120""#)
+        );
+
+        let json = br#"{"version":1,"monitor_mode":"dry"}"#;
+        let migrated = parse_and_migrate(json).unwrap();
+        assert_eq!(migrated.input_meter_floor, InputMeterFloorPref::Floor60);
+        assert_eq!(migrated.input_meter_floor.floor_dbfs(), -60);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     // --- T-306: recent files (SPEC-018 §2.12, AC-16) -------------------------------------------

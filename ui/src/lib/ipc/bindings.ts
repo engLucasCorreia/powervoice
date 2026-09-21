@@ -367,6 +367,16 @@ export type ImportStartedDto = { job_id: number, name: string, sample_rate_hz: n
 len_samples: number | null, };
 
 /**
+ * The input meter's selectable scale floor (owner request, H-112: "options to change the mic
+ * scale's minimum to −60, −80 or −120, so I can see the level of the mic input well"). `−60`
+ * dBFS is the SPEC-002 §2.1 factory default (unchanged); `−80`/`−120` trade scale resolution near
+ * 0 dBFS for visibility of a quiet mic or the room's noise floor. Stored as the dBFS value itself
+ * (rather than a bare enum name) so the TS binding is a literal-number-string union a `<select>`
+ * can bind to directly, the same convention as [`BitDepth`] above.
+ */
+export type InputMeterFloorPref = "-60" | "-80" | "-120";
+
+/**
  * H-42: `analyzer_inspector_subscribe`/`analyzer_inspector_configure`'s settings.
  */
 export type InspectorConfigDto = { 
@@ -1259,7 +1269,12 @@ snap_to_zero_crossing: boolean,
  * H-42 (SPEC-007 §8): analyzer peak labels / diagnostics panel / Spectrum Inspector
  * settings. Additive field — the settings version stays 1.
  */
-analyzer_diagnostics: AnalyzerDiagnosticsPrefsDto, };
+analyzer_diagnostics: AnalyzerDiagnosticsPrefsDto, 
+/**
+ * H-112 (SPEC-002 §2.1 amended): the input meter's selectable scale floor (−60/−80/−120
+ * dBFS). Additive field — the settings version stays 1.
+ */
+input_meter_floor: InputMeterFloorPref, };
 
 /**
  * SPEC-007 §8.7.

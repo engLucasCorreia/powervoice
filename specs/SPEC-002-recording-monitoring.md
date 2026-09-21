@@ -35,9 +35,13 @@ This spec covers **new-file recording** (M1) and the three monitoring modes. Rec
     `VXTM`), in dBFS. Instant attack; release 20 dB/s. A peak-hold tick holds for 1.5 s, then falls.
   - **RMS bar.** Unweighted RMS over a sliding 300 ms rectangular window, `20·log10(rms)` (the same
     convention as testkit and ACX, so a sine with peak −20 dBFS reads −23.0 dB), in `in_rms_dbfs`.
-  - **Scale and readout.** The scale runs from −60 to 0 dBFS; digital silence (`-inf`) shows an empty
-    bar. A numeric readout shows the highest peak since arming or since the last reset; clicking it
-    resets it.
+  - **Scale and readout** (H-112 amendment — see "Amendment 1" below). The scale runs from a
+    selectable floor — −60 (factory default), −80 or −120 dBFS — to 0 dBFS, chosen from a control
+    on the meter itself and persisted (`Settings.input_meter_floor`); digital silence (`-inf`)
+    shows an empty bar. A numeric readout shows the highest peak since arming or since the last
+    reset; clicking it resets it. The meter is vertical, matching the output meter's form
+    (peak+RMS fill, peak-hold tick, colour zones, scale ticks) — the two sit side by side in the
+    meter bridge.
 - **Clip indicator.**
   - **Trigger.** It lights when any input sample has |x| ≥ 0.99990 (≈ −0.0009 dBFS). This catches
     integer full scale (16-bit +32767 → 0.999969; −32768 → −1.0) and float overs. The event is
@@ -216,6 +220,7 @@ the SPEC-001 device-lost banner appears, and the take proceeds until the user st
 | `record_sample_rate_hz` | Recording sample rate | Hz | {44 100, 48 000, 88 200, 96 000} | 48 000 | list | per new file; Settings → Default format |
 | `record_bit_depth` | Save bit depth of a new recording | — | {16, 24, 32f} | 24 | list | capture is always 32f |
 | `monitor_mode` | Monitoring | enum | Off / Dry / Through rack | Off | list | persisted preference; audible only while armed or recording |
+| `meter_input_floor_dbfs` | Input meter scale floor | dBFS | {−60, −80, −120} | −60 | list | H-112; persisted preference, UI-only (never read by the engine) |
 | `meter_rms_window_ms` | Input RMS window | ms | — | 300 | fixed | rectangular, unweighted |
 | `meter_peak_release_db_per_s` | Peak bar release | dB/s | — | 20 | fixed | UI ballistics |
 | `meter_peak_hold_s` | Peak-hold tick | s | — | 1.5 | fixed | UI |
@@ -397,3 +402,32 @@ Record works with only an input device, SPEC-001 §2.3). Original questions:
    input. Recommendation: keep Record enabled with an input device alone.
 3. Should the per-take clip count also add markers, like dropouts? The recommendation is no for v1:
    clips are best found with the waveform/peak tools planned for M2.
+
+## Amendment 1 — H-112 selectable input meter floor (2026-09-21, owner-requested)
+
+The owner's words: "The output level bar is very nice and vertical and I can see the audio well
+when playing. The input level should be the same way and shape — right now it is only a small
+horizontal bar. It should definitely look like the Output level, but with options to change the
+mic scale's minimum to −60, −80 or −120, so I can see the level of the mic input well."
+
+This supersedes §2.1's original "the scale runs from −60 to 0 dBFS" wherever it appears, and the
+inline bullet above is updated to match:
+
+- **Form.** The input meter is now vertical, the same size and visual language as the output meter
+  (peak+RMS fill, peak-hold tick, colour zones, scale ticks, `meter.peak`/`meter.rms` numeric
+  readouts) — both share one implementation, `ui/src/lib/meters/VerticalMeter.svelte`. The two sit
+  side by side in the meter bridge, the natural arrangement for setting a recording level. The
+  input meter keeps its own Max readout (highest peak since arming or the last reset) and its
+  click-to-reset, which the output meter has no equivalent of. The clip indicator stays where it
+  already was (the transport bar, `RecordControls.svelte`) — the hold tick still tints on a latched
+  clip, exactly like the output meter's own hold tick.
+- **Selectable floor.** A control on the meter itself chooses the scale's minimum: −60 dBFS
+  (factory default, unchanged), −80 or −120 dBFS. A quiet microphone or a room-tone check is
+  invisible on a −60 floor; −120 shows the noise floor. The choice is persisted
+  (`Settings.input_meter_floor`, `meter_input_floor_dbfs` in §3), UI-only — the engine still always
+  sends `in_peak_dbfs`/`in_rms_dbfs` in dBFS regardless of what range the UI chooses to display.
+  The scale's tick labels are fitted to stay legible (non-colliding) at every floor, the same
+  collision-avoidance the output meter's scale already used (`meterScale.ts`).
+- **The output meter is unchanged** — its own scale floor stays the fixed −60 dBFS from H-41/H-48;
+  the owner likes it as-is, and this amendment only ever generalizes the *shared* implementation to
+  support a floor parameter, never applies a selectable floor to the output meter itself.

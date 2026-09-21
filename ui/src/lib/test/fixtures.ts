@@ -113,6 +113,7 @@ export function settingsFixture(overrides: Partial<Settings> = {}): Settings {
       inspector_scale: "log",
       inspector_response: "medium",
     },
+    input_meter_floor: "-60",
     ...overrides,
   };
 }

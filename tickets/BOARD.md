@@ -125,6 +125,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-99 | Align the diagnostics panel's hint wording with H-94's principles (no air boost to flatten a voice; "harsh" only on substantial evidence) | S | todo |
 | H-100 | A wall-clock timing assertion inside `just check` (VXTC frame budget) is flaky in debug builds under load — move it to the bench suite | H | todo |
 | H-101 | The dashed EQ-suggestion overlay needs a way to evaluate a filter that isn't in the rack yet — backend preview, since SPEC-015 AC-17 forbids the UI evaluating filters (H-92 escalated rather than guessing) | S | todo |
+| H-102 | The Explain modal is correct but cramped: the graph is the smallest element, annotation text truncates mid-sentence, cards overrun the plot — layout pass against the owner's reference image | S | in progress |
 | H-62 | Sandbox event-ring overflow is silent (H-55 open question): `HostEnd::push_event` / the proxy drop events when the ring is full (counted in `events_dropped`, never surfaced) — another timing-dependent divergence under heavy automation; surface it as a notice/slot status and test it | S | done |
 | H-56 | Insert silence + cross-document clipboard (T-302 remainder, SPEC-008) | S | done |
 | H-57 | Markers: kinds in the core model, drag, region→selection (T-303 remainder, SPEC-009) | S | done |

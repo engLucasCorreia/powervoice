@@ -115,7 +115,7 @@
             <h4>{t("explain.summary.profile.title")}</h4>
             <ul>
               {#each summary.profile as row (row.id)}
-                <li>
+                <li title={row.reading}>
                   <StatusDot tone={profileTone(row.id, row.severity)} label={row.label} />
                   <span class="profile-label">{row.label}</span>
                   <span class="profile-value">{row.value}</span>
@@ -206,7 +206,13 @@
        strip with its own scrollbar so a long finding list can never push the graph down to a
        sliver, whatever the take's findings. The bottom edge fades rather than cutting hard, so a
        scrollable list reads as "more below", never as a truncated line. */
-    max-height: 11rem;
+    /* H-104: 13rem, and mind the unit — this app's root font is 13px, so the old `11rem` cap was
+       143px, not the 176px it reads like, and the three-row profile needs 160px. That arithmetic
+       is why several attempts to "fit six rows" failed: the cap, not the content, was the limit.
+       Measured in the DOM rather than guessed. `flex: none` stops the graph's min-height
+       squeezing the strip below the cap from the other direction. */
+    max-height: 13rem;
+    flex: none;
     overflow-y: auto;
     -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 14px), transparent);
     mask-image: linear-gradient(to bottom, black calc(100% - 14px), transparent);
@@ -258,12 +264,50 @@
     list-style: none;
   }
 
+  /* H-104: the profile column displays its six items as a 2-column grid (3 rows),
+     so all items fit without scrolling at desktop height. The focus column stays as
+     a vertical list. */
+  .summary-col:first-child ul {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 2px;
+  }
+
   .summary-col li {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: var(--pv-space-1) var(--pv-space-2);
     font-size: var(--pv-text-xs);
+  }
+
+  /* H-104: profile rows are a scannable single-line grid: dot + label + value (right-aligned).
+     Reading text is hidden; shown only as a tooltip on hover (cursor: help indicates this).
+     At normal type size (~16px) plus dot and small gaps, each row is ~20px; six rows = ~120px.
+     This fits comfortably in the 11rem budget beside headers and other elements. */
+  .summary-col:first-child li {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 0 var(--pv-space-1);
+    align-items: center;
+    cursor: help;
+  }
+
+  .summary-col:first-child li > :first-child {
+    grid-column: 1;
+  }
+
+  .summary-col:first-child li > .profile-label {
+    grid-column: 2;
+  }
+
+  .summary-col:first-child li > .profile-value {
+    grid-column: 3;
+    text-align: right;
+  }
+
+  .summary-col:first-child li > .profile-reading {
+    display: none;
   }
 
   .profile-label {
@@ -305,7 +349,11 @@
   .graph-area {
     display: flex;
     flex: 1;
-    min-height: 30rem;
+    /* H-104: 28rem, not 30. The summary's own `max-height` never applied at desktop height —
+       this min-height won the flex negotiation and squeezed the strip to whatever was left, so
+       two of the six profile rows fell under the fade. 2rem back is invisible on the plot (the
+       frequency axis still draws) and is exactly what the third row needs. */
+    min-height: 28rem;
   }
 
   .beneath {

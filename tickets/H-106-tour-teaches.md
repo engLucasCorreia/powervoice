@@ -2,7 +2,13 @@
 
 - **Tier:** Sonnet, UI/UX quality bar
 - **Owner's words:** "add the instructions to the tour, improve that of course, to teach what the things does, how to use the app".
-- **The state today:** six tours exist (`ui/src/lib/tour/tours.ts`) but most are thin — `welcome` has 10 steps, `rack` 4, `loudness` 3, `plugins` 2, and **`noise` and `punch` have one step each**. They point at things; they do not teach what those things are for or when you would use them.
+- **The state today:** six tours exist (`ui/src/lib/tour/tours.ts`): welcome 10 steps, rack 4, noise 3, loudness 4, punch 3, plugins 4.
+
+  **Correction (orchestrator, after the fact):** this ticket originally claimed noise and punch had
+  one step each and that the tours "point rather than teach". That was wrong — my counting script
+  only matched steps written across multiple lines and missed the single-line form, and the bodies
+  already met the teaching bar from T-709/H-39. The agent checked instead of padding tours that were
+  fine, which is the right instinct. **The real gap was that Explain My Voice had no tour at all.**
 - **Read first:** CLAUDE.md, MEMORY.md (T-709's tour implementation), `ui/src/lib/tour/`, `ui/src/lib/i18n/en.json`'s `tour.*` keys, `docs/user-guide.md` (the prose already exists there — reuse its substance rather than inventing a second explanation), and H-94's `explain/prose.ts` for the register: plain, concrete, no exclamation marks, no selling.
 
 ## Scope (in)

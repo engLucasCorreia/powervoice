@@ -224,6 +224,33 @@ function strongestPeakDraft(finding: VoiceFinding, snapshot: VoiceSnapshot): Dra
   const detail = finding.detail;
   const level = dbLevel(detail.levelDb ?? 0);
   const freq = freqPrecise(finding.measured.value);
+  // H-116: the peak lines up with a harmonic that this take's pitch range cannot separate from
+  // its neighbours. That is a weaker, still-true claim than "not a harmonic" — say which harmonic
+  // it probably is and that the take cannot be certain, never that it is a resonance instead.
+  if (peak && peak.harmonicNumber === null && peak.unresolvedHarmonicNumber !== null) {
+    const interpretation: Line[] = [{ key: "explain.finding.strongest_peak.not_fundamental" }];
+    if (peak.unresolvedImpliedF0Hz !== null && snapshot.pitch) {
+      interpretation.push({
+        key: "explain.finding.strongest_peak.likely_unresolved_harmonic",
+        params: {
+          n: peak.unresolvedHarmonicNumber,
+          implied: freqPrecise(peak.unresolvedImpliedF0Hz),
+          cents: formatCents(Math.round(peak.unresolvedDeviationCents ?? 0)),
+          median: freqPrecise(snapshot.pitch.medianHz),
+        },
+      });
+    }
+    return {
+      title: "explain.finding.strongest_peak.title",
+      measured: {
+        key: "explain.finding.strongest_peak.measured_unresolved",
+        params: { freq, level },
+      },
+      interpretation,
+    };
+  }
+  // Only reached once neither a resolvable nor an unresolved harmonic explains the peak — no
+  // pitch this speaker used, at any n, implies this frequency.
   if (!peak || peak.harmonicNumber === null) {
     return {
       title: "explain.finding.strongest_peak.title",

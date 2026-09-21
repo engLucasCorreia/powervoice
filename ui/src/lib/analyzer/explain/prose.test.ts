@@ -199,6 +199,53 @@ describe("the strongest partial", () => {
   });
 });
 
+describe("H-116: a peak that lines up with an unresolvable harmonic", () => {
+  /**
+   * The owner's second take. The pitch range (76–121 Hz, median ~106 Hz) is wide enough that
+   * `highestSeparableHarmonic` = 1 — only H1 is separable — but the loudest peak in the
+   * spectrum, 215.6 Hz, divided by 2 is 107.8 Hz: squarely inside the measured range. The report
+   * must say the peak likely *is* H2 but cannot be separated from its neighbours this take —
+   * never that it "is not a harmonic" or "a resonance of the room".
+   */
+  function secondTakeReport(): VoiceReportDto {
+    return balancedReport({
+      f0: {
+        current_hz: null,
+        median_hz: 106,
+        low_hz: 76,
+        high_hz: 121,
+        voiced_fraction: 0.6,
+        confidence: 0.9,
+        octave_corrected: 0,
+      },
+    });
+  }
+
+  function secondTakeCurve(): SyntheticCurve {
+    // A quiet comb (so H1/H2 aren't what findPeaks picks up) plus one loud, sharp line at
+    // 215.6 Hz — the owner's reported strongest peak.
+    return combCurve({
+      f0Hz: 106,
+      harmonicsDb: [-45, -50, -55, -60, -65, -70],
+      resonances: [[215.6, -31.4, 3]],
+      maxHz: 3000,
+    });
+  }
+
+  it("never turns 'cannot be separated' into 'is not a harmonic — it is the room'", () => {
+    const prose = explainFindings(snapshotOf(secondTakeReport(), secondTakeCurve()));
+    const peak = one(prose, "strongest_peak");
+    expect(peak.measured).toMatch(/215\.6 Hz/);
+    expect(peak.measured).not.toMatch(/rather than a partial/i);
+    expect(peak.interpretation).not.toMatch(/resonance of the (voice or of the )?room/i);
+    expect(peak.interpretation).not.toMatch(/rather than a partial/i);
+    // The weaker, still-true claim: it is probably H2, but the take can't be sure.
+    expect(peak.interpretation).toMatch(/harmonic 2/i);
+    expect(peak.interpretation).toMatch(/107\.8 Hz/);
+    expect(peak.interpretation).toMatch(/pitch moved/i);
+  });
+});
+
 describe("harmonics", () => {
   it("says plainly that the pitch moved too much to separate the upper harmonics", () => {
     // A ±3-semitone speaking range smears the comb from H3 up (H-91): that is a limit of the

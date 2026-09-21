@@ -207,6 +207,9 @@ function pitchFindings(
           impliedF0Hz: strongest.impliedF0Hz,
           deviationCents: strongest.deviationCents,
           aboveFundamentalDb: strongest.aboveFundamentalDb,
+          unresolvedHarmonicNumber: strongest.unresolvedHarmonicNumber,
+          unresolvedImpliedF0Hz: strongest.unresolvedImpliedF0Hz,
+          unresolvedDeviationCents: strongest.unresolvedDeviationCents,
         },
       ),
     );

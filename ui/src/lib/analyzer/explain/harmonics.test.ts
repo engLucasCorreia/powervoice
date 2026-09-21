@@ -6,6 +6,7 @@ import { fileURLToPath } from "url";
 
 import { findPeaks } from "../peaks";
 import {
+  bestHarmonicMatch,
   cents,
   chooseFundamental,
   harmonicBand,
@@ -141,6 +142,52 @@ describe("the strongest peak versus the fundamental", () => {
   it("has no opinion when there are no peaks at all", () => {
     const flat = combCurve({ f0Hz: 100, harmonicsDb: [], floorDb: -90 });
     expect(relateStrongestPeak(flat, steady(100), strongestOf(flat), [])).toBeNull();
+  });
+});
+
+describe("a peak that lines up with a harmonic this take cannot separate (H-116)", () => {
+  // The owner's second take: 76–121 Hz range (median ~106 Hz). `highestSeparableHarmonic` = 1,
+  // so H2 cannot be resolved — but the loudest peak at 215.6 Hz, divided by 2, is 107.8 Hz,
+  // squarely inside the measured range. "Cannot be separated" and "is not a harmonic" are
+  // different claims, and only the first is supported by the data.
+  const range: PitchRange = { medianHz: 106, lowHz: 76, highHz: 121 };
+
+  it("only H1 is separable at this pitch range", () => {
+    expect(highestSeparableHarmonic(range)).toBe(1);
+  });
+
+  it("declines to name a resolvable harmonic, but still finds the unresolved match", () => {
+    expect(harmonicNumberOf(215.6, range)).toBeNull();
+    const match = bestHarmonicMatch(215.6, range);
+    expect(match).not.toBeNull();
+    expect(match!.n).toBe(2);
+    expect(match!.impliedF0Hz).toBeCloseTo(107.8, 1);
+  });
+
+  it("relateStrongestPeak reports the unresolved match instead of a bare null", () => {
+    const strongest = { freqHz: 215.6, levelDb: -31.4, prominenceDb: 12 };
+    const curve = combCurve({ f0Hz: 106, harmonicsDb: [] });
+    const relation = relateStrongestPeak(curve, range, strongest, []);
+    expect(relation).not.toBeNull();
+    // The resolvable claim is correctly withheld…
+    expect(relation!.harmonicNumber).toBeNull();
+    expect(relation!.isFundamental).toBe(false);
+    // …but the weaker, still-true claim is now available: this is probably H2.
+    expect(relation!.unresolvedHarmonicNumber).toBe(2);
+    expect(relation!.unresolvedImpliedF0Hz).toBeCloseTo(107.8, 1);
+  });
+
+  it("does not manufacture an unresolved match for a peak that fits no harmonic at all", () => {
+    // The genuine "resonance" case from the test above: nothing, resolvable or not, explains it.
+    const f0 = 100;
+    const curve = combCurve({
+      f0Hz: f0,
+      harmonicsDb: [-40, -38, -42, -48, -54, -60],
+      resonances: [[455, -26, 12]],
+    });
+    const { peak } = relate(curve, steady(f0));
+    expect(peak!.harmonicNumber).toBeNull();
+    expect(peak!.unresolvedHarmonicNumber).toBeNull();
   });
 });
 

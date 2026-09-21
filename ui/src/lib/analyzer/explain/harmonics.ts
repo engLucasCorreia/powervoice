@@ -291,27 +291,57 @@ export interface PeakRelation {
   /** Peak level − H1's measured level (dB); positive means the fundamental is not the loudest
    * thing in the voice. `null` when H1 could not be measured. */
   aboveFundamentalDb: number | null;
+  /**
+   * H-116: set only when `harmonicNumber` is `null` *because* the matching harmonic is beyond
+   * `range`'s separable limit, not because there is no match at all — `n` where the peak fits a
+   * harmonic this take's pitch range cannot resolve from its neighbours. The peak is probably
+   * this harmonic, but the take does not let the report be certain. `null` when `harmonicNumber`
+   * is set, or when no `n` (resolvable or not) explains the peak.
+   */
+  unresolvedHarmonicNumber: number | null;
+  /** The fundamental `unresolvedHarmonicNumber` implies (Hz); `null` as above. */
+  unresolvedImpliedF0Hz: number | null;
+  /** How far that implied fundamental sits from the tracked median (cents); `null` as above. */
+  unresolvedDeviationCents: number | null;
+}
+
+/** A candidate harmonic number a frequency fits, and the fundamental it implies. */
+export interface HarmonicMatch {
+  n: number;
+  impliedF0Hz: number;
+  deviationCents: number;
 }
 
 /**
- * Which harmonic of `range` a frequency is, or `null`. The test is the measured pitch range,
- * not a fixed tolerance: `freqHz / n` has to be a pitch this speaker actually used.
+ * The best-fitting harmonic number for `freqHz` against `range`, searching `n` up to `max`
+ * (default {@link MAX_PEAK_HARMONIC}) — *regardless of whether that many harmonics are
+ * separable*. The test is the measured pitch range, not a fixed tolerance: `freqHz / n` has to
+ * be a pitch this speaker actually used. `null` when no such `n` exists.
+ *
+ * `harmonicNumberOf` narrows this to `range`'s own separable limit, which is the right question
+ * for "is the strongest peak Hn" (H-91 §3: beyond that limit Hn and Hn+1 overlap, so naming one
+ * over the other is not a claim the data supports). This wider search answers a different
+ * question — "does the peak line up with a harmonic at all, resolvable or not" — which is what
+ * tells apart the two ways a match can fail (H-116): a harmonic this take's pitch range cannot
+ * separate from its neighbours, versus a peak that matches no harmonic of any pitch the speaker
+ * used. Only the second may be called something other than a partial.
  */
-export function harmonicNumberOf(freqHz: number, range: PitchRange): number | null {
+export function bestHarmonicMatch(
+  freqHz: number,
+  range: PitchRange,
+  max = MAX_PEAK_HARMONIC,
+): HarmonicMatch | null {
   const usable = usableRange(range);
   if (!(freqHz > 0) || !(usable.medianHz > 0)) {
     return null;
   }
   const low = usable.lowHz / margin;
   const high = usable.highHz * margin;
-  // Beyond the separable limit "the strongest peak is Hn" is not a claim the data supports —
-  // Hn and Hn+1 overlap there — so the peak is reported as a region, not as a harmonic.
-  const limit = highestSeparableHarmonic(range);
   const guess = Math.round(freqHz / usable.medianHz);
-  let best: number | null = null;
+  let best: HarmonicMatch | null = null;
   let bestOff = Infinity;
   for (const n of [guess - 1, guess, guess + 1]) {
-    if (n < 1 || n > limit) {
+    if (n < 1 || n > max) {
       continue;
     }
     const implied = freqHz / n;
@@ -321,10 +351,21 @@ export function harmonicNumberOf(freqHz: number, range: PitchRange): number | nu
     const off = Math.abs(cents(implied, usable.medianHz));
     if (off < bestOff) {
       bestOff = off;
-      best = n;
+      best = { n, impliedF0Hz: implied, deviationCents: cents(implied, usable.medianHz) };
     }
   }
   return best;
+}
+
+/**
+ * Which harmonic of `range` a frequency *is*, or `null` — restricted to harmonics `range` can
+ * actually separate (see {@link bestHarmonicMatch}). Beyond the separable limit "the strongest
+ * peak is Hn" is not a claim the data supports, so this returns `null` there even when a match
+ * exists; `relateStrongestPeak` is what reports that weaker match.
+ */
+export function harmonicNumberOf(freqHz: number, range: PitchRange): number | null {
+  const limit = highestSeparableHarmonic(range);
+  return bestHarmonicMatch(freqHz, range, limit)?.n ?? null;
 }
 
 /**
@@ -340,7 +381,14 @@ export function relateStrongestPeak(
   if (!strongest) {
     return null;
   }
-  const n = harmonicNumberOf(strongest.freqHz, range);
+  const limit = highestSeparableHarmonic(range);
+  const resolved = bestHarmonicMatch(strongest.freqHz, range, limit);
+  // Only reached when nothing separable explains the peak. Searching the wider, unresolved space
+  // is what tells "lines up with a harmonic this take can't resolve" (H-116) apart from "lines up
+  // with nothing at all" — every candidate this search can find has `n > limit`, because anything
+  // at or below `limit` was already tried, and failed, above.
+  const unresolved = resolved === null ? bestHarmonicMatch(strongest.freqHz, range) : null;
+  const n = resolved?.n ?? null;
   const h1 = harmonics.find((h) => h.n === 1);
   const h1Level = h1 && Number.isFinite(h1.levelDb) && h1.status !== "unresolved" ? h1.levelDb : null;
   return {
@@ -348,9 +396,12 @@ export function relateStrongestPeak(
     levelDb: strongest.levelDb,
     prominenceDb: strongest.prominenceDb,
     harmonicNumber: n,
-    impliedF0Hz: n === null ? null : strongest.freqHz / n,
-    deviationCents: n === null ? null : cents(strongest.freqHz / n, usableRange(range).medianHz),
+    impliedF0Hz: resolved?.impliedF0Hz ?? null,
+    deviationCents: resolved?.deviationCents ?? null,
     isFundamental: n === 1,
     aboveFundamentalDb: h1Level === null ? null : strongest.levelDb - h1Level,
+    unresolvedHarmonicNumber: unresolved?.n ?? null,
+    unresolvedImpliedF0Hz: unresolved?.impliedF0Hz ?? null,
+    unresolvedDeviationCents: unresolved?.deviationCents ?? null,
   };
 }

@@ -1274,6 +1274,33 @@ export function installPreviewIpc(options: PreviewOptions): void {
         }
         case "rack_response_curve":
           return responseCurve(a.points as number[]);
+        // H-101: the Explain modal's dashed "suggested EQ" overlay evaluates a filter that is not
+        // in the rack, from parameter overrides alone. Mocked here so the overlay is visible in
+        // the preview harness (and therefore screenshottable) — the real command runs the module's
+        // own ResponseCurve extension, which this cannot and does not try to imitate exactly.
+        case "rack_response_curve_preview": {
+          const points = a.points as number[];
+          const overrides = (a.overrides ?? []) as { id: string; value: number }[];
+          const by = (id: string) => overrides.find((o) => o.id === id)?.value;
+          const bell = (f: number, fc: number, gain: number, q: number) =>
+            gain * Math.exp(-(Math.log2(f / fc) ** 2) / (2 * (0.9 / q) ** 2));
+          const hp = by("hp_freq");
+          const components = [
+            points.map((f) => (hp === undefined ? 0 : -10 * Math.log10(1 + (hp / f) ** 4))),
+            points.map((f) =>
+              bell(f, by("b1_freq") ?? 1000, by("b1_gain") ?? 0, by("b1_q") ?? 1),
+            ),
+            points.map((f) =>
+              bell(f, by("b2_freq") ?? 3000, by("b2_gain") ?? 0, by("b2_q") ?? 1),
+            ),
+          ];
+          return {
+            freqs_hz: points,
+            sample_rate_hz: PREVIEW_RATE_HZ,
+            total_db: points.map((_, i) => components.reduce((sum, c) => sum + c[i]!, 0)),
+            components_db: components,
+          } satisfies ResponseCurveDto;
+        }
         case "noise_profile_curve":
           return noiseProfileCurve();
         case "rack_clear_noise_print": {

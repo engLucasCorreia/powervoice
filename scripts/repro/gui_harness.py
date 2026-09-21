@@ -36,7 +36,10 @@ BINARY_RELEASE = REPO_ROOT / "target" / "release" / "powervoice-app"
 
 def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     print(f"+ {' '.join(cmd)}", file=sys.stderr)
-    return subprocess.run(cmd, cwd=REPO_ROOT, **kwargs)
+    # H-101: `cwd` used to be hard-coded here *and* passed by callers, which raised
+    # "got multiple values for keyword argument 'cwd'" and broke `build` outright.
+    kwargs.setdefault("cwd", REPO_ROOT)
+    return subprocess.run(cmd, **kwargs)
 
 
 def cmd_build(args: argparse.Namespace) -> int:
@@ -44,6 +47,8 @@ def cmd_build(args: argparse.Namespace) -> int:
     loads the production frontend bundle directly (no `devUrl`, no mocked IPC), which is the
     "real app" this harness is for. Debug build (~2 min) is enough; pass --release to match what
     ships."""
+    # H-101: a plain `cargo build -p powervoice-app` still embeds `devUrl`, so the launched
+    # window shows "Could not connect to localhost". Only the Tauri CLI bakes in `frontendDist`.
     r = run(["npm", "run", "build"], cwd=REPO_ROOT / "ui")
     if r.returncode != 0:
         return r.returncode

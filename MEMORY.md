@@ -13,6 +13,10 @@
   tagging; after CI, **download the artifact, run it, and screenshot its contents** — a window
   appearing is not evidence the UI rendered. Publish hand-written notes with `gh release edit
   --notes-file` (the workflow's own body is generic), and mark superseded releases as such.
+- **RELEASE GATE (owner, 2026-09-21): no GitHub release until the owner has tested the fixes.**
+  "We will test the tickets before releasing new versions for github now. I want to make sure we fix
+  before we release new versions." Merging and pushing main continue as before; **tagging does not**.
+  Build a local AppImage, give the owner a per-fix checklist, and tag only after they confirm.
 - **Owner's standing instructions:** autonomous — no checkpoints, no questions; after every merge run
   `just roadmap`, republish the dashboard artifact, and push main to GitHub; never install system
   packages or use sudo; never start or kill the owner's running PowerVoice; agents never `cd` into a

@@ -15,6 +15,12 @@ Audition's Waveform Editor, not a multitrack DAW. Mono, one recording at a time,
   feature and the export-hang fix. **Cut v0.4.0 once H-95 reports.**
 - `just check` is green: ~4,650 tests — roughly 2,670 in the UI and 1,980 in Rust.
 
+## Releasing — the owner tests first
+**Never tag a release until the owner has personally tested the fixes in it** (their instruction,
+2026-09-21). Merge and push main as usual; then build a local AppImage, give them a checklist of what
+to try per fix, and wait for their confirmation before bumping the version and tagging. CI going
+green and my own screenshots have both been wrong before.
+
 ## How the work is organised
 - **Spec-first.** `specs/SPEC-0xx` define behaviour; `docs/adr/` records architecture decisions.
   Both are amended, never silently contradicted — append a dated amendment and say what it

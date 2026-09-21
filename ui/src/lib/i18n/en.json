@@ -111,6 +111,7 @@
   "analyzer.hint.presence_low": "Dull — presence is lacking",
   "analyzer.hint.presence_ok": "Presence OK",
   "analyzer.hint.presence_high": "Forward or harsh in the upper mids",
+  "analyzer.hint.presence_high_near": "Slightly forward in the upper mids",
   "analyzer.hint.air_low": "Little air above 10 kHz",
   "analyzer.hint.air_ok": "Air OK",
   "analyzer.hint.air_high": "Bright — watch for hiss",

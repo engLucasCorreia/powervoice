@@ -7,6 +7,13 @@
  * The thresholds are voice-over rules of thumb, not standards (documented in the SPEC-007
  * amendment). Tone balance is measured as per-octave density relative to the 1 kHz octave, where
  * pink noise reads 0 dB; a typical voice sits around +3 (mud), −7 (presence), −22 dB (air).
+ *
+ * These hints and the *Explain My Voice* prose (`explain/prose.ts`, H-94) describe the same
+ * measurements and must never disagree in register (H-99, SPEC-007 Amendment 2): air is a
+ * description, never a boost to reach for, and "boomy"/"harsh" wording (with the EQ move that
+ * goes with it) is reserved for a reading that clears its warn threshold by more than
+ * {@link NEAR_THRESHOLD_DB} — the same margin Explain uses, so the two never split a hair
+ * differently. Panel copy stays a terse one-liner; only the verdict has to match, not the length.
  */
 import type { MessageKey, MessageParams } from "../i18n";
 import type { VoiceReportDto } from "../ipc/bindings";
@@ -34,7 +41,9 @@ export interface Finding {
 }
 
 /** Tone-balance zones (dB relative to the 1 kHz octave): below `low` / above `high` is a
- * finding; `warnHigh`/`warnLow` escalate it. */
+ * finding; `warnHigh` escalates it to "boomy" + an EQ move, past {@link NEAR_THRESHOLD_DB} of
+ * margin (H-99). Presence has no separate info step — crossing `high`/`low` at all is the warn
+ * threshold, same as SPEC-007 §8.10's table. */
 export const TONE_ZONES = {
   mud: { low: -6, high: 6, warnHigh: 9 },
   presence: { low: -14, high: -2 },
@@ -51,12 +60,23 @@ export const ACX_NOISE_FLOOR_DBFS = -60;
 export const SNR_FAIR_DB = 30;
 export const SNR_GOOD_DB = 40;
 
-/** The EQ moves the findings offer. */
+/**
+ * How far past a warn threshold (mud, presence) a reading must land before the panel calls it
+ * "boomy"/"harsh" and offers an EQ move (H-99, SPEC-007 Amendment 2). Within this margin the
+ * reading gets the same mild, no-action wording as the softer info band below the threshold —
+ * a microphone swap or a few centimetres of working distance moves a band by this much on its
+ * own, so it isn't evidence of anything to correct. Shared value with Explain My Voice's
+ * `NEAR_THRESHOLD_DB` (`explain/thresholds.ts`, H-94): the panel and the modal must never split
+ * the same hair of margin into two different verdicts.
+ */
+export const NEAR_THRESHOLD_DB = 1;
+
+/** The EQ moves the findings offer. There is deliberately no move for "more air": a voice's
+ * high end is supposed to roll off, so nothing here ever suggests boosting it (H-99). */
 export const EQ_MOVES = {
   mudCut: { kind: "cut", freqHz: 300, gainDb: -3, q: 1.4 },
   presenceBoost: { kind: "boost", freqHz: 3500, gainDb: 2.5, q: 1 },
   presenceCut: { kind: "cut", freqHz: 3500, gainDb: -3, q: 2 },
-  airBoost: { kind: "boost", freqHz: 12_000, gainDb: 3, q: 0.7 },
   rumbleHighPass: { kind: "high_pass", freqHz: 80, gainDb: 0, q: 0.7071 },
 } as const satisfies Record<string, EqAction>;
 /** Hum notch: deep and narrow (RBJ peaking, SPEC-015 limits: gain ≥ −24 dB, Q ≤ 30). */
@@ -79,10 +99,12 @@ function tone(report: VoiceReportDto): Finding[] {
     return out;
   }
   const mud = t.mud_db;
-  if (mud > TONE_ZONES.mud.warnHigh) {
+  if (mud > TONE_ZONES.mud.warnHigh + NEAR_THRESHOLD_DB) {
     out.push({ id: "mud", severity: "warn", hintKey: "analyzer.hint.mud_high", action: { type: "eq", eq: EQ_MOVES.mudCut } });
   } else if (mud > TONE_ZONES.mud.high) {
-    out.push({ id: "mud", severity: "info", hintKey: "analyzer.hint.mud_slight", action: { type: "eq", eq: EQ_MOVES.mudCut } });
+    // Below the warn line, and a hair past it, both read as a description, not a defect: no
+    // "boomy" wording and nothing to fix (H-99 — matches Explain's info branch).
+    out.push({ id: "mud", severity: "info", hintKey: "analyzer.hint.mud_slight" });
   } else if (mud < TONE_ZONES.mud.low) {
     out.push({ id: "mud", severity: "info", hintKey: "analyzer.hint.mud_low" });
   } else {
@@ -92,8 +114,12 @@ function tone(report: VoiceReportDto): Finding[] {
     const p = t.presence_db;
     if (p < TONE_ZONES.presence.low) {
       out.push({ id: "presence", severity: "warn", hintKey: "analyzer.hint.presence_low", action: { type: "eq", eq: EQ_MOVES.presenceBoost } });
-    } else if (p > TONE_ZONES.presence.high) {
+    } else if (p > TONE_ZONES.presence.high + NEAR_THRESHOLD_DB) {
       out.push({ id: "presence", severity: "warn", hintKey: "analyzer.hint.presence_high", action: { type: "eq", eq: EQ_MOVES.presenceCut } });
+    } else if (p > TONE_ZONES.presence.high) {
+      // Barely across the "forward/harsh" line: say "forward", not "harsh", and offer nothing to
+      // correct (H-99 — the same margin Explain treats as barely across).
+      out.push({ id: "presence", severity: "info", hintKey: "analyzer.hint.presence_high_near" });
     } else {
       out.push({ id: "presence", severity: "ok", hintKey: "analyzer.hint.presence_ok" });
     }
@@ -101,7 +127,9 @@ function tone(report: VoiceReportDto): Finding[] {
   if (t.air_db !== null) {
     const a = t.air_db;
     if (a < TONE_ZONES.air.low) {
-      out.push({ id: "air", severity: "info", hintKey: "analyzer.hint.air_low", action: { type: "eq", eq: EQ_MOVES.airBoost } });
+      // Description only — a voice's top end is supposed to roll off, so this never offers a
+      // boost to "fix" it (H-99, SPEC-007 Amendment 2).
+      out.push({ id: "air", severity: "info", hintKey: "analyzer.hint.air_low" });
     } else if (a > TONE_ZONES.air.high) {
       out.push({ id: "air", severity: "info", hintKey: "analyzer.hint.air_high" });
     } else {

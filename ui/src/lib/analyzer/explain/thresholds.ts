@@ -19,6 +19,7 @@
  */
 export {
   ACX_NOISE_FLOOR_DBFS,
+  NEAR_THRESHOLD_DB,
   RUMBLE_WARN_DB,
   SIBILANCE_MODERATE_DB,
   SIBILANCE_STRONG_DB,
@@ -34,15 +35,13 @@ export {
  */
 export const SIGNIFICANT_MARGIN_DB = 6;
 
-/**
- * How close to the threshold it crossed a measurement may sit and still be phrased
- * conservatively (dB). H-94: `attention` is not one thing. A reading 0.7 dB past its threshold
- * and a reading 5 dB past it are both "a threshold was crossed", but only the second is evidence
- * of anything a listener would hear — microphone response and a few centimetres of working
- * distance move a band level by more than this on their own. Within this margin the prose says
- * the measurement is barely across, and offers no correction.
+/*
+ * `NEAR_THRESHOLD_DB` (H-94: "`attention` is not one thing" — a reading 0.7 dB past its
+ * threshold and a reading 5 dB past it are both "crossed", but only the second is evidence of
+ * anything a listener would hear) moved to `../diagnosticsHints` in H-99, because the panel's
+ * own "boomy"/"harsh" wording needed the identical margin: one number, re-exported above, so the
+ * panel and this report can never split the same hair of margin into two different verdicts.
  */
-export const NEAR_THRESHOLD_DB = 1;
 
 /**
  * A broadband RMS noise floor below this (dBFS) is reported as *probably processed* rather than

@@ -38,6 +38,57 @@ describe("diagnostic hints (H-42)", () => {
     expect(byId(harsh, "air")).toBeUndefined();
   });
 
+  it("never recommends boosting air — a voice is not supposed to be flat up there (H-99)", () => {
+    const low = assessReport(report({ tone: { mud_db: 3, presence_db: -7, air_db: -40 } }));
+    expect(byId(low, "air")).toMatchObject({ severity: "info", hintKey: "analyzer.hint.air_low" });
+    expect(byId(low, "air")?.action).toBeUndefined();
+    const high = assessReport(report({ tone: { mud_db: 3, presence_db: -7, air_db: -5 } }));
+    expect(byId(high, "air")).toMatchObject({ severity: "info", hintKey: "analyzer.hint.air_high" });
+    expect(byId(high, "air")?.action).toBeUndefined();
+    // No EQ move offered anywhere ever boosts the top end (EQ_MOVES no longer even has one).
+    for (const f of [...low, ...high]) {
+      if (f.action?.type === "eq") {
+        expect(f.action.eq.kind === "boost" && f.action.eq.freqHz >= 10_000).toBe(false);
+      }
+    }
+  });
+
+  it("a threshold crossed by a hair reads mild, not alarming (H-99, shared with Explain My Voice)", () => {
+    // Mud: 9 dB is the "boomy" line. A reading barely past it stays in the mild, no-action
+    // register (same as the softer 6..9 dB band) — "boomy" and a suggested cut are reserved for
+    // a reading that clears the line by more than a mic swap would explain.
+    const nearMud = byId(assessReport(report({ tone: { mud_db: 9.5, presence_db: -7, air_db: -22 } })), "mud")!;
+    expect(nearMud).toMatchObject({ severity: "info", hintKey: "analyzer.hint.mud_slight" });
+    expect(nearMud.action).toBeUndefined();
+    const clearMud = byId(assessReport(report({ tone: { mud_db: 10.5, presence_db: -7, air_db: -22 } })), "mud")!;
+    expect(clearMud).toMatchObject({ severity: "warn", hintKey: "analyzer.hint.mud_high" });
+    expect(clearMud.action).toMatchObject({ type: "eq", eq: { kind: "cut" } });
+
+    // Presence: −2 dB is the "forward/harsh" line. Barely past it is "slightly forward", not
+    // "harsh", and offers nothing to fix.
+    const nearPresence = byId(
+      assessReport(report({ tone: { mud_db: 3, presence_db: -1.5, air_db: -22 } })),
+      "presence",
+    )!;
+    expect(nearPresence).toMatchObject({ severity: "info", hintKey: "analyzer.hint.presence_high_near" });
+    expect(nearPresence.action).toBeUndefined();
+    const clearPresence = byId(
+      assessReport(report({ tone: { mud_db: 3, presence_db: -0.5, air_db: -22 } })),
+      "presence",
+    )!;
+    expect(clearPresence).toMatchObject({ severity: "warn", hintKey: "analyzer.hint.presence_high" });
+    expect(clearPresence.action).toMatchObject({ type: "eq", eq: { kind: "cut", freqHz: 3500 } });
+  });
+
+  it("an info-level mud reading describes, and does not suggest fixing (H-99)", () => {
+    // 6..9 dB is "slightly full" already at info severity in SPEC-007 §8.10 — it must not carry
+    // the mud cut, which is reserved for the warn tier (matches Explain's info branch, which
+    // never recommends anything either).
+    const f = byId(assessReport(report({ tone: { mud_db: 7, presence_db: -7, air_db: -22 } })), "mud")!;
+    expect(f).toMatchObject({ severity: "info", hintKey: "analyzer.hint.mud_slight" });
+    expect(f.action).toBeUndefined();
+  });
+
   it("sibilance gives the de-esser target to copy", () => {
     const f = byId(assessReport(report({ sibilance: { ratio_db: -9, centre_hz: 6310 } })), "sibilance")!;
     expect(f.severity).toBe("warn");

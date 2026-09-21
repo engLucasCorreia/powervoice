@@ -810,3 +810,28 @@ tile content, after the boundary lines are added alongside it — because the sp
 is an opaque heatmap image, not a thin line on an empty background; a translucent wash tints it
 rather than hiding it, which was never the reported failure mode here. Both panes pick up the new
 hue automatically since they read the same shared tokens.
+
+## Amendment 2 — H-99 diagnostics/Explain register (2026-09-21, autonomous)
+
+H-91–H-94 added *Explain My Voice*, a second reading of the same measurements §8.10 already
+covers, and gave it firmer principles than §8.10's original table: a voice's high end is not
+required to be flat, and "harsh"/"hard"/"boomy" language (with the correction that goes with it)
+is reserved for a reading that clears its threshold by more than a microphone swap would explain.
+§8.10's table predates those principles and disagreed with them on both counts. This amendment
+brings §8.10 into line so the panel and the modal never offer two different verdicts over the
+same number:
+
+- **Air's "EQ move offered" cell is withdrawn.** §8.10 listed "boost 12 kHz +3 dB Q 0.7 (low
+  air)"; no such move is offered any more, at either end of the air zone. A voice's spectrum
+  rolls off up here, same as most microphones — the finding stays informational and boosting to
+  flatten it would mostly raise hiss and sibilance, not presence.
+- **Mud's and Presence's warn thresholds gain a 1 dB grace margin**, shared with Explain My
+  Voice's `NEAR_THRESHOLD_DB` (`explain/thresholds.ts`, re-exported from
+  `analyzer/diagnosticsHints.ts`, which now owns the constant). A reading within that margin of
+  the warn line (mud's +9 dB, presence's −2 dB) is phrased the same mild, no-EQ-move way as the
+  band below the threshold (mud: "slightly full"; presence: "slightly forward"); "a bit boomy" /
+  "forward or harsh", and the EQ move that comes with them, apply only once the margin is cleared.
+  The thresholds and severities themselves (mud info at +6, warn at +9; presence warn at −14/−2)
+  are unchanged — only the last 1 dB below each warn line reads more conservatively.
+
+No wire format, command or acceptance criterion changes; this is a copy/verdict correction only.

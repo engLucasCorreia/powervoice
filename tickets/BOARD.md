@@ -117,13 +117,14 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-96 | Owner-reported: the export UI hangs at "exporting" after the export has actually finished — `job_progress` is subscribed *after* the job starts, so a fast job's terminal event is lost (same pattern in normalize, LUFS normalize and bake) | S | done |
 | H-98 | The unreproduced half of the export freeze: Cancel unresponsive, SIGTERM ignored, 72% CPU — needs a real-app repro harness and a profile at the moment of the freeze (H-96 fixed the lost event but could not reproduce the spin) | S | todo |
 | H-91 | Explain My Voice: frozen analysis snapshot, harmonic/peak reasoning, octave-error guard, findings model (engine only) | O | done |
-| H-92 | Explain My Voice: the modal and the annotated log-frequency graph (raw + smoothed envelope, F0/harmonics, voice bands, hover, responsive) | S | in progress |
+| H-92 | Explain My Voice: the modal and the annotated log-frequency graph (raw + smoothed envelope, F0/harmonics, voice bands, hover, responsive) | S | done |
 | H-93 | Explain My Voice: collision-aware annotation layout solver (pure geometry) | S | done |
 | H-94 | Explain My Voice: finding prose, engineering summary, conservative EQ advice — measurement separated from interpretation | O | done |
-| H-95 | Explain My Voice: verification against real voices (the owner's 8 cases + their own recording) | S | todo |
+| H-95 | Explain My Voice: verification against real voices (the owner's 8 cases + their own recording) | S | in progress |
 | H-97 | Show pitch confidence in the diagnostics panel when an F0 estimate is shaky (H-91 follow-up) | H | todo |
 | H-99 | Align the diagnostics panel's hint wording with H-94's principles (no air boost to flatten a voice; "harsh" only on substantial evidence) | S | todo |
 | H-100 | A wall-clock timing assertion inside `just check` (VXTC frame budget) is flaky in debug builds under load — move it to the bench suite | H | todo |
+| H-101 | The dashed EQ-suggestion overlay needs a way to evaluate a filter that isn't in the rack yet — backend preview, since SPEC-015 AC-17 forbids the UI evaluating filters (H-92 escalated rather than guessing) | S | todo |
 | H-62 | Sandbox event-ring overflow is silent (H-55 open question): `HostEnd::push_event` / the proxy drop events when the ring is full (counted in `events_dropped`, never surfaced) — another timing-dependent divergence under heavy automation; surface it as a notice/slot status and test it | S | done |
 | H-56 | Insert silence + cross-document clipboard (T-302 remainder, SPEC-008) | S | done |
 | H-57 | Markers: kinds in the core model, drag, region→selection (T-303 remainder, SPEC-009) | S | done |

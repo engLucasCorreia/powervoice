@@ -40,6 +40,8 @@ function render(s: RackSlotDto): { target: HTMLElement; teardown: () => void } {
       ondragover: () => {},
       ondrop: () => {},
       ondragend: () => {},
+      slotCount: 1,
+      onmove: () => {},
     },
   });
   flushSync();

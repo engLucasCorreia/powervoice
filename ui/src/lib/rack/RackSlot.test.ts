@@ -149,12 +149,14 @@ function render(slot: RackSlotDto) {
     props: {
       slot,
       index: 0,
+      slotCount: 1,
       rateHz: 48_000,
       dragOver: false,
       ondragstart: () => {},
       ondragover: () => {},
       ondrop: () => {},
       ondragend: () => {},
+      onmove: () => {},
     },
   });
   flushSync();
@@ -468,12 +470,14 @@ describe("Clear Noise Print menu item (H-85)", () => {
       props: {
         slot,
         index: 1,
+        slotCount: 2,
         rateHz: 48_000,
         dragOver: false,
         ondragstart: () => {},
         ondragover: () => {},
         ondrop: () => {},
         ondragend: () => {},
+        onmove: () => {},
       },
     });
     flushSync();
@@ -514,6 +518,200 @@ describe("Clear Noise Print menu item (H-85)", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(calls).toEqual([["rack_clear_noise_print", { slot: 1 }]]);
     teardown();
+  });
+});
+
+// H-110 (owner-reported): `draggable="true"` used to sit on the whole slot `<section>`, so a
+// press-and-move anywhere inside the card started a native drag of the entire slot before any
+// inner control (EQ node, slider, transfer-graph handle, number field...) ever saw the gesture.
+// Only the grip may start a slot drag now; every interactive element in the body must sit outside
+// any `[draggable="true"]` ancestor, and reordering must still work by drag (grip) and keyboard.
+describe("H-110: only the grip starts a slot drag", () => {
+  /** A slot exercising every control the ticket calls out: EQ graph, transfer graph, noise
+   * profile graph + capture, a generic param slider/value field, and the presets menu's
+   * name field. */
+  function fullSlotFixture(): RackSlotDto {
+    return {
+      ...slotFixture(),
+      curve_handles: [{ component: 0, freq: 0, gain: null, q: null, enable: null }],
+      transfer_handles: [{ component: 0, threshold: 0, enable: null }],
+      noise_profile: "loaded",
+    };
+  }
+
+  function renderMoveable(
+    slot: RackSlotDto,
+    overrides: Partial<{
+      index: number;
+      slotCount: number;
+      ondragstart: (index: number) => void;
+      ondragend: () => void;
+      onmove: (from: number, to: number) => void;
+    }> = {},
+  ) {
+    mockIPC((cmd) => {
+      if (cmd === "module_presets_list") {
+        return [];
+      }
+      if (cmd === "noise_profile_curve") {
+        return { freqs_hz: [], levels_dbfs: [] };
+      }
+      if (cmd === "analyzer_subscribe") {
+        throw new Error("no real Tauri window");
+      }
+      return rackStateDto();
+    });
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(RackSlot, {
+      target,
+      props: {
+        slot,
+        index: overrides.index ?? 1,
+        slotCount: overrides.slotCount ?? 3,
+        rateHz: 48_000,
+        dragOver: false,
+        ondragstart: overrides.ondragstart ?? (() => {}),
+        ondragover: () => {},
+        ondrop: () => {},
+        ondragend: overrides.ondragend ?? (() => {}),
+        onmove: overrides.onmove ?? (() => {}),
+      },
+    });
+    flushSync();
+    return { target, teardown: () => unmount(app) };
+  }
+
+  it("puts draggable=true on the grip, never on the slot section", () => {
+    const { target, teardown } = renderMoveable(fullSlotFixture());
+    const section = target.querySelector('[data-testid="rack-slot"]')!;
+    const grip = target.querySelector('[data-testid="rack-slot-grip"]')!;
+    expect(section.getAttribute("draggable")).not.toBe("true");
+    expect(grip.getAttribute("draggable")).toBe("true");
+    teardown();
+  });
+
+  it("keeps every interactive control in the body outside any draggable ancestor", async () => {
+    const { target, teardown } = renderMoveable(fullSlotFixture());
+    try {
+      // Open the value-edit text field for a generic param (the number-entry case the ticket
+      // calls out — text selection by drag must work there too).
+      target.querySelector<HTMLButtonElement>('[data-testid="param-value"]')!.click();
+      flushSync();
+
+      // Open the slot menu → Presets → Save as… to reach the preset-name text field.
+      target.querySelector<HTMLButtonElement>('[data-testid="rack-slot-menu"]')!.click();
+      flushSync();
+      target.querySelector<HTMLButtonElement>('[data-testid="rack-slot-presets"]')!.click();
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      target.querySelector<HTMLButtonElement>('[data-testid="rack-slot-preset-save"]')!.click();
+      flushSync();
+
+      const controls = [
+        "param-slider",
+        "param-value-input",
+        "eq-canvas",
+        "transfer-canvas",
+        "nr-profile-canvas",
+        "nr-capture-button",
+        "rack-slot-preset-name",
+      ];
+      for (const testid of controls) {
+        const el = target.querySelector(`[data-testid="${testid}"]`);
+        expect(el, `expected [data-testid="${testid}"] to be present`).not.toBeNull();
+        expect(
+          el!.closest('[draggable="true"]'),
+          `[data-testid="${testid}"] must not sit under a draggable ancestor`,
+        ).toBeNull();
+      }
+    } finally {
+      teardown();
+    }
+  });
+
+  it("starts a reorder drag only from the grip, not from the card body", () => {
+    const started: number[] = [];
+    const { target, teardown } = renderMoveable(fullSlotFixture(), {
+      ondragstart: (index) => started.push(index),
+    });
+    try {
+      const section = target.querySelector('[data-testid="rack-slot"]')!;
+      const grip = target.querySelector('[data-testid="rack-slot-grip"]')!;
+
+      section.dispatchEvent(new Event("dragstart", { bubbles: true }));
+      expect(started).toEqual([]);
+
+      grip.dispatchEvent(new Event("dragstart", { bubbles: true }));
+      expect(started).toEqual([1]);
+    } finally {
+      teardown();
+    }
+  });
+
+  it("moves the slot with ArrowDown/ArrowUp on the grip, clamped at the ends", () => {
+    const moves: Array<[number, number]> = [];
+    const { target, teardown } = renderMoveable(fullSlotFixture(), {
+      index: 1,
+      slotCount: 3,
+      onmove: (from, to) => moves.push([from, to]),
+    });
+    try {
+      const grip = target.querySelector<HTMLElement>('[data-testid="rack-slot-grip"]')!;
+
+      grip.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+      grip.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true }));
+      expect(moves).toEqual([
+        [1, 2],
+        [1, 0],
+      ]);
+    } finally {
+      teardown();
+    }
+  });
+
+  it("clamps keyboard reorder at the top and bottom of the rack", () => {
+    const moves: Array<[number, number]> = [];
+    const top = renderMoveable(fullSlotFixture(), {
+      index: 0,
+      slotCount: 3,
+      onmove: (from, to) => moves.push([from, to]),
+    });
+    try {
+      top.target
+        .querySelector<HTMLElement>('[data-testid="rack-slot-grip"]')!
+        .dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true }));
+    } finally {
+      top.teardown();
+    }
+
+    const bottom = renderMoveable(fullSlotFixture(), {
+      index: 2,
+      slotCount: 3,
+      onmove: (from, to) => moves.push([from, to]),
+    });
+    try {
+      bottom.target
+        .querySelector<HTMLElement>('[data-testid="rack-slot-grip"]')!
+        .dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    } finally {
+      bottom.teardown();
+    }
+
+    expect(moves).toEqual([]);
+  });
+
+  it("gives the grip an accessible, focusable name naming the module", () => {
+    const { target, teardown } = renderMoveable({ ...fullSlotFixture(), name: "Parametric EQ" });
+    try {
+      const grip = target.querySelector<HTMLElement>('[data-testid="rack-slot-grip"]')!;
+      expect(grip.getAttribute("tabindex")).toBe("0");
+      expect(grip.getAttribute("aria-label")?.length ?? 0).toBeGreaterThan(0);
+      expect(grip.getAttribute("aria-label")).toContain("Parametric EQ");
+    } finally {
+      teardown();
+    }
   });
 });
 

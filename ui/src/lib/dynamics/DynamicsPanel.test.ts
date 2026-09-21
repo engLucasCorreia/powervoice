@@ -273,6 +273,8 @@ function render(slot: RackSlotDto) {
       ondragover: () => {},
       ondrop: () => {},
       ondragend: () => {},
+      slotCount: 1,
+      onmove: () => {},
     },
   });
   flushSync();

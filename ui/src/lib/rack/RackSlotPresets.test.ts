@@ -48,6 +48,8 @@ function render(slot: RackSlotDto, onCommand: (cmd: string, args: unknown) => un
       ondragover: () => {},
       ondrop: () => {},
       ondragend: () => {},
+      slotCount: 1,
+      onmove: () => {},
     },
   });
   flushSync();

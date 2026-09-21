@@ -273,10 +273,46 @@ describe("RackPanel", () => {
     document.body.appendChild(target);
     const app = mount(RackPanel, { target });
     await settle();
+    // H-110: only the grip is draggable now — a card-wide drag would defeat the fix, so the drag
+    // starts/ends on the grip while dragover/drop (accepting a drop anywhere on the card) stay on
+    // the slot itself.
     const slots = target.querySelectorAll<HTMLElement>('[data-testid="rack-slot"]');
-    slots[0]!.dispatchEvent(new Event("dragstart", { bubbles: true }));
+    const grips = target.querySelectorAll<HTMLElement>('[data-testid="rack-slot-grip"]');
+    grips[0]!.dispatchEvent(new Event("dragstart", { bubbles: true }));
     slots[1]!.dispatchEvent(new Event("dragover", { bubbles: true, cancelable: true }));
     slots[1]!.dispatchEvent(new Event("drop", { bubbles: true, cancelable: true }));
+    await settle();
+    expect(calls).toEqual([{ from: 0, to: 1 }]);
+    unmount(app);
+    stopTransport();
+  });
+
+  it("moves a slot with Arrow Up/Down on its grip (keyboard reorder)", async () => {
+    const calls: unknown[] = [];
+    const rack = rackFixture([slotFixture(1), slotFixture(2)]);
+    mockIPC(
+      (cmd, args) => {
+        if (cmd === "rack_list_modules") return [];
+        if (cmd === "rack_get") return rack;
+        if (cmd === "rack_move") {
+          calls.push(args);
+          return rackFixture([...rack.slots].reverse());
+        }
+        if (cmd === "transport_get") {
+          return transportStateDto({ doc_rate_hz: 48_000 });
+        }
+        if (cmd === "clock_now_ns") return 0;
+        return null;
+      },
+      { shouldMockEvents: true },
+    );
+    const stopTransport = await initTransport();
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(RackPanel, { target });
+    await settle();
+    const grips = target.querySelectorAll<HTMLElement>('[data-testid="rack-slot-grip"]');
+    grips[0]!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
     await settle();
     expect(calls).toEqual([{ from: 0, to: 1 }]);
     unmount(app);

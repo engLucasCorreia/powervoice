@@ -1,7 +1,8 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { Button, Icon, IconButton, Menu } from "../ui";
+  import { Button, Icon, IconButton, Menu, Tooltip } from "../ui";
   import type { MenuEntry } from "../ui/menuModel";
+  import type { TooltipTriggerProps } from "../ui";
   import DynamicsPanel from "../dynamics/DynamicsPanel.svelte";
   import EqGraph from "../eq/EqGraph.svelte";
   import TransferGraph from "../transfer/TransferGraph.svelte";
@@ -42,21 +43,28 @@
   let {
     slot,
     index,
+    slotCount,
     rateHz,
     dragOver,
     ondragstart,
     ondragover,
     ondrop,
     ondragend,
+    onmove,
   }: {
     slot: RackSlotDto;
     index: number;
+    /** Total slot count (H-110): lets the grip clamp keyboard reordering at the ends without the
+     * slot knowing about its siblings otherwise. */
+    slotCount: number;
     rateHz: number;
     dragOver: boolean;
     ondragstart: (index: number) => void;
     ondragover: (index: number, event: DragEvent) => void;
     ondrop: (index: number) => void;
     ondragend: () => void;
+    /** H-110: the keyboard reorder path — Arrow Up/Down on the grip. */
+    onmove: (from: number, to: number) => void;
   } = $props();
 
   /** ADR-005 §2 / SPEC-016 §2.1. */
@@ -66,6 +74,38 @@
   let menuOpen = $state(false);
   let menuTrigger: HTMLButtonElement | undefined = $state();
   let sectionEl: HTMLElement | undefined = $state();
+
+  // H-110 (owner-reported): `draggable` used to sit on the whole `<section>` below, so a
+  // press-and-move anywhere in the card — an EQ node, a slider, a transfer-graph handle, even
+  // selecting text in a number field — started a native drag of the entire slot before the
+  // control underneath ever saw the gesture. Only this grip is draggable now; it also carries the
+  // keyboard reorder path (Arrow Up/Down), since dragging is the least accessible way to reorder.
+  const gripLabel = $derived(t("rack.slot.grip", { name: slot.name }));
+
+  function onGripDragStart(event: DragEvent): void {
+    ondragstart(index);
+    // Still show the whole card as the drag image, not just the small grip glyph, so the gesture
+    // reads as "picking up this card" — `setDragImage` isn't implemented everywhere (jsdom, some
+    // older engines), so this is best-effort polish, not load-bearing for the fix.
+    if (sectionEl) {
+      try {
+        const rect = sectionEl.getBoundingClientRect();
+        event.dataTransfer?.setDragImage(sectionEl, event.clientX - rect.left, event.clientY - rect.top);
+      } catch {
+        // See above: purely cosmetic.
+      }
+    }
+  }
+
+  function onGripKeydown(event: KeyboardEvent): void {
+    if (event.key === "ArrowUp" && index > 0) {
+      event.preventDefault();
+      onmove(index, index - 1);
+    } else if (event.key === "ArrowDown" && index < slotCount - 1) {
+      event.preventDefault();
+      onmove(index, index + 1);
+    }
+  }
 
   // H-85 (SPEC-014 §2.3 "Ctrl+Shift+P shows the Noise Reduction panel"): a request naming this
   // slot's own index expands it (if collapsed) and scrolls it into view.
@@ -453,18 +493,36 @@
   data-status={slot.status.kind}
   role="group"
   aria-label={slot.name}
-  draggable="true"
-  ondragstart={() => ondragstart(index)}
   ondragover={(e) => ondragover(index, e)}
   ondrop={(e) => {
     e.preventDefault();
     ondrop(index);
   }}
-  ondragend={ondragend}
   onfocusin={() => noteSlotFocused(index)}
 >
   <header>
-    <span class="grip" aria-hidden="true"><Icon name="drag" size="sm" /></span>
+    <!-- H-110: the ONLY draggable element in the card — dragstart/dragend live here, not on the
+         section, so a press-and-move anywhere else in the card drives that control instead of
+         hijacking a native drag of the whole slot. ArrowUp/ArrowDown reorder it without a mouse. -->
+    {#snippet gripHandle(trigger: TooltipTriggerProps)}
+      <div
+        {...trigger}
+        class="grip"
+        role="button"
+        tabindex="0"
+        aria-label={gripLabel}
+        data-testid="rack-slot-grip"
+        draggable="true"
+        ondragstart={onGripDragStart}
+        ondragend={ondragend}
+        onkeydown={onGripKeydown}
+      >
+        <Icon name="drag" size="sm" />
+      </div>
+    {/snippet}
+    <Tooltip text={gripLabel} describe={false}>
+      {#snippet children(trigger)}{@render gripHandle(trigger)}{/snippet}
+    </Tooltip>
     <IconButton
       icon="bypass"
       label={t("rack.slot.bypass")}
@@ -630,10 +688,36 @@
     padding: 0 var(--pv-space-1);
   }
 
+  /* H-110: a real handle now (focusable, draggable), not decoration — hover/active/focus states
+     match the header's other icon buttons so it reads as interactive at a glance. */
   .grip {
     display: inline-flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: var(--pv-control-h-sm);
+    height: var(--pv-control-h-sm);
+    border-radius: var(--pv-radius-sm);
     color: var(--pv-text-tertiary);
     cursor: grab;
+    transition:
+      background-color var(--pv-duration-fast) var(--pv-ease-standard),
+      color var(--pv-duration-fast) var(--pv-ease-standard);
+  }
+
+  .grip:hover {
+    background: var(--pv-control-bg-hover);
+    color: var(--pv-text-primary);
+  }
+
+  .grip:active {
+    cursor: grabbing;
+    background: var(--pv-control-bg-active);
+  }
+
+  .grip:focus-visible {
+    outline: var(--pv-focus-width) solid var(--pv-focus-ring);
+    outline-offset: var(--pv-focus-offset);
   }
 
   /* T-809: in a narrow rack the name keeps at least a few characters (a plugin slot also carries

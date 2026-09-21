@@ -67,6 +67,12 @@
     dragOverIndex = null;
   }
 
+  // H-110: the keyboard reorder path (Arrow Up/Down on a slot's grip) — dragging must not be the
+  // only way to reorder, so it goes through the same `moveSlot`/`rack_move` as a drag-drop.
+  function onSlotMove(from: number, to: number): void {
+    void moveSlot(from, to);
+  }
+
   onMount(() => {
     let disposed = false;
     let teardown: (() => void) | null = null;
@@ -125,12 +131,14 @@
           <RackSlot
             {slot}
             {index}
+            slotCount={rs.state.slots.length}
             {rateHz}
             dragOver={dragOverIndex === index}
             ondragstart={onSlotDragStart}
             ondragover={onSlotDragOver}
             ondrop={onSlotDrop}
             ondragend={onSlotDragEnd}
+            onmove={onSlotMove}
           />
         {/each}
       {/if}

@@ -258,6 +258,7 @@
   "rack.slot.bypass": "Bypass",
   "rack.slot.collapse": "Collapse",
   "rack.slot.expand": "Expand",
+  "rack.slot.grip": "Reorder {name} — drag, or press arrow up/down",
   "rack.slot.latency": "{ms} ms ({samples} samples)",
   "rack.slot.menu": "Slot menu",
   "rack.slot.menu.remove": "Remove",

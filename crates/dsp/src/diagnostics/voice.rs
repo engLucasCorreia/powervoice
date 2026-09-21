@@ -838,6 +838,59 @@ mod tests {
         assert!(cents(guarded.low_hz, 140.0).abs() < 200.0, "{guarded:?}");
     }
 
+    /// H-95 case A: a low male voice (~100 Hz) whose second harmonic is louder than its own
+    /// fundamental — precisely the shape that can talk YIN's shortest-period-first search into
+    /// locking onto H2 (an octave error), which is exactly what `f0_profile`'s guard
+    /// (`octave_slips_do_not_move_the_pitch_profile`, above) exists to catch. Unlike that test
+    /// (amplitude modulation faking a doubled period), this one is a real harmonic series with
+    /// H2 genuinely the loudest partial in the spectrum, run through the full offline pipeline.
+    #[test]
+    fn h2_louder_than_the_fundamental_does_not_move_f0() {
+        let f0_hz = 100.0;
+        let seconds = 6.0;
+        let n = (seconds * f64::from(FS)) as usize;
+        let mut phase = 0.0f64;
+        let mut x = vec![0.0f32; n];
+        for (i, s) in x.iter_mut().enumerate() {
+            let t = i as f64 / f64::from(FS);
+            // A little vibrato, like a real voice, so this isn't a degenerate pure tone.
+            let inst = f0_hz * (1.0 + 0.01 * (std::f64::consts::TAU * 4.0 * t).sin());
+            phase += std::f64::consts::TAU * inst / f64::from(FS);
+            // H2 (~16.5 dB louder than H1) is the strongest partial in the spectrum; H3 is
+            // present but quieter than either.
+            *s = (0.03 * phase.sin() + 0.20 * (2.0 * phase).sin() + 0.05 * (3.0 * phase).sin())
+                as f32;
+        }
+
+        let config = OfflineConfig {
+            sample_rate_hz: FS,
+            fft_size: 8192,
+            window: WindowKind::Hann,
+        };
+        let a = analyze_buffer(&x, config, |_| true).expect("analysis");
+        let f0 = a.report.f0.expect("voiced");
+        assert!(
+            cents(f0.median_hz, f0_hz).abs() < 50.0,
+            "expected ~{f0_hz} Hz (the true fundamental), got {} Hz ({:.0} cents from 2x F0)",
+            f0.median_hz,
+            cents(f0.median_hz, 2.0 * f0_hz)
+        );
+
+        // And the spectral side must call H2, not H1, the strongest partial (features.rs has no
+        // "which harmonic is strongest" concept of its own — that reasoning lives in the UI's
+        // harmonics.ts, over the *measured* curve and this *measured* F0 — but the raw spectrum
+        // itself must show the expected shape: more power at 2·F0 than at F0).
+        let bin_hz = f64::from(FS) / a.fft_size as f64;
+        let bin_at = |f: f64| (f / bin_hz).round() as usize;
+        let h1_db = power_db(a.ltas[bin_at(f0_hz)]);
+        let h2_db = power_db(a.ltas[bin_at(2.0 * f0_hz)]);
+        assert!(
+            h2_db > h1_db + 6.0,
+            "H2 ({h2_db} dB) should be clearly louder than H1 ({h1_db} dB) — otherwise this test \
+             doesn't exercise case A at all"
+        );
+    }
+
     #[test]
     fn live_current_f0_follows_the_last_phrase() {
         let (x, _) = session(11.0); // ends 1.0 s into a phrase
@@ -921,6 +974,66 @@ mod tests {
         // Digital silence is not a noise floor; too little audio gives no floor at all.
         assert_eq!(level_stats([0.0; 100].into_iter()), LevelStats::default());
         assert_eq!(level_stats([1e-4; 20].into_iter()), LevelStats::default());
+    }
+
+    /// H-95 case G: a quiet take swamped by room noise (~12 dB SNR — poor by any ACX-style
+    /// standard). Noise floor / active level / SNR come from 10 ms broadband RMS blocks (this
+    /// module's own doc comment), never from a spectral estimate, so they must stay sensible
+    /// through `analyze_buffer`'s full offline path even when the FFT domain can't cleanly tell
+    /// voice from noise (unlike `levels_follow_the_acx_definition`'s ~47 dB SNR tone bursts).
+    #[test]
+    fn poor_snr_still_reports_sensible_levels_from_the_broadband_floor() {
+        let seconds = 10.0;
+        let voice_only = voice_like(115.0, seconds, FS);
+        let phrase = (1.0 * f64::from(FS)) as usize;
+        let period = (1.8 * f64::from(FS)) as usize;
+        let voice: Vec<f32> = voice_only
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| if i % period < phrase { v } else { 0.0 })
+            .collect();
+        let voice_active_rms = rms_db(
+            &voice
+                .chunks(period)
+                .flat_map(|c| &c[..phrase.min(c.len())])
+                .copied()
+                .collect::<Vec<_>>(),
+        );
+        // A loud, close-mic'd room: noise only ~20 dB under the voice's own active level — poor
+        // by any ACX-style standard, but still clear of `ACTIVE_MARGIN_DB` (15.9 dB), the least
+        // separation the gate needs to call anything "active" at all.
+        let target_snr_db = 20.0;
+        let noise =
+            vox_testkit::signal::pink_noise(13, voice_active_rms - target_snr_db, seconds, FS)
+                .unwrap();
+        let x = mix(&[&voice, &noise]);
+
+        let config = OfflineConfig {
+            sample_rate_hz: FS,
+            fft_size: 8192,
+            window: WindowKind::Hann,
+        };
+        let a = analyze_buffer(&x, config, |_| true).expect("analysis");
+        let r = &a.report;
+        let floor = r
+            .noise_floor_dbfs
+            .expect("the pauses give a real, if loud, floor");
+        let active = r.active_level_dbfs.expect("active level");
+        let snr = r.snr_db.expect("snr");
+        assert!(
+            (snr - target_snr_db).abs() < 3.0,
+            "expected ~{target_snr_db} dB SNR, got {snr} (floor {floor}, active {active})"
+        );
+        assert!(
+            snr < 30.0,
+            "this scenario is supposed to be poor SNR: {snr} dB"
+        );
+        // The definition holds exactly, not just approximately (voice.rs's own invariant).
+        assert!((snr - (active - floor)).abs() < 1e-9);
+        // The F0/tone/spectral measurements may be degraded by the noise (or entirely absent —
+        // that is fine and is the point: they live on a different, FFT-based path), but the
+        // level trio above must never depend on whether any of them succeeded.
+        let _ = (&r.f0, &r.tone, &r.sibilance);
     }
 
     #[test]

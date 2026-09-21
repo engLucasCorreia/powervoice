@@ -46,6 +46,7 @@ import {
   vxltFrame,
   vxsaFrame,
 } from "./previewSpectrum";
+import { EQ_IDS } from "../lib/analyzer/eqSuggest";
 import { docDto, rackSlotDto, rackStateDto, recordStateDto, settingsFixture, transportStateDto } from "../lib/test/fixtures";
 import type {
   AcxCheckReportDto,
@@ -72,6 +73,7 @@ import type {
   ThemePref,
   TransportStateDto,
   UnitDto,
+  VoiceReportDto,
 } from "../lib/ipc/bindings";
 import { formatWithUnit } from "../lib/ui/units";
 
@@ -1006,6 +1008,22 @@ function vxmtFrame(seq: number, records: Array<{ uid: number; values: number[] }
   return buf;
 }
 
+/**
+ * H-95: a verification/screenshot harness can inject the owner's own *measured* Average
+ * (curve + `VoiceReportDto`, read straight off `analyze_buffer(ExampleRecording.wav)`) by
+ * setting `window.__ownerAverage` before this module runs — bypassing the synthetic
+ * `voiceBinsCached`/`PREVIEW_AVERAGE_REPORTS` voice entirely, so the Explain modal's dashed EQ
+ * overlay can be screenshotted over a *real* spectrum rather than a synthesized one. Unset (and
+ * therefore inert) in every ordinary preview scene and every other test.
+ */
+interface OwnerAverage {
+  curveDb: number[];
+  report: VoiceReportDto;
+}
+function ownerAverage(): OwnerAverage | null {
+  return (globalThis as { __ownerAverage?: OwnerAverage }).__ownerAverage ?? null;
+}
+
 export function installPreviewIpc(options: PreviewOptions): void {
   const { theme, scenes, dialog } = options;
   const hasScene = (name: string) => scenes.includes(name);
@@ -1278,20 +1296,32 @@ export function installPreviewIpc(options: PreviewOptions): void {
         // in the rack, from parameter overrides alone. Mocked here so the overlay is visible in
         // the preview harness (and therefore screenshottable) — the real command runs the module's
         // own ResponseCurve extension, which this cannot and does not try to imitate exactly.
+        //
+        // H-95: `overrides` are the *numeric* parameter ids `eqSuggest.ts::EQ_IDS` sends
+        // ({ id: 31, value: 300 }, …, per `ExplainGraph.eqAdvice.test.ts`), not the string keys
+        // this case matched until now ("b1_freq" etc.) — that mismatch meant `by(...)` always
+        // fell through to its defaults with gain 0, so the mocked preview curve was always flat
+        // (0 dB everywhere) and the dashed overlay silently drew exactly on top of the measured
+        // curve, invisible, in *every* preview screenshot that ever exercised it (H-101's
+        // included). Matching the real ids fixes that.
         case "rack_response_curve_preview": {
           const points = a.points as number[];
-          const overrides = (a.overrides ?? []) as { id: string; value: number }[];
-          const by = (id: string) => overrides.find((o) => o.id === id)?.value;
+          const overrides = (a.overrides ?? []) as { id: number; value: number }[];
+          const by = (id: number) => overrides.find((o) => o.id === id)?.value;
           const bell = (f: number, fc: number, gain: number, q: number) =>
             gain * Math.exp(-(Math.log2(f / fc) ** 2) / (2 * (0.9 / q) ** 2));
-          const hp = by("hp_freq");
+          const hpOn = by(EQ_IDS.hpOn) === 1;
+          // EQ_IDS.peaks always has 5 entries (eqSuggest.ts); the preview only ever needs the
+          // first two (mud/body and presence — the only bands the summary ever suggests both of).
+          const peak1 = EQ_IDS.peaks[0]!;
+          const peak2 = EQ_IDS.peaks[1]!;
           const components = [
-            points.map((f) => (hp === undefined ? 0 : -10 * Math.log10(1 + (hp / f) ** 4))),
+            points.map((f) => (hpOn ? -10 * Math.log10(1 + ((by(EQ_IDS.hpFreq) ?? 80) / f) ** 4) : 0)),
             points.map((f) =>
-              bell(f, by("b1_freq") ?? 1000, by("b1_gain") ?? 0, by("b1_q") ?? 1),
+              by(peak1.on) === 1 ? bell(f, by(peak1.freq) ?? 1000, by(peak1.gain) ?? 0, by(peak1.q) ?? 1) : 0,
             ),
             points.map((f) =>
-              bell(f, by("b2_freq") ?? 3000, by("b2_gain") ?? 0, by("b2_q") ?? 1),
+              by(peak2.on) === 1 ? bell(f, by(peak2.freq) ?? 3000, by(peak2.gain) ?? 0, by(peak2.q) ?? 1) : 0,
             ),
           ];
           return {
@@ -1396,7 +1426,7 @@ export function installPreviewIpc(options: PreviewOptions): void {
                 source,
                 frames: 560,
                 has_noise: true,
-                report: PREVIEW_AVERAGE_REPORTS[source],
+                report: ownerAverage()?.report ?? PREVIEW_AVERAGE_REPORTS[source],
               })),
             });
           }, 400);
@@ -1407,7 +1437,9 @@ export function installPreviewIpc(options: PreviewOptions): void {
           const index = a.index as number;
           const source = lastSpectrumSources[index] ?? "processed";
           const fft = 16_384;
-          return vxltFrame(11, index, PREVIEW_RATE_HZ, fft, voiceBinsCached(fft, PREVIEW_RATE_HZ, source), roomToneBins(fft, PREVIEW_RATE_HZ));
+          const owner = ownerAverage();
+          const levels = owner ? Float32Array.from(owner.curveDb) : voiceBinsCached(fft, PREVIEW_RATE_HZ, source);
+          return vxltFrame(11, index, PREVIEW_RATE_HZ, fft, levels, roomToneBins(fft, PREVIEW_RATE_HZ));
         }
         case "spectrum_export_csv":
           return a.path as string;

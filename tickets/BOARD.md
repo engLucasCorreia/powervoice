@@ -115,7 +115,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-89 | RELEASE BLOCKER, owner-reported: the AppImage bundles libpipewire without its spa plugins, so it fails on every non-Ubuntu distro (flood of pw.loop errors) — stop bundling it and guard against it | S | done |
 | H-90 | RELEASE BLOCKER, owner-reported: the AppImage bundles libwayland-client, so WebKitWebProcess aborts and the window renders empty on a newer Wayland stack — denylisted (found via the upstream excludelist, which H-89's audit had not consulted) | S | done |
 | H-96 | Owner-reported: the export UI hangs at "exporting" after the export has actually finished — `job_progress` is subscribed *after* the job starts, so a fast job's terminal event is lost (same pattern in normalize, LUFS normalize and bake) | S | done |
-| H-98 | The unreproduced half of the export freeze: Cancel unresponsive, SIGTERM ignored, 72% CPU — needs a real-app repro harness and a profile at the moment of the freeze (H-96 fixed the lost event but could not reproduce the spin) | S | todo |
+| H-98 | The unreproduced half of the export freeze: Cancel unresponsive, SIGTERM ignored, 72% CPU — needs a real-app repro harness and a profile at the moment of the freeze (H-96 fixed the lost event but could not reproduce the spin) | S | done |
 | H-91 | Explain My Voice: frozen analysis snapshot, harmonic/peak reasoning, octave-error guard, findings model (engine only) | O | done |
 | H-92 | Explain My Voice: the modal and the annotated log-frequency graph (raw + smoothed envelope, F0/harmonics, voice bands, hover, responsive) | S | done |
 | H-93 | Explain My Voice: collision-aware annotation layout solver (pure geometry) | S | done |
@@ -124,6 +124,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-97 | Show pitch confidence in the diagnostics panel when an F0 estimate is shaky (H-91 follow-up) | H | in progress |
 | H-99 | Align the diagnostics panel's hint wording with H-94's principles (no air boost to flatten a voice; "harsh" only on substantial evidence) | S | done |
 | H-100 | A wall-clock timing assertion inside `just check` (VXTC frame budget) is flaky in debug builds under load — move it to the bench suite | H | done |
+| H-103 | `rfd`'s gtk3 backend spawns a second, permanent GTK main loop the first time a native dialog opens — sharing one GMainContext with the window's own loop. Suspected in the owner's freeze (which followed a save dialog), not proven. Reproduce with the harness, then consider xdg-portal | S | todo |
 | H-101 | The dashed EQ-suggestion overlay needs a way to evaluate a filter that isn't in the rack yet — backend preview, since SPEC-015 AC-17 forbids the UI evaluating filters (H-92 escalated rather than guessing) | S | todo |
 | H-102 | The Explain modal is correct but cramped: the graph is the smallest element, annotation text truncates mid-sentence, cards overrun the plot — layout pass against the owner's reference image | S | in progress |
 | H-62 | Sandbox event-ring overflow is silent (H-55 open question): `HostEnd::push_event` / the proxy drop events when the ring is full (counted in `events_dropped`, never surfaced) — another timing-dependent divergence under heavy automation; surface it as a notice/slot status and test it | S | done |

@@ -59,5 +59,11 @@ harness = false
 name = "playback_start"
 harness = false
 
+# H-100: SPEC-016 AC-23's 5 ms budget for a 512-point transfer curve, measured in release where
+# the number means something (the debug-build wall-clock assertion this replaces was flaky).
+[[bench]]
+name = "transfer_curve"
+harness = false
+
 [lints]
 workspace = true

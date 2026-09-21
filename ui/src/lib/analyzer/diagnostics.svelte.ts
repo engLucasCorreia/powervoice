@@ -20,6 +20,7 @@ import type {
   IpcError,
   JobProgressDto,
   LoudnessSourceDto,
+  Notice,
   SpectrumReportDto,
   SpectrumScalePref,
   SpectrumSmoothingPref,
@@ -104,6 +105,53 @@ let unlistenProgress: (() => void) | null = null;
 let unlistenReport: (() => void) | null = null;
 /** H-96 "belt and braces": stops the recovery poll for the current average/compare job. */
 let stopStatusPoll: (() => void) | null = null;
+
+/**
+ * H-108: the owner hit "Analyzing…" that never finished, with no way to tell slow from stuck —
+ * this is the backstop. If **nothing at all** (not a real `job_progress`, not a recovered
+ * `job_status` tick) arrives for this long while a job looks "running", it almost certainly is
+ * stuck (a lost terminal event past H-96's own recovery, a wedged render thread), so this stops
+ * pretending and fails it instead of spinning forever. Generous on purpose: a huge file's
+ * "processed" render reports no progress at all until the analysis pass after it starts (only
+ * `analyze_buffer`'s frame loop ticks), so a legitimately slow job must not trip this.
+ */
+const NO_PROGRESS_TIMEOUT_MS = 30_000;
+/** How often the watchdog checks; independent of the ~10 Hz real progress rate or H-96's 3 s
+ * recovery poll. */
+const WATCHDOG_INTERVAL_MS = 2_000;
+
+let lastProgressAt = 0;
+let stopWatchdog: (() => void) | null = null;
+
+function localNotice(key: string): Notice {
+  return { level: "error", key, params: {}, persistent: false, id: null, cleared: false, auto_dismiss_ms: null, action: null };
+}
+
+/** A locally-built error toast for a spectrum-analyze failure that never went through
+ * `invoke()` (so there's no `IpcError` to route through `noticeFromIpcError`) — the no-progress
+ * timeout above, and `AnalyzerPanel.svelte`'s "done but produced nothing for this source" case. */
+export function pushSpectrumFailureNotice(key: string): void {
+  pushNotice(localNotice(key));
+}
+
+/** (Re)starts the no-progress watchdog for `jobId` (any previous one is stopped first). */
+function startWatchdog(jobId: number): void {
+  stopWatchdog?.();
+  lastProgressAt = Date.now();
+  const id = setInterval(() => {
+    if (!job || job.jobId !== jobId || job.state !== "running") {
+      stopWatchdog?.();
+      return;
+    }
+    if (Date.now() - lastProgressAt >= NO_PROGRESS_TIMEOUT_MS) {
+      void spectrumAnalyzeCancel(jobId).catch(() => {});
+      job = { ...job, state: "failed" };
+      pushSpectrumFailureNotice("error.spectrum.timeout");
+      stopWatchdog?.();
+    }
+  }, WATCHDOG_INTERVAL_MS);
+  stopWatchdog = () => clearInterval(id);
+}
 
 /** Read-only accessor for components. */
 export function diagnosticsState(): {
@@ -319,6 +367,8 @@ async function start(sources: LoudnessSourceDto[], purpose: SpectrumJobState["pu
       () => job !== null && job.jobId === started.job_id && job.state === "running",
       applySpectrumJobProgress,
     );
+    // H-108: and if *that* recovery path is ever silent too, the watchdog is the last resort.
+    startWatchdog(started.job_id);
   } catch (err) {
     if (isIpcError(err)) {
       pushNotice(noticeFromIpcError(err));
@@ -347,6 +397,7 @@ export function applySpectrumJobProgress(payload: JobProgressDto): void {
   if (payload.kind !== "spectrum_analyze" || !job || payload.job_id !== job.jobId) {
     return;
   }
+  lastProgressAt = Date.now(); // H-108: any tick for our job, real or recovered, feeds the watchdog.
   job = { ...job, fraction: payload.fraction, state: payload.state };
 }
 
@@ -437,4 +488,6 @@ export function resetDiagnosticsForTest(): void {
   unlistenReport = null;
   stopStatusPoll?.();
   stopStatusPoll = null;
+  stopWatchdog?.();
+  stopWatchdog = null;
 }

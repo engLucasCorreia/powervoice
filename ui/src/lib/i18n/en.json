@@ -109,7 +109,6 @@
   "analyzer.diag.relative": "{db} dB",
   "analyzer.diag.close": "Hide diagnostics",
   "analyzer.explain_open": "Explain My Voice",
-  "analyzer.explain_analyzing": "Analyzing…",
   "analyzer.explain_tooltip": "Analyze the selection (or the whole file) and open a detailed, annotated explanation",
   "analyzer.explain_needs_document": "Open a file first, so there is something to analyze",
   "analyzer.eq_kind.notch": "notch",
@@ -865,6 +864,7 @@
   "error.spectrum.invalid_range": "There's nothing to analyze in that range.",
   "error.spectrum.no_result": "That analysis result is no longer available — run it again.",
   "error.spectrum.csv_write": "Saving the CSV file failed: {message}",
+  "error.spectrum.timeout": "The analysis is taking far longer than expected, so it was stopped — try again.",
 
   "panel.acx.check": "ACX Check",
   "panel.acx.checking": "Checking…",

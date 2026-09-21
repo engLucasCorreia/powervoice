@@ -242,6 +242,18 @@ fn notice_from_error(err: &IpcError) -> Notice {
 }
 
 fn run_job(inner: &Inner, job: &Job, source: &crate::document::ExportSource, cancel: &AtomicBool) {
+    // H-108: the owner's log had no line at all for spectrum-analyze, so a completed job and a
+    // stuck one looked identical from the outside — H-96 gave export/normalize/bake this same
+    // one start line + one finish line (at `info`, the level an operator actually reads).
+    let started_at = Instant::now();
+    tracing::info!(
+        job_id = job.job_id,
+        start = job.start,
+        end = job.end,
+        sources = ?job.sources,
+        fft_size = job.config.fft_size,
+        "spectrum analyze started"
+    );
     let emit = Arc::clone(&inner.emit);
     let job_id = job.job_id;
     let mut last_progress: Option<Instant> = None;
@@ -277,6 +289,12 @@ fn run_job(inner: &Inner, job: &Job, source: &crate::document::ExportSource, can
     if let (JobState::Failed, Err(err)) = (state, &result) {
         (inner.emit)(SpectrumEvent::Notice(notice_from_error(err)));
     }
+    tracing::info!(
+        job_id,
+        ?state,
+        elapsed_ms = started_at.elapsed().as_millis() as u64,
+        "spectrum analyze finished"
+    );
     if let Ok(results) = result {
         let report = SpectrumReportDto {
             job_id,
@@ -434,8 +452,13 @@ pub fn write_csv(path: &Path, contents: &str) -> Result<PathBuf, IpcError> {
 mod tests {
     use std::collections::BTreeMap;
 
+    use vox_engine::backend::fake::FakeBackend;
+    use vox_engine::{Engine, EngineConfig};
     use vox_module_api::{ModuleRef, ModuleState, Version};
     use vox_rack::SlotModel;
+
+    use crate::ipc::loudness_dto::LoudnessSourceDto;
+    use crate::settings::BitDepth;
 
     use super::*;
 
@@ -443,6 +466,10 @@ mod tests {
 
     fn registry() -> Registry {
         Registry::with_factories(vox_modules::builtin_factories()).unwrap()
+    }
+
+    fn tmp_dir(tag: &str) -> PathBuf {
+        crate::test_util::tmp_dir(&format!("spectrum-{tag}"))
     }
 
     fn gain_model(db: f64) -> RackModel {
@@ -510,6 +537,109 @@ mod tests {
         .err()
         .unwrap();
         assert_eq!(err.code, IpcErrorCode::Cancelled);
+    }
+
+    /// H-108: end-to-end regression through the real job path (never the preview harness's mock,
+    /// which always uses job id 11 and perfect event order) for both of the ticket's hypotheses,
+    /// on the exact scenario the owner hit — an **unsaved recording** (`begin_recording`/
+    /// `commit_take`, never `open`, so `doc.path` stays `None`) with **no rack** slots at all,
+    /// analysing "processed" (the analyzer's own default `averageSource`):
+    /// 1. every `job_progress` tick and the terminal `spectrum_report` must carry the *same*
+    ///    `job_id` `start_job` returned — a mismatch would explain `AnalyzerPanel.svelte`'s
+    ///    completion effect (gated on `averageReport?.job_id === job.jobId`) waiting forever;
+    /// 2. the job must actually reach `Done` with a report that has an entry for the requested
+    ///    source, so `diag.averages.find(a => a.source === diag.averageSource)` never comes up
+    ///    empty on this scenario (the other way the completion effect can hang forever).
+    #[test]
+    fn unsaved_recording_with_no_rack_reports_under_the_same_job_id() {
+        let dir = tmp_dir("unsaved-recording");
+        let fake = FakeBackend::new(1);
+        let engine_registry =
+            Arc::new(Registry::with_factories(vox_modules::builtin_factories()).unwrap());
+        let engine = Engine::start(EngineConfig::new(Arc::new(fake), engine_registry)).unwrap();
+        let documents =
+            crate::document::DocumentService::new(dir.join("sessions"), engine.handle());
+
+        // An unsaved recording: never `open`, so the document has no path (matches the ticket's
+        // "unsaved recording" repro exactly) — and no rack slot is ever added, so the "processed"
+        // render below goes through `RackModel::default()`.
+        let (mut capture, _info) = documents
+            .begin_recording(FS, BitDepth::Bit24, false)
+            .unwrap();
+        let samples = vox_testkit::signal::sine(440.0, -20.0, 0.5, FS).unwrap();
+        capture.append(&samples).unwrap();
+        documents.commit_take(&capture.finish(), &[]).unwrap();
+
+        let events: Arc<Mutex<Vec<SpectrumEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_for_emit = Arc::clone(&events);
+        let emit: SpectrumEmitter = Arc::new(move |event| {
+            events_for_emit.lock().unwrap().push(event);
+        });
+        let inner = Arc::new(Inner {
+            documents,
+            engine: engine.handle(),
+            registry: Arc::new(registry()),
+            emit,
+            next_id: AtomicU32::new(1),
+            jobs: Mutex::new(HashMap::new()),
+            results: Mutex::new(VecDeque::new()),
+        });
+        let service = SpectrumService(inner);
+
+        let job_id = service
+            .start_job(SpectrumRequest {
+                range: None,
+                sources: vec![LoudnessSource::Processed],
+                fft_size: 1024,
+                window: WindowKind::Hann,
+            })
+            .unwrap();
+
+        let mut report = None;
+        for _ in 0..500 {
+            report = events.lock().unwrap().iter().find_map(|e| match e {
+                SpectrumEvent::Report(r) => Some(r.clone()),
+                _ => None,
+            });
+            if report.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let report = report.expect(
+            "spectrum_report never arrived — the average job on an unsaved recording with no \
+             rack got stuck",
+        );
+
+        let seen = events.lock().unwrap();
+        let progress_ids: Vec<u32> = seen
+            .iter()
+            .filter_map(|e| match e {
+                SpectrumEvent::Progress(p) => Some(p.job_id),
+                _ => None,
+            })
+            .collect();
+        assert!(!progress_ids.is_empty(), "no job_progress events at all");
+        assert!(
+            progress_ids.iter().all(|&id| id == job_id),
+            "a job_progress event carried a different job_id than spectrum_analyze_start \
+             returned: {progress_ids:?} vs {job_id}"
+        );
+        assert_eq!(
+            report.job_id, job_id,
+            "spectrum_report carried a different job_id than spectrum_analyze_start returned"
+        );
+        let final_state = seen.iter().rev().find_map(|e| match e {
+            SpectrumEvent::Progress(p) if p.job_id == job_id => Some(p.state),
+            _ => None,
+        });
+        assert_eq!(
+            final_state,
+            Some(JobState::Done),
+            "the job never reached Done"
+        );
+        assert_eq!(report.results.len(), 1);
+        assert_eq!(report.results[0].source, LoudnessSourceDto::Processed);
     }
 
     #[test]

@@ -2,7 +2,7 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DocumentDto, SpectrumReportDto, VoiceReportDto } from "../ipc/bindings";
 import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
-import { clearNotices } from "../state/notices.svelte";
+import { clearNotices, noticesState } from "../state/notices.svelte";
 import { resetSelectionForTest, setSelectionFromResult } from "../state/selection.svelte";
 import { docDto as doc } from "../test/fixtures";
 import { resetWaveformViewForTest } from "../state/waveformView.svelte";
@@ -244,6 +244,77 @@ describe("H-96 belt-and-braces recovery for the average job (H-92 needs this: it
       resetDiagnosticsForTest();
       await vi.advanceTimersByTimeAsync(30_000);
       expect(statusCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("H-108: the no-progress timeout backstop", () => {
+  it("fails a job that goes completely silent for the timeout, cancels it best-effort, and notifies", async () => {
+    await openFixture({ len_samples: 96_000 });
+    vi.useFakeTimers();
+    try {
+      const cancelled: number[] = [];
+      mockIPC((cmd, args) => {
+        if (cmd === "spectrum_analyze_start") {
+          return { job_id: 70 };
+        }
+        if (cmd === "spectrum_analyze_cancel") {
+          cancelled.push((args as { jobId: number }).jobId);
+          return null;
+        }
+        // "job_status" (H-96's own recovery) unmocked here too — the scenario is *everything*
+        // going silent, not just the real `job_progress` listener.
+        return null;
+      });
+      await startAverage();
+      expect(diagnosticsState().job?.state).toBe("running");
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(diagnosticsState().job).toMatchObject({ jobId: 70, state: "failed" });
+      expect(cancelled).toContain(70);
+      expect(noticesState().toasts.some((n) => n.key === "error.spectrum.timeout")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a real progress tick resets the watchdog, so a legitimately slow job is never timed out", async () => {
+    await openFixture({ len_samples: 96_000 });
+    vi.useFakeTimers();
+    try {
+      mockIPC((cmd) => (cmd === "spectrum_analyze_start" ? { job_id: 71 } : null));
+      await startAverage();
+      // A tick every 20 s (well inside the 30 s timeout) for over a minute total — the timeout
+      // must never fire as long as *something* keeps arriving.
+      for (let i = 1; i <= 4; i++) {
+        await vi.advanceTimersByTimeAsync(20_000);
+        applySpectrumJobProgress({ job_id: 71, kind: "spectrum_analyze", state: "running", fraction: i / 4 });
+      }
+      expect(diagnosticsState().job).toMatchObject({ jobId: 71, state: "running" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops the watchdog once the store is reset (no leaked timer failing a later job)", async () => {
+    await openFixture({ len_samples: 96_000 });
+    vi.useFakeTimers();
+    try {
+      const cancelled: number[] = [];
+      mockIPC((cmd, args) => {
+        if (cmd === "spectrum_analyze_start") {
+          return { job_id: 72 };
+        }
+        if (cmd === "spectrum_analyze_cancel") {
+          cancelled.push((args as { jobId: number }).jobId);
+        }
+        return null;
+      });
+      await startAverage();
+      resetDiagnosticsForTest();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(cancelled).toEqual([]);
     } finally {
       vi.useRealTimers();
     }

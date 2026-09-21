@@ -1,8 +1,9 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { SpectrumReportDto } from "../ipc/bindings";
 import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
+import { clearNotices, noticesState } from "../state/notices.svelte";
 import { resetSelectionForTest, setSelectionFromResult } from "../state/selection.svelte";
 import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 import { docDto } from "../test/fixtures";
@@ -224,6 +225,11 @@ describe("Explain My Voice (H-92)", () => {
     resetWaveformViewForTest();
     resetSelectionForTest();
     resetExplainModalForTest();
+    // H-108: a couple of these tests start a job and never run it to "done"/"failed"/"cancelled"
+    // — without this, the leftover `running` job in the shared diagnostics store makes the very
+    // next `canAnalyzeAverage()` call (any later describe block, not just this one) refuse a
+    // fresh Explain/Analyze click for no visible reason.
+    resetDiagnosticsForTest();
     document.body.innerHTML = "";
   });
 
@@ -309,6 +315,119 @@ describe("Explain My Voice (H-92)", () => {
     target.querySelector<HTMLButtonElement>('[data-testid="analyzer-explain-open"]')!.click();
     await settle();
     expect(requests[0]).toMatchObject({ start_sample: 1000, end_sample: 5000 });
+
+    unmount(app);
+  });
+});
+
+// --- H-108: "Analyzing…" always ends somewhere visible, with real progress and a Cancel --------
+
+describe("Explain My Voice: progress, cancel and failure (H-108)", () => {
+  // H-92's own tests (above) leave a `running` job in the shared diagnostics store when they
+  // don't run it to completion — reset before each test here too, not just after, so that leak
+  // never makes `canAnalyzeAverage()` refuse a fresh Explain click.
+  beforeEach(() => {
+    resetDiagnosticsForTest();
+  });
+  afterEach(() => {
+    resetDocumentStateForTest();
+    resetWaveformViewForTest();
+    resetSelectionForTest();
+    resetExplainModalForTest();
+    resetDiagnosticsForTest();
+    clearNotices();
+    document.body.innerHTML = "";
+  });
+
+  it("shows the job's own real progress (not a bare spinner) and a Cancel that stops it", async () => {
+    mockIPC((cmd) => (cmd === "document_open" ? docDto({ len_samples: 96_000 }) : null));
+    await openDocument("/home/user/take.wav");
+    clearMocks();
+
+    stubSize(900, 200);
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(AnalyzerPanel, { target });
+    await settle();
+
+    const cancelled: number[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "spectrum_analyze_start") {
+        return { job_id: 91 };
+      }
+      if (cmd === "spectrum_analyze_cancel") {
+        cancelled.push((args as { jobId: number }).jobId);
+        return null;
+      }
+      return null;
+    });
+    target.querySelector<HTMLButtonElement>('[data-testid="analyzer-explain-open"]')!.click();
+    await settle();
+
+    applySpectrumJobProgress({ job_id: 91, kind: "spectrum_analyze", state: "running", fraction: 0.42 });
+    await settle();
+    const button = target.querySelector('[data-testid="analyzer-explain-open"]')!;
+    expect(button.textContent).toContain("42");
+
+    const cancelButton = target.querySelector<HTMLButtonElement>('[data-testid="analyzer-explain-cancel"]');
+    expect(cancelButton).not.toBeNull();
+    cancelButton!.click();
+    await settle();
+    expect(cancelled).toEqual([91]);
+
+    applySpectrumJobProgress({ job_id: 91, kind: "spectrum_analyze", state: "cancelled", fraction: 0 });
+    await settle();
+    // Cancelled is one of the three states the user can see: the button goes back to its resting
+    // label and the Cancel affordance disappears — never stuck on "Analyzing…" forever.
+    expect(target.querySelector('[data-testid="analyzer-explain-open"]')!.textContent).toContain("Explain My Voice");
+    expect(target.querySelector('[data-testid="analyzer-explain-cancel"]')).toBeNull();
+    expect(explainModalState().open).toBe(false);
+
+    unmount(app);
+  });
+
+  it("a done report that produces no curve for the requested source fails cleanly instead of hanging forever", async () => {
+    mockIPC((cmd) => (cmd === "document_open" ? docDto({ len_samples: 96_000 }) : null));
+    await openDocument("/home/user/take.wav");
+    clearMocks();
+
+    stubSize(900, 200);
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(AnalyzerPanel, { target });
+    await settle();
+
+    mockIPC((cmd) => {
+      if (cmd === "spectrum_analyze_start") {
+        return { job_id: 92 };
+      }
+      if (cmd === "spectrum_analyze_curve") {
+        // The one real-world way `diag.averages` can end up with nothing for the requested
+        // source once the job is "done": the curve fetch itself fails (H-108's second
+        // hypothesis, ruled out on the current backend by a Rust-level regression test, but the
+        // UI must still not hang forever if it ever does happen).
+        throw { code: "invalid_argument", key: "error.spectrum.no_result", params: {} };
+      }
+      return null;
+    });
+    target.querySelector<HTMLButtonElement>('[data-testid="analyzer-explain-open"]')!.click();
+    await settle();
+
+    applySpectrumJobProgress({ job_id: 92, kind: "spectrum_analyze", state: "done", fraction: 1 });
+    await applySpectrumReport({
+      job_id: 92,
+      sample_rate_hz: 48_000,
+      fft_size: 4,
+      window: "hann",
+      start_sample: 0,
+      end_sample: 48_000,
+      results: [{ source: "processed", frames: 10, has_noise: false, report: balancedReport() }],
+    } satisfies SpectrumReportDto);
+    await settle();
+
+    expect(explainModalState().open).toBe(false);
+    expect(target.querySelector('[data-testid="analyzer-explain-open"]')!.textContent).toContain("Explain My Voice");
+    expect(noticesState().toasts.some((n) => n.key === "error.spectrum.no_result")).toBe(true);
 
     unmount(app);
   });

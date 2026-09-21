@@ -20,6 +20,7 @@
     clearSnapshots,
     diagnosticsState,
     freezeSnapshot,
+    pushSpectrumFailureNotice,
     setAnalyzerMode,
     setAverageSource,
     setDiagnosticsPanelVisible,
@@ -262,6 +263,16 @@
           sampleRateHz: diag.averageReport.sample_rate_hz,
           origin: "average",
         });
+      } else {
+        // H-108: the job finished and its own report arrived, but produced no curve for the
+        // requested source — surface this as a failure instead of leaving "Analyzing…" stuck
+        // forever with nothing to show for it. If the source was in the report at all, a failed
+        // `spectrum_analyze_curve` fetch already pushed its own notice (`applySpectrumReport`'s
+        // catch) — only add ours when nothing else would have told the user why.
+        pendingExplain = false;
+        if (!diag.averageReport.results.some((r) => r.source === diag.averageSource)) {
+          pushSpectrumFailureNotice("error.spectrum.no_result");
+        }
       }
     } else if (j.state === "failed" || j.state === "cancelled") {
       pendingExplain = false;
@@ -362,8 +373,15 @@
       data-tour="explain-open"
       onclick={requestExplain}
     >
-      {pendingExplain ? t("analyzer.explain_analyzing") : t("analyzer.explain_open")}
+      <!-- H-108: real progress ("Analyzing… 42 %", the job's own `fraction`) instead of a bare
+           spinner with no number — that gave the owner no way to tell slow from stuck. -->
+      {pendingExplain ? t("analyzer.average.progress", { pct: jobPct }) : t("analyzer.explain_open")}
     </Button>
+    {#if pendingExplain && jobRunning}
+      <Button size="sm" variant="ghost" testid="analyzer-explain-cancel" onclick={cancelAverage}>
+        {t("analyzer.average.cancel")}
+      </Button>
+    {/if}
   </div>
 
   {#if diag.mode === "average"}

@@ -86,6 +86,86 @@ own small FFT rather than depending on `realfft` (ADR-001 §3 confines that to `
 | `POWERVOICE_BLESS=1` | Rewrite golden files |
 | `CLAP_PATH`, `VST3_PATH`, `LV2_PATH` | Extra plugin search paths |
 
+## Reproducing a real-app freeze (GUI harness)
+
+Some bugs only show up in the *real compiled app* — a frozen WebView, a Cancel/window-close that
+does nothing, a process that ignores `SIGTERM` — and never show up in a mounted-component test
+(H-96 tried hard, for the freeze H-98 chased, and could not reproduce anything JS-level). This repo
+had no way to drive the real binary and read its CPU/signal behaviour, which is exactly why that
+class of bug is hard to chase. `scripts/repro/gui_harness.py` is the smallest thing that fixes
+that gap; it needs a Linux/wlroots session (`hyprctl`, `grim`) — there is no equivalent for
+Windows/macOS yet.
+
+```sh
+python3 scripts/repro/gui_harness.py build [--release]              # ui/dist + the real binary
+python3 scripts/repro/gui_harness.py launch [--pidfile PATH]        # prints the app's real PID
+python3 scripts/repro/gui_harness.py watch PID --seconds 30         # per-thread state + signal masks
+python3 scripts/repro/gui_harness.py screenshot PID                 # grim-capture its window
+python3 scripts/repro/gui_harness.py shutdown-test PID              # SIGTERM, then SIGKILL if needed
+```
+
+`launch` resolves the binary's *real* PID by name rather than trusting `$!` — `setsid` forks when
+its caller is already a process group leader (a backgrounded shell job usually is), so `$!` is
+often the wrong PID. `watch` reads `/proc/<pid>/task/*/{stat,status}` directly rather than `ps -T`,
+which was observed to report only the main thread in at least one sandboxed environment during
+H-98 (a real gotcha, not a one-off). It prints one JSON line per sample — a thread stuck in `R`
+across many consecutive samples with no wall-clock progress is the CPU-burn signature; a thread in
+`D` (uninterruptible sleep) is the "not even `SIGKILL` helps that one thread, but the process as a
+whole still can die" signature; `SigBlk` in the main thread's signal line covering bit 15 (SIGTERM,
+`1 << 14`) would mean the process really has masked it, not just gone slow. `shutdown-test` only
+ever signals the PID you gave it — never guess at, or touch, someone else's running instance
+(check `pgrep -af powervoice-app` first if you're not sure nothing else is already running).
+
+**Driving it (the part that needs real input, and its limits).** The harness reads state; it
+doesn't synthesize clicks. On a normal Hyprland/wlroots session: focus the window
+(`hyprctl dispatch focuswindow class:^(powervoice-app)$`), then either `wtype` a keyboard shortcut
+(most of the app is keyboard-reachable — e.g. `wtype -M ctrl -k o -m ctrl` reaches File → Open's
+native dialog without touching a mouse, since `file.open` is a global-scope shortcut) or drive the
+mouse with `ydotool`/ ­`ydotoold` if installed (not assumed here — this repo has no dependency on
+it). **H-98 could not complete this step inside its own agent sandbox**: that session's shell
+commands run through a controlling terminal window that reclaims Wayland keyboard focus as a side
+effect of running each command, so a `wtype` call issued from that same automation loop can never
+reliably reach a *different* window no matter what `hyprctl activewindow` reported a moment
+earlier — and that sandbox's `hyprctl dispatch` was additionally remapped to a restricted Lua API
+(`hl.dsp.*`) with no window-focus dispatcher exposed at all. Both are properties of that sandbox,
+not of this script or of Hyprland generally; a normal desktop session (including the owner's own
+machine) should not hit either one. `grim` also hung repeatedly in that same sandbox on a plain
+full-screen capture with no app involved — wrap every call in `timeout`, check `pgrep -x grim` for
+a stale process afterwards (kill only that one), and if it keeps hanging treat "no screenshot" as
+an environment limitation and fall back to `watch`'s `/proc` evidence rather than as proof of
+anything about the app (H-90's lesson still applies in the other direction: a screenshot that
+*does* work is real evidence; one that doesn't come back is not evidence of anything).
+
+**Isolating "is it the native file dialog?" without any input automation at all.** If keyboard/
+mouse automation isn't available, a standalone probe using the exact pinned dependency versions
+from `Cargo.lock` (`tao = "=0.35.3"`, `rfd = { version = "=0.16.0", default-features = false,
+features = ["gtk3"] }`) can open a real native dialog on its own timer, with nobody touching it,
+and you just watch `/proc/<pid>/task` and try `SIGTERM`:
+
+```rust
+// Cargo.toml: tao = "=0.35.3"; rfd = { version = "=0.16.0", default-features = false, features = ["gtk3"] }
+let event_loop = tao::event_loop::EventLoop::new();
+let _window = tao::window::WindowBuilder::new().build(&event_loop).unwrap();
+std::thread::spawn(|| {
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    rfd::FileDialog::new().pick_file(); // exactly what tauri-plugin-dialog's blocking_pick_file() does
+});
+event_loop.run(|_, _, _| {});
+```
+
+This is how H-98 confirmed that `tauri-plugin-dialog`'s default Linux backend (`rfd`'s `gtk3`
+feature — confirm with `cargo tree -p rfd -e features -i`) makes `rfd` spawn a **second** OS thread
+that calls `gtk_init_check()` again and runs its own `gtk_main_iteration()` loop for the rest of
+the process's life (`rfd-0.16.0/src/backend/gtk3/utils.rs::GtkGlobalThread`) — a real, permanent,
+unsynchronized second GTK main loop sharing the one process-wide default `GMainContext` with the
+window's own loop, which GTK's threading model does not support. In isolation, with the dialog
+left untouched, this did **not** by itself burn CPU (`gtk_main_iteration()` blocks in `poll()`
+properly) and `SIGTERM` still terminated the process immediately — so "any native dialog, merely
+opened" is ruled out as sufficient on its own; the structural risk (two threads racing to iterate
+the same `GMainContext` and the same GDK display connection) is real and worth removing, but
+proving it is *the* cause of the owner's freeze needs the same interactive step above, on a session
+that actually has it.
+
 ## How work is organised
 
 PowerVoice is built spec-first by an orchestrated set of AI sessions; the same flow works for a

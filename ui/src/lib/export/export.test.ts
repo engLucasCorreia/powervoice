@@ -208,6 +208,32 @@ describe("applyJobProgress", () => {
     applyJobProgress({ job_id: 3, kind: "export", state: "done", fraction: 1 });
     expect(exportState().job).toEqual({ jobId: 3, fraction: 1, state: "done" });
   });
+
+  it("H-98: ignores a same-id event from a different job kind (export/normalize/bake each number jobs from their own counter, so ids collide across kinds)", async () => {
+    mockIPC((cmd, args) => {
+      if (cmd === "plugin:dialog|save") {
+        return "/home/user/out.wav";
+      }
+      if (cmd === "export_start") {
+        void args;
+        return { job_id: 1 };
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    openExportDialog("take");
+    await confirmExport({ kind: "wav", bits: "24" }, 48_000);
+
+    // A bake (or normalize) job with the same numeric id, still running, must not be mistaken
+    // for this export finishing or failing.
+    applyJobProgress({ job_id: 1, kind: "bake", state: "done", fraction: 1 });
+    expect(exportState().job).toEqual({ jobId: 1, fraction: 0, state: "running" });
+
+    applyJobProgress({ job_id: 1, kind: "normalize_peak", state: "failed", fraction: 0.6 });
+    expect(exportState().job).toEqual({ jobId: 1, fraction: 0, state: "running" });
+
+    applyJobProgress({ job_id: 1, kind: "export", state: "done", fraction: 1 });
+    expect(exportState().job).toEqual({ jobId: 1, fraction: 1, state: "done" });
+  });
 });
 
 describe("dismissExportJob / cancelExportJob", () => {

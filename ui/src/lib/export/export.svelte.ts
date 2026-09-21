@@ -219,8 +219,14 @@ async function startExport(
  * without a real Tauri event transport (mirrors `document.svelte.ts`'s untested `listen` wiring:
  * the side effect is best-effort, the logic it drives is not). H-96: while a job is starting (the
  * command sent, its id not yet known locally), a matching event is buffered rather than dropped —
- * see `startExport`. */
+ * see `startExport`. H-98: `export`, `normalize` and `bake` each number their jobs from their own
+ * `AtomicU32::new(1)`, so ids collide across kinds — every other job-progress consumer already
+ * checks `payload.kind` (bake, normalize, normalize_lufs, nr_capture, loudness_analyze,
+ * spectrum_analyze, import, save, paste, calibration); this was the one left unguarded. */
 export function applyJobProgress(payload: JobProgressDto): void {
+  if (payload.kind !== "export") {
+    return;
+  }
   if (starting) {
     early.push(payload);
     return;

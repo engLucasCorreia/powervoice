@@ -1,13 +1,26 @@
 # MEMORY.md — Project memory (curated by the orchestrator only)
 
 ## Status
-- **PACING (2026-09-13):** owner reported 90 % of the session usage budget spent → only Slice 1 agents (S1-03, S1-04) keep running; **S3-01, S3-03, S4-02 paused** (TaskStop) with partial work in `.claude/worktrees/<id>` (uncommitted) — resume after the limit resets by dispatching a new agent told to continue from that worktree's state. Max 2 concurrent agents until the reset; keep orchestrator messages short.
-- **VERTICAL SLICES (D-022, 2026-09-13, owner):** "Make something work first and after improve. Instead of getting all perfect from the beginning." → Work is organised as thin end-to-end **slices** (see `tickets/BOARD.md` top): S1 record & play → S2 edit → S3 clean/effects → S4 deliver → H hardening (full spec ACs, recovery, punch-in, spectral, perf, packaging) → P plugins (M8/M9). Slice tickets are lean and full-stack (Rust + UI in one ticket), implement the essential subset of the approved specs and list deferred ACs explicitly. No new spec waves until a slice needs one (short specs then). Opus review only for RT-audio and data-loss code, **blocking findings only, no re-review loops** (orchestrator verifies fixes); nits → backlog. Merge green work fast. The orchestrator smoke-runs the app after each slice.
-- **AUTONOMOUS MODE (D-021, 2026-09-12, owner going to sleep):** "keep the development without asking me anything anymore … not doing checkpoints anymore … until the end of the tickets." → Run every milestone back-to-back with no owner checkpoints and no questions. Owner-facing choices use the documented recommended default and are logged as "D-0xx (autonomous)". Still gate every ticket (`just check`, Opus review where required). **T-811 VST2 was dropped by the owner on 2026-09-17** (it had been gated on legal sign-off; Steinberg no longer licenses the VST2 SDK — ADR-007 §7). M8 deferred choices use defaults: sandboxed-plugin monitoring latency = accept + show (SPEC-002 OD-1 A); unsigned native modules = allowed with a warning dialog.
-- **Current milestone:** M0 done (checkpoint passed 2026-09-12, decisions D-011…D-020). M1 starting after T-009 (code rename) merges; M2 spec wave (T-200) running in parallel.
-- **Last checkpoint:** none (M0 is the first)
-- **Status line superseded:** the "Next action" line below is historical; after owner answers, apply decisions to specs (OD boxes), mark specs/ADRs approved, then write full M1 ticket files (T-101…T-110) and dispatch M1 W1.
-- **Next action:** M0 W1 running: T-001 (Haiku), T-002/T-003 (Opus, docs-only) — all in main tree, disjoint files. Then W2: T-006 after T-001; T-004 after T-001+T-002; T-005 after T-001+T-003.
+- **2026-09-21. Feature-complete and released; 196 of 198 tickets done.** Everything on the board is
+  merged except **H-95** (the Explain My Voice verification pass, running) and **H-103** (the
+  suspected cause of the owner's export freeze, which needs a real reproduction before any fix).
+  T-811 (VST2) was **dropped** by the owner — Steinberg no longer licenses the SDK (ADR-007 §7).
+- **Released:** v0.3.2 on GitHub (AppImage, .deb, unverified .msi/.exe/.dmg). **Main is ~30 commits
+  ahead of it**, including the whole Explain My Voice feature and the export-hang fix, so the next
+  release (v0.4.0) matters: anyone downloading today still hits the frozen "Exporting…" dialog.
+- **Release drill, learned the hard way (v0.3.0 and v0.3.1 both shipped broken AppImages):** bump the
+  version in `Cargo.toml`, `src-tauri/tauri.conf.json`, `ui/package.json` **and** the lockfile before
+  tagging; after CI, **download the artifact, run it, and screenshot its contents** — a window
+  appearing is not evidence the UI rendered. Publish hand-written notes with `gh release edit
+  --notes-file` (the workflow's own body is generic), and mark superseded releases as such.
+- **Owner's standing instructions:** autonomous — no checkpoints, no questions; after every merge run
+  `just roadmap`, republish the dashboard artifact, and push main to GitHub; never install system
+  packages or use sudo; never start or kill the owner's running PowerVoice; agents never `cd` into a
+  worktree; `just check` runs in the foreground.
+- **The habit that keeps catching real bugs:** verify a completion claim against the code, and for
+  anything visual, look at the pixels. `just check` was green for an AppImage with an empty window,
+  a modal whose text truncated mid-sentence, a graph with its frequency axis deleted, and a
+  benchmark that was never registered to run.
 
 ## Environment
 - Rust 1.98.1 stable via pacman `rustup` (+ rustfmt, clippy, x86_64-pc-windows-gnu target); `just` 1.58 via pacman; Node 26.7 / npm 11.19; git 2.55.

@@ -16,6 +16,7 @@ This guide is organised by task, roughly in the order you'll use them:
 [Remove background noise](#remove-background-noise) · [Make your voice sound better](#make-your-voice-sound-better) ·
 [Rack presets](#rack-presets) · [Apply the rack (bake)](#apply-the-rack-bake) · [Plugins](#plugins) ·
 [Presets](#presets) · [Check your levels](#check-your-levels-analyzer-and-diagnostics) ·
+[Explain My Voice](#explain-my-voice) ·
 [Hit a loudness target](#hit-a-loudness-target) · [Export](#export) · [Themes](#themes) ·
 [Preferences](#preferences) · [Shortcuts](#shortcuts) · [Troubleshooting](#troubleshooting)
 
@@ -147,6 +148,11 @@ The clipboard holds one item and survives switching documents (open a different 
 still has what you last copied) — the Edit menu's Paste item is only enabled when there's something
 to paste.
 
+While a file is still being imported (opening it, or pasting from another format), every edit
+above — including Insert Silence — is unavailable for the few moments that takes: the view is still
+showing the *importing* file, so an edit fired mid-import could apply one file's selection to
+another file's audio. Select All and Undo/Redo are unaffected.
+
 **Undo** (**Ctrl/⌘+Z**) and **Redo** (**Ctrl/⌘+Shift+Z**) step back and forward through every edit,
 with no limit other than free disk space — see [why undo never runs
 out](how-it-works.md#why-your-original-recording-is-never-damaged). Undoing a [baked
@@ -174,8 +180,10 @@ shows its frequency content, which makes hum, clicks and breaths easy to spot. T
   intuitive for reading levels at a glance).
 - **Loop playback** (**Ctrl/⌘+L**, or View → Loop Playback) repeats the current selection
   (10 ms or longer) instead of stopping at its end — handy for checking how a phrase or an edit
-  sounds. A loop doesn't reset the effects rack at the seam, so a reverb or delay tail from a
-  plugin carries across the repeat, the same as it would if you kept playing normally.
+  sounds. With no selection (or one shorter than 10 ms), it loops the whole document instead of
+  doing nothing, so the button being lit always means "actually looping." A loop doesn't reset the
+  effects rack at the seam, so a reverb or delay tail from a plugin carries across the repeat, the
+  same as it would if you kept playing normally.
 
 ## Cleaning up: the effects rack
 
@@ -344,6 +352,106 @@ The dock along the bottom shows what you're hearing:
   with its own FFT size, window and response settings, for closer inspection than the compact
   Analyzer panel — wheel to zoom, drag to pan, Shift-drag to zoom to a range, double-click to
   reset.
+
+## Explain My Voice
+
+**Explain My Voice** (the button next to Diagnostics in the Analyzer panel — dock at the bottom)
+gives you a plain-language, one-page read of your voice: what its pitch is, how its tone balances
+across low, mid and high frequencies, whether there's sibilance, hum or rumble, and how clean the
+recording is — the same measurements as [Voice
+diagnostics](#check-your-levels-analyzer-and-diagnostics), written out in full sentences instead of
+one-line hints. It needs an open file (and, ideally, a selection of clean speech); if nothing is
+selected it analyzes the whole file.
+
+It opens a window titled **Voice Spectrum Analysis** with three parts:
+
+- **A graph** of your voice's frequency content, from 20 Hz up to 24 kHz, with your pitch and its
+  harmonics marked, seven shaded bands for the regions engineers talk about (rumble, fundamental,
+  low-mids, midrange, presence, sibilance, air), and callout cards pointing at whatever stood out.
+  Toggle Raw FFT, Smoothed, Harmonics, Voice Bands and EQ Advice on or off above the graph.
+- An **engineering summary**: a "voice profile" (pitch, body, presence, sibilance, rumble, hum,
+  each read as in the usual range, above it or below it) and a **suggested focus** — one line per
+  measurement worth a closer listen, each with a button to act on it (add a matching EQ band, or
+  copy a suggested frequency) where a fix is actually justified.
+- An **"Also measured"** list underneath, for readings (noise floor, signal-to-noise, or "no hum
+  detected") that don't point at one spot on the graph.
+
+### It's an average over time, not a snapshot
+
+The graph is **not** what your voice sounds like at this exact instant — it's the average tone
+over the whole span you analyzed (the selection, or the whole file), including the quiet pauses
+between words. The subtitle under the title names exactly how many seconds that was. This matters
+because a single instant of live audio only shows whichever vowel you happened to be saying; an
+average over a real stretch of speech is what actually describes *your voice*, the same way a
+photo of one wave doesn't describe the tide. The pitch, sibilance and a few other numbers below the
+graph are measured over active speech only (the pauses are excluded from those, but not from the
+graph's curve), so the two can describe slightly different — though overlapping — material; the
+window says so.
+
+### What the annotations mean
+
+Every finding separates **what was measured** from **what it might mean** — a measured number
+never comes with a verdict attached for free:
+
+- **Pitch (F0)**: the median pitch of your voiced speech and the range it moved in (as a note name
+  and in Hz). This is a description of your voice, not a judgement — there's no "good" or "bad"
+  pitch.
+- **Strongest partial**: the loudest single peak in your spectrum isn't always your pitch itself —
+  for many voices it's the *second* harmonic (twice the pitch frequency) or another one. Both are
+  completely ordinary; this finding just tells you which one is happening in your recording and
+  why that doesn't change what your actual pitch is.
+- **Harmonic series**: which of the pitch's overtones (H1, H2, H3…) stand out clearly enough in the
+  spectrum to measure individually.
+- **Low-mid body, Presence, Air, Sibilance, Rumble**: how much energy sits in each frequency
+  region, compared with what's typical for a voice.
+- **Mains hum**: whether a 50 Hz or 60 Hz electrical hum (and its harmonics) was found in the quiet
+  moments between phrases.
+- **Noise floor and Signal-to-noise**: how quiet your quietest moment was, and how far your voice
+  sits above it.
+
+A reading only escalates to something worth acting on once it clearly crosses a documented
+threshold — a measurement a hair past the line reads as a mild description, not a problem, and the
+[Voice diagnostics](#check-your-levels-analyzer-and-diagnostics) panel's one-line hints use the
+same thresholds, so the two never disagree about the same number. If nothing in your recording
+crosses a threshold, the summary says so plainly instead of inventing something to report.
+
+### "Unresolved" harmonics
+
+Sometimes the harmonic series section says a harmonic **can't be measured** rather than giving you
+a weak or missing reading for it. This isn't a bug: your pitch moves while you talk (a rising
+question, a stressed word), so each harmonic isn't a single frequency but a *band* — the harmonic's
+number times your pitch's low end, up to that number times your pitch's high end. High enough up
+the series, those bands from neighbouring harmonics start to overlap, and once they do there's no
+way to tell where one ends and the next begins. Rather than guess, PowerVoice says the honest
+thing: nothing can be measured there, and tells you which harmonics that affects. A narrower pitch
+range resolves more harmonics; a wider one resolves fewer — it's a property of how your pitch
+moved during the take, not a fault in your voice or in the measurement.
+
+### Why it won't suggest "fixing" your voice to sound flat
+
+A natural voice's frequency spectrum isn't flat, and it isn't supposed to be — it rolls off toward
+the top the same way most microphones do. Explain My Voice is built to describe a voice honestly,
+not to nudge you toward one "correct" shape:
+
+- Low **air** (very high frequencies) is described, never treated as something to boost — boosting
+  that region to flatten the curve would mostly add hiss and sibilance, not presence.
+- "Forward," "boomy" or "harsh" language, and any suggested EQ move, appears only once a
+  measurement clears its threshold by a real margin — a reading a hair past the line is described
+  mildly and offered no fix at all.
+- Every recommendation stays conservative (about ±3 dB) and, where it applies, suggests checking
+  microphone distance or working angle *before* reaching for EQ, because those change these
+  numbers more than a filter does.
+- The **EQ Advice** toggle draws its suggested moves as a dashed curve over your measured spectrum
+  — never changing it — so you can see exactly what a suggested change would do before deciding
+  whether you want it in your rack at all.
+
+### Read together with Voice diagnostics
+
+The live [Voice diagnostics](#check-your-levels-analyzer-and-diagnostics) panel gives you the same
+kind of information continuously, as short hints; Explain My Voice gives you the considered,
+full-sentence version once, over a real stretch of your recording. Use diagnostics while you work
+and Explain My Voice when you want the fuller picture — a session, a note, or something to compare
+notes on with an audio engineer.
 
 ## Hit a loudness target
 

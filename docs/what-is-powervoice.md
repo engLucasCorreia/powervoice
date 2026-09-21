@@ -56,8 +56,10 @@ does that one thing without the rest of the studio around it.
 3. **Level** it: bring it to a target loudness with one-click
    [normalize](user-guide.md#hit-a-loudness-target) favourites, or an exact
    [LUFS](glossary.md#l) target.
-4. **Check** it against Audible's [ACX](glossary.md#a) submission rules, or just listen with the
-   built-in [meters and analyzer](user-guide.md#check-your-levels-analyzer-and-diagnostics).
+4. **Check** it against Audible's [ACX](glossary.md#a) submission rules, listen with the built-in
+   [meters and analyzer](user-guide.md#check-your-levels-analyzer-and-diagnostics), or get a
+   plain-language read of your voice's pitch and tone from [Explain My
+   Voice](user-guide.md#explain-my-voice).
 5. **Export** a finished WAV, FLAC or MP3 file, ready to send or upload.
 
 ```mermaid

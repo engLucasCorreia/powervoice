@@ -200,6 +200,18 @@ Jump to: [A](#a) · [B](#b) · [C](#c) · [D](#d) · [E](#e) · [F](#f) · [G](#
   better](user-guide.md#make-your-voice-sound-better) and
   [dsp.md](architecture/dsp.md#parametric-eq).
 
+**Explain My Voice**
+- *Plain:* a one-page, plain-language read of your voice's pitch, tone, sibilance, hum and
+  cleanliness, written out in full sentences rather than one-line hints — and honest about what it
+  can't measure, rather than guessing.
+- The Analyzer panel's button next to Diagnostics; opens the *Voice Spectrum Analysis* modal built
+  from a long-term average (§[LTAS](#l)) over the selection or whole file, never an instant
+  snapshot. Findings separate measurement from interpretation and share their thresholds with
+  [Voice diagnostics](#v) (H-99) so the two never disagree; it never suggests boosting "air" to
+  flatten a voice's natural roll-off, and marks a harmonic "unresolved" rather than guessing when
+  the pitch range moved enough that neighbouring harmonics' bands overlap. See [Explain My
+  Voice](user-guide.md#explain-my-voice).
+
 **Export**
 - *Plain:* write a finished file (WAV, FLAC or MP3) with the effects applied.
 - A job: offline rack render → optional f64 resampling → TPDF dither → encoder
@@ -217,6 +229,17 @@ Jump to: [A](#a) · [B](#b) · [C](#c) · [D](#d) · [E](#e) · [F](#f) · [G](#
 - *Plain:* a way of splitting sound into its frequencies.
 - Fast Fourier transform (`realfft`/`rustfft` via `vox-dsp`), used by noise reduction, the
   spectrogram, the analyzer and diagnostics.
+
+**Fundamental frequency (F0) / harmonic**
+- *Plain:* F0 is your voice's pitch — how many times a second your vocal folds vibrate. A harmonic
+  is one of the quieter overtones stacked above it at whole-number multiples (H2 = 2×F0, H3 = 3×F0,
+  and so on) that give a voice its particular colour, on top of its pitch.
+- Estimated with YIN (`vox_dsp::diagnostics::pitch`), then aggregated into a median and range
+  guarded against octave errors (`f0_profile.rs`: a handful of frames read at half or double the
+  real pitch are folded back rather than left to skew the range). Because pitch moves during
+  speech, a harmonic isn't one frequency but a band; once two neighbouring harmonics' bands
+  overlap, neither can be measured and [Explain My Voice](#e) reports it "unresolved" rather than
+  guessing. See [Explain My Voice](user-guide.md#explain-my-voice).
 
 ## G
 
@@ -291,15 +314,21 @@ Jump to: [A](#a) · [B](#b) · [C](#c) · [D](#d) · [E](#e) · [F](#f) · [G](#
 
 **Loop playback**
 - *Plain:* replays the current selection over and over instead of stopping at its end, so you can
-  listen to a phrase or an edit repeatedly without re-selecting it each time.
-- `Ctrl/⌘+L`; a sample-exact wrap with no rack reset at the seam, so an effect's tail (e.g. a
-  plugin's reverb) carries across the repeat (A-023). See [Waveform and spectral
+  listen to a phrase or an edit repeatedly without re-selecting it each time. With no selection (or
+  one under 10 ms), it loops the whole document instead, so the button being lit always means
+  "actually looping."
+- `Ctrl/⌘+L`; `loop_region()` (`crates/engine/src/transport.rs`) returns the selection when it's at
+  least `MIN_LOOP_MS` (10 ms) long, otherwise the whole document (H-80); a sample-exact wrap with no
+  rack reset at the seam, so an effect's tail (e.g. a plugin's reverb) carries across the repeat
+  (A-023). A monotonic `revision` on the transport state stops a slower, unrelated IPC reply from
+  resurrecting a stale loop reading (H-81). See [Waveform and spectral
   views](user-guide.md#waveform-and-spectral-views).
 
 **LTAS**
-- *Plain:* the average tone colour of a whole recording.
+- *Plain:* the average tone colour of a whole recording, not an instant snapshot.
 - Long-term average spectrum (`vox_dsp::diagnostics::spectrum::Ltas`), computed by the Average
-  mode of the analyzer (`src-tauri/src/spectrum.rs`).
+  mode of the analyzer (`src-tauri/src/spectrum.rs`) and by [Explain My Voice](#e), which is built
+  on the same long-term average job rather than the live per-frame view.
 
 **LV2**
 - *Plain:* an open plugin format common on Linux.
@@ -561,9 +590,13 @@ Jump to: [A](#a) · [B](#b) · [C](#c) · [D](#d) · [E](#e) · [F](#f) · [G](#
 **Voice diagnostics**
 - *Plain:* plain-language readouts about your voice's sound — pitch, tone balance ("boomy",
   "dull", "bright"), sibilance (harsh "s" sounds), hum, rumble and noise floor — each with a short
-  hint on what to do about it.
+  hint on what to do about it. A shaky pitch reading is marked with "≈" rather than shown as if it
+  were solid.
 - The Analyzer panel's Diagnostics toggle; live (a few times a second) or on an Average analysis.
-  Several hints offer an **Add EQ band here** shortcut into the Parametric EQ. See [Check your
+  Several hints offer an **Add EQ band here** shortcut into the Parametric EQ. Shares its
+  thresholds with [Explain My Voice](#e) (`diagnosticsHints.ts`, H-99) so the two never disagree
+  about the same measurement, and never suggests boosting "air" to flatten a voice's natural
+  high-frequency roll-off. See [Check your
   levels](user-guide.md#check-your-levels-analyzer-and-diagnostics).
 
 **VST3 / VST2**

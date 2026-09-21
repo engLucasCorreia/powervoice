@@ -143,6 +143,17 @@ Long operations are jobs with one shared shape, in `src-tauri`
    `normalize_result`, `spectrum_report`, `document_changed` + `history_state`).
 4. `*_cancel(job_id)` sets the token; unknown ids are ignored.
 
+**The UI must subscribe to `job_progress` before it sends the start command** (H-96): a job that
+finishes fast enough can have its terminal event land in the gap between "command sent" and
+"listener attached," which is otherwise silently dropped and leaves the UI parked on `running`
+forever. Export, normalize (peak and LUFS) and bake had this bug and are fixed; paste's listener
+was already wired at app init, so it was never exposed. As a second line of defence for the same
+class of bug, `JobStatusRegistry` (`src-tauri/src/job_status.rs`, a bounded 64-entry
+last-known-status cache) records every `job_progress` tick for export, normalize, bake and
+spectrum-analyze jobs, and the `job_status(job_id)` command lets the UI poll it as a fallback if a
+listener still missed the terminal event — it does **not** cover paste or import, which use the
+app-init-listener/`DocumentService` mechanisms above instead.
+
 `JobKind`: `export`, `import`, `nr_capture`, `loudness_analyze`, `normalize_peak`,
 `normalize_lufs`, `calibration`, `bake`, `spectrum_analyze`, `paste` (H-56), `save` (H-70). Import
 is special: its cancel tokens live in `DocumentService` and `document_open` emits the events

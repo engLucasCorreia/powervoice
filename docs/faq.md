@@ -118,6 +118,39 @@ quieter than what you notice while listening to speech. Capture a noise print fr
 stretch of room tone and add Noise Reduction — see [Remove background
 noise](user-guide.md#remove-background-noise).
 
+## Explain My Voice
+
+### What does Explain My Voice actually do?
+
+It measures your voice's pitch, tone balance, sibilance, hum and cleanliness over a real stretch
+of your recording (the selection, or the whole file), and writes out what it found in full
+sentences instead of the Diagnostics panel's one-line hints. See [Explain My
+Voice](user-guide.md#explain-my-voice).
+
+### Is the graph what my voice sounds like right now?
+
+No — it's a **long-term average** over the whole span you analyzed, pauses between words included,
+not an instantaneous snapshot. A single instant only shows whichever sound you happened to be
+making; the average is what actually describes your voice. See [Explain My Voice: it's an average
+over time, not a snapshot](user-guide.md#explain-my-voice).
+
+### What does "unresolved" mean next to a harmonic?
+
+It means that harmonic genuinely can't be measured from your recording, not that it's weak or
+missing. Your pitch moves while you talk, so each harmonic spans a band of frequencies rather than
+one exact frequency; high enough in the series, neighbouring harmonics' bands overlap and nothing
+can be said about them individually. PowerVoice says so rather than guessing. See [Explain My
+Voice: "unresolved" harmonics](user-guide.md#explain-my-voice).
+
+### Why doesn't it just tell me how to make my voice sound "better"?
+
+Because a natural voice isn't supposed to be flat — every voice and every microphone rolls off
+toward very high frequencies, so "fixing" that would mostly add hiss. Explain My Voice only
+recommends a change once a measurement clearly crosses a documented threshold, keeps every
+suggestion conservative, and prefers "check your microphone distance" over an EQ move wherever
+that's the more likely cause. See [Explain My Voice: why it won't suggest "fixing" your voice to
+sound flat](user-guide.md#explain-my-voice).
+
 ## Plugins
 
 ### PowerVoice crashed — was it a plugin?

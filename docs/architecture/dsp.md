@@ -361,6 +361,6 @@ ticket S4-01 (its spec, SPEC-011, was never written).
 | `dither` | TPDF dither, seeded PCG32, 4096-sample exact-block skip | save, export |
 | `spectro` | STFT frames (Hann), u8 quantization −150 … +6 dB, zoom → hop | spectrogram tiles |
 | `analyzer` | BH4 FFT 4096–32 768, 1/24-octave bands from 20 Hz, Fast/Medium/Slow 50/150/500 ms | live analyzer |
-| `diagnostics` | Power spectra, LTAS, YIN pitch, tone balance, sibilance, hum, rumble, noise floor, SNR | Voice diagnostics, Spectrum Inspector |
+| `diagnostics` | Power spectra, LTAS, YIN pitch (`f0_profile` guards the median/range against octave errors), tone balance, sibilance, hum, rumble, noise floor, SNR | Voice diagnostics, Spectrum Inspector, Explain My Voice |
 | `calibration` | Loopback sweep (5 × 1 s, 100 Hz–12 kHz) and GCC-PHAT latency analysis | record-offset calibration |
 | `fp` | `DenormalGuard` (FTZ/DAZ) | callbacks, workers, offline renders |

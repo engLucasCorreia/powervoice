@@ -73,6 +73,7 @@ commands through the wrappers in `ui/src/lib/ipc/commands.ts`, events through `l
 | `state/spectral.svelte.ts` | Spectral pane visibility and display settings | UI; `sidecar_view_set_spectral` |
 | `rack/rack.svelte.ts` | Slots, modules, parameter values | `rack_changed`, `param_changed`, `rack_latency`, `VXMT` channel; parameter drags coalesced to one IPC call per frame |
 | `analyzer/analyzer.svelte.ts`, `diagnostics.svelte.ts`, `inspectorStream.svelte.ts` | Live analyzer, voice diagnostics, Average/Compare, Inspector | `VXSA`, voice-report channel, `spectrum_report`, `VXLT`, `VXIS` |
+| `analyzer/explain/explainVoice.svelte.ts`, `explainModal.svelte.ts` | Explain My Voice's frozen snapshot (memoized per input) and modal open/closed state | Built from the same Average job's `spectrum_report`/`VXLT` above, matched by `job_id` (H-92) |
 | `loudness/loudness.svelte.ts`, `acx.svelte.ts` | Loudness analysis, ACX report | `job_progress`, `loudness_report`, `acx_check` |
 | `state/normalize.svelte.ts`, `normalizeLufs.svelte.ts`, `state/bake.svelte.ts`, `rack/nrCapture.svelte.ts`, `export/export.svelte.ts` | Job dialogs and progress | `job_progress` (+ result events) |
 | `markers/markers.svelte.ts` | Markers | `markers_get` on every `document_changed` |
@@ -86,8 +87,9 @@ typed with `satisfies EventName`; every store exports a `reset*ForTest()` helper
 
 ## Renderers
 
-Five components draw on a `<canvas>`: `WaveformView`, `SpectralView`, `EqGraph`, `SpectrumPlot`
-and `TransferGraph` (H-63, the Dynamics/Noise Gate transfer-curve graph).
+Six components draw on a `<canvas>`: `WaveformView`, `SpectralView`, `EqGraph`, `SpectrumPlot`,
+`TransferGraph` (H-63, the Dynamics/Noise Gate transfer-curve graph) and `ExplainGraph` (H-92, the
+Explain My Voice modal's annotated spectrum).
 
 ```mermaid
 flowchart LR
@@ -101,8 +103,8 @@ flowchart LR
 
 - **WebGL2 first, Canvas2D fallback** (ADR-009): `GlContextHost` tries `webgl2` unless the
   preference forces Canvas2D, and on `webglcontextlost` switches to Canvas2D for good, with one
-  notice. The waveform and spectrogram use it; the EQ graph, analyzer plot and transfer-curve
-  graph are Canvas2D only.
+  notice. The waveform and spectrogram use it; the EQ graph, analyzer plot, transfer-curve graph
+  and Explain My Voice's graph are Canvas2D only.
 - **Data:** the waveform draws `VXPK` min/max buckets (or raw samples when zoomed in, with dots
   at ≥ 3 px per sample); the spectrogram draws `VXST` u8 tiles computed in Rust, colored on the GPU
   through a lookup texture. `shaderSampler.ts` mirrors the shader's sampling and is parity-tested

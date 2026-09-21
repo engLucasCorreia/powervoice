@@ -132,6 +132,51 @@ locally, you're free to install what's missing yourself:
   automatically by `just build`) uses `desktop-file-validate` (from `desktop-file-utils`) if it's
   on `PATH`, else falls back to its own format check — no hard requirement either way.
 
+### Libraries the AppImage must never bundle (H-89, H-90)
+
+`just build` strips a short denylist of libraries out of the AppImage after `tauri build`
+(`scripts/packaging/strip_appimage_libs.py`, reusing the `linuxdeploy` tool the bundler already
+downloaded, so no new dependency) and `check_bundle.py` **fails the build** if one comes back
+(`scripts/packaging/appimage_denylist.py`'s `DENYLISTED_LIBS`, currently `libpipewire-0.3.so*` and
+`libwayland-client.so*`). Both are libraries that must match something on the user's own system
+rather than be vendored:
+
+- **`libpipewire-0.3.so.0`** gets pulled into the AppImage transitively (WebKitGTK's media backend
+  needs it), but its `spa-0.2` plugin directory is looked up at an absolute, build-host path that
+  differs across distros — the bundled copy loads, can't find its plugins, and floods stderr
+  retrying forever. PowerVoice's own audio I/O never goes through this bundled copy anyway; it
+  talks to PipeWire through `cpal`, dynamically linked against the *system* library.
+- **`libwayland-client.so.0`** must be the exact same copy the system's Mesa/EGL/compositor use —
+  every Wayland-facing library in the process has to share one. A bundled copy built against a
+  different host's stack made EGL fail with `EGL_BAD_ALLOC` and **`WebKitWebProcess` abort on every
+  launch**: the window opened and stayed completely empty, with nothing else in the log. This is
+  also on upstream's own pkg2appimage `excludelist` for the same reason.
+
+If you're extending this list, the shape to look for is a library whose plugins (or peer library)
+are looked up at an absolute, build-time path rather than bundled alongside it — see the module
+docstring in `appimage_denylist.py` for what was audited and *not* added, and why.
+
+### Verifying a Linux build before calling it done
+
+`just check` and even `just build` succeeding says nothing about whether the app actually renders —
+both passed for an AppImage whose window opened completely empty (H-90). Before treating a Linux
+build as good:
+
+1. **Run the real binary/AppImage and look at the window's contents**, not just that a window
+   appeared — a `grim -g "<geometry>"` screenshot (geometry from `hyprctl clients -j` on a
+   wlroots/Hyprland session) catches an empty or broken render that a "does a window exist" check
+   won't. `scripts/repro/gui_harness.py` (see [Reproducing a real-app
+   freeze](contributing.md#reproducing-a-real-app-freeze-gui-harness)) automates the launch,
+   screenshot and shutdown steps, though it currently only supports a Linux/wlroots session
+   (`hyprctl`, `grim`) — there's no Windows/macOS equivalent yet.
+2. **Check `coredumpctl`** (or your distro's equivalent) for a crashed child process — a plugin
+   sandbox or the WebKitGTK web process can die without the main window closing.
+3. One line you'll see on every launch and can ignore: `Could not create surfaceless EGL display:
+   EGL_BAD_ALLOC. Aborting...`. It comes from the system Mesa/EGL stack probing an offscreen
+   surface for WebKitGTK's GPU process, prints before and after any of the fixes above, and the
+   window renders fine regardless — don't mistake it for the `libwayland-client` failure above
+   (that one closes the window; this one doesn't).
+
 ## Windows
 
 > **H-61 found, H-69 fixed: CI attempts a Windows installer on every tagged release, and even

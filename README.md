@@ -28,7 +28,8 @@ PowerVoice edits **one mono voice recording at a time**, and does that one job w
    - Presets, A/B comparison, and **Bake Rack** to render the chain into the audio (one undo step)
 4. **Hit the target.** One-click **Normalize** favourites (−1, −0.1, −3 dB peak, or a LUFS target),
    a full **loudness analysis** (integrated / short-term / momentary LUFS, loudness range, true
-   peak), and an **ACX check** for audiobook submissions.
+   peak), an **ACX check** for audiobook submissions, and **Explain My Voice** — a plain-language,
+   annotated read of your pitch, tone and cleanliness, honest about what it can and can't measure.
 5. **Export.** WAV (16/24/32-bit float), FLAC, and MP3 (via your system's LAME library).
 
 ![Spectral view and live spectrum analyzer in the Light theme](docs/images/powervoice-light-spectral.png)
@@ -119,7 +120,7 @@ app, without any code.
 
 The project is developed spec-first: specs and ADRs define behaviour, and work is tracked as
 tickets in [`tickets/`](tickets/). Every change passes `just check`, which runs formatting,
-lints, ~2,400 UI tests and the full Rust suite.
+lints, ~2,670 UI tests and ~1,980 Rust tests.
 
 ## License
 

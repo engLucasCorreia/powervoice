@@ -17,7 +17,8 @@ use std::thread::JoinHandle;
 
 use vox_project::{ChunkStore, DocSnapshot, FreeSpaceProvider, SystemFreeSpace, TakeCapture};
 use vox_rack::{
-    EditorRequest, ModuleDescriptor, ModulePreset, ModuleState, RackModel, RackNotice, Registry,
+    EditorRequest, ModuleDescriptor, ModulePreset, ModuleState, ParamId, RackModel, RackNotice,
+    Registry,
 };
 
 use crate::analyzer::{AnalyzerResponse, AnalyzerSink, InspectorConfig, InspectorSink, VoiceSink};
@@ -524,6 +525,25 @@ impl EngineHandle {
             .unwrap_or(Err(RackApiError::Unavailable))
     }
 
+    /// H-101 (SPEC-015 §2.6.3 amendment): evaluates `module_id`'s response curve **from
+    /// parameters alone** — no rack slot is read or created, so calling this can never mutate
+    /// the rack. Used to preview a hypothetical parameter change (e.g. an EQ suggestion) before
+    /// it is ever applied, through the exact same `ResponseCurve` extension
+    /// [`Self::response_curve`] evaluates for a live slot, at the live rack's own sample rate
+    /// when a device is open (a neutral default otherwise), so a preview and the applied result
+    /// can never disagree. `overrides` are applied on top of `module_id`'s own schema defaults;
+    /// an id the module doesn't have is ignored. `freqs_hz` is truncated to
+    /// `MAX_RESPONSE_CURVE_POINTS` if longer. Read-only; call from any thread.
+    pub fn response_curve_preview(
+        &self,
+        module_id: String,
+        overrides: Vec<(ParamId, f64)>,
+        freqs_hz: Vec<f64>,
+    ) -> Result<ResponseCurvePoints, RackApiError> {
+        self.call(move |c| c.response_curve_preview(module_id, overrides, freqs_hz))
+            .unwrap_or(Err(RackApiError::Unavailable))
+    }
+
     /// The transfer graph (H-63, SPEC-016 §4.11): evaluates slot `index`'s `TransferCurve`
     /// extension over `points` levels spanning `x_min_db … x_max_db` from the parameter mirror's
     /// current values. `points` is clamped to `MAX_TRANSFER_CURVE_POINTS`. Read-only; call from
@@ -804,6 +824,17 @@ impl ManualEngine {
         freqs_hz: Vec<f64>,
     ) -> Result<ResponseCurvePoints, RackApiError> {
         self.control.response_curve(index, freqs_hz)
+    }
+
+    /// See [`EngineHandle::response_curve_preview`].
+    pub fn response_curve_preview(
+        &self,
+        module_id: String,
+        overrides: Vec<(ParamId, f64)>,
+        freqs_hz: Vec<f64>,
+    ) -> Result<ResponseCurvePoints, RackApiError> {
+        self.control
+            .response_curve_preview(module_id, overrides, freqs_hz)
     }
 
     /// See [`EngineHandle::transfer_curve`].

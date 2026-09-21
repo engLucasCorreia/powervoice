@@ -711,3 +711,50 @@ edits (SPEC-004 OD-4), native plugin-style windows.
   `process()` and `ResponseCurve`.
 - Tests use an independent implementation.
 - `i18n` keys: `module.parametric_eq.*`, `eq.band.{hp,ls,1..5,hs,lp}`, `eq.graph.*`.
+
+## Amendment 3 — H-101 previewing a filter that isn't in the rack yet (2026-09-21, autonomous)
+
+H-92's Explain My Voice modal was specified to draw a dashed EQ-suggestion curve over the
+measured spectrum (H-92/H-94 tickets), but `rack_response_curve` (§2.6.6, §4.10) only evaluates
+**a live rack slot's current mirror values**. There is no rack slot to evaluate for a
+suggestion the user hasn't applied yet, and §2.6.3's rule — "the UI never evaluates a filter; it
+only maps (frequency, dB) pairs to pixels" (**AC-17**) — forbids working around that by running
+the filter's math in TypeScript. H-92 escalated rather than picking either, which was correct.
+
+**Decided: AC-17 stands, unchanged. The preview is served by the backend, from parameters
+alone, with no rack slot and no mutation.**
+
+- `vox_rack::Registry::preview_response_curve(module_id, overrides, config, freqs_hz)` builds a
+  fresh, never-inserted module instance through the same `resolve`/`instantiate` path
+  (`prepare_state`, `load_state`, the dual-mono shim, `activate`) a real rack slot goes through,
+  with `overrides` applied on top of the module's own schema defaults, then reads its
+  `ResponseCurve` extension exactly as `RackHost::response_curve_extension` does for a live slot.
+  Nothing about a `RackModel`/`RackHost` is touched or created — there is no rack slot for this to
+  mutate in the first place, which is the point.
+- The new command `rack_response_curve_preview(module_id, overrides, points)` (additive to
+  §2.6.6/ADR-003, same JSON lean-slice shape as `rack_response_curve`'s `ResponseCurveDto`)
+  exposes this to the UI. It is a **new command, not a mode of `rack_response_curve`**: the
+  existing command's whole contract is "the target slot's current mirror" (it errors without a
+  live slot or a live output stream at all), while a preview must work with neither — folding the
+  two into one command would mean overloading `slot` with an either-a-slot-or-a-module-id
+  argument, which is a worse contract than two commands with one job each.
+  `error.rack_no_extension` for a module with no `ResponseCurve` support, matching
+  `module_transfer_curve`'s existing convention for the same situation.
+- The UI (`ExplainGraph.svelte`) asks for this curve exactly as it would ask for the real one
+  after applying the same changes (`eqSuggest.ts::previewEqOverrides` builds the same
+  `{id, value}` pairs `planEqAction`/`eqApply.ts` sends through `param_set_plain`), then only
+  **adds** the returned dB values to the already-measured envelope
+  (`explainGraphMath.ts::eqAdviceLevels`) to draw the dashed curve. No filter or taper math
+  reaches the UI; the addition is the same kind of pixel-mapping arithmetic §2.6.3 already
+  permits, not a second implementation of the filter.
+- Consequence: because the preview and a real applied slot evaluate the identical
+  `ResponseCurve::magnitude_db`/`component_magnitude_db` over the identical parameter values, a
+  preview and the applied result can never numerically disagree — proven directly by
+  `vox-engine`'s `tests/response_curve_preview.rs` (a live Parametric EQ slot set up with
+  `param_set_plain`, compared point-for-point against a no-rack-slot preview built from the same
+  overrides) and `vox-rack`'s `registry.rs` unit tests (a preview compared against an
+  independently constructed instance with the same explicit state).
+
+No wire format, command signature, or acceptance criterion of §2–§6 changes; `rack_response_curve`
+and its AC-16/AC-17 are exactly as before. This amendment only adds the new, additive command and
+its backing `Registry` method.

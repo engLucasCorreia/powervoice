@@ -32,6 +32,7 @@ import type {
   NoiseProfileCurveDto,
   NormalizeJobStartedDto,
   NrCaptureStartedDto,
+  ParamOverrideDto,
   PeaksRequestDto,
   PluginEntryDto,
   PluginFoldersDto,
@@ -318,6 +319,22 @@ export async function rackResponseCurve(
   points: number[],
 ): Promise<ResponseCurveDto> {
   return invoke<ResponseCurveDto>("rack_response_curve" satisfies CommandName, { slot, points });
+}
+
+/** H-101 (SPEC-015 §2.6.3 amendment): `moduleId`'s response curve from parameters alone — no
+ * rack slot is read or created, so this can never mutate the rack. `overrides` land on top of
+ * the module's own schema defaults; an id it doesn't have is ignored. Used to preview a
+ * hypothetical change (e.g. an EQ suggestion) before it's ever applied. */
+export async function rackResponseCurvePreview(
+  moduleId: string,
+  overrides: ParamOverrideDto[],
+  points: number[],
+): Promise<ResponseCurveDto> {
+  return invoke<ResponseCurveDto>("rack_response_curve_preview" satisfies CommandName, {
+    moduleId,
+    overrides,
+    points,
+  });
 }
 
 /** H-85: the NR profile graph's noise-print curve (SPEC-014 §2.8 item 2), on the SPEC-007

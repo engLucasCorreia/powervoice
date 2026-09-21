@@ -7,6 +7,7 @@
  * top of one).
  */
 import type { Rect } from "../../ui/axisLabels";
+import { freqForU } from "../../spectrum/freqAxis";
 
 const HEADROOM_DB = 6;
 const MIN_SPAN_DB = 30;
@@ -121,4 +122,48 @@ export function markerReservedRects(input: MarkerReservationInput): Rect[] {
     });
   }
   return rects;
+}
+
+/** Cap matching `vox_engine::rack_api::MAX_RESPONSE_CURVE_POINTS` — the backend truncates an
+ * oversized request rather than rejecting it, so a caller must cap first to keep the returned
+ * points index-aligned with what it asked for. The overlay only draws a smooth line, not
+ * pixel-exact node positions (unlike the EQ graph itself), so far fewer than the cap is plenty. */
+export const EQ_ADVICE_MAX_POINTS = 256;
+
+/**
+ * Log-spaced frequency points to request the EQ-suggestion preview curve at (H-101): one per
+ * device-pixel column centre, the same spacing `eq/freqAxis.ts::logSpacedFreqs` uses for the
+ * real EQ graph (SPEC-015 §4.10), capped at {@link EQ_ADVICE_MAX_POINTS}.
+ */
+export function eqAdviceRequestFreqs(fLo: number, fHi: number, columns: number): number[] {
+  const n = Math.max(0, Math.min(Math.round(columns), EQ_ADVICE_MAX_POINTS));
+  if (n <= 0 || !(fHi > fLo)) {
+    return [];
+  }
+  const out: number[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    out[i] = freqForU((i + 0.5) / n, fLo, fHi, "log");
+  }
+  return out;
+}
+
+/**
+ * The suggested-EQ overlay's drawn levels (H-101): the measured envelope plus the previewed
+ * filter's own response, at the preview curve's own frequencies — "a dashed suggestion curve
+ * drawn over — never modifying — the measured spectrum" (H-92/H-94's tickets). `levelAt` is the
+ * caller's own interpolation over the measured curve (`analyzer/plotGeometry.ts::levelAt`), so
+ * this stays a pure combine with no curve-fitting logic of its own. A point where either input
+ * is non-finite comes back `NaN`, so the caller's polyline breaks there instead of drawing a
+ * wrong value.
+ */
+export function eqAdviceLevels(
+  freqsHz: readonly number[],
+  totalDb: readonly number[],
+  levelAt: (freqHz: number) => number,
+): number[] {
+  return freqsHz.map((f, i) => {
+    const base = levelAt(f);
+    const delta = totalDb[i];
+    return Number.isFinite(base) && delta !== undefined && Number.isFinite(delta) ? base + delta : NaN;
+  });
 }

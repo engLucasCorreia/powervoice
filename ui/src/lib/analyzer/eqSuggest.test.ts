@@ -4,7 +4,7 @@ import type { RackSlotDto, RackStateDto } from "../ipc/bindings";
 import { rackSlotDto, rackStateDto } from "../test/fixtures";
 import { resetRackForTest } from "../rack/rack.svelte";
 import { applyEqAction } from "./eqApply";
-import { EQ_IDS, EQ_MODULE_ID, eqSlotIndex, planEqAction } from "./eqSuggest";
+import { EQ_IDS, EQ_MODULE_ID, eqSlotIndex, planEqAction, previewEqOverrides } from "./eqSuggest";
 
 /** A Parametric EQ slot at SPEC-015 defaults (peak bands 200/500/1200/3000/6000 Hz, 0 dB). */
 function eqSlot(gains: number[] = [0, 0, 0, 0, 0]): RackSlotDto {
@@ -97,5 +97,58 @@ describe("Add EQ band here (H-42)", () => {
     const result = await applyEqAction({ kind: "cut", freqHz: 300, gainDb: -3, q: 1.4 }, full);
     expect(result).toEqual({ outcome: "no_free_band" });
     expect(calls).toEqual([]);
+  });
+});
+
+describe("previewEqOverrides (H-101, the Explain modal's dashed EQ-suggestion overlay)", () => {
+  it("maps a single boost/cut/notch suggestion onto peak band 1", () => {
+    expect(previewEqOverrides([{ kind: "cut", freqHz: 300, gainDb: -3, q: 1.4 }])).toEqual([
+      { id: 31, value: 300 },
+      { id: 33, value: 1.4 },
+      { id: 32, value: -3 },
+      { id: 30, value: 1 },
+    ]);
+  });
+
+  it("maps a high_pass suggestion onto the HP band, independent of peak-band order", () => {
+    expect(
+      previewEqOverrides([
+        { kind: "high_pass", freqHz: 80, gainDb: 0, q: 0.7 },
+        { kind: "boost", freqHz: 3000, gainDb: 2, q: 1 },
+      ]),
+    ).toEqual([
+      { id: 11, value: 80 },
+      { id: 10, value: 1 },
+      { id: 31, value: 3000 },
+      { id: 33, value: 1 },
+      { id: 32, value: 2 },
+      { id: 30, value: 1 },
+    ]);
+  });
+
+  it("takes peak bands in order for successive suggestions, never reusing one", () => {
+    const overrides = previewEqOverrides([
+      { kind: "cut", freqHz: 300, gainDb: -3, q: 1.4 },
+      { kind: "boost", freqHz: 3000, gainDb: 2, q: 1 },
+    ]);
+    const bandOf = (id: number): number => EQ_IDS.peaks.findIndex((ids) => ids.freq === id);
+    const freqSets = overrides.filter((s) => EQ_IDS.peaks.some((ids) => ids.freq === s.id));
+    expect(freqSets.map((s) => bandOf(s.id))).toEqual([0, 1]);
+  });
+
+  it("drops suggestions beyond the fifth peak band rather than overwriting one", () => {
+    const many = Array.from({ length: 7 }, (_, i) => ({
+      kind: "boost" as const,
+      freqHz: 300 * (i + 1),
+      gainDb: 1,
+      q: 1,
+    }));
+    const overrides = previewEqOverrides(many);
+    // 5 peak bands × 4 params each = 20 sets; nothing for suggestions 6 and 7.
+    expect(overrides.length).toBe(20);
+  });
+
+  it("is empty for no suggestions", () => {
+    expect(previewEqOverrides([])).toEqual([]);
   });
 });

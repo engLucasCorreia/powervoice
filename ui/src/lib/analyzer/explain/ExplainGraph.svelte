@@ -14,11 +14,22 @@
   import { createFrameClient } from "../../render/frameScheduler";
   import { themeColors } from "../../theme/themeColors";
   import { themeState } from "../../theme/theme.svelte";
+  import { CoalescedCurveRequest } from "../../eq/curveRequest";
+  import type { ResponseCurveDto } from "../../ipc/bindings";
+  import { rackResponseCurvePreview } from "../../ipc/commands";
   import { layoutExplainAnnotations } from "./explainAnnotations";
-  import { computeDbRange, f0LabelTopPx, markerReservedRects } from "./explainGraphMath";
+  import {
+    computeDbRange,
+    eqAdviceLevels,
+    eqAdviceRequestFreqs,
+    f0LabelTopPx,
+    markerReservedRects,
+  } from "./explainGraphMath";
   import { voiceBandLabel } from "./explainLabels";
+  import { EQ_MODULE_ID, previewEqOverrides } from "../eqSuggest";
   import { explainFindings } from "./prose";
   import { regionsAt, voiceBands } from "./voiceBands";
+  import type { EqAction } from "../diagnosticsHints";
   import type { VoiceFinding } from "./findings";
   import type { VoiceSnapshot } from "./snapshot";
   import ExplainFindingCard from "./ExplainFindingCard.svelte";
@@ -43,6 +54,7 @@
     showHarmonics,
     showBands,
     showEqAdvice,
+    eqBands = [],
     maxLabels,
     beneath = $bindable([]),
     testid,
@@ -53,6 +65,9 @@
     showHarmonics: boolean;
     showBands: boolean;
     showEqAdvice: boolean;
+    /** H-101: H-94's conservative EQ suggestions, drawn as a dashed curve over — never
+     * modifying — the measured spectrum, behind `showEqAdvice`. */
+    eqBands?: EqAction[];
     /** How many cards the graph itself tries to fit (desktop: more; phone: 3, per the ticket). */
     maxLabels: number;
     /** Findings with no card on the graph — bound out for the modal's "also measured" list. */
@@ -174,9 +189,53 @@
     return { text, x: hover.x };
   });
 
+  // --- EQ-suggestion overlay (H-101): a dashed curve = the measured envelope plus H-94's
+  // conservative EQ moves, drawn over — never modifying — the measured spectrum. The backend
+  // evaluates the actual `ResponseCurve` from parameters alone (SPEC-015 §2.6.3 amendment); this
+  // component only asks for it and adds it to the already-measured envelope (AC-17: no filter
+  // math here, only `+`).
+  const eqOverrides = $derived(previewEqOverrides(eqBands));
+  let eqCurve: ResponseCurveDto | null = $state(null);
+
+  const eqFetcher = new CoalescedCurveRequest<ResponseCurveDto>(
+    (points) => rackResponseCurvePreview(EQ_MODULE_ID, eqOverrides, points),
+    (result) => (eqCurve = result),
+  );
+
+  $effect(() => {
+    if (!showEqAdvice || eqOverrides.length === 0 || plot.width <= 0) {
+      eqCurve = null;
+      eqFetcher.cancel();
+      return;
+    }
+    const [fLo, fHi] = range;
+    eqFetcher.request(eqAdviceRequestFreqs(fLo, fHi, plot.width));
+  });
+
+  $effect(() => () => eqFetcher.cancel());
+
+  const eqAdviceDrawn = $derived.by(() => {
+    const curve = eqCurve;
+    return showEqAdvice && !!curve && curve.total_db.length > 0;
+  });
+
+  /** Reserves a small corner box for the overlay's own legend text, the same way every other
+   * piece of chrome this graph draws is reserved (H-102) — an annotation card must not land on
+   * top of it either. */
+  const eqAdviceLegendRect: Rect | null = $derived.by(() => {
+    if (!eqAdviceDrawn || plot.width <= 0) {
+      return null;
+    }
+    const label = t("explain.eq_advice_label");
+    const width = estimateLabelWidthPx(label, 10) + 8;
+    const height = 16;
+    return { x: plot.x + plot.width - width, y: plot.y + plot.height - height, width, height };
+  });
+
   const reserved: Rect[] = $derived([
     ...(hoverReadout ? [{ x: hoverReadout.x - 140, y: plot.y, width: 280, height: 22 }] : []),
     ...markerReserved,
+    ...(eqAdviceLegendRect ? [eqAdviceLegendRect] : []),
   ]);
 
   const prose = $derived(explainFindings(snapshot));
@@ -327,6 +386,51 @@
       strokeCurve(ctx, snapshot.smoothedDb);
     }
 
+    // H-101: the dashed EQ-suggestion overlay — the measured envelope plus the previewed
+    // filter's own response (`eqAdviceLevels`), drawn over the measured curve without touching
+    // it. `eqCurve` came from the backend's `ResponseCurve` evaluation (H-101,
+    // `rack_response_curve_preview`); this component only maps its numbers to pixels.
+    const curveForAdvice = eqCurve;
+    if (eqAdviceDrawn && curveForAdvice) {
+      const levels = eqAdviceLevels(curveForAdvice.freqs_hz, curveForAdvice.total_db, (f) =>
+        levelAt({ freqsHz: snapshot.freqsHz, levelsDb: snapshot.smoothedDb }, f),
+      );
+      ctx.strokeStyle = colors.eq.curve.css;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      let penDown = false;
+      for (let i = 0; i < curveForAdvice.freqs_hz.length; i++) {
+        const db = levels[i];
+        if (db === undefined || !Number.isFinite(db)) {
+          penDown = false;
+          continue;
+        }
+        const x = xForFreq(curveForAdvice.freqs_hz[i]!);
+        const y = yForDb(db);
+        if (!penDown) {
+          ctx.moveTo(x, y);
+          penDown = true;
+        } else {
+          ctx.lineTo(x, y);
+        }
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      if (eqAdviceLegendRect) {
+        ctx.fillStyle = colors.eq.curve.css;
+        ctx.font = BAND_LABEL_FONT;
+        ctx.textAlign = "right";
+        ctx.textBaseline = "bottom";
+        ctx.fillText(
+          t("explain.eq_advice_label"),
+          eqAdviceLegendRect.x + eqAdviceLegendRect.width - 4,
+          eqAdviceLegendRect.y + eqAdviceLegendRect.height - 2,
+        );
+      }
+    }
+
     // H-102: the F0 label's top, shared with the harmonic-collision check just below and with
     // `markerReservedRects` (via the `f0X`/`markerReserved` derived values) — one formula, so the
     // drawn label, the drawn harmonic offset and the reserved rect can never drift apart.
@@ -413,6 +517,8 @@
       showSmoothed,
       showHarmonics,
       showBands,
+      showEqAdvice,
+      eqCurve,
       width,
       height,
       hover,

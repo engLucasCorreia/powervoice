@@ -11,7 +11,8 @@ use crate::audio::AudioEngine;
 use crate::document::DocumentService;
 use crate::ipc::error::{IpcError, IpcErrorCode};
 use crate::ipc::rack_dto::{
-    ModuleDescriptorDto, NoiseProfileCurveDto, RackStateDto, ResponseCurveDto, rack_ipc_error,
+    ModuleDescriptorDto, NoiseProfileCurveDto, ParamOverrideDto, RackStateDto, ResponseCurveDto,
+    rack_ipc_error,
 };
 use crate::settings::SettingsStore;
 
@@ -314,6 +315,36 @@ pub async fn rack_response_curve(
     let result = tauri::async_runtime::spawn_blocking(move || handle.response_curve(slot, points))
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
+    Ok(result.map_err(rack_ipc_error)?.into())
+}
+
+/// Evaluates `module_id`'s response curve **from parameters alone** (H-101, SPEC-015 §2.6.3
+/// amendment): no rack slot is read or created, and the rack is never mutated — the Explain
+/// modal's dashed EQ-suggestion overlay asks this to preview a hypothetical change before it's
+/// ever applied, without either mutating the user's real rack (H-92's original wall) or growing
+/// a second, UI-side filter implementation (AC-17 still forbids the UI evaluating a filter).
+/// `overrides` are applied on top of `module_id`'s own schema defaults; an id the module doesn't
+/// have is ignored. Rust evaluates the exact same `ResponseCurve` extension
+/// `rack_response_curve` does, at the live rack's own sample rate when a device is open, so a
+/// preview and the applied result can never disagree. `error.rack_no_extension` for a module
+/// with no `ResponseCurve` support.
+#[tauri::command]
+pub async fn rack_response_curve_preview(
+    engine: State<'_, AudioEngine>,
+    module_id: String,
+    overrides: Vec<ParamOverrideDto>,
+    points: Vec<f64>,
+) -> Result<ResponseCurveDto, IpcError> {
+    let handle = engine.handle().clone();
+    let overrides: Vec<(ParamId, f64)> = overrides
+        .into_iter()
+        .map(|o| (ParamId(o.id), o.value))
+        .collect();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        handle.response_curve_preview(module_id, overrides, points)
+    })
+    .await
+    .map_err(|e| IpcError::internal(e.to_string()))?;
     Ok(result.map_err(rack_ipc_error)?.into())
 }
 

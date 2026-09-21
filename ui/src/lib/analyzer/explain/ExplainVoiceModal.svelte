@@ -157,6 +157,7 @@
         {showHarmonics}
         {showBands}
         {showEqAdvice}
+        eqBands={summary?.eqBands ?? []}
         {maxLabels}
         bind:beneath
         testid="explain-graph"

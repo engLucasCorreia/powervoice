@@ -19,8 +19,8 @@ use vox_dsp::capture_resample::CaptureResampler;
 use vox_project::{FreeSpaceProvider, TakeCapture};
 use vox_rack::{
     ActivateConfig, ChannelLayout, CurveBranch, EditorRequest, MAX_BLOCK, ModuleDescriptor,
-    ModulePreset, ModuleState, PluginEditor, ProcessMode, RackHost, RackModel, RackNotice,
-    RackOptions, Registry, SlotUid,
+    ModulePreset, ModuleState, ParamId, PluginEditor, ProcessMode, RackError, RackHost, RackModel,
+    RackNotice, RackOptions, Registry, SlotUid,
 };
 
 use crate::analyzer::{
@@ -1179,6 +1179,47 @@ impl Control {
             sample_rate_hz,
             total_db,
             components_db,
+        })
+    }
+
+    /// H-101 (SPEC-015 §2.6.3 amendment): evaluates `module_id`'s response curve **from
+    /// parameters alone** — no rack slot is read or created, so calling this can never mutate
+    /// the rack (the wall H-92 hit: `Self::response_curve` needs a live slot). Used to preview a
+    /// hypothetical parameter change (e.g. an EQ suggestion) before it's ever applied, through
+    /// the exact same [`vox_rack::Registry::preview_response_curve`] `Self::response_curve`
+    /// evaluates for a live slot, at the live rack's own sample rate when a device is open (a
+    /// neutral 48 kHz default otherwise — the response curve math doesn't depend on the
+    /// activation rate beyond the values it's handed), so a preview and the applied result can
+    /// never disagree.
+    pub(crate) fn response_curve_preview(
+        &self,
+        module_id: String,
+        overrides: Vec<(ParamId, f64)>,
+        mut freqs_hz: Vec<f64>,
+    ) -> Result<ResponseCurvePoints, RackApiError> {
+        freqs_hz.truncate(MAX_RESPONSE_CURVE_POINTS);
+        let config = self
+            .output
+            .as_ref()
+            .map(|out| out.rack.config())
+            .unwrap_or(ActivateConfig {
+                sample_rate: 48_000.0,
+                max_block: MAX_BLOCK,
+                mode: ProcessMode::Realtime,
+                layout: ChannelLayout::MONO,
+            });
+        let preview = self
+            .registry
+            .preview_response_curve(&module_id, &overrides, &config, freqs_hz)
+            .map_err(|e| match e {
+                RackError::NoResponseCurve { .. } => RackApiError::NoExtension,
+                other => RackApiError::Rack(other.to_string()),
+            })?;
+        Ok(ResponseCurvePoints {
+            freqs_hz: preview.freqs_hz,
+            sample_rate_hz: preview.sample_rate_hz,
+            total_db: preview.total_db,
+            components_db: preview.components_db,
         })
     }
 

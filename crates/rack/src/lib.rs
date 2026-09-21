@@ -48,7 +48,7 @@ pub use host::{
 pub use live::{LiveRack, RackCommand};
 pub use mix::xfade_gain;
 pub use model::{RackModel, SlotModel};
-pub use registry::{Registry, RegistryError, Resolved};
+pub use registry::{Registry, RegistryError, Resolved, ResponseCurvePreview};
 pub use shim::DualMonoShim;
 /// Module-API types a rack driver needs (the engine drives the rack through these without a
 /// direct `module-api` edge, ADR-001 §2). `NoiseProfile` (S3-06): the noise-print capture
@@ -264,6 +264,24 @@ pub enum RackError {
     /// Typed text did not parse (nothing was sent).
     #[error("`{0}` is not a valid value")]
     InvalidText(String),
+    /// [`Registry::preview_response_curve`] (H-101): the module has no `ResponseCurve`
+    /// extension (e.g. a Gain module).
+    #[error("{id} has no response-curve support")]
+    NoResponseCurve {
+        /// Module id.
+        id: String,
+    },
+    /// [`Registry::preview_response_curve`]'s fresh instance resolved to a placeholder instead
+    /// of a live one. Unreachable for a currently-registered module and a state this call just
+    /// built at the module's own current format version — kept only so the match stays
+    /// exhaustive.
+    #[error("couldn't preview {id}: {message}")]
+    PreviewUnavailable {
+        /// Module id.
+        id: String,
+        /// The placeholder's own message.
+        message: String,
+    },
 }
 
 /// Error from [`Chain::push_event`] (RT-safe, `Copy`).

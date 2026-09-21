@@ -83,3 +83,40 @@ export function planEqAction(slot: RackSlotDto, action: EqAction): EqPlan | null
     ],
   };
 }
+
+/**
+ * H-101 (the Explain modal's dashed EQ-suggestion overlay): `actions` (H-94's
+ * `suggestedEqBands()`, deliberately conservative and few) mapped onto the EQ's fixed band
+ * slots, independent of any real rack slot — the preview answers "what would a *fresh* EQ with
+ * these moves look like", not "where would `applyEqAction` land them in the rack I already
+ * have". A `high_pass` move goes to the HP band; everything else takes the peak bands in order
+ * (1, 2, 3…). More boost/cut suggestions than peak bands (5) is not something H-94 produces
+ * today; any beyond the fifth are dropped rather than overwriting one another.
+ *
+ * These overrides are sent to `rack_response_curve_preview` exactly as `eqApply.ts` would send
+ * the same `sets` through `param_set_plain` if the user clicked "Add EQ band here" on a fresh
+ * EQ — so the previewed curve and the one a real slot would show after applying can never
+ * disagree (they run the same `ResponseCurve` math over the same parameter values).
+ */
+export function previewEqOverrides(actions: readonly EqAction[]): ParamSet[] {
+  const sets: ParamSet[] = [];
+  let peak = 0;
+  for (const action of actions) {
+    if (action.kind === "high_pass") {
+      sets.push({ id: EQ_IDS.hpFreq, value: action.freqHz }, { id: EQ_IDS.hpOn, value: 1 });
+      continue;
+    }
+    const ids = EQ_IDS.peaks[peak];
+    if (!ids) {
+      continue; // more suggestions than peak bands: nothing left to draw them on.
+    }
+    peak += 1;
+    sets.push(
+      { id: ids.freq, value: action.freqHz },
+      { id: ids.q, value: action.q },
+      { id: ids.gain, value: action.gainDb },
+      { id: ids.on, value: 1 },
+    );
+  }
+  return sets;
+}

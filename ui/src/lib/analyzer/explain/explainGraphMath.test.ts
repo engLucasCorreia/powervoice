@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { rectsOverlap } from "../../ui/axisLabels";
-import { computeDbRange, f0LabelTopPx, markerReservedRects } from "./explainGraphMath";
+import {
+  computeDbRange,
+  eqAdviceLevels,
+  eqAdviceRequestFreqs,
+  EQ_ADVICE_MAX_POINTS,
+  f0LabelTopPx,
+  markerReservedRects,
+} from "./explainGraphMath";
 
 describe("computeDbRange (H-92: never truncate a real peak)", () => {
   it("gives every finite point headroom above and below, on a clean 10 dB grid", () => {
@@ -105,5 +112,55 @@ describe("f0LabelTopPx (H-102: the F0 label must never sit on the band-name row)
     const rects = markerReservedRects({ plot: PLOT, f0X: 120, harmonics: [], strongestPeak: null, showBandLabels: true });
     expect(rects).toHaveLength(2); // band row + F0
     expect(rectsOverlap(rects[0]!, rects[1]!)).toBe(false);
+  });
+});
+
+describe("eqAdviceRequestFreqs (H-101: the EQ-suggestion preview request)", () => {
+  it("returns `columns` ascending points strictly inside [fLo, fHi]", () => {
+    const freqs = eqAdviceRequestFreqs(20, 20_000, 16);
+    expect(freqs).toHaveLength(16);
+    for (const f of freqs) {
+      expect(f).toBeGreaterThan(20);
+      expect(f).toBeLessThan(20_000);
+    }
+    expect([...freqs].sort((a, b) => a - b)).toEqual(freqs);
+  });
+
+  it("is capped at EQ_ADVICE_MAX_POINTS even for a huge column count", () => {
+    expect(eqAdviceRequestFreqs(20, 20_000, 10_000)).toHaveLength(EQ_ADVICE_MAX_POINTS);
+  });
+
+  it("is empty for zero columns or a degenerate range", () => {
+    expect(eqAdviceRequestFreqs(20, 20_000, 0)).toEqual([]);
+    expect(eqAdviceRequestFreqs(20_000, 20, 8)).toEqual([]);
+    expect(eqAdviceRequestFreqs(100, 100, 8)).toEqual([]);
+  });
+});
+
+describe("eqAdviceLevels (H-101: measured spectrum + the previewed filter, never modifying either)", () => {
+  it("adds the filter's own response to the measured level at each frequency", () => {
+    const freqs = [100, 1_000, 10_000];
+    const totalDb = [0, 6, -3];
+    const levels = eqAdviceLevels(freqs, totalDb, (f) => (f === 1_000 ? -20 : -30));
+    expect(levels).toEqual([-30, -14, -33]);
+  });
+
+  it("never mutates its inputs — only ever combines them into a new array", () => {
+    const freqs = [1_000];
+    const totalDb = [3];
+    eqAdviceLevels(freqs, totalDb, () => -20);
+    expect(freqs).toEqual([1_000]);
+    expect(totalDb).toEqual([3]);
+  });
+
+  it("is NaN where the measured level is non-finite, so the caller's line breaks instead of drawing a wrong point", () => {
+    const levels = eqAdviceLevels([1_000], [3], () => -Infinity);
+    expect(levels[0]).toBeNaN();
+  });
+
+  it("is NaN where the previewed response is missing (a shorter totalDb than freqsHz)", () => {
+    const levels = eqAdviceLevels([1_000, 2_000], [3], () => -20);
+    expect(levels[0]).toBe(-17);
+    expect(levels[1]).toBeNaN();
   });
 });

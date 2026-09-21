@@ -247,6 +247,16 @@ impl ParamValueDto {
     }
 }
 
+/// One parameter override for `rack_response_curve_preview` (H-101, SPEC-015 §2.6.3 amendment):
+/// a plain value for a parameter id, the same shape `param_set_plain` sends. An id the target
+/// module doesn't have is ignored; every other parameter previews at its schema default.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings.ts")]
+pub struct ParamOverrideDto {
+    pub id: u32,
+    pub value: f64,
+}
+
 /// A parameter changed (`param_changed` event): the slot's current index plus its new value.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "bindings.ts")]

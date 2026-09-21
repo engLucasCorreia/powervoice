@@ -141,6 +141,7 @@
   "explain.toggle.harmonics": "Harmonics",
   "explain.toggle.bands": "Voice Bands",
   "explain.toggle.eq_advice": "EQ Advice",
+  "explain.eq_advice_label": "Suggested EQ",
   "explain.more_title": "Also measured",
   "explain.hover": "{freq} · raw {raw} · env {env}",
   "explain.hover_region": "{freq} · raw {raw} · env {env} · {region}",

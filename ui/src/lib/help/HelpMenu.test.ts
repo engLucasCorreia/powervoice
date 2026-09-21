@@ -4,6 +4,7 @@ import { resetMenuBarForTest } from "../menu/menu.svelte";
 import { resetTourForTest, tourState } from "../tour/tour.svelte";
 import { TOUR_IDS } from "../tour/tours";
 import { aboutState, resetAboutForTest } from "./about.svelte";
+import { helpCentreState, resetHelpCentreForTest } from "./helpCentre.svelte";
 import HelpMenu from "./HelpMenu.svelte";
 import { resetShortcutsDialogForTest, shortcutsDialogState } from "./shortcuts.svelte";
 
@@ -12,6 +13,7 @@ afterEach(() => {
   resetAboutForTest();
   resetTourForTest();
   resetShortcutsDialogForTest();
+  resetHelpCentreForTest();
 });
 
 function mountMenu(): { target: HTMLElement; app: ReturnType<typeof mount> } {
@@ -43,6 +45,20 @@ describe("HelpMenu (H-19)", () => {
     const about = target.querySelector('[data-testid="menu-about"]');
     expect(about?.getAttribute("role")).toBe("menuitem");
     expect(about?.textContent).toContain("About PowerVoice");
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("Help Centre… opens the Help Centre and closes the menu (H-107)", () => {
+    const { target, app } = mountMenu();
+    target.querySelector<HTMLButtonElement>('[data-testid="menu-trigger-help"]')!.click();
+    flushSync();
+    target.querySelector<HTMLButtonElement>('[data-testid="menu-help-centre"]')!.click();
+    flushSync();
+
+    expect(helpCentreState().open).toBe(true);
+    expect(target.querySelector('[data-testid="help-menu"]')).toBeNull();
 
     unmount(app);
     target.remove();

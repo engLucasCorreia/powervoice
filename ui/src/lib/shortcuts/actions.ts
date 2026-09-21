@@ -57,4 +57,9 @@ export type ActionId =
   | "selection.nudge_left"
   | "selection.nudge_right"
   | "selection.extend_left"
-  | "selection.extend_right";
+  | "selection.extend_right"
+  // H-107: F1 opens the in-app Help Centre — global scope like every other binding here, so (per
+  // the existing "dialogs are modal" rule, `listener.ts::isModalDialogOpen`) it's a no-op while
+  // another dialog is already open; each of those panels/dialogs has its own "?" (`HelpButton`)
+  // for reaching Help without needing F1 to reach through them.
+  | "help.open_centre";

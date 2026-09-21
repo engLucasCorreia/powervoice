@@ -49,6 +49,7 @@
   } from "./plugins.svelte";
   import Tabs from "../ui/Tabs.svelte";
   import TourButton from "../tour/TourButton.svelte";
+  import HelpButton from "../help/HelpButton.svelte";
 
   /**
    * The plugin manager (T-809): Effects → Manage Plugins…, Preferences → Plugins, a flagged rack
@@ -498,6 +499,7 @@
     actions={[{ label: t("plugins.close"), role: "primary", testid: "plugin-manager-close", onclick: closePluginManager }]}
   >
     {#snippet headerActions()}
+      <HelpButton doc="user-guide" section="plugins" size="md" />
       <TourButton tour="plugins" size="md" />
     {/snippet}
     <div class="manager">

@@ -24,6 +24,7 @@
   } from "./format";
   import { ROLL_MAX_S, XFADE_MAX_MS, bufferHint, offsetReadout, phaseLabel } from "./punch";
   import TourButton from "../tour/TourButton.svelte";
+  import HelpButton from "../help/HelpButton.svelte";
 
   /**
    * Record panel controls (S1-04, SPEC-002 §2.1–§2.2, §2.7): Input (arm) toggle, Record/Stop
@@ -251,7 +252,10 @@
         <div class="panel">
           <div class="panel-title">
             <span>{t("record.punch_section")}</span>
-            <TourButton tour="punch" />
+            <span class="panel-title-actions">
+              <HelpButton doc="user-guide" section="re-recording-part-of-a-take-punch-in" />
+              <TourButton tour="punch" />
+            </span>
           </div>
           <div class="row" role="group" aria-label={t("record.mode")} title={t("record.mode_title")}>
             <span class="row-label">{t("record.mode")}</span>
@@ -571,6 +575,12 @@
     gap: var(--pv-space-2);
     width: 22rem;
     max-width: 100%;
+  }
+
+  .panel-title-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--pv-space-1);
   }
 
   .panel-title {

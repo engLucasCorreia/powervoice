@@ -27,6 +27,8 @@
   import { cancelPasteJob, dismissPasteJob, editState } from "./lib/state/edit.svelte";
   import ExportDialog from "./lib/export/ExportDialog.svelte";
   import AboutDialog from "./lib/help/AboutDialog.svelte";
+  import HelpCentre from "./lib/help/HelpCentre.svelte";
+  import { initHelpCentre } from "./lib/help/helpCentre.svelte";
   import ShortcutsDialog from "./lib/help/ShortcutsDialog.svelte";
   import HelpMenu from "./lib/help/HelpMenu.svelte";
   import { t } from "./lib/i18n";
@@ -394,6 +396,9 @@
 
   // T-207: the spectral pane's Shift+D toggle.
   onMount(() => initSpectral());
+
+  // H-107: F1 opens the Help Centre.
+  onMount(() => initHelpCentre());
 </script>
 
 <div class="shell">
@@ -536,6 +541,7 @@
 <ManagePresetsDialog />
 <AboutDialog {version} />
 <ShortcutsDialog />
+<HelpCentre />
 <CalibrationDialog />
 <SpectrumInspector />
 <ExplainVoiceModal />

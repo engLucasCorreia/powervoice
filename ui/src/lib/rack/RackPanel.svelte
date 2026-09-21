@@ -8,6 +8,7 @@
   import { addModule, loadRack, moveSlot, rackState, setAb } from "./rack.svelte";
   import RackSlot from "./RackSlot.svelte";
   import TourButton from "../tour/TourButton.svelte";
+  import HelpButton from "../help/HelpButton.svelte";
 
   /**
    * The rack panel (right dock, SPEC-012 §2.1): header (A/B, latency), the Add-module menu, and
@@ -99,6 +100,7 @@
       >
         {t("rack.ab")}
       </Button>
+      <HelpButton doc="user-guide" section="cleaning-up-the-effects-rack" />
       <TourButton tour="rack" />
     {/snippet}
   </PanelHeader>

@@ -5,6 +5,7 @@
   import type { AcxRuleDto, AcxRuleStatusDto } from "../ipc/bindings";
   import { acxState, runAcxCheck } from "./acx.svelte";
   import TourButton from "../tour/TourButton.svelte";
+  import HelpButton from "../help/HelpButton.svelte";
   import {
     canAnalyzeLoudness,
     cancelLoudnessAnalyze,
@@ -138,7 +139,9 @@
         {t("panel.loudness.analyze")}
       </Button>
     {/if}
-    <span class="tour-help"><TourButton tour="loudness" /></span>
+    <span class="tour-help"
+      ><HelpButton doc="user-guide" section="hit-a-loudness-target" /><TourButton tour="loudness" /></span
+    >
   </div>
 
   {#if state.report}
@@ -265,6 +268,8 @@
 
   /* T-709: the Loudness tour's "?" sits at the end of the controls row. */
   .tour-help {
+    display: inline-flex;
+    gap: var(--pv-space-1);
     margin-left: auto;
   }
 

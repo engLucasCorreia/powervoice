@@ -36,6 +36,7 @@ menus becomes ⌘ — every table below shows both.
 | Capture Noise Print — provisional binding | `Shift+P` | `⇧P` |
 | Show Noise Reduction — provisional binding | `Ctrl+Shift+P` | `⇧⌘P` |
 | Show/hide the spectral pane | `Shift+D` | `⇧D` |
+| Open the Help Centre | `F1` | `F1` |
 
 ### Waveform view
 

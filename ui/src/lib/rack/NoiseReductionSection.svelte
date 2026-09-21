@@ -5,6 +5,7 @@
   import { hasSelection } from "../state/selection.svelte";
   import { recordState } from "../state/record.svelte";
   import TourButton from "../tour/TourButton.svelte";
+  import HelpButton from "../help/HelpButton.svelte";
 
   /**
    * Capture Noise Print status line + button (S3-06, SPEC-014 §2.8, item 1). Rendered only for a
@@ -67,7 +68,9 @@
         {t("module.noise_reduction.capture")}
       </button>
     {/if}
-    <span class="tour-help"><TourButton tour="noise" /></span>
+    <span class="tour-help"
+      ><HelpButton doc="user-guide" section="remove-background-noise" /><TourButton tour="noise" /></span
+    >
   </div>
   <p class="status" data-testid="nr-capture-status">{t(statusKey)}</p>
 </div>
@@ -88,6 +91,8 @@
 
   /* T-709: the Noise tour's "?" at the end of the capture row. */
   .tour-help {
+    display: inline-flex;
+    gap: var(--pv-space-1);
     margin-left: auto;
   }
 

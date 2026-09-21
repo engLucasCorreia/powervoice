@@ -277,6 +277,9 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     scope: "waveform",
     labelKey: "shortcut.selection.extend_right",
   },
+  // H-107: F1 opens the in-app Help Centre — the conventional "help" key across desktop platforms,
+  // and unbound in every Audition source consulted so far, so it introduces no conflict.
+  { action: "help.open_centre", code: "F1", scope: "global", labelKey: "shortcut.help.open_centre" },
 ];
 
 /**

@@ -6,11 +6,16 @@
   import { startTour } from "../tour/tour.svelte";
   import { TOUR_IDS, TOURS } from "../tour/tours";
   import { openAbout } from "./about.svelte";
+  import { openHelpCentre } from "./helpCentre.svelte";
   import { openShortcutsDialog } from "./shortcuts.svelte";
 
-  /** Help menu (H-19; T-709 adds Take the Tour and Tours ▸): "About PowerVoice…", with the app version (SPEC-000-adjacent
-   * `app_info` — the ticket's "About with version"). H-26: on the shared menu. */
+  /** Help menu (H-19; T-709 adds Take the Tour and Tours ▸; H-107 adds the Help Centre): "About
+   * PowerVoice…", with the app version (SPEC-000-adjacent `app_info` — the ticket's "About with
+   * version"). H-26: on the shared menu. */
   const items = $derived<MenuEntry[]>([
+    // H-107: the browsable/searchable Help Centre — also reachable via F1 and a panel "?".
+    { kind: "item", id: "help-centre", label: t("menu.help.centre"), testid: "menu-help-centre", onselect: () => openHelpCentre() },
+    { kind: "separator", id: "sep-help-centre" },
     // T-709: replay the Welcome tour, or any tour, at any time.
     { kind: "item", id: "tour", label: t("menu.help.tour"), testid: "menu-tour", onselect: () => startTour("welcome") },
     {

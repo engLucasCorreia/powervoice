@@ -11,6 +11,8 @@ check:
     python3 scripts/packaging/test_check_bundle_windows.py
     python3 scripts/packaging/test_strip_appimage_libs.py
     python3 scripts/notices/generate.py --check
+    python3 scripts/help/test_generate.py
+    python3 scripts/help/generate.py --check
     python3 scripts/docs/test_check.py
     python3 scripts/docs/check.py
     python3 scripts/test_check_case_collisions.py
@@ -87,6 +89,12 @@ notices:
 # result.
 shortcuts-table:
     node scripts/docs/generate_shortcuts.mjs
+
+# Regenerate the in-app Help Centre's content (ui/src/lib/help/content.generated.ts) from
+# docs/user-guide.md and docs/faq.md (H-107). Run after editing either doc and commit the result;
+# `just check` fails if it's stale.
+help-content:
+    python3 scripts/help/generate.py
 
 # T-706: regenerate the generated sections of the architecture docs (crate graph from `cargo
 # metadata`, IPC command/event tables from src-tauri/src/ipc) and check links, anchors and Mermaid

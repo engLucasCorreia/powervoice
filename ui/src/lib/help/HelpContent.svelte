@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { HelpBlock, HelpSpan } from "./content";
-  import { selectHelpSection } from "./helpCentre.svelte";
+  import { selectHelpSection } from "./helpState.svelte";
 
   /**
    * H-107: renders one Help Centre section's generated blocks. Deliberately not `{@html}` — the

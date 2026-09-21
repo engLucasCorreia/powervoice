@@ -3,7 +3,7 @@
   import { Dialog, EmptyState, Icon, IconButton } from "../ui";
   import { HELP_DOCS, searchHelp, type HelpSearchHit } from "./content";
   import HelpContent from "./HelpContent.svelte";
-  import { closeHelpCentre, helpCentreState, selectHelpSection, setHelpQuery } from "./helpCentre.svelte";
+  import { closeHelpCentre, helpCentreState, selectHelpSection, setHelpQuery } from "./helpState.svelte";
 
   /**
    * H-107: a browsable, searchable, offline Help Centre — reachable from Help ▸ Help Centre…, F1

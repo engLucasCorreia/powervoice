@@ -28,7 +28,7 @@
   import ExportDialog from "./lib/export/ExportDialog.svelte";
   import AboutDialog from "./lib/help/AboutDialog.svelte";
   import HelpCentre from "./lib/help/HelpCentre.svelte";
-  import { initHelpCentre } from "./lib/help/helpCentre.svelte";
+  import { initHelpCentre } from "./lib/help/helpState.svelte";
   import ShortcutsDialog from "./lib/help/ShortcutsDialog.svelte";
   import HelpMenu from "./lib/help/HelpMenu.svelte";
   import { t } from "./lib/i18n";

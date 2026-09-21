@@ -9,14 +9,14 @@ import {
   resetHelpCentreForTest,
   selectHelpSection,
   setHelpQuery,
-} from "./helpCentre.svelte";
+} from "./helpState.svelte";
 
 afterEach(() => {
   resetHelpCentreForTest();
   clearActionHandlers();
 });
 
-describe("helpCentre.svelte (H-107)", () => {
+describe("helpState.svelte (H-107)", () => {
   it("starts closed, on the first doc's first section", () => {
     const s = helpCentreState();
     expect(s.open).toBe(false);

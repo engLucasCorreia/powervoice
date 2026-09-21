@@ -2,7 +2,7 @@
   import { t } from "../i18n";
   import { IconButton } from "../ui";
   import { resolveHelpTopic } from "./content";
-  import { openHelpCentre } from "./helpCentre.svelte";
+  import { openHelpCentre } from "./helpState.svelte";
 
   /**
    * H-107: the "?" that opens the Help Centre straight to one topic — next to `TourButton`

@@ -10,7 +10,7 @@ import { openDocument, openSaveAsPrompt, requestClose, requestSave } from "../li
 import { pickRecentFile } from "../lib/document/recentFiles.svelte";
 import { openExportDialog } from "../lib/export/export.svelte";
 import { openAbout } from "../lib/help/about.svelte";
-import { openHelpCentre } from "../lib/help/helpCentre.svelte";
+import { openHelpCentre } from "../lib/help/helpState.svelte";
 import { dispatchAction } from "../lib/shortcuts";
 import { runAcxCheck } from "../lib/loudness/acx.svelte";
 import { startLoudnessAnalyze } from "../lib/loudness/loudness.svelte";

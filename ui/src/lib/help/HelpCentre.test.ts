@@ -1,7 +1,7 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
 import HelpCentre from "./HelpCentre.svelte";
-import { openHelpCentre, resetHelpCentreForTest } from "./helpCentre.svelte";
+import { openHelpCentre, resetHelpCentreForTest } from "./helpState.svelte";
 
 afterEach(() => {
   resetHelpCentreForTest();

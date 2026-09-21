@@ -6,7 +6,7 @@
   import { startTour } from "../tour/tour.svelte";
   import { TOUR_IDS, TOURS } from "../tour/tours";
   import { openAbout } from "./about.svelte";
-  import { openHelpCentre } from "./helpCentre.svelte";
+  import { openHelpCentre } from "./helpState.svelte";
   import { openShortcutsDialog } from "./shortcuts.svelte";
 
   /** Help menu (H-19; T-709 adds Take the Tour and Tours ▸; H-107 adds the Help Centre): "About

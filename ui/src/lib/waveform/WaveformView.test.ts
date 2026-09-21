@@ -741,6 +741,366 @@ describe("WaveformView selection (S2-01)", () => {
   });
 });
 
+// H-109: a selection drag (plain or handle) released outside the waveform never ended, because
+// only marker drags (H-64) captured the pointer — the owner's report. Same fixture geometry as
+// the "WaveformView selection (S2-01)" block above (8 000 samples / 800 px = 10 samples/px,
+// startSample 0).
+describe("WaveformView selection drag pointer capture (H-109)", () => {
+  const widthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+
+  function stubWidth(px: number): void {
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get: () => px,
+    });
+  }
+
+  afterEach(() => {
+    if (widthDescriptor) {
+      Object.defineProperty(HTMLElement.prototype, "clientWidth", widthDescriptor);
+    }
+  });
+
+  async function openFixture(lenSamples: number): Promise<void> {
+    const fixture = docDto({ len_samples: lenSamples });
+    mockIPC((cmd) => {
+      if (cmd === "document_open") {
+        return fixture;
+      }
+      if (cmd === "peaks_get") {
+        const buf = new ArrayBuffer(48);
+        const dv = new DataView(buf);
+        dv.setUint8(0, 0x56);
+        dv.setUint8(1, 0x58);
+        dv.setUint8(2, 0x50);
+        dv.setUint8(3, 0x4b);
+        dv.setUint16(4, 1, true);
+        dv.setUint16(6, 48, true);
+        return buf;
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    await openDocument("/home/user/take.wav");
+  }
+
+  async function openFixtureWithMarkers(lenSamples: number, markers: MarkerDto[]): Promise<() => unknown[]> {
+    const fixture = docDto({ len_samples: lenSamples });
+    const setRangeCalls: unknown[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "document_open") {
+        return fixture;
+      }
+      if (cmd === "peaks_get") {
+        const buf = new ArrayBuffer(48);
+        const dv = new DataView(buf);
+        dv.setUint8(0, 0x56);
+        dv.setUint8(1, 0x58);
+        dv.setUint8(2, 0x50);
+        dv.setUint8(3, 0x4b);
+        dv.setUint16(4, 1, true);
+        dv.setUint16(6, 48, true);
+        return buf;
+      }
+      if (cmd === "markers_get") {
+        return markers;
+      }
+      if (cmd === "marker_set_range") {
+        setRangeCalls.push(args);
+        return null;
+      }
+      throw new Error(`unmocked command: ${cmd}`);
+    });
+    await openDocument("/home/user/take.wav");
+    await initMarkers();
+    return () => setRangeCalls;
+  }
+
+  it("captures the pointer for a plain selection drag, and releases it on pointerup", async () => {
+    stubWidth(800);
+    await openFixture(8_000);
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(WaveformView, { target });
+    flushSync();
+
+    const container = target.querySelector('[data-testid="waveform-canvas"]')!
+      .parentElement as HTMLElement;
+    const setCapture = vi.fn();
+    const releaseCapture = vi.fn();
+    container.setPointerCapture = setCapture;
+    container.releasePointerCapture = releaseCapture;
+
+    container.dispatchEvent(
+      new PointerEvent("pointerdown", { clientX: 10, pointerId: 7, bubbles: true }),
+    );
+    container.dispatchEvent(
+      new PointerEvent("pointermove", { clientX: 50, pointerId: 7, bubbles: true }),
+    );
+    expect(setCapture).toHaveBeenCalledWith(7);
+    expect(releaseCapture).not.toHaveBeenCalled();
+
+    container.dispatchEvent(new PointerEvent("pointerup", { clientX: 50, pointerId: 7, bubbles: true }));
+    flushSync();
+    expect(releaseCapture).toHaveBeenCalledWith(7);
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("captures the pointer for a selection-handle drag, and releases it on pointerup", async () => {
+    stubWidth(800);
+    await openFixture(8_000);
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(WaveformView, { target });
+    flushSync();
+    setSelectionFromResult([100, 500]); // start px 10, end px 50 at 10 samples/px
+
+    const container = target.querySelector('[data-testid="waveform-canvas"]')!
+      .parentElement as HTMLElement;
+    const setCapture = vi.fn();
+    const releaseCapture = vi.fn();
+    container.setPointerCapture = setCapture;
+    container.releasePointerCapture = releaseCapture;
+
+    // Grabs the end handle (px 50).
+    container.dispatchEvent(
+      new PointerEvent("pointerdown", { clientX: 50, pointerId: 3, bubbles: true }),
+    );
+    expect(setCapture).toHaveBeenCalledWith(3);
+
+    container.dispatchEvent(
+      new PointerEvent("pointermove", { clientX: 70, pointerId: 3, bubbles: true }),
+    );
+    container.dispatchEvent(new PointerEvent("pointerup", { clientX: 70, pointerId: 3, bubbles: true }));
+    flushSync();
+    expect(releaseCapture).toHaveBeenCalledWith(3);
+
+    unmount(app);
+    target.remove();
+  });
+
+  it.each(["pointercancel", "lostpointercapture"] as const)(
+    "a plain selection drag ended by %s (never a pointerup) keeps the selection fixed and ignores further movement",
+    async (eventType) => {
+      stubWidth(800);
+      await openFixture(8_000);
+      const target = document.createElement("div");
+      document.body.appendChild(target);
+      const app = mount(WaveformView, { target });
+      flushSync();
+
+      const container = target.querySelector('[data-testid="waveform-canvas"]')!
+        .parentElement as HTMLElement;
+      container.setPointerCapture = vi.fn();
+      container.releasePointerCapture = vi.fn();
+
+      // Start a drag and move it — this is the state today's code leaves stuck forever once the
+      // matching pointerup never reaches this element (H-109's actual bug: it lands on another
+      // panel instead). Before the fix, this test's next assertion (after the cancel/lost-capture
+      // event) fails because `dragging` was never cleared.
+      container.dispatchEvent(
+        new PointerEvent("pointerdown", { clientX: 10, pointerId: 7, bubbles: true }),
+      );
+      container.dispatchEvent(
+        new PointerEvent("pointermove", { clientX: 50, pointerId: 7, bubbles: true }),
+      );
+      flushSync();
+      const midDrag = selectionState().current;
+      expect(midDrag).toEqual({ startSample: 100, endSample: 500 });
+
+      container.dispatchEvent(new PointerEvent(eventType, { pointerId: 7, bubbles: true }));
+      flushSync();
+      // Fixed exactly where the last real pointermove left it (SPEC-006 §2.9-style: the release
+      // itself never reports a new position, so there is nothing to move to).
+      expect(selectionState().current).toEqual(midDrag);
+
+      container.dispatchEvent(
+        new PointerEvent("pointermove", { clientX: 200, pointerId: 7, bubbles: true }),
+      );
+      flushSync();
+      expect(selectionState().current).toEqual(midDrag);
+
+      unmount(app);
+      target.remove();
+    },
+  );
+
+  it("a selection-handle drag ended by pointercancel keeps the selection fixed and ignores further movement", async () => {
+    stubWidth(800);
+    await openFixture(8_000);
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(WaveformView, { target });
+    flushSync();
+    setSelectionFromResult([100, 500]);
+
+    const container = target.querySelector('[data-testid="waveform-canvas"]')!
+      .parentElement as HTMLElement;
+    container.setPointerCapture = vi.fn();
+    container.releasePointerCapture = vi.fn();
+
+    container.dispatchEvent(
+      new PointerEvent("pointerdown", { clientX: 50, pointerId: 3, bubbles: true }),
+    );
+    container.dispatchEvent(
+      new PointerEvent("pointermove", { clientX: 70, pointerId: 3, bubbles: true }),
+    );
+    flushSync();
+    const midDrag = selectionState().current;
+    expect(midDrag).toEqual({ startSample: 100, endSample: 700 });
+
+    container.dispatchEvent(new PointerEvent("pointercancel", { pointerId: 3, bubbles: true }));
+    flushSync();
+    expect(selectionState().current).toEqual(midDrag);
+
+    container.dispatchEvent(
+      new PointerEvent("pointermove", { clientX: 300, pointerId: 3, bubbles: true }),
+    );
+    flushSync();
+    expect(selectionState().current).toEqual(midDrag);
+
+    unmount(app);
+    target.remove();
+  });
+
+  // H-109 scope item 3: "the same auto-scroll behaviour H-64 gave marker drags" — same structure
+  // as the marker drag suite's "auto-scrolls the view..." test below.
+  it("auto-scrolls the view while a plain selection drag holds the pointer past the right edge, and stops at the document's end", async () => {
+    stubWidth(800);
+    await openFixture(16_000);
+
+    let startSample = 0;
+    let samplesPerPixel = 1;
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame", "performance"],
+    });
+    try {
+      const app = mount(WaveformView, {
+        target,
+        props: {
+          get startSample() {
+            return startSample;
+          },
+          set startSample(v: number) {
+            startSample = v;
+          },
+          get samplesPerPixel() {
+            return samplesPerPixel;
+          },
+          set samplesPerPixel(v: number) {
+            samplesPerPixel = v;
+          },
+        },
+      });
+      flushSync();
+
+      setSelectionFromResult([0, 8_000]);
+      const { dispatchAction } = await import("../shortcuts");
+      dispatchAction("waveform.zoom_to_selection");
+      flushSync();
+      expect(startSample).toBe(0);
+      expect(samplesPerPixel).toBe(10);
+
+      const container = target.querySelector('[data-testid="waveform-canvas"]')!
+        .parentElement as HTMLElement;
+      container.setPointerCapture = vi.fn();
+      container.releasePointerCapture = vi.fn();
+      // Past the drag threshold, and past the 800 px canvas's right edge.
+      container.dispatchEvent(
+        new PointerEvent("pointerdown", { clientX: 10, pointerId: 5, bubbles: true }),
+      );
+      container.dispatchEvent(
+        new PointerEvent("pointermove", { clientX: 900, pointerId: 5, bubbles: true }),
+      );
+      flushSync();
+
+      await vi.advanceTimersByTimeAsync(200);
+      flushSync();
+      expect(startSample).toBeGreaterThan(0);
+      expect(startSample).toBeLessThan(8_000);
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      flushSync();
+      expect(startSample).toBe(8_000);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      flushSync();
+      expect(startSample).toBe(8_000);
+
+      container.dispatchEvent(new PointerEvent("pointerup", { clientX: 900, pointerId: 5, bubbles: true }));
+      flushSync();
+      unmount(app);
+    } finally {
+      vi.useRealTimers();
+      target.remove();
+    }
+  });
+
+  it("a right-click during a plain drag is unaffected (H-66): pointercancel afterwards is a no-op", async () => {
+    stubWidth(800);
+    await openFixture(8_000);
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(WaveformView, { target });
+    flushSync();
+
+    const container = target.querySelector('[data-testid="waveform-canvas"]')!
+      .parentElement as HTMLElement;
+    container.setPointerCapture = vi.fn();
+    container.releasePointerCapture = vi.fn();
+
+    // H-66: a secondary-button pointerdown never starts a drag at all.
+    container.dispatchEvent(
+      new PointerEvent("pointerdown", { clientX: 10, button: 2, pointerId: 9, bubbles: true }),
+    );
+    container.dispatchEvent(new PointerEvent("pointercancel", { pointerId: 9, bubbles: true }));
+    flushSync();
+    expect(selectionState().current).toBeNull();
+
+    unmount(app);
+    target.remove();
+  });
+
+  function marker(id: number, pos: number, len = 0): MarkerDto {
+    return { id, pos_samples: pos, len_samples: len, name: `m${id}`, kind: "user" };
+  }
+
+  it("a pointercancel mid marker-drag is a no-op — the marker drag's own capture/behaviour (H-64) is unaffected", async () => {
+    stubWidth(800);
+    const getCalls = await openFixtureWithMarkers(8_000, [marker(1, 1_000)]);
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(WaveformView, { target });
+    flushSync();
+
+    const container = target.querySelector('[data-testid="waveform-canvas"]')!
+      .parentElement as HTMLElement;
+    // The flag sits at px 100 (1 000 samples / 10 samples-per-px).
+    container.dispatchEvent(new PointerEvent("pointerdown", { clientX: 100, clientY: 0, bubbles: true }));
+    container.dispatchEvent(new PointerEvent("pointermove", { clientX: 150, clientY: 0, bubbles: true }));
+    flushSync();
+
+    // H-109's new pointercancel handling is scoped to the plain/handle-drag path; it must not
+    // touch an in-progress marker drag (whose own end-of-gesture handling is Esc or pointerup).
+    container.dispatchEvent(new PointerEvent("pointercancel", { bubbles: true }));
+    flushSync();
+    expect(getCalls()).toEqual([]);
+
+    // The marker drag is still alive: an ordinary pointerup now commits it exactly as before.
+    container.dispatchEvent(new PointerEvent("pointerup", { clientX: 150, clientY: 0, bubbles: true }));
+    flushSync();
+    expect(getCalls()).toEqual([{ id: 1, posSamples: 1_500, lenSamples: 0, kind: "move" }]);
+
+    unmount(app);
+    target.remove();
+    resetMarkersForTest();
+  });
+});
+
 // H-57, SPEC-009 §2.5: dragging a marker's flag on the waveform. Same fixture geometry as the
 // selection describe block above (8 000 samples / 800 px = 10 samples/px, startSample 0), so
 // `clientX` is the in-canvas pixel and `sample = round(clientX * 10)`.

@@ -197,6 +197,13 @@
   /** T-206 (SPEC-006 §2.9): `true` from a handle-hit pointerdown until pointerup — routes
    * pointermove/pointerup to the handle-drag store functions instead of the plain-drag ones. */
   let handleDragActive = false;
+  /** H-109: the pointer id captured for the current plain selection or handle drag (`null`
+   * otherwise) — the non-marker counterpart of `markerDragPointerId` below. Without this, a drag
+   * released outside the waveform (over another panel) sent its `pointerup` there instead of
+   * here, so the drag never ended (the owner's report; H-64 already fixed this for marker
+   * drags). Released on `onPointerUp` or the browser's own end-of-gesture events
+   * (`onPointerCaptureLost`: `pointercancel`/`lostpointercapture`). */
+  let dragPointerId: number | null = null;
   /** T-206: hovering within `SELECTION_HANDLE_HIT_PX` of a selection boundary shows a resize
    * cursor (SPEC-006 §2.9). */
   let nearHandle = $state(false);
@@ -235,6 +242,16 @@
   /** H-64: the pointer id captured for the current marker drag (`null` otherwise), released on
    * drag end/cancel. */
   let markerDragPointerId: number | null = null;
+  /** H-109 (SPEC-009 §3 `drag_autoscroll_rate`): the same auto-scroll H-64 gave marker drags,
+   * extended to a plain selection or handle drag — `-1`/`1` while the pointer sits beyond the
+   * canvas's left/right edge during one of those drags, `0` otherwise. Kept separate from
+   * `markerAutoscrollDir` (never active at once: `onPointerDown` clears `markerDrag` before
+   * either of these two drag kinds can start). */
+  let selectionAutoscrollDir: -1 | 0 | 1 = 0;
+  /** The non-marker counterpart of `autoscrollLastNow` above. */
+  let selectionAutoscrollLastNow: number | null = null;
+  /** The non-marker counterpart of `lastMarkerPointerClientX` above. */
+  let lastSelectionPointerClientX: number | null = null;
   /** H-07: the last `record_peaks_get` response applied (`null`: none polled yet). */
   let liveBuckets = $state<Array<[number, number]>>([]);
   let liveStartSample = $state(0);
@@ -301,7 +318,47 @@
       } else {
         autoscrollLastNow = null;
       }
-      return isPlayheadMoving() || isRecording || stillAutoscrolling;
+      // H-109: the same auto-scroll, extended to a plain selection or handle drag (scope item 3
+      // — "the same auto-scroll behaviour H-64 gave marker drags").
+      let stillSelectionAutoscrolling = false;
+      if ((dragging || handleDragActive) && selectionAutoscrollDir !== 0) {
+        const last = selectionAutoscrollLastNow;
+        selectionAutoscrollLastNow = now;
+        if (last !== null) {
+          const dt = (now - last) / 1000;
+          const next = advanceMarkerAutoscroll(
+            startSample,
+            selectionAutoscrollDir,
+            dt,
+            samplesPerPixel,
+            lenSamples,
+            viewportPx,
+          );
+          if (next !== startSample) {
+            startSample = next;
+            if (lastSelectionPointerClientX !== null) {
+              const sample = sampleAtClientX(lastSelectionPointerClientX);
+              if (sample !== null) {
+                if (handleDragActive) {
+                  handleDragTo(sample);
+                } else {
+                  dragTo(sample);
+                }
+              }
+            }
+            stillSelectionAutoscrolling = true;
+          } else {
+            // Already at the document edge in this direction: nothing left to animate until the
+            // pointer moves again (which re-evaluates the direction from scratch).
+            selectionAutoscrollDir = 0;
+          }
+        } else {
+          stillSelectionAutoscrolling = true;
+        }
+      } else {
+        selectionAutoscrollLastNow = null;
+      }
+      return isPlayheadMoving() || isRecording || stillAutoscrolling || stillSelectionAutoscrolling;
     },
     { name: "waveform" },
   );
@@ -1448,6 +1505,56 @@
     resetMarkerAutoscroll();
   }
 
+  /** H-109: the non-marker counterpart of `resetMarkerAutoscroll` — resets the plain/handle-drag
+   * auto-scroll tracking and releases that drag's captured pointer, if any. */
+  function resetSelectionAutoscroll(): void {
+    selectionAutoscrollDir = 0;
+    selectionAutoscrollLastNow = null;
+    lastSelectionPointerClientX = null;
+    if (dragPointerId !== null) {
+      try {
+        containerEl?.releasePointerCapture?.(dragPointerId);
+      } catch {
+        // Already released (e.g. the browser auto-released it on pointerup) — harmless.
+      }
+      dragPointerId = null;
+    }
+  }
+
+  /** H-109: re-evaluates auto-scroll direction for a plain/handle drag from a real pointermove —
+   * the non-marker counterpart of `updateMarkerDragPreview`'s auto-scroll half (H-64). */
+  function updateSelectionAutoscroll(clientX: number): void {
+    lastSelectionPointerClientX = clientX;
+    const rawPx = pxAtClientX(clientX);
+    selectionAutoscrollDir = rawPx === null ? 0 : markerAutoscrollDirection(rawPx, viewportPx);
+    if (selectionAutoscrollDir !== 0) {
+      selectionAutoscrollLastNow = null; // a fresh baseline for the next tick's dt
+      frames.invalidate();
+    }
+  }
+
+  /** H-109 (scope item 1): a captured pointer's own end-of-gesture events — `pointercancel` (the
+   * platform aborts the gesture, e.g. a touch/pen interaction) and `lostpointercapture` (capture
+   * ends for any reason, including the browser's implicit release right after a `pointerup` that
+   * already ran, which makes this a no-op in the ordinary case). Ends whichever plain/handle drag
+   * is still in progress at its last known position instead of leaving it stuck forever if a
+   * `pointerup` is somehow never delivered at all. Deliberately scoped to the plain/handle-drag
+   * path only — a marker drag's own end-of-gesture handling (pointerup, Esc) is untouched, exactly
+   * as it was before this ticket (H-64). */
+  function onPointerCaptureLost(): void {
+    if (markerDrag || (!dragging && !handleDragActive)) {
+      return;
+    }
+    dragging = false;
+    handleDragActive = false;
+    pointerDownClientX = null;
+    pointerDownSample = null;
+    pointerDownShiftKey = false;
+    endHandleDrag();
+    endDrag();
+    resetSelectionAutoscroll();
+  }
+
   /** Pointerup on a marker drag (SPEC-009 §2.5): a release before the drag threshold is a click
    * (activates the marker, §2.8); past it, commits one undo entry — `history.marker_move` for a
    * point drag or a Shift-drag of a region, `history.marker_resize` for a single-edge region
@@ -1695,8 +1802,14 @@
       handleDragActive = true;
       nearHandle = true;
       beginHandleDrag(hit === "start" ? sel.endSample : sel.startSample);
+      // H-109: same fix H-64 already gave marker drags — without capture, releasing over another
+      // panel sends `pointerup` there instead of here, so the drag never ends.
+      dragPointerId = event.pointerId;
+      containerEl?.setPointerCapture?.(event.pointerId);
       return;
     }
+    dragPointerId = event.pointerId;
+    containerEl?.setPointerCapture?.(event.pointerId);
     beginDrag(pointerDownSample);
   }
 
@@ -1718,6 +1831,7 @@
       if (sample !== null) {
         handleDragTo(sample);
       }
+      updateSelectionAutoscroll(event.clientX); // H-109, SPEC-009 §3 parity with marker drags
       return;
     }
     if (pointerDownShiftKey || pointerDownSample === null || pointerDownClientX === null) {
@@ -1732,6 +1846,7 @@
       if (sample !== null) {
         dragTo(sample);
       }
+      updateSelectionAutoscroll(event.clientX); // H-109, SPEC-009 §3 parity with marker drags
     }
   }
 
@@ -1747,6 +1862,11 @@
       finishMarkerDrag();
       return;
     }
+    // H-109: release this drag's captured pointer (a no-op if none was captured, e.g. a Shift+
+    // click or an out-of-range pointerdown) up front — every path below already computes its own
+    // final selection from `event`, which capture guarantees still targets this element even when
+    // the button was released elsewhere (over another panel, or outside the window).
+    resetSelectionAutoscroll();
     const wasDragging = dragging;
     const wasHandleDrag = handleDragActive;
     const shiftKey = pointerDownShiftKey;
@@ -1927,6 +2047,8 @@
         onpointerdown={onPointerDown}
         onpointermove={onPointerMove}
         onpointerup={onPointerUp}
+        onpointercancel={onPointerCaptureLost}
+        onlostpointercapture={onPointerCaptureLost}
         onpointerleave={onPointerLeave}
         ondblclick={onDoubleClick}
         oncontextmenu={onWaveformContextMenu}

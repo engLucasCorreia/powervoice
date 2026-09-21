@@ -359,6 +359,7 @@
       loading={pendingExplain}
       title={scope ? t("analyzer.explain_tooltip") : t("analyzer.explain_needs_document")}
       testid="analyzer-explain-open"
+      data-tour="explain-open"
       onclick={requestExplain}
     >
       {pendingExplain ? t("analyzer.explain_analyzing") : t("analyzer.explain_open")}

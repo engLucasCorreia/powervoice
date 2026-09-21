@@ -10,12 +10,13 @@ import type { MessageKey, MessageParams } from "../i18n";
 import { shortcutLabelForAction } from "../shortcuts/shortcutLabel";
 import { setDockTab } from "../layout/layoutSettings.svelte";
 import { openPluginManager, pluginsState, setManagerTab } from "../plugins/plugins.svelte";
+import { explainModalState } from "../analyzer/explain/explainModal.svelte";
 import { recordState } from "../state/record.svelte";
 import type { ActionId } from "../shortcuts/actions";
 import type { IconName } from "../ui/icons";
 import type { TourPlacement } from "./tourPlacement";
 
-export const TOUR_IDS = ["welcome", "rack", "noise", "loudness", "punch", "plugins"] as const;
+export const TOUR_IDS = ["welcome", "rack", "noise", "loudness", "punch", "plugins", "explain"] as const;
 export type TourId = (typeof TOUR_IDS)[number];
 
 export interface TourStep {
@@ -57,6 +58,7 @@ export interface TourDef {
 const key = (action: ActionId): string => shortcutLabelForAction(action) ?? "";
 
 const showLoudnessTab = (): void => setDockTab("loudness");
+const showMetersTab = (): void => setDockTab("meters");
 
 function showPluginManager(): void {
   if (!pluginsState().open) {
@@ -253,6 +255,61 @@ const PLUGINS: TourDef = {
   ],
 };
 
+const EXPLAIN: TourDef = {
+  id: "explain",
+  version: 1,
+  nameKey: "tour.name.explain",
+  steps: [
+    {
+      id: "intro",
+      titleKey: "tour.explain.intro.title",
+      bodyKey: "tour.explain.intro.body",
+      illustration: "explain",
+      enter: showMetersTab,
+    },
+    {
+      id: "open",
+      target: ["explain-open"],
+      placement: "top",
+      titleKey: "tour.explain.open.title",
+      bodyKey: "tour.explain.open.body",
+      enter: showMetersTab,
+      interactive: true,
+      waitFor: { done: () => explainModalState().open, hintKey: "tour.explain.open.wait" },
+    },
+    {
+      id: "scope",
+      target: ["explain-subtitle", "explain-open"],
+      titleKey: "tour.explain.scope.title",
+      bodyKey: "tour.explain.scope.body",
+      enter: showMetersTab,
+    },
+    {
+      id: "summary",
+      target: ["explain-summary", "explain-open"],
+      placement: "bottom",
+      titleKey: "tour.explain.summary.title",
+      bodyKey: "tour.explain.summary.body",
+      enter: showMetersTab,
+    },
+    {
+      id: "graph",
+      target: ["explain-graph-area", "explain-open"],
+      titleKey: "tour.explain.graph.title",
+      bodyKey: "tour.explain.graph.body",
+      enter: showMetersTab,
+    },
+    {
+      id: "toggles",
+      target: ["explain-toggles", "explain-open"],
+      placement: "bottom",
+      titleKey: "tour.explain.toggles.title",
+      bodyKey: "tour.explain.toggles.body",
+      enter: showMetersTab,
+    },
+  ],
+};
+
 export const TOURS: Readonly<Record<TourId, TourDef>> = {
   welcome: WELCOME,
   rack: RACK,
@@ -260,6 +317,7 @@ export const TOURS: Readonly<Record<TourId, TourDef>> = {
   loudness: LOUDNESS,
   punch: PUNCH,
   plugins: PLUGINS,
+  explain: EXPLAIN,
 };
 
 export function isTourId(value: string): value is TourId {

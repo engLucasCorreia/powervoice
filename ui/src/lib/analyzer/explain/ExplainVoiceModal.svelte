@@ -2,6 +2,7 @@
   import { t } from "../../i18n";
   import { Dialog, StatusDot, ToggleButton } from "../../ui";
   import { formatNumber } from "../../ui/units";
+  import TourButton from "../../tour/TourButton.svelte";
   import { closeExplainVoice, explainModalState } from "./explainModal.svelte";
   import { explainVoiceState } from "./explainVoice.svelte";
   import { explainFindings } from "./prose";
@@ -102,11 +103,14 @@
     onkeydown={onKeydown}
     style="height: min(840px, 90vh);"
   >
-    <p class="subtitle" data-testid="explain-subtitle">{subtitle}</p>
+    {#snippet headerActions()}
+      <TourButton tour="explain" size="md" />
+    {/snippet}
+    <p class="subtitle" data-testid="explain-subtitle" data-tour="explain-subtitle">{subtitle}</p>
     <p class="scope-note" data-testid="explain-scope-note">{t("explain.scope_note")}</p>
 
     {#if summary}
-      <section class="summary" data-testid="explain-summary">
+      <section class="summary" data-testid="explain-summary" data-tour="explain-summary">
         <h3>{t("explain.summary.title")}</h3>
         <p class="headline" data-testid="explain-summary-headline">{summary.headline}</p>
         <p class="basis">{summary.basis}</p>
@@ -141,7 +145,7 @@
       </section>
     {/if}
 
-    <div class="toggles" data-testid="explain-toggles">
+    <div class="toggles" data-testid="explain-toggles" data-tour="explain-toggles">
       <ToggleButton size="sm" bind:pressed={showRaw} testid="explain-toggle-raw">{t("explain.toggle.raw")}</ToggleButton>
       <ToggleButton size="sm" bind:pressed={showSmoothed} testid="explain-toggle-smoothed">{t("explain.toggle.smoothed")}</ToggleButton>
       <ToggleButton size="sm" bind:pressed={showHarmonics} testid="explain-toggle-harmonics">{t("explain.toggle.harmonics")}</ToggleButton>
@@ -149,7 +153,7 @@
       <ToggleButton size="sm" bind:pressed={showEqAdvice} testid="explain-toggle-eq">{t("explain.toggle.eq_advice")}</ToggleButton>
     </div>
 
-    <div class="graph-area" data-testid="explain-graph-area">
+    <div class="graph-area" data-testid="explain-graph-area" data-tour="explain-graph-area">
       <ExplainGraph
         {snapshot}
         {showRaw}

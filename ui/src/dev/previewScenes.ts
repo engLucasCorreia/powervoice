@@ -166,12 +166,23 @@ export async function runPreviewScene(options: PreviewOptions, menu: string | nu
     slots[slots.length - 1]?.scrollIntoView({ block: "center" });
   }
 
-  // T-709: a tour at a step — `&tour=welcome|rack|noise|loudness|punch|plugins` (default welcome),
-  // `&step=n` (1-based, default 1).
+  // T-709/H-106: a tour at a step — `&tour=welcome|rack|noise|loudness|punch|plugins|explain`
+  // (default welcome), `&step=n` (1-based, default 1). The `explain` tour points partway into the
+  // real "Explain My Voice" modal, so — unlike the other contextual tours, which only point at
+  // static panel chrome — it needs that modal actually open first: click the real button and let
+  // the mocked average job (`spectrum_analyze_start` in `previewIpc.ts`) run to completion, the
+  // same path a live user's click takes.
   if (scenes.includes("tour")) {
     const params = new URLSearchParams(window.location.search);
     const id = params.get("tour") ?? "welcome";
     const step = Number.parseInt(params.get("step") ?? "1", 10);
+    // The explain tour's first two steps (the intro card and the "click Explain My Voice" step)
+    // come *before* the modal opens — an aria-modal dialog blocks any step whose target isn't
+    // inside it (`targets.ts`'s `blockingModal`), so pre-opening it here would strand those two.
+    if (id === "explain" && Number.isFinite(step) && step >= 3) {
+      click("analyzer-explain-open");
+      await sleep(900);
+    }
     await sleep(200);
     startTour(isTourId(id) ? id : "welcome", Number.isFinite(step) ? step - 1 : 0);
   }

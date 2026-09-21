@@ -15,6 +15,11 @@
    * `attention` reads as `info`-level here. Everything else maps its own severity directly.
    * `compact` (the graph's floating cards) shows title + measured only, so the chart stays
    * readable; the full four blocks show in the "also measured" list, where space is not scarce.
+   *
+   * **H-102**: the compact `measured` line used to be a single `nowrap` line with an ellipsis, so
+   * H-94's full sentences were cut off mid-word. It now wraps like ordinary text — its box is
+   * sized to fit by `explainAnnotations.ts::compactCardHeightPx`, which mirrors this exact
+   * padding/gap/font/line-height so the two never drift apart.
    */
   let {
     prose,
@@ -80,6 +85,7 @@
     align-items: center;
     gap: var(--pv-space-1);
     min-width: 0;
+    line-height: var(--pv-leading-sm);
   }
 
   .title {
@@ -96,10 +102,11 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* H-102: a full measured sentence wraps instead of truncating — never an ellipsis in the
+     middle of a measurement. The card's box is sized to fit it (explainAnnotations.ts). */
   .card[data-compact="true"] .measured {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    line-height: var(--pv-leading-sm);
+    overflow-wrap: break-word;
   }
 
   .interpretation {

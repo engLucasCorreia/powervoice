@@ -8,14 +8,14 @@
     fullFreqRange,
     uForFreq,
   } from "../../spectrum/freqAxis";
-  import type { Rect } from "../../ui/axisLabels";
+  import { estimateLabelWidthPx, fitAxisLabels, type Rect } from "../../ui/axisLabels";
   import { dbAxisTicks, yForAnalyzerDb } from "../analyzerMath";
   import { columnize, levelAt } from "../plotGeometry";
   import { createFrameClient } from "../../render/frameScheduler";
   import { themeColors } from "../../theme/themeColors";
   import { themeState } from "../../theme/theme.svelte";
   import { layoutExplainAnnotations } from "./explainAnnotations";
-  import { computeDbRange } from "./explainGraphMath";
+  import { computeDbRange, f0LabelTopPx, markerReservedRects } from "./explainGraphMath";
   import { voiceBandLabel } from "./explainLabels";
   import { explainFindings } from "./prose";
   import { regionsAt, voiceBands } from "./voiceBands";
@@ -102,8 +102,58 @@
   });
   const dbTicks = $derived.by(() => (plot.height > 0 ? dbAxisTicks(floorDb, ceilDb, plot.height, 20) : []));
 
+  /** Which band names have room to draw without overlapping a neighbour, narrowest plot first
+   * (H-102: on a phone-width plot all seven band names drawn unconditionally ran into each other
+   * — "RumbFundamentalmidsMidrangePresencesibilancAir"). The shaded bands themselves always draw;
+   * this only decides which get a text label, the same way `frequencyTicks` already drops axis
+   * ticks that don't fit. */
+  const visibleBandLabelIds = $derived.by(() => {
+    if (plot.width <= 0) {
+      return new Set<string>();
+    }
+    const specs = bands.map((band) => {
+      const midHz = Math.sqrt(band.lowHz * band.highHz);
+      const width = estimateLabelWidthPx(voiceBandLabel(band.id), 10);
+      const x = Math.min(Math.max(xForFreq(midHz), plot.x + 24), plot.x + plot.width - 24) - plot.x;
+      return { id: band.id, pos: x, size: width, align: "center" as const };
+    });
+    const kept = fitAxisLabels(specs, { length: plot.width, gapPx: 6 });
+    return new Set(kept.map((k) => k.id));
+  });
+
   const avoidRects: Rect[] = $derived(
     snapshot.peaks.map((p) => ({ x: xForFreq(p.freqHz) - 26, y: yForDb(p.levelDb) - 10, width: 52, height: 20 })),
+  );
+
+  /** Where the F0 dashed line's own label sits — shared by the reserved-rect computation below
+   * and the harmonic-label collision check in `draw()`, so the two can never disagree. */
+  const f0X = $derived(snapshot.pitch ? xForFreq(snapshot.pitch.fundamentalHz) : null);
+
+  const harmonicMarkers = $derived(
+    showHarmonics
+      ? snapshot.harmonics
+          .filter((h) => h.status === "supported" && h.peakHz !== null && Number.isFinite(h.levelDb))
+          .map((h) => ({ n: h.n, x: xForFreq(h.peakHz!), y: yForDb(h.levelDb) }))
+      : [],
+  );
+
+  const strongestPeakMarker = $derived(
+    snapshot.strongestPeak && !snapshot.strongestPeak.isFundamental
+      ? { x: xForFreq(snapshot.strongestPeak.freqHz), y: yForDb(snapshot.strongestPeak.levelDb) }
+      : null,
+  );
+
+  /** Hard reservations for the graph's own chrome (H-102 ticket §3/§5): the band-label row, the
+   * F0 line's label, every drawn harmonic marker's label and the strongest-peak marker's label —
+   * an annotation card must never be placed on top of one of these. */
+  const markerReserved: Rect[] = $derived(
+    markerReservedRects({
+      plot,
+      f0X,
+      harmonics: harmonicMarkers,
+      strongestPeak: strongestPeakMarker,
+      showBandLabels: showBands,
+    }),
   );
 
   const hoverReadout = $derived.by(() => {
@@ -124,9 +174,10 @@
     return { text, x: hover.x };
   });
 
-  const reserved: Rect[] = $derived(
-    hoverReadout ? [{ x: hoverReadout.x - 140, y: plot.y, width: 280, height: 22 }] : [],
-  );
+  const reserved: Rect[] = $derived([
+    ...(hoverReadout ? [{ x: hoverReadout.x - 140, y: plot.y, width: 280, height: 22 }] : []),
+    ...markerReserved,
+  ]);
 
   const prose = $derived(explainFindings(snapshot));
 
@@ -247,6 +298,11 @@
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
       for (const band of bands) {
+        // H-102: on a narrow (phone) plot not every band name fits without overlapping its
+        // neighbour — the shaded band still draws, just without illegible overlapping text.
+        if (!visibleBandLabelIds.has(band.id)) {
+          continue;
+        }
         const midHz = Math.sqrt(band.lowHz * band.highHz);
         const x = Math.min(Math.max(xForFreq(midHz), plot.x + 24), plot.x + plot.width - 24);
         ctx.fillText(voiceBandLabel(band.id), x, plot.y + 2);
@@ -271,6 +327,11 @@
       strokeCurve(ctx, snapshot.smoothedDb);
     }
 
+    // H-102: the F0 label's top, shared with the harmonic-collision check just below and with
+    // `markerReservedRects` (via the `f0X`/`markerReserved` derived values) — one formula, so the
+    // drawn label, the drawn harmonic offset and the reserved rect can never drift apart.
+    const f0Top = f0LabelTopPx(plot, showBands);
+
     if (snapshot.pitch) {
       const x = Math.round(xForFreq(snapshot.pitch.fundamentalHz)) + 0.5;
       ctx.strokeStyle = colors.analyzer.compareA.css;
@@ -285,7 +346,9 @@
       ctx.font = BAND_LABEL_FONT;
       ctx.textAlign = "left";
       ctx.textBaseline = "alphabetic";
-      ctx.fillText(t("explain.f0_label"), x + 3, plot.y + 10);
+      // Drop below the band-name row (e.g. "Fundamental") instead of sitting on top of it — a
+      // voice's F0 line is always inside that band, so the two collided every time.
+      ctx.fillText(t("explain.f0_label"), x + 3, f0Top + 10);
     }
 
     if (showHarmonics) {
@@ -301,10 +364,14 @@
         ctx.arc(x, y, 3, 0, Math.PI * 2);
         ctx.fill();
         if (h.status === "supported") {
+          // H-102 ticket §5: H1 sits at (or very near) the fundamental itself, so its label above
+          // the dot collided with the F0 dashed line's own label. Below the F0 label's own strip,
+          // the two can never be at the same y — drop below the dot instead.
+          const collidesWithF0Label = f0X !== null && Math.abs(x - f0X) < 20 && y - 5 < f0Top + 20;
           ctx.font = BAND_LABEL_FONT;
           ctx.textAlign = "center";
-          ctx.textBaseline = "bottom";
-          ctx.fillText(t("explain.harmonic_label", { n: h.n }), x, y - 5);
+          ctx.textBaseline = collidesWithF0Label ? "top" : "bottom";
+          ctx.fillText(t("explain.harmonic_label", { n: h.n }), x, collidesWithF0Label ? y + 6 : y - 5);
         }
         ctx.globalAlpha = 1;
       }
@@ -434,7 +501,7 @@
   .canvas-wrap {
     position: relative;
     flex: 1;
-    min-height: 12rem;
+    min-height: 16rem;
     overflow: hidden;
     border-radius: var(--pv-radius-md);
   }

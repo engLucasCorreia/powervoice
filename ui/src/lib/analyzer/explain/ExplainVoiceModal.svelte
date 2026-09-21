@@ -20,10 +20,20 @@
    *
    * Closing drops the frozen snapshot (`explainModal.svelte.ts`) and returns to plain live
    * analysis, which never stopped running underneath.
+   *
+   * **H-102**: the graph was a fifth of the dialog's height, with the summary and its two wide,
+   * sparsely-filled columns above it — the opposite of the reference ("the annotated spectrum
+   * *is* the page"). The dialog now opens taller than the shared `Dialog` kit's default `xl`
+   * (a `style` override scoped to this one instance, not a change to `Dialog.svelte` itself,
+   * which other `xl` dialogs — e.g. the plugin manager, T-809 — still use unchanged), the summary
+   * is capped to a compact, independently-scrolling strip, and the graph gets the rest — by far
+   * the largest region in the dialog, as the reference is. `DESKTOP_MAX_LABELS` rose with it: a
+   * taller plot has room to keep most findings on the chart itself, which is what the reference
+   * shows, rather than routing them to the "also measured" list below by default.
    */
 
   const MOBILE_MAX_LABELS = 3;
-  const DESKTOP_MAX_LABELS = 6;
+  const DESKTOP_MAX_LABELS = 9;
   const MOBILE_BREAKPOINT_PX = 640;
 
   let showRaw = $state(true);
@@ -90,6 +100,7 @@
     titleId="explain-voice-title"
     testid="explain-voice-modal"
     onkeydown={onKeydown}
+    style="height: min(840px, 90vh);"
   >
     <p class="subtitle" data-testid="explain-subtitle">{subtitle}</p>
     <p class="scope-note" data-testid="explain-scope-note">{t("explain.scope_note")}</p>
@@ -184,12 +195,21 @@
 
   .summary {
     display: flex;
+    flex: none;
     flex-direction: column;
     gap: var(--pv-space-1);
-    padding: var(--pv-space-3);
+    padding: var(--pv-space-2) var(--pv-space-3);
     border: var(--pv-border-width) solid var(--pv-border-subtle);
     border-radius: var(--pv-radius-md);
     background: var(--pv-bg-inset);
+    /* H-102: the summary supports the graph, it doesn't compete with it — capped to a compact
+       strip with its own scrollbar so a long finding list can never push the graph down to a
+       sliver, whatever the take's findings. The bottom edge fades rather than cutting hard, so a
+       scrollable list reads as "more below", never as a truncated line. */
+    max-height: 11rem;
+    overflow-y: auto;
+    -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 14px), transparent);
+    mask-image: linear-gradient(to bottom, black calc(100% - 14px), transparent);
   }
 
   .summary h3 {
@@ -216,8 +236,8 @@
   }
 
   .summary-col {
-    flex: 1 1 260px;
-    min-width: 220px;
+    flex: 1 1 0;
+    min-width: 200px;
   }
 
   .summary-col h4 {
@@ -275,14 +295,17 @@
 
   .toggles {
     display: flex;
+    flex: none;
     flex-wrap: wrap;
     gap: var(--pv-space-2);
   }
 
+  /* H-102: this is the dominant element of the dialog, not a fifth of it — everything else above
+     is capped or sized to content so this `flex: 1` claims the rest. */
   .graph-area {
     display: flex;
     flex: 1;
-    min-height: 22rem;
+    min-height: 30rem;
   }
 
   .beneath {
@@ -290,6 +313,10 @@
     flex-direction: column;
     gap: var(--pv-space-2);
     flex: none;
+    max-height: 9rem;
+    overflow-y: auto;
+    -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 14px), transparent);
+    mask-image: linear-gradient(to bottom, black calc(100% - 14px), transparent);
   }
 
   .beneath h3 {
@@ -305,5 +332,24 @@
   .beneath-cards :global(.card) {
     flex: 1 1 220px;
     min-width: 200px;
+  }
+
+  /* H-102: below MOBILE_BREAKPOINT_PX the two summary columns stack instead of sitting
+     side-by-side, so the same content needs more height — the desktop cap left almost nothing
+     of the first finding visible before the fade. A taller (but still capped, still scrollable)
+     allowance fits a typical short summary without clipping mid-item, while the graph keeps a
+     smaller floor than desktop so it isn't fighting a much shorter viewport for space. */
+  @media (max-width: 640px) {
+    .summary {
+      max-height: 15rem;
+    }
+
+    .beneath {
+      max-height: 11rem;
+    }
+
+    .graph-area {
+      min-height: 16rem;
+    }
   }
 </style>

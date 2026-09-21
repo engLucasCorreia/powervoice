@@ -10,7 +10,12 @@ afterEach(() => {
   r = null;
 });
 
-describe("Gallery (dev page)", () => {
+// H-118: each test renders the whole component gallery in all three themes, synchronously — a
+// CPU-bound job whose time scales with machine load. It timed out at vitest's 5 s default with the
+// load average near 40 (several agents compiling in parallel), then passed in repeated interleaved
+// runs with and without the change under suspicion, so the failure was load, not a regression.
+// A generous ceiling keeps the gate honest without letting a busy machine fail a correct build.
+describe("Gallery (dev page)", { timeout: 30_000 }, () => {
   it("renders the same showcase in a Dark, Light and High Contrast column (H-31)", () => {
     r = render(Gallery, {});
     const dark = byTestId(r.target, "gallery-dark");

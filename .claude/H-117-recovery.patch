@@ -1,0 +1,430 @@
+diff --git i/ui/src/lib/analyzer/SpectrumInspector.svelte w/ui/src/lib/analyzer/SpectrumInspector.svelte
+index 1a82471..de13d93 100644
+--- i/ui/src/lib/analyzer/SpectrumInspector.svelte
++++ w/ui/src/lib/analyzer/SpectrumInspector.svelte
+@@ -20,6 +20,7 @@
+   import {
+     acquireLiveVoice,
+     averageScope,
++    canAnalyzeAverage,
+     cancelAverage,
+     diagnosticsState,
+     freezeSnapshot,
+@@ -34,6 +35,8 @@
+     startAverage,
+     type SnapshotSlot,
+   } from "./diagnostics.svelte";
++  import { openExplainVoice } from "./explain/explainModal.svelte";
++  import type { VoiceSnapshotInput } from "./explain/snapshot";
+   import { closeInspectorStream, inspectorStream, openInspectorStream } from "./inspectorStream.svelte";
+   import { formatNote } from "./notes";
+   import type { SpectralPeak } from "./peaks";
+@@ -207,6 +210,67 @@
+     setInspectorOpen(false);
+   }
+
++  // H-117: Explain My Voice belongs here too — the Inspector is "the analysis" as far as the
++  // owner is concerned — and must call the same `openExplainVoice` path the dock button (H-92)
++  // uses, so the two are indistinguishable. The one behaviour this adds: if an Average result for
++  // the current scope is already sitting in `average` (e.g. the owner just ran one in this same
++  // window), open on it immediately instead of running a second job — that avoidable wait was
++  // exactly what H-108 was filed over.
++  let pendingExplain = $state(false);
++
++  function explainInputFromAverage(): VoiceSnapshotInput | null {
++    const a = average;
++    const r = diag.averageReport;
++    if (!a || !r) {
++      return null;
++    }
++    return {
++      freqsHz: a.curve.freqsHz,
++      levelsDb: a.curve.levelsDb,
++      resolution: "bins",
++      report: a.report,
++      sampleRateHz: r.sample_rate_hz,
++      origin: "average",
++    };
++  }
++
++  function requestExplain(): void {
++    const existing = explainInputFromAverage();
++    if (existing) {
++      openExplainVoice(existing);
++      return;
++    }
++    if (!canAnalyzeAverage()) {
++      return;
++    }
++    pendingExplain = true;
++    void startAverage();
++  }
++
++  $effect(() => {
++    if (!pendingExplain) {
++      return;
++    }
++    const j = diag.job;
++    if (!j || j.purpose !== "average") {
++      return;
++    }
++    if (j.state === "done") {
++      // Same guard as H-92's: only trust `averageReport` once it is unmistakably this job's own
++      // (matched by `job_id`), since the "done" progress event can arrive before the report does.
++      if (diag.averageReport?.job_id !== j.jobId) {
++        return;
++      }
++      const input = explainInputFromAverage();
++      if (input) {
++        pendingExplain = false;
++        openExplainVoice(input);
++      }
++    } else if (j.state === "failed" || j.state === "cancelled") {
++      pendingExplain = false;
++    }
++  });
++
+   function freeze(slot: SnapshotSlot): void {
+     const c = curve;
+     if (c) {
+@@ -301,6 +365,30 @@
+   }
+ </script>
+
++<!-- H-117: every curve the plot can draw, named — the dock's chip style (H-92), plus the main
++     curve itself (unlabelled here before, unlike the dock's mode control) so this larger view
++     never leaves a line unexplained. -->
++{#snippet legend()}
++  <span class="legend-chip" data-tone="voice">
++    <span class="swatch" data-tone="voice"></span>
++    {t("inspector.legend.voice", { mode: t(`inspector.source.${source}` as `inspector.source.${Source}`) })}
++  </span>
++  {#each overlays as o (o.key)}
++    <span class="legend-chip" data-tone={o.tone}>
++      <span class="swatch" data-tone={o.tone}></span>
++      {#if o.tone === "noise"}
++        {t("inspector.legend.room_tone")}
++      {:else}
++        {@const snap = o.tone === "a" ? diag.snapshots.a : diag.snapshots.b}
++        {t("analyzer.snapshot.legend", {
++          slot: o.tone.toUpperCase(),
++          name: snap ? t(`analyzer.snapshot.${snap.origin}` as `analyzer.snapshot.${typeof snap.origin}`) : "",
++        })}
++      {/if}
++    </span>
++  {/each}
++{/snippet}
++
+ {#if open}
+   <div
+     bind:this={windowEl}
+@@ -387,6 +475,17 @@
+       {/if}
+       <Button size="sm" disabled={!curve} testid="inspector-freeze-a" onclick={() => freeze("a")}>{t("analyzer.compare.freeze_a")}</Button>
+       <Button size="sm" disabled={!curve} testid="inspector-freeze-b" onclick={() => freeze("b")}>{t("analyzer.compare.freeze_b")}</Button>
++      <Button
++        size="sm"
++        icon="explain"
++        disabled={!scope || jobRunning}
++        loading={pendingExplain}
++        title={scope ? t("analyzer.explain_tooltip") : t("analyzer.explain_needs_document")}
++        testid="inspector-explain-open"
++        onclick={requestExplain}
++      >
++        {pendingExplain ? t("analyzer.explain_analyzing") : t("analyzer.explain_open")}
++      </Button>
+       <span class="spacer"></span>
+       <span class="muted hint">{t("inspector.zoom_hint")}</span>
+       <Button size="sm" variant="ghost" disabled={zoom === null} testid="inspector-zoom-reset" onclick={() => (zoom = null)}>
+@@ -401,6 +500,7 @@
+       <SpectrumPlot
+         {curve}
+         {overlays}
++        {legend}
+         scale={prefs.inspector_scale}
+         {maxHz}
+         floorDb={FLOOR_DB}
+@@ -584,4 +684,35 @@
+     cursor: nwse-resize;
+     background: linear-gradient(135deg, transparent 50%, var(--pv-border) 50%);
+   }
++
++  /* H-117: the same chip look as the dock's legend (AnalyzerPanel.svelte), so the two views read
++     the same, plus a "voice" swatch for the main curve the dock never needed to name. */
++  .legend-chip {
++    display: inline-flex;
++    align-items: center;
++    gap: 4px;
++    color: var(--pv-text-tertiary);
++    font-size: 10px;
++    line-height: 12px;
++    white-space: nowrap;
++  }
++
++  .swatch {
++    width: 12px;
++    height: 2px;
++    border-radius: 1px;
++    background: var(--analyzer-fill);
++  }
++
++  .swatch[data-tone="a"] {
++    background: var(--analyzer-compare-a);
++  }
++
++  .swatch[data-tone="b"] {
++    background: var(--analyzer-compare-b);
++  }
++
++  .swatch[data-tone="noise"] {
++    background: var(--analyzer-noise);
++  }
+ </style>
+diff --git i/ui/src/lib/analyzer/SpectrumInspector.test.ts w/ui/src/lib/analyzer/SpectrumInspector.test.ts
+index 785f316..c1619f9 100644
+--- i/ui/src/lib/analyzer/SpectrumInspector.test.ts
++++ w/ui/src/lib/analyzer/SpectrumInspector.test.ts
+@@ -1,7 +1,13 @@
+ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
+ import { flushSync, mount, unmount } from "svelte";
+ import { afterEach, describe, expect, it } from "vitest";
+-import { resetDiagnosticsForTest, setInspectorOpen } from "./diagnostics.svelte";
++import type { SpectrumReportDto } from "../ipc/bindings";
++import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
++import { docDto } from "../test/fixtures";
++import { applySpectrumJobProgress, applySpectrumReport, resetDiagnosticsForTest, setInspectorOpen } from "./diagnostics.svelte";
++import { explainModalState, resetExplainModalForTest } from "./explain/explainModal.svelte";
++import { explainVoiceState } from "./explain/explainVoice.svelte";
++import { balancedReport } from "./explain/voiceFixtures";
+ import { resetInspectorStreamForTest } from "./inspectorStream.svelte";
+ import SpectrumInspector from "./SpectrumInspector.svelte";
+
+@@ -91,3 +97,215 @@ describe("SpectrumInspector (H-42)", () => {
+     unmount(app);
+   });
+ });
++
++// --- H-117: a legend for every curve, and Explain My Voice reusing an Average already here ------
++
++/** A `VXLT` frame (see `ui/src/lib/ipc/inspector.ts`) carrying `levels` and, optionally, a
++ * room-tone `noise` curve, for one result of a `spectrum_report`. */
++function vxlt(jobId: number, index: number, levels: number[], noise?: number[]): ArrayBuffer {
++  const bins = levels.length;
++  const hasNoise = noise !== undefined;
++  const buf = new ArrayBuffer(36 + 4 * bins * (hasNoise ? 2 : 1));
++  const dv = new DataView(buf);
++  "VXLT".split("").forEach((c, i) => dv.setUint8(i, c.charCodeAt(0)));
++  dv.setUint16(4, 1, true);
++  dv.setUint16(6, 36, true);
++  dv.setUint32(8, jobId, true);
++  dv.setUint32(12, index, true);
++  dv.setUint32(16, 48_000, true);
++  dv.setUint32(20, 4, true);
++  dv.setUint32(24, 0, true);
++  dv.setUint32(28, bins, true);
++  dv.setUint32(32, hasNoise ? 1 : 0, true);
++  levels.forEach((v, k) => dv.setFloat32(36 + 4 * k, v, true));
++  if (noise) {
++    noise.forEach((v, k) => dv.setFloat32(36 + 4 * bins + 4 * k, v, true));
++  }
++  return buf;
++}
++
++function averageReport(jobId: number, hasNoise = false): SpectrumReportDto {
++  return {
++    job_id: jobId,
++    sample_rate_hz: 48_000,
++    fft_size: 4,
++    window: "hann",
++    start_sample: 0,
++    end_sample: 48_000,
++    results: [{ source: "processed", frames: 10, has_noise: hasNoise, report: balancedReport() }],
++  };
++}
++
++function clickSource(target: HTMLElement, label: "Live" | "Average"): void {
++  const el = [
++    ...target.querySelectorAll<HTMLElement>('[data-testid="inspector-source"] [role="radio"], [data-testid="inspector-source"] button'),
++  ].find((e) => e.textContent?.trim() === label)!;
++  el.click();
++}
++
++describe("Spectrum Inspector legend (H-117)", () => {
++  afterEach(() => {
++    resetDocumentStateForTest();
++  });
++
++  it("names the voice curve, the room tone, and any frozen snapshot", async () => {
++    mockIPC((cmd) => (cmd === "document_open" ? docDto({ len_samples: 96_000 }) : null));
++    await openDocument("/home/user/take.wav");
++    clearMocks();
++
++    const target = document.createElement("div");
++    document.body.appendChild(target);
++    setInspectorOpen(true);
++    const app = mount(SpectrumInspector, { target });
++    await settle();
++
++    const chip = (tone: string) => target.querySelector(`.legend-chip[data-tone="${tone}"]`)?.textContent?.trim() ?? null;
++    // Live, nothing else drawn yet: only the voice chip, no unexplained dashed curve.
++    expect(chip("voice")).toContain("Live");
++    expect(chip("noise")).toBeNull();
++
++    mockIPC((cmd, args) => {
++      if (cmd === "spectrum_analyze_start") {
++        return { job_id: 9 };
++      }
++      if (cmd === "spectrum_analyze_curve") {
++        const a = args as { jobId: number; index: number };
++        return vxlt(a.jobId, a.index, [-10, -20, -30], [-60, -65, -70]);
++      }
++      return null;
++    });
++    clickSource(target, "Average");
++    await settle();
++    target.querySelector<HTMLButtonElement>('[data-testid="inspector-analyze"]')!.click();
++    await settle();
++    applySpectrumJobProgress({ job_id: 9, kind: "spectrum_analyze", state: "done", fraction: 1 });
++    await applySpectrumReport(averageReport(9, true));
++    await settle();
++
++    expect(chip("voice")).toContain("Average");
++    // The dashed gray curve the owner couldn't identify: named, and its purpose spelled out.
++    expect(chip("noise")).toContain("Room tone");
++    expect(chip("noise")).toContain("quiet between phrases");
++    expect(chip("noise")).toContain("compare");
++
++    target.querySelector<HTMLButtonElement>('[data-testid="inspector-freeze-a"]')!.click();
++    await settle();
++    expect(chip("a")).toContain("A:");
++
++    unmount(app);
++  });
++});
++
++describe("Explain My Voice inside the Inspector (H-117)", () => {
++  afterEach(() => {
++    resetDocumentStateForTest();
++    resetExplainModalForTest();
++  });
++
++  it("opens immediately from an Average result already held here — it never starts a second job", async () => {
++    mockIPC((cmd) => (cmd === "document_open" ? docDto({ len_samples: 96_000 }) : null));
++    await openDocument("/home/user/take.wav");
++    clearMocks();
++
++    const target = document.createElement("div");
++    document.body.appendChild(target);
++    setInspectorOpen(true);
++    const app = mount(SpectrumInspector, { target });
++    await settle();
++
++    // Seed an existing Average result the way the toolbar's own Analyze button would.
++    mockIPC((cmd, args) => {
++      if (cmd === "spectrum_analyze_start") {
++        return { job_id: 5 };
++      }
++      if (cmd === "spectrum_analyze_curve") {
++        const a = args as { jobId: number; index: number };
++        return vxlt(a.jobId, a.index, [-12, -24, -36]);
++      }
++      return null;
++    });
++    clickSource(target, "Average");
++    await settle();
++    target.querySelector<HTMLButtonElement>('[data-testid="inspector-analyze"]')!.click();
++    await settle();
++    applySpectrumJobProgress({ job_id: 5, kind: "spectrum_analyze", state: "done", fraction: 1 });
++    await applySpectrumReport(averageReport(5));
++    await settle();
++
++    const started: unknown[] = [];
++    mockIPC((cmd) => {
++      if (cmd === "spectrum_analyze_start") {
++        started.push(cmd);
++      }
++      return null;
++    });
++
++    const startedAtMs = performance.now();
++    target.querySelector<HTMLButtonElement>('[data-testid="inspector-explain-open"]')!.click();
++    await settle();
++    const elapsedMs = performance.now() - startedAtMs;
++
++    expect(started).toHaveLength(0); // no second Average job — reused the one already here
++    expect(explainModalState().open).toBe(true);
++    const snapshot = explainVoiceState().snapshot!;
++    expect(snapshot.origin).toBe("average");
++    expect(snapshot.resolution).toBe("bins");
++    expect(Array.from(snapshot.rawDb)).toEqual([-12, -24, -36]);
++    // H-117 verification: reusing the held Average must not go anywhere near a second job's
++    // round trip — this stays under a test-machine-noise-tolerant budget, not a UI timing spec.
++    expect(elapsedMs).toBeLessThan(200);
++
++    unmount(app);
++  });
++
++  it("starts its own Average job when there is nothing to reuse yet, and opens once it completes", async () => {
++    mockIPC((cmd) => (cmd === "document_open" ? docDto({ len_samples: 96_000 }) : null));
++    await openDocument("/home/user/take.wav");
++    clearMocks();
++
++    const target = document.createElement("div");
++    document.body.appendChild(target);
++    setInspectorOpen(true);
++    const app = mount(SpectrumInspector, { target });
++    await settle();
++
++    const button = target.querySelector<HTMLButtonElement>('[data-testid="inspector-explain-open"]')!;
++    expect(button.disabled).toBe(false);
++
++    const started: unknown[] = [];
++    mockIPC((cmd, args) => {
++      if (cmd === "spectrum_analyze_start") {
++        started.push((args as { request: unknown }).request);
++        return { job_id: 42 };
++      }
++      if (cmd === "spectrum_analyze_curve") {
++        const a = args as { jobId: number; index: number };
++        return vxlt(a.jobId, a.index, [-10, -20, -30]);
++      }
++      return null;
++    });
++    button.click();
++    await settle();
++
++    expect(started).toHaveLength(1);
++    expect(explainModalState().open).toBe(false);
++    expect(button.textContent).toContain("Analyzing");
++
++    applySpectrumJobProgress({ job_id: 42, kind: "spectrum_analyze", state: "done", fraction: 1 });
++    await applySpectrumReport(averageReport(42));
++    await settle();
++
++    expect(explainModalState().open).toBe(true);
++    unmount(app);
++  });
++
++  it("stays disabled with no document open", async () => {
++    const target = document.createElement("div");
++    document.body.appendChild(target);
++    setInspectorOpen(true);
++    const app = mount(SpectrumInspector, { target });
++    await settle();
++    expect(target.querySelector<HTMLButtonElement>('[data-testid="inspector-explain-open"]')!.disabled).toBe(true);
++    unmount(app);
++  });
++});
+diff --git i/ui/src/lib/i18n/en.json w/ui/src/lib/i18n/en.json
+index b25345f..627d811 100644
+--- i/ui/src/lib/i18n/en.json
++++ w/ui/src/lib/i18n/en.json
+@@ -203,6 +203,8 @@
+   "inspector.peak_col_level": "Level",
+   "inspector.move": "Move the Spectrum Inspector",
+   "inspector.resize": "Resize the Spectrum Inspector",
++  "inspector.legend.voice": "Voice — {mode}",
++  "inspector.legend.room_tone": "Room tone — the quiet between phrases; compare it with the voice to judge noise across frequency",
+   "notice.analyzer.eq_added": "Parametric EQ band {band}: {what} at {freq}. Undo it in the rack.",
+   "notice.analyzer.eq_hp_added": "Parametric EQ high-pass on at {freq}. Undo it in the rack.",
+   "notice.analyzer.eq_no_free_band": "All five Parametric EQ peak bands are in use — set one to 0 dB and try again.",

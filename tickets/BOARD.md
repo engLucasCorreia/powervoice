@@ -121,8 +121,8 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-93 | Explain My Voice: collision-aware annotation layout solver (pure geometry) | S | done |
 | H-94 | Explain My Voice: finding prose, engineering summary, conservative EQ advice — measurement separated from interpretation | O | done |
 | H-95 | Explain My Voice: verification against real voices (the owner's 8 cases + their own recording) | S | in progress |
-| H-97 | Show pitch confidence in the diagnostics panel when an F0 estimate is shaky (H-91 follow-up) | H | todo |
-| H-99 | Align the diagnostics panel's hint wording with H-94's principles (no air boost to flatten a voice; "harsh" only on substantial evidence) | S | todo |
+| H-97 | Show pitch confidence in the diagnostics panel when an F0 estimate is shaky (H-91 follow-up) | H | in progress |
+| H-99 | Align the diagnostics panel's hint wording with H-94's principles (no air boost to flatten a voice; "harsh" only on substantial evidence) | S | done |
 | H-100 | A wall-clock timing assertion inside `just check` (VXTC frame budget) is flaky in debug builds under load — move it to the bench suite | H | done |
 | H-101 | The dashed EQ-suggestion overlay needs a way to evaluate a filter that isn't in the rack yet — backend preview, since SPEC-015 AC-17 forbids the UI evaluating filters (H-92 escalated rather than guessing) | S | todo |
 | H-102 | The Explain modal is correct but cramped: the graph is the smallest element, annotation text truncates mid-sentence, cards overrun the plot — layout pass against the owner's reference image | S | in progress |

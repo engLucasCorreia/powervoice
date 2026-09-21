@@ -19,7 +19,9 @@
  */
 export {
   ACX_NOISE_FLOOR_DBFS,
+  LOW_PITCH_CONFIDENCE,
   NEAR_THRESHOLD_DB,
+  NOTABLE_OCTAVE_CORRECTION,
   RUMBLE_WARN_DB,
   SIBILANCE_MODERATE_DB,
   SIBILANCE_STRONG_DB,
@@ -110,17 +112,12 @@ export const MAX_PEAK_HARMONIC = 12;
 export const SUB_HARMONIC_TESTS = [1.5, 2.5, 3.5] as const;
 export const MIN_SUPPORTED_SUB_HARMONICS = 2;
 
-/**
- * Below this pitch confidence (`F0Stats.confidence`, 1 − median aperiodicity) the pitch finding
- * says so: the voice was breathy or noisy enough that the reading is an estimate.
+/*
+ * `LOW_PITCH_CONFIDENCE` and `NOTABLE_OCTAVE_CORRECTION` moved to `../diagnosticsHints` in H-97,
+ * which added the same low-confidence/octave-correction signal to the diagnostics panel's F0
+ * readout — one number for each idea, re-exported above, so the panel and this report can never
+ * disagree about when a pitch reading stopped being firm.
  */
-export const LOW_PITCH_CONFIDENCE = 0.6;
-
-/**
- * Above this share of octave-corrected frames (`F0Stats.octave_corrected`) the pitch finding
- * reports that the tracker needed correcting — useful honesty, not a problem with the voice.
- */
-export const NOTABLE_OCTAVE_CORRECTION = 0.1;
 
 /**
  * Hum is `attention` as soon as SPEC-007 §8.7 detects it, and `significant` once its strongest

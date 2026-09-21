@@ -109,4 +109,56 @@ describe("DiagnosticsPanel (H-42)", () => {
     expect(target.querySelector('[data-testid="diagnostics-add-eq-sibilance"]')).toBeNull();
     unmount(app);
   });
+
+  it("a firm pitch reading (H-97) shows the note plainly, with no estimate marker", () => {
+    const { target, app } = mountPanel({});
+    const value = target.querySelector('[data-testid="diagnostics-f0"] .value.strong')!;
+    expect(value.textContent?.trim()).not.toMatch(/^≈/);
+    expect(value.textContent).toContain("C3");
+    expect(value.getAttribute("title")).toBeNull();
+    unmount(app);
+  });
+
+  it("a shaky pitch reading is marked an estimate, and octave_corrected never appears as a raw percentage (H-97)", () => {
+    // The owner's own take: 17.7 % of frames needed octave correction, aperiodicity high enough
+    // that confidence dropped well below the panel's threshold.
+    const shaky: VoiceReportDto = {
+      ...report,
+      f0: { current_hz: 131, median_hz: 128.9, low_hz: 112, high_hz: 152, voiced_fraction: 0.64, confidence: 0.4, octave_corrected: 0.177 },
+    };
+    const { target, app } = mountPanel({ report: shaky });
+    const section = target.querySelector('[data-testid="diagnostics-f0"]')!;
+    const value = section.querySelector(".value.strong")!;
+    // Marked as an estimate right on the readout, not just buried in a footnote.
+    expect(value.textContent).toContain("≈");
+    expect(value.textContent).toContain("C3");
+    // The tooltip is where the tracker honesty lives — worded for a human, never a bare number.
+    const title = value.getAttribute("title") ?? "";
+    expect(title.length).toBeGreaterThan(0);
+    expect(title).not.toMatch(/17\.7|0\.177|18\s*%/);
+    // Nowhere in the section — main text or tooltip — does octave_corrected show up as a percentage.
+    expect(section.textContent ?? "").not.toMatch(/17\.7|0\.177|18\s*%/);
+    // The one small added signal: a status line explaining the estimate.
+    expect(section.textContent).toContain("Estimate");
+    unmount(app);
+  });
+
+  it("a notable octave correction is only ever mentioned in the hover tooltip, never inline", () => {
+    // Confidence stays firm even though a share of frames needed folding — the two signals are
+    // independent (H-91), so the octave-correction mention must not depend on low confidence.
+    const corrected: VoiceReportDto = {
+      ...report,
+      f0: { current_hz: 131, median_hz: 128.9, low_hz: 112, high_hz: 152, voiced_fraction: 0.64, confidence: 0.9, octave_corrected: 0.177 },
+    };
+    const { target, app } = mountPanel({ report: corrected });
+    const section = target.querySelector('[data-testid="diagnostics-f0"]')!;
+    const value = section.querySelector(".value.strong")!;
+    // Confidence is firm, so no estimate marker on the number itself.
+    expect(value.textContent).not.toContain("≈");
+    const title = value.getAttribute("title") ?? "";
+    expect(title.length).toBeGreaterThan(0);
+    expect(title).not.toMatch(/17\.7|0\.177|18\s*%/);
+    expect(section.textContent ?? "").not.toMatch(/17\.7|0\.177|18\s*%/);
+    unmount(app);
+  });
 });

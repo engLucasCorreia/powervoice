@@ -7,6 +7,7 @@
   import {
     assessReport,
     formatFreqShort,
+    NOTABLE_OCTAVE_CORRECTION,
     TONE_ZONES,
     type EqAction,
     type Finding,
@@ -143,6 +144,25 @@
 
   const f0 = $derived(report?.f0 ?? null);
   const f0Main = $derived(f0 ? (f0.current_hz ?? f0.median_hz) : null);
+  // H-97: low pitch confidence (the tracker had little to lock onto) is a caveat on the number,
+  // not a defect in the voice — it earns the "info" reading `assessReport` produces, never "warn".
+  const f0IsEstimate = $derived(finding("f0")?.severity === "info");
+  // Octave correction is a diagnostic of *our* tracker, never shown as a raw percentage in the
+  // main readout (H-97 scope) — only, human-worded, in the hover detail, and independently of
+  // confidence (a firm reading can still have needed some folding).
+  const f0Tooltip = $derived.by((): string | undefined => {
+    if (!f0) {
+      return undefined;
+    }
+    const parts: string[] = [];
+    if (f0IsEstimate) {
+      parts.push(t("analyzer.diag.f0_confidence_tooltip", { confidence: formatNumber(f0.confidence, 2) }));
+    }
+    if (f0.octave_corrected > NOTABLE_OCTAVE_CORRECTION) {
+      parts.push(t("analyzer.diag.f0_octave_tooltip"));
+    }
+    return parts.length > 0 ? parts.join(" ") : undefined;
+  });
 </script>
 
 {#snippet status(f: Finding | undefined)}
@@ -202,7 +222,9 @@
         <section class="row f0" data-testid={`${testid}-f0`}>
           <div class="line">
             <span class="label">{t("analyzer.diag.f0")}</span>
-            <span class="value strong">{formatNote(f0Main)}</span>
+            <span class="value strong" data-estimate={f0IsEstimate ? "true" : undefined} title={f0Tooltip}
+              >{f0IsEstimate ? "≈" : ""}{formatNote(f0Main)}</span
+            >
           </div>
           <div class="line">
             <span class="sub">
@@ -217,6 +239,12 @@
               high: formatFreqShort(f0.high_hz),
             })}
           </p>
+          {#if f0IsEstimate}
+            <div class="line status-line">
+              {@render status(finding("f0"))}
+              {@render action(finding("f0"))}
+            </div>
+          {/if}
         </section>
       {/if}
 
@@ -418,6 +446,11 @@
   .value.strong {
     font-size: var(--pv-text-md);
     font-weight: var(--pv-weight-semibold);
+  }
+
+  /* H-97: an estimate never looks as solid as a clean reading. */
+  .value.strong[data-estimate="true"] {
+    color: var(--pv-text-secondary);
   }
 
   .sub {

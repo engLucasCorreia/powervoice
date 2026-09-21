@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { VoiceReportDto } from "../ipc/bindings";
-import { assessReport, formatFreqShort, HUM_NOTCH_GAIN_DB, type Finding } from "./diagnosticsHints";
+import type { F0StatsDto, VoiceReportDto } from "../ipc/bindings";
+import { assessReport, formatFreqShort, HUM_NOTCH_GAIN_DB, LOW_PITCH_CONFIDENCE, type Finding } from "./diagnosticsHints";
 
 function report(overrides: Partial<VoiceReportDto> = {}): VoiceReportDto {
   return {
@@ -19,12 +19,32 @@ function report(overrides: Partial<VoiceReportDto> = {}): VoiceReportDto {
 
 const byId = (findings: Finding[], id: string) => findings.find((f) => f.id === id);
 
+function f0(overrides: Partial<F0StatsDto> = {}): F0StatsDto {
+  return { current_hz: 131, median_hz: 128, low_hz: 110, high_hz: 152, voiced_fraction: 0.6, confidence: 0.9, octave_corrected: 0, ...overrides };
+}
+
 describe("diagnostic hints (H-42)", () => {
   it("a healthy voice reads OK everywhere", () => {
     const f = assessReport(report());
     expect(f.map((x) => x.id)).toEqual(["f0", "mud", "presence", "air", "sibilance", "hum", "rumble", "noise", "snr"]);
     expect(f.filter((x) => x.severity === "warn")).toEqual([]);
     expect(byId(f, "presence")?.hintKey).toBe("analyzer.hint.presence_ok");
+  });
+
+  it("a firm pitch reading (confidence at or above the threshold) reads as a plain measurement (H-97)", () => {
+    const atThreshold = byId(assessReport(report({ f0: f0({ confidence: LOW_PITCH_CONFIDENCE }) })), "f0")!;
+    expect(atThreshold).toMatchObject({ severity: "ok", hintKey: "analyzer.hint.f0" });
+    const clearlyFirm = byId(assessReport(report({ f0: f0({ confidence: 0.9 }) })), "f0")!;
+    expect(clearlyFirm).toMatchObject({ severity: "ok", hintKey: "analyzer.hint.f0" });
+  });
+
+  it("a shaky pitch reading (confidence below the threshold) is marked an estimate, not shown as a clean number (H-97)", () => {
+    const justBelow = byId(assessReport(report({ f0: f0({ confidence: LOW_PITCH_CONFIDENCE - 0.001 }) })), "f0")!;
+    expect(justBelow).toMatchObject({ severity: "info", hintKey: "analyzer.hint.f0_low_confidence" });
+    const breathy = byId(assessReport(report({ f0: f0({ confidence: 0.3 }) })), "f0")!;
+    expect(breathy).toMatchObject({ severity: "info", hintKey: "analyzer.hint.f0_low_confidence" });
+    // Never an action: an estimate is a caveat on the reading, not something to fix.
+    expect(breathy.action).toBeUndefined();
   });
 
   it("flags boomy, dull and harsh voices with an EQ move", () => {

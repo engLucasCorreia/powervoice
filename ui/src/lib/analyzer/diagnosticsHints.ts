@@ -71,6 +71,25 @@ export const SNR_GOOD_DB = 40;
  */
 export const NEAR_THRESHOLD_DB = 1;
 
+/**
+ * Below this pitch confidence (`F0StatsDto.confidence`, H-91: `1 − median aperiodicity`) the F0
+ * reading is marked an estimate instead of shown as a number that looks as solid as a clean
+ * track (H-97) — breathy or noisy voicing gives the tracker less to lock onto. Same value as
+ * Explain My Voice's identical `LOW_PITCH_CONFIDENCE` (`explain/thresholds.ts`, re-exported from
+ * here since H-97, following `NEAR_THRESHOLD_DB`'s precedent): the panel and the modal must never
+ * disagree about when a pitch reading stopped being a firm measurement.
+ */
+export const LOW_PITCH_CONFIDENCE = 0.6;
+
+/**
+ * Above this share of voiced frames the tracker folded for an octave error
+ * (`F0StatsDto.octave_corrected`) it is worth a quiet, human-worded mention in the F0 hover
+ * detail (H-97) — never as a raw percentage in the main readout, because it is a diagnostic of
+ * *our* tracker, not a property of the user's voice. Same value as Explain My Voice's identical
+ * `NOTABLE_OCTAVE_CORRECTION`.
+ */
+export const NOTABLE_OCTAVE_CORRECTION = 0.1;
+
 /** The EQ moves the findings offer. There is deliberately no move for "more air": a voice's
  * high end is supposed to roll off, so nothing here ever suggests boosting it (H-99). */
 export const EQ_MOVES = {
@@ -143,7 +162,11 @@ function tone(report: VoiceReportDto): Finding[] {
 export function assessReport(report: VoiceReportDto): Finding[] {
   const out: Finding[] = [];
   if (report.f0) {
-    out.push({ id: "f0", severity: "ok", hintKey: "analyzer.hint.f0" });
+    out.push(
+      report.f0.confidence < LOW_PITCH_CONFIDENCE
+        ? { id: "f0", severity: "info", hintKey: "analyzer.hint.f0_low_confidence" }
+        : { id: "f0", severity: "ok", hintKey: "analyzer.hint.f0" },
+    );
   }
   out.push(...tone(report));
 

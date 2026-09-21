@@ -13,7 +13,7 @@ Audition's Waveform Editor, not a multitrack DAW. Mono, one recording at a time,
   **H-103** (the suspected cause of an export freeze; needs a real reproduction first).
 - **v0.3.2 is the public release.** Main is ~30 commits ahead, including the Explain My Voice
   feature and the export-hang fix. **Cut v0.4.0 once H-95 reports.**
-- `just check` is green: ~2,670 tests across Rust and the UI.
+- `just check` is green: ~4,650 tests — roughly 2,670 in the UI and 1,980 in Rust.
 
 ## How the work is organised
 - **Spec-first.** `specs/SPEC-0xx` define behaviour; `docs/adr/` records architecture decisions.

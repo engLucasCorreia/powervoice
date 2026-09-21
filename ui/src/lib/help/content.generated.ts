@@ -245,6 +245,16 @@ export const HELP_DOCS: readonly HelpDoc[] = [
                 "text": " · "
               },
               {
+                "text": "Explain My Voice",
+                "link": {
+                  "doc": "user-guide",
+                  "section": "explain-my-voice"
+                }
+              },
+              {
+                "text": " · "
+              },
+              {
                 "text": "Hit a loudness target",
                 "link": {
                   "doc": "user-guide",
@@ -1094,6 +1104,21 @@ export const HELP_DOCS: readonly HelpDoc[] = [
             "type": "p",
             "spans": [
               {
+                "text": "While a file is still being imported (opening it, or pasting from another format), every edit above — including Insert Silence — is unavailable for the few moments that takes: the view is still showing the "
+              },
+              {
+                "text": "importing",
+                "italic": true
+              },
+              {
+                "text": " file, so an edit fired mid-import could apply one file's selection to another file's audio. Select All and Undo/Redo are unaffected."
+              }
+            ]
+          },
+          {
+            "type": "p",
+            "spans": [
+              {
                 "text": "Undo",
                 "bold": true
               },
@@ -1347,7 +1372,7 @@ export const HELP_DOCS: readonly HelpDoc[] = [
                   "bold": true
                 },
                 {
-                  "text": ", or View → Loop Playback) repeats the current selection (10 ms or longer) instead of stopping at its end — handy for checking how a phrase or an edit sounds. A loop doesn't reset the effects rack at the seam, so a reverb or delay tail from a plugin carries across the repeat, the same as it would if you kept playing normally."
+                  "text": ", or View → Loop Playback) repeats the current selection (10 ms or longer) instead of stopping at its end — handy for checking how a phrase or an edit sounds. With no selection (or one shorter than 10 ms), it loops the whole document instead of doing nothing, so the button being lit always means \"actually looping.\" A loop doesn't reset the effects rack at the seam, so a reverb or delay tail from a plugin carries across the repeat, the same as it would if you kept playing normally."
                 }
               ]
             ]
@@ -2303,6 +2328,361 @@ export const HELP_DOCS: readonly HelpDoc[] = [
                   "text": ", no default shortcut): a larger, dedicated live spectrum view with its own FFT size, window and response settings, for closer inspection than the compact Analyzer panel — wheel to zoom, drag to pan, Shift-drag to zoom to a range, double-click to reset."
                 }
               ]
+            ]
+          }
+        ]
+      },
+      {
+        "id": "explain-my-voice",
+        "title": "Explain My Voice",
+        "blocks": [
+          {
+            "type": "p",
+            "spans": [
+              {
+                "text": "Explain My Voice",
+                "bold": true
+              },
+              {
+                "text": " (the button next to Diagnostics in the Analyzer panel — dock at the bottom) gives you a plain-language, one-page read of your voice: what its pitch is, how its tone balances across low, mid and high frequencies, whether there's sibilance, hum or rumble, and how clean the recording is — the same measurements as "
+              },
+              {
+                "text": "Voice diagnostics",
+                "link": {
+                  "doc": "user-guide",
+                  "section": "check-your-levels-analyzer-and-diagnostics"
+                }
+              },
+              {
+                "text": ", written out in full sentences instead of one-line hints. It needs an open file (and, ideally, a selection of clean speech); if nothing is selected it analyzes the whole file."
+              }
+            ]
+          },
+          {
+            "type": "p",
+            "spans": [
+              {
+                "text": "It opens a window titled "
+              },
+              {
+                "text": "Voice Spectrum Analysis",
+                "bold": true
+              },
+              {
+                "text": " with three parts:"
+              }
+            ]
+          },
+          {
+            "type": "ul",
+            "items": [
+              [
+                {
+                  "text": "A graph",
+                  "bold": true
+                },
+                {
+                  "text": " of your voice's frequency content, from 20 Hz up to 24 kHz, with your pitch and its harmonics marked, seven shaded bands for the regions engineers talk about (rumble, fundamental, low-mids, midrange, presence, sibilance, air), and callout cards pointing at whatever stood out. Toggle Raw FFT, Smoothed, Harmonics, Voice Bands and EQ Advice on or off above the graph."
+                }
+              ],
+              [
+                {
+                  "text": "An "
+                },
+                {
+                  "text": "engineering summary",
+                  "bold": true
+                },
+                {
+                  "text": ": a \"voice profile\" (pitch, body, presence, sibilance, rumble, hum, each read as in the usual range, above it or below it) and a "
+                },
+                {
+                  "text": "suggested focus",
+                  "bold": true
+                },
+                {
+                  "text": " — one line per measurement worth a closer listen, each with a button to act on it (add a matching EQ band, or copy a suggested frequency) where a fix is actually justified."
+                }
+              ],
+              [
+                {
+                  "text": "An "
+                },
+                {
+                  "text": "\"Also measured\"",
+                  "bold": true
+                },
+                {
+                  "text": " list underneath, for readings (noise floor, signal-to-noise, or \"no hum detected\") that don't point at one spot on the graph."
+                }
+              ]
+            ]
+          },
+          {
+            "type": "h3",
+            "id": "its-an-average-over-time-not-a-snapshot",
+            "spans": [
+              {
+                "text": "It's an average over time, not a snapshot"
+              }
+            ]
+          },
+          {
+            "type": "p",
+            "spans": [
+              {
+                "text": "The graph is "
+              },
+              {
+                "text": "not",
+                "bold": true
+              },
+              {
+                "text": " what your voice sounds like at this exact instant — it's the average tone over the whole span you analyzed (the selection, or the whole file), including the quiet pauses between words. The subtitle under the title names exactly how many seconds that was. This matters because a single instant of live audio only shows whichever vowel you happened to be saying; an average over a real stretch of speech is what actually describes "
+              },
+              {
+                "text": "your voice",
+                "italic": true
+              },
+              {
+                "text": ", the same way a photo of one wave doesn't describe the tide. The pitch, sibilance and a few other numbers below the graph are measured over active speech only (the pauses are excluded from those, but not from the graph's curve), so the two can describe slightly different — though overlapping — material; the window says so."
+              }
+            ]
+          },
+          {
+            "type": "h3",
+            "id": "what-the-annotations-mean",
+            "spans": [
+              {
+                "text": "What the annotations mean"
+              }
+            ]
+          },
+          {
+            "type": "p",
+            "spans": [
+              {
+                "text": "Every finding separates "
+              },
+              {
+                "text": "what was measured",
+                "bold": true
+              },
+              {
+                "text": " from "
+              },
+              {
+                "text": "what it might mean",
+                "bold": true
+              },
+              {
+                "text": " — a measured number never comes with a verdict attached for free:"
+              }
+            ]
+          },
+          {
+            "type": "ul",
+            "items": [
+              [
+                {
+                  "text": "Pitch (F0)",
+                  "bold": true
+                },
+                {
+                  "text": ": the median pitch of your voiced speech and the range it moved in (as a note name and in Hz). This is a description of your voice, not a judgement — there's no \"good\" or \"bad\" pitch."
+                }
+              ],
+              [
+                {
+                  "text": "Strongest partial",
+                  "bold": true
+                },
+                {
+                  "text": ": the loudest single peak in your spectrum isn't always your pitch itself — for many voices it's the "
+                },
+                {
+                  "text": "second",
+                  "italic": true
+                },
+                {
+                  "text": " harmonic (twice the pitch frequency) or another one. Both are completely ordinary; this finding just tells you which one is happening in your recording and why that doesn't change what your actual pitch is."
+                }
+              ],
+              [
+                {
+                  "text": "Harmonic series",
+                  "bold": true
+                },
+                {
+                  "text": ": which of the pitch's overtones (H1, H2, H3…) stand out clearly enough in the spectrum to measure individually."
+                }
+              ],
+              [
+                {
+                  "text": "Low-mid body, Presence, Air, Sibilance, Rumble",
+                  "bold": true
+                },
+                {
+                  "text": ": how much energy sits in each frequency region, compared with what's typical for a voice."
+                }
+              ],
+              [
+                {
+                  "text": "Mains hum",
+                  "bold": true
+                },
+                {
+                  "text": ": whether a 50 Hz or 60 Hz electrical hum (and its harmonics) was found in the quiet moments between phrases."
+                }
+              ],
+              [
+                {
+                  "text": "Noise floor and Signal-to-noise",
+                  "bold": true
+                },
+                {
+                  "text": ": how quiet your quietest moment was, and how far your voice sits above it."
+                }
+              ]
+            ]
+          },
+          {
+            "type": "p",
+            "spans": [
+              {
+                "text": "A reading only escalates to something worth acting on once it clearly crosses a documented threshold — a measurement a hair past the line reads as a mild description, not a problem, and the "
+              },
+              {
+                "text": "Voice diagnostics",
+                "link": {
+                  "doc": "user-guide",
+                  "section": "check-your-levels-analyzer-and-diagnostics"
+                }
+              },
+              {
+                "text": " panel's one-line hints use the same thresholds, so the two never disagree about the same number. If nothing in your recording crosses a threshold, the summary says so plainly instead of inventing something to report."
+              }
+            ]
+          },
+          {
+            "type": "h3",
+            "id": "unresolved-harmonics",
+            "spans": [
+              {
+                "text": "\"Unresolved\" harmonics"
+              }
+            ]
+          },
+          {
+            "type": "p",
+            "spans": [
+              {
+                "text": "Sometimes the harmonic series section says a harmonic "
+              },
+              {
+                "text": "can't be measured",
+                "bold": true
+              },
+              {
+                "text": " rather than giving you a weak or missing reading for it. This isn't a bug: your pitch moves while you talk (a rising question, a stressed word), so each harmonic isn't a single frequency but a "
+              },
+              {
+                "text": "band",
+                "italic": true
+              },
+              {
+                "text": " — the harmonic's number times your pitch's low end, up to that number times your pitch's high end. High enough up the series, those bands from neighbouring harmonics start to overlap, and once they do there's no way to tell where one ends and the next begins. Rather than guess, PowerVoice says the honest thing: nothing can be measured there, and tells you which harmonics that affects. A narrower pitch range resolves more harmonics; a wider one resolves fewer — it's a property of how your pitch moved during the take, not a fault in your voice or in the measurement."
+              }
+            ]
+          },
+          {
+            "type": "h3",
+            "id": "why-it-wont-suggest-fixing-your-voice-to-sound-flat",
+            "spans": [
+              {
+                "text": "Why it won't suggest \"fixing\" your voice to sound flat"
+              }
+            ]
+          },
+          {
+            "type": "p",
+            "spans": [
+              {
+                "text": "A natural voice's frequency spectrum isn't flat, and it isn't supposed to be — it rolls off toward the top the same way most microphones do. Explain My Voice is built to describe a voice honestly, not to nudge you toward one \"correct\" shape:"
+              }
+            ]
+          },
+          {
+            "type": "ul",
+            "items": [
+              [
+                {
+                  "text": "Low "
+                },
+                {
+                  "text": "air",
+                  "bold": true
+                },
+                {
+                  "text": " (very high frequencies) is described, never treated as something to boost — boosting that region to flatten the curve would mostly add hiss and sibilance, not presence."
+                }
+              ],
+              [
+                {
+                  "text": "\"Forward,\" \"boomy\" or \"harsh\" language, and any suggested EQ move, appears only once a measurement clears its threshold by a real margin — a reading a hair past the line is described mildly and offered no fix at all."
+                }
+              ],
+              [
+                {
+                  "text": "Every recommendation stays conservative (about ±3 dB) and, where it applies, suggests checking microphone distance or working angle "
+                },
+                {
+                  "text": "before",
+                  "italic": true
+                },
+                {
+                  "text": " reaching for EQ, because those change these numbers more than a filter does."
+                }
+              ],
+              [
+                {
+                  "text": "The "
+                },
+                {
+                  "text": "EQ Advice",
+                  "bold": true
+                },
+                {
+                  "text": " toggle draws its suggested moves as a dashed curve over your measured spectrum — never changing it — so you can see exactly what a suggested change would do before deciding whether you want it in your rack at all."
+                }
+              ]
+            ]
+          },
+          {
+            "type": "h3",
+            "id": "read-together-with-voice-diagnostics",
+            "spans": [
+              {
+                "text": "Read together with Voice diagnostics"
+              }
+            ]
+          },
+          {
+            "type": "p",
+            "spans": [
+              {
+                "text": "The live "
+              },
+              {
+                "text": "Voice diagnostics",
+                "link": {
+                  "doc": "user-guide",
+                  "section": "check-your-levels-analyzer-and-diagnostics"
+                }
+              },
+              {
+                "text": " panel gives you the same kind of information continuously, as short hints; Explain My Voice gives you the considered, full-sentence version once, over a real stretch of your recording. Use diagnostics while you work and Explain My Voice when you want the fuller picture — a session, a note, or something to compare notes on with an audio engineer."
+              }
             ]
           }
         ]
@@ -4185,6 +4565,127 @@ export const HELP_DOCS: readonly HelpDoc[] = [
                 "link": {
                   "doc": "user-guide",
                   "section": "cleaning-up-the-effects-rack"
+                }
+              },
+              {
+                "text": "."
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "explain-my-voice",
+        "title": "Explain My Voice",
+        "blocks": [
+          {
+            "type": "h3",
+            "id": "what-does-explain-my-voice-actually-do",
+            "spans": [
+              {
+                "text": "What does Explain My Voice actually do?"
+              }
+            ]
+          },
+          {
+            "type": "p",
+            "spans": [
+              {
+                "text": "It measures your voice's pitch, tone balance, sibilance, hum and cleanliness over a real stretch of your recording (the selection, or the whole file), and writes out what it found in full sentences instead of the Diagnostics panel's one-line hints. See "
+              },
+              {
+                "text": "Explain My Voice",
+                "link": {
+                  "doc": "user-guide",
+                  "section": "explain-my-voice"
+                }
+              },
+              {
+                "text": "."
+              }
+            ]
+          },
+          {
+            "type": "h3",
+            "id": "is-the-graph-what-my-voice-sounds-like-right-now",
+            "spans": [
+              {
+                "text": "Is the graph what my voice sounds like right now?"
+              }
+            ]
+          },
+          {
+            "type": "p",
+            "spans": [
+              {
+                "text": "No — it's a "
+              },
+              {
+                "text": "long-term average",
+                "bold": true
+              },
+              {
+                "text": " over the whole span you analyzed, pauses between words included, not an instantaneous snapshot. A single instant only shows whichever sound you happened to be making; the average is what actually describes your voice. See "
+              },
+              {
+                "text": "Explain My Voice: it's an average over time, not a snapshot",
+                "link": {
+                  "doc": "user-guide",
+                  "section": "explain-my-voice"
+                }
+              },
+              {
+                "text": "."
+              }
+            ]
+          },
+          {
+            "type": "h3",
+            "id": "what-does-unresolved-mean-next-to-a-harmonic",
+            "spans": [
+              {
+                "text": "What does \"unresolved\" mean next to a harmonic?"
+              }
+            ]
+          },
+          {
+            "type": "p",
+            "spans": [
+              {
+                "text": "It means that harmonic genuinely can't be measured from your recording, not that it's weak or missing. Your pitch moves while you talk, so each harmonic spans a band of frequencies rather than one exact frequency; high enough in the series, neighbouring harmonics' bands overlap and nothing can be said about them individually. PowerVoice says so rather than guessing. See "
+              },
+              {
+                "text": "Explain My Voice: \"unresolved\" harmonics",
+                "link": {
+                  "doc": "user-guide",
+                  "section": "explain-my-voice"
+                }
+              },
+              {
+                "text": "."
+              }
+            ]
+          },
+          {
+            "type": "h3",
+            "id": "why-doesnt-it-just-tell-me-how-to-make-my-voice-sound-better",
+            "spans": [
+              {
+                "text": "Why doesn't it just tell me how to make my voice sound \"better\"?"
+              }
+            ]
+          },
+          {
+            "type": "p",
+            "spans": [
+              {
+                "text": "Because a natural voice isn't supposed to be flat — every voice and every microphone rolls off toward very high frequencies, so \"fixing\" that would mostly add hiss. Explain My Voice only recommends a change once a measurement clearly crosses a documented threshold, keeps every suggestion conservative, and prefers \"check your microphone distance\" over an EQ move wherever that's the more likely cause. See "
+              },
+              {
+                "text": "Explain My Voice: why it won't suggest \"fixing\" your voice to sound flat",
+                "link": {
+                  "doc": "user-guide",
+                  "section": "explain-my-voice"
                 }
               },
               {

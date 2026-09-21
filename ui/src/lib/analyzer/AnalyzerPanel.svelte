@@ -15,6 +15,7 @@
   import {
     acquireLiveVoice,
     averageScope,
+    canAnalyzeAverage,
     cancelAverage,
     clearSnapshots,
     diagnosticsState,
@@ -32,6 +33,7 @@
   import SpectrumPlot from "./SpectrumPlot.svelte";
   import DiagnosticsPanel from "./DiagnosticsPanel.svelte";
   import type { PlotCurve, PlotOverlay } from "./plotGeometry";
+  import { openExplainVoice } from "./explain/explainModal.svelte";
 
   /**
    * The live output analyzer panel (T-208/H-16, SPEC-007 §2.9) — its look unchanged — with the
@@ -214,6 +216,57 @@
   async function chooseResponse(r: AnalyzerResponseDto): Promise<void> {
     await setAnalyzerResponse(r);
   }
+
+  // H-92: "Explain My Voice" is built on a long-term *Average* over a section — the selection if
+  // one exists, otherwise the whole file — never the live 1/24-octave bands (H-91: harmonic
+  // measurement is materially sharper on FFT bins, and a live curve shows whichever vowel the
+  // speaker happened to be on, exactly the wrong basis for tonal advice). Clicking it while
+  // nothing suitable exists yet therefore *starts* that analysis rather than freezing whatever the
+  // Live mode is currently showing; `pendingExplain` tracks that this component asked for it, so
+  // the effect below knows to open the modal (rather than just updating the Average tab) once it
+  // completes.
+  let pendingExplain = $state(false);
+
+  function requestExplain(): void {
+    if (!canAnalyzeAverage()) {
+      return;
+    }
+    pendingExplain = true;
+    void startAverage();
+  }
+
+  $effect(() => {
+    if (!pendingExplain) {
+      return;
+    }
+    const j = diag.job;
+    if (!j || j.purpose !== "average") {
+      return;
+    }
+    if (j.state === "done") {
+      // The "done" progress event can arrive slightly before `spectrum_report` (the curve fetch
+      // that populates `averages` is async) — and `averages` from an *earlier* unrelated Average
+      // run otherwise persists on screen. Only trust it once it is unmistakably this job's own
+      // report, matched by `job_id`; until then, keep waiting for the effect to rerun.
+      if (diag.averageReport?.job_id !== j.jobId) {
+        return;
+      }
+      const result = diag.averages.find((a) => a.source === diag.averageSource) ?? diag.averages[0];
+      if (result) {
+        pendingExplain = false;
+        openExplainVoice({
+          freqsHz: result.curve.freqsHz,
+          levelsDb: result.curve.levelsDb,
+          resolution: "bins",
+          report: result.report,
+          sampleRateHz: diag.averageReport.sample_rate_hz,
+          origin: "average",
+        });
+      }
+    } else if (j.state === "failed" || j.state === "cancelled") {
+      pendingExplain = false;
+    }
+  });
 </script>
 
 {#snippet legend()}
@@ -299,6 +352,17 @@
       testid="analyzer-open-inspector"
       onclick={() => setInspectorOpen(!diag.inspectorOpen)}
     />
+    <Button
+      size="sm"
+      icon="explain"
+      disabled={!scope || jobRunning}
+      loading={pendingExplain}
+      title={scope ? t("analyzer.explain_tooltip") : t("analyzer.explain_needs_document")}
+      testid="analyzer-explain-open"
+      onclick={requestExplain}
+    >
+      {pendingExplain ? t("analyzer.explain_analyzing") : t("analyzer.explain_open")}
+    </Button>
   </div>
 
   {#if diag.mode === "average"}

@@ -1,0 +1,489 @@
+<script lang="ts">
+  import { t } from "../../i18n";
+  import { formatNumber } from "../../ui/units";
+  import {
+    formatHoverFreqHz,
+    freqForU,
+    frequencyTicks,
+    fullFreqRange,
+    uForFreq,
+  } from "../../spectrum/freqAxis";
+  import type { Rect } from "../../ui/axisLabels";
+  import { dbAxisTicks, yForAnalyzerDb } from "../analyzerMath";
+  import { columnize, levelAt } from "../plotGeometry";
+  import { createFrameClient } from "../../render/frameScheduler";
+  import { themeColors } from "../../theme/themeColors";
+  import { themeState } from "../../theme/theme.svelte";
+  import { layoutExplainAnnotations } from "./explainAnnotations";
+  import { computeDbRange } from "./explainGraphMath";
+  import { voiceBandLabel } from "./explainLabels";
+  import { explainFindings } from "./prose";
+  import { regionsAt, voiceBands } from "./voiceBands";
+  import type { VoiceFinding } from "./findings";
+  import type { VoiceSnapshot } from "./snapshot";
+  import ExplainFindingCard from "./ExplainFindingCard.svelte";
+
+  /**
+   * The annotated graph itself (H-92 ticket §3): the frozen curve pair on the shared log
+   * frequency axis, subtle voice-region bands, the F0/harmonic/strongest-peak markers, and H-93's
+   * annotation cards with their leader lines. Purely a *view* over H-91's frozen `VoiceSnapshot`
+   * and H-93's `layoutAnnotations` — no analysis or layout logic of its own beyond mapping
+   * measured Hz/dB to plot pixels (`explainAnnotations.ts` does that mapping, tested without a
+   * canvas).
+   */
+
+  const MARGIN = { left: 48, right: 10, top: 10, bottom: 20 };
+  const BAND_LABEL_FONT = "10px var(--pv-font-sans, sans-serif)";
+  const AXIS_LABEL_FONT = "10px var(--pv-font-sans, sans-serif)";
+
+  let {
+    snapshot,
+    showRaw,
+    showSmoothed,
+    showHarmonics,
+    showBands,
+    showEqAdvice,
+    maxLabels,
+    beneath = $bindable([]),
+    testid,
+  }: {
+    snapshot: VoiceSnapshot;
+    showRaw: boolean;
+    showSmoothed: boolean;
+    showHarmonics: boolean;
+    showBands: boolean;
+    showEqAdvice: boolean;
+    /** How many cards the graph itself tries to fit (desktop: more; phone: 3, per the ticket). */
+    maxLabels: number;
+    /** Findings with no card on the graph — bound out for the modal's "also measured" list. */
+    beneath?: VoiceFinding[];
+    testid: string;
+  } = $props();
+
+  let canvasEl: HTMLCanvasElement | undefined = $state();
+  let width = $state(0);
+  let height = $state(0);
+  let hover: { x: number; y: number } | null = $state(null);
+
+  const maxHz = $derived(snapshot.sampleRateHz > 0 ? Math.min(snapshot.sampleRateHz / 2, 24_000) : 24_000);
+  const range = $derived(fullFreqRange("log", maxHz));
+  const dbRange = $derived(computeDbRange(snapshot.rawDb, snapshot.smoothedDb));
+  const floorDb = $derived(dbRange[0]);
+  const ceilDb = $derived(dbRange[1]);
+  const bands = $derived(voiceBands(snapshot.pitch));
+
+  const plot: Rect = $derived({
+    x: MARGIN.left,
+    y: MARGIN.top,
+    width: Math.max(0, width - MARGIN.left - MARGIN.right),
+    height: Math.max(0, height - MARGIN.top - MARGIN.bottom),
+  });
+
+  function xForFreq(freqHz: number): number {
+    const [fLo, fHi] = range;
+    return plot.x + uForFreq(freqHz, fLo, fHi, "log") * plot.width;
+  }
+
+  function yForDb(db: number): number {
+    return plot.y + yForAnalyzerDb(db, floorDb, ceilDb, plot.height);
+  }
+
+  function freqForX(x: number): number {
+    const [fLo, fHi] = range;
+    return freqForU((x - plot.x) / Math.max(1, plot.width), fLo, fHi, "log");
+  }
+
+  const freqTicks = $derived.by(() => {
+    if (plot.width <= 0) {
+      return [];
+    }
+    const [fLo, fHi] = range;
+    return frequencyTicks(fLo, fHi, "log", plot.width, 42);
+  });
+  const dbTicks = $derived.by(() => (plot.height > 0 ? dbAxisTicks(floorDb, ceilDb, plot.height, 20) : []));
+
+  const avoidRects: Rect[] = $derived(
+    snapshot.peaks.map((p) => ({ x: xForFreq(p.freqHz) - 26, y: yForDb(p.levelDb) - 10, width: 52, height: 20 })),
+  );
+
+  const hoverReadout = $derived.by(() => {
+    if (!hover || plot.width <= 0) {
+      return null;
+    }
+    const freqHz = freqForX(hover.x);
+    const rawDb = levelAt({ freqsHz: snapshot.freqsHz, levelsDb: snapshot.rawDb }, freqHz);
+    const envDb = levelAt({ freqsHz: snapshot.freqsHz, levelsDb: snapshot.smoothedDb }, freqHz);
+    const region = regionsAt(freqHz, bands);
+    const freq = formatHoverFreqHz(freqHz);
+    const raw = Number.isFinite(rawDb) ? `${formatNumber(rawDb, 1)} dB` : t("meter.silence");
+    const env = Number.isFinite(envDb) ? `${formatNumber(envDb, 1)} dB` : t("meter.silence");
+    const text =
+      region.length > 0
+        ? t("explain.hover_region", { freq: freq, raw: raw, env: env, region: region.map(voiceBandLabel).join(" / ") })
+        : t("explain.hover", { freq: freq, raw: raw, env: env });
+    return { text, x: hover.x };
+  });
+
+  const reserved: Rect[] = $derived(
+    hoverReadout ? [{ x: hoverReadout.x - 140, y: plot.y, width: 280, height: 22 }] : [],
+  );
+
+  const prose = $derived(explainFindings(snapshot));
+
+  const layout = $derived.by(() =>
+    plot.width > 0 && plot.height > 0
+      ? layoutExplainAnnotations(
+          snapshot.findings,
+          prose,
+          {
+            xForFreq,
+            yForCurveAtFreq: (freqHz: number) =>
+              yForDb(levelAt({ freqsHz: snapshot.freqsHz, levelsDb: snapshot.smoothedDb }, freqHz)),
+          },
+          { rect: plot, avoid: avoidRects, reserved, maxLabels },
+        )
+      : { placed: [], beneath: snapshot.findings },
+  );
+
+  $effect(() => {
+    beneath = layout.beneath;
+  });
+
+  // --- Drawing on demand (H-43), like every other canvas renderer's. ---------------------------
+
+  const frames = createFrameClient(() => {
+    draw();
+    return false; // a frozen snapshot never animates on its own
+  }, { name: "explain-graph" });
+
+  function requestDraw(): void {
+    frames.invalidate();
+  }
+
+  function strokeCurve(ctx: CanvasRenderingContext2D, levels: ArrayLike<number>): void {
+    const [fLo, fHi] = range;
+    const pts = columnize(snapshot.freqsHz, levels, xForFreq, fLo, fHi);
+    ctx.beginPath();
+    let started = false;
+    for (const p of pts) {
+      const y = Number.isFinite(p.db) ? yForDb(p.db) : plot.y + plot.height;
+      if (!started) {
+        ctx.moveTo(p.x, y);
+        started = true;
+      } else {
+        ctx.lineTo(p.x, y);
+      }
+    }
+    ctx.stroke();
+  }
+
+  function draw(): void {
+    if (!canvasEl || width <= 0 || height <= 0) {
+      return;
+    }
+    const ctx = canvasEl.getContext("2d");
+    if (!ctx) {
+      return; // jsdom in tests
+    }
+    const dpr = window.devicePixelRatio || 1;
+    const backingW = Math.max(1, Math.round(width * dpr));
+    const backingH = Math.max(1, Math.round(height * dpr));
+    if (canvasEl.width !== backingW || canvasEl.height !== backingH) {
+      canvasEl.width = backingW;
+      canvasEl.height = backingH;
+    }
+    const colors = themeColors();
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = colors.analyzer.bg.css;
+    ctx.fillRect(0, 0, width, height);
+
+    // Grid at the labelled ticks.
+    ctx.strokeStyle = colors.analyzer.grid.css;
+    ctx.lineWidth = 1;
+    ctx.globalAlpha = 0.55;
+    for (const tick of freqTicks) {
+      const x = Math.round(xForFreq(tick.freqHz)) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(x, plot.y);
+      ctx.lineTo(x, plot.y + plot.height);
+      ctx.stroke();
+    }
+    for (const tick of dbTicks) {
+      const y = Math.round(plot.y + tick.y) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(plot.x, y);
+      ctx.lineTo(plot.x + plot.width, y);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // Axis tick text.
+    ctx.fillStyle = colors.eq.labelText.css;
+    ctx.font = AXIS_LABEL_FONT;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    for (const tick of freqTicks) {
+      ctx.fillText(tick.label, xForFreq(tick.freqHz), plot.y + plot.height + 4);
+    }
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    for (const tick of dbTicks) {
+      ctx.fillText(tick.label, plot.x - 4, plot.y + tick.y);
+    }
+
+    // Voice-region bands: subtle, overlap freely (H-92 ticket §3).
+    if (showBands) {
+      ctx.fillStyle = colors.analyzer.explainBand.css;
+      for (const band of bands) {
+        const x0 = Math.max(plot.x, xForFreq(band.lowHz));
+        const x1 = Math.min(plot.x + plot.width, xForFreq(band.highHz));
+        if (x1 > x0) {
+          ctx.fillRect(x0, plot.y, x1 - x0, plot.height);
+        }
+      }
+      ctx.fillStyle = colors.eq.labelText.css;
+      ctx.font = BAND_LABEL_FONT;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      for (const band of bands) {
+        const midHz = Math.sqrt(band.lowHz * band.highHz);
+        const x = Math.min(Math.max(xForFreq(midHz), plot.x + 24), plot.x + plot.width - 24);
+        ctx.fillText(voiceBandLabel(band.id), x, plot.y + 2);
+      }
+    }
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(plot.x, plot.y, plot.width, plot.height);
+    ctx.clip();
+
+    if (showRaw && snapshot.rawDb.length > 0) {
+      ctx.strokeStyle = colors.analyzer.noise.css;
+      ctx.globalAlpha = 0.5;
+      ctx.lineWidth = 1;
+      strokeCurve(ctx, snapshot.rawDb);
+      ctx.globalAlpha = 1;
+    }
+    if (showSmoothed && snapshot.smoothedDb.length > 0) {
+      ctx.strokeStyle = colors.analyzer.explainEnvelope.css;
+      ctx.lineWidth = colors.emphasisStrokePx;
+      strokeCurve(ctx, snapshot.smoothedDb);
+    }
+
+    if (snapshot.pitch) {
+      const x = Math.round(xForFreq(snapshot.pitch.fundamentalHz)) + 0.5;
+      ctx.strokeStyle = colors.analyzer.compareA.css;
+      ctx.setLineDash([4, 3]);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x, plot.y);
+      ctx.lineTo(x, plot.y + plot.height);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = colors.analyzer.compareA.css;
+      ctx.font = BAND_LABEL_FONT;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "alphabetic";
+      ctx.fillText(t("explain.f0_label"), x + 3, plot.y + 10);
+    }
+
+    if (showHarmonics) {
+      for (const h of snapshot.harmonics) {
+        if (h.status === "unresolved" || h.peakHz === null || !Number.isFinite(h.levelDb)) {
+          continue;
+        }
+        const x = xForFreq(h.peakHz);
+        const y = yForDb(h.levelDb);
+        ctx.fillStyle = colors.analyzer.marker.css;
+        ctx.globalAlpha = h.status === "supported" ? 1 : 0.4;
+        ctx.beginPath();
+        ctx.arc(x, y, 3, 0, Math.PI * 2);
+        ctx.fill();
+        if (h.status === "supported") {
+          ctx.font = BAND_LABEL_FONT;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "bottom";
+          ctx.fillText(t("explain.harmonic_label", { n: h.n }), x, y - 5);
+        }
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    if (snapshot.strongestPeak && !snapshot.strongestPeak.isFundamental) {
+      const x = xForFreq(snapshot.strongestPeak.freqHz);
+      const y = yForDb(snapshot.strongestPeak.levelDb);
+      ctx.strokeStyle = colors.analyzer.compareB.css;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = colors.analyzer.compareB.css;
+      ctx.font = BAND_LABEL_FONT;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      ctx.fillText(t("explain.strongest_label"), x, y - 7);
+    }
+
+    if (hover) {
+      ctx.strokeStyle = colors.analyzer.crosshair.css;
+      ctx.lineWidth = 1;
+      const x = Math.round(hover.x) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(x, plot.y);
+      ctx.lineTo(x, plot.y + plot.height);
+      ctx.stroke();
+    }
+
+    ctx.restore(); // clip
+    ctx.restore(); // outer save
+  }
+
+  $effect(() => {
+    void [
+      snapshot,
+      showRaw,
+      showSmoothed,
+      showHarmonics,
+      showBands,
+      width,
+      height,
+      hover,
+      themeState().revision,
+    ];
+    requestDraw();
+  });
+
+  $effect(() => () => frames.dispose());
+
+  $effect(() => {
+    const el = canvasEl;
+    if (!el) {
+      width = 0;
+      height = 0;
+      return;
+    }
+    width = el.clientWidth;
+    height = el.clientHeight;
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        width = Math.max(0, Math.round(entry.contentRect.width));
+        height = Math.max(0, Math.round(entry.contentRect.height));
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
+
+  function handleMouseMove(e: MouseEvent): void {
+    const rect = canvasEl?.getBoundingClientRect();
+    if (!rect) {
+      return;
+    }
+    hover = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  function handleMouseLeave(): void {
+    hover = null;
+  }
+
+  const ariaLabel = $derived(t("explain.title"));
+</script>
+
+<div class="explain-graph" data-testid={`${testid}-root`}>
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+  <div class="canvas-wrap" tabindex="0" role="img" aria-label={ariaLabel} data-testid={`${testid}-canvas-wrap`}>
+    <canvas
+      bind:this={canvasEl}
+      onmousemove={handleMouseMove}
+      onmouseleave={handleMouseLeave}
+    ></canvas>
+    <svg class="leaders" aria-hidden="true">
+      {#each layout.placed as p (p.item.id)}
+        <line x1={p.leader.from.x} y1={p.leader.from.y} x2={p.leader.to.x} y2={p.leader.to.y} />
+        <circle cx={p.leader.to.x} cy={p.leader.to.y} r="2.5" />
+      {/each}
+    </svg>
+    {#each layout.placed as p (p.item.id)}
+      <div class="annotation" style:left="{p.rect.x}px" style:top="{p.rect.y}px" style:width="{p.rect.width}px">
+        <ExplainFindingCard
+          prose={p.item.prose}
+          {showEqAdvice}
+          compact
+          testid={`${testid}-annotation-${p.item.id}`}
+        />
+      </div>
+    {/each}
+    {#if hoverReadout}
+      <div class="hover" data-testid={`${testid}-hover`} style:left="{hoverReadout.x}px">{hoverReadout.text}</div>
+    {/if}
+  </div>
+</div>
+
+<style>
+  .explain-graph {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .canvas-wrap {
+    position: relative;
+    flex: 1;
+    min-height: 12rem;
+    overflow: hidden;
+    border-radius: var(--pv-radius-md);
+  }
+
+  .canvas-wrap:focus-visible {
+    outline: var(--pv-focus-width) solid var(--pv-focus-ring);
+    outline-offset: -2px;
+  }
+
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .leaders {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+  }
+
+  .leaders line {
+    stroke: var(--pv-border);
+    stroke-width: 1;
+  }
+
+  .leaders circle {
+    fill: var(--pv-border);
+  }
+
+  .annotation {
+    position: absolute;
+  }
+
+  .hover {
+    position: absolute;
+    top: 2px;
+    transform: translateX(-50%);
+    padding: var(--pv-space-half) var(--pv-space-2);
+    border: var(--pv-border-width) solid var(--pv-border);
+    border-radius: var(--pv-radius-sm);
+    background: var(--pv-bg-overlay);
+    box-shadow: var(--pv-shadow-1);
+    color: var(--pv-text-primary);
+    font-size: var(--pv-text-xs);
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+</style>

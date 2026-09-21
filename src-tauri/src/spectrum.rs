@@ -32,6 +32,7 @@ use crate::ipc::{
     IpcError, IpcErrorCode, JobKind, JobProgressDto, JobState, Notice, NoticeLevel,
     emit_job_progress, emit_notice, emit_spectrum_report,
 };
+use crate::job_status::JobStatusRegistry;
 use crate::loudness::{LoudnessSource, read_range, render_processed_to_buffer};
 
 /// How many finished jobs keep their curves for `spectrum_analyze_curve`.
@@ -91,13 +92,24 @@ struct Inner {
 pub struct SpectrumService(Arc<Inner>);
 
 /// Builds the service (composition root; its own `Registry`, like the loudness service).
+///
+/// `status` is the app-wide [`JobStatusRegistry`] (H-96 "belt and braces") shared with
+/// export/normalize/bake: every `job_progress` tick this service emits is also recorded there, so
+/// a UI that ever misses the real event (H-92: "Explain My Voice" starting this job and needing to
+/// recover rather than get stuck on "analysing…") can poll `job_status(job_id)` instead.
 pub fn start<R: Runtime>(
     app: AppHandle<R>,
     documents: DocumentService,
     engine: EngineHandle,
+    status: JobStatusRegistry,
 ) -> anyhow::Result<SpectrumService> {
     let registry = crate::plugins::registry()?;
-    let emit: SpectrumEmitter = Arc::new(move |event| forward(&app, event));
+    let emit: SpectrumEmitter = Arc::new(move |event| {
+        if let SpectrumEvent::Progress(dto) = &event {
+            status.record(*dto);
+        }
+        forward(&app, event);
+    });
     Ok(SpectrumService(Arc::new(Inner {
         documents,
         engine,

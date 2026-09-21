@@ -1,8 +1,17 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
+import type { SpectrumReportDto } from "../ipc/bindings";
+import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
+import { resetSelectionForTest, setSelectionFromResult } from "../state/selection.svelte";
+import { resetWaveformViewForTest } from "../state/waveformView.svelte";
+import { docDto } from "../test/fixtures";
 import { resetAnalyzerForTest } from "./analyzer.svelte";
 import { resetOutputDeviceStatusForTest } from "./outputDeviceStatus.svelte";
+import { applySpectrumJobProgress, applySpectrumReport } from "./diagnostics.svelte";
+import { explainModalState, resetExplainModalForTest } from "./explain/explainModal.svelte";
+import { explainVoiceState } from "./explain/explainVoice.svelte";
+import { balancedReport } from "./explain/voiceFixtures";
 import AnalyzerPanel from "./AnalyzerPanel.svelte";
 
 /**
@@ -173,6 +182,134 @@ describe("AnalyzerPanel diagnostics (H-42)", () => {
     expect(target.querySelector('[data-testid="analyzer-compare-bar"]')).not.toBeNull();
     // No live frame yet: nothing to freeze.
     expect(target.querySelector<HTMLButtonElement>('[data-testid="analyzer-freeze-a"]')!.disabled).toBe(true);
+    unmount(app);
+  });
+});
+
+// --- H-92: the "Explain My Voice" button freezes the *Average* FFT-bin curve ---------------------
+
+/** A `VXLT` frame carrying `levels`, for one result of a `spectrum_report`. */
+function vxlt(jobId: number, index: number, levels: number[]): ArrayBuffer {
+  const buf = new ArrayBuffer(36 + 4 * levels.length);
+  const dv = new DataView(buf);
+  "VXLT".split("").forEach((c, i) => dv.setUint8(i, c.charCodeAt(0)));
+  dv.setUint16(4, 1, true);
+  dv.setUint16(6, 36, true);
+  dv.setUint32(8, jobId, true);
+  dv.setUint32(12, index, true);
+  dv.setUint32(16, 48_000, true);
+  dv.setUint32(20, 4, true);
+  dv.setUint32(24, 0, true);
+  dv.setUint32(28, levels.length, true);
+  dv.setUint32(32, 0, true);
+  levels.forEach((v, k) => dv.setFloat32(36 + 4 * k, v, true));
+  return buf;
+}
+
+function averageReport(jobId: number): SpectrumReportDto {
+  return {
+    job_id: jobId,
+    sample_rate_hz: 48_000,
+    fft_size: 4,
+    window: "hann",
+    start_sample: 0,
+    end_sample: 48_000,
+    results: [{ source: "processed", frames: 10, has_noise: false, report: balancedReport() }],
+  };
+}
+
+describe("Explain My Voice (H-92)", () => {
+  afterEach(() => {
+    resetDocumentStateForTest();
+    resetWaveformViewForTest();
+    resetSelectionForTest();
+    resetExplainModalForTest();
+    document.body.innerHTML = "";
+  });
+
+  it("stays disabled with no document open", async () => {
+    stubSize(900, 200);
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(AnalyzerPanel, { target });
+    await settle();
+    expect(target.querySelector<HTMLButtonElement>('[data-testid="analyzer-explain-open"]')!.disabled).toBe(true);
+    unmount(app);
+  });
+
+  it("clicking it starts a long-term Average job itself — it never freezes the live bands — and opens once that job completes", async () => {
+    mockIPC((cmd) => (cmd === "document_open" ? docDto({ len_samples: 96_000 }) : null));
+    await openDocument("/home/user/take.wav");
+    clearMocks();
+
+    stubSize(900, 200);
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(AnalyzerPanel, { target });
+    await settle();
+
+    const button = target.querySelector<HTMLButtonElement>('[data-testid="analyzer-explain-open"]')!;
+    // No Average result exists yet, but a document is open: the button is enabled and, unlike
+    // before H-96 was reused here, does its own analysis rather than requiring the Average tab.
+    expect(button.disabled).toBe(false);
+
+    const started: unknown[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "spectrum_analyze_start") {
+        started.push((args as { request: unknown }).request);
+        return { job_id: 42 };
+      }
+      if (cmd === "spectrum_analyze_curve") {
+        const a = args as { jobId: number; index: number };
+        return vxlt(a.jobId, a.index, [-10, -20, -30]);
+      }
+      return null;
+    });
+    button.click();
+    await settle();
+
+    expect(started).toHaveLength(1);
+    expect(explainModalState().open).toBe(false); // still analyzing — no selection, so whole file
+    expect(target.querySelector('[data-testid="analyzer-explain-open"]')?.textContent).toContain("Analyzing");
+
+    applySpectrumJobProgress({ job_id: 42, kind: "spectrum_analyze", state: "done", fraction: 1 });
+    await applySpectrumReport(averageReport(42));
+    await settle();
+
+    expect(explainModalState().open).toBe(true);
+    const snapshot = explainVoiceState().snapshot!;
+    expect(snapshot.origin).toBe("average");
+    expect(snapshot.resolution).toBe("bins");
+    // The frozen curve is the Average result's FFT bins — never the live 1/24-octave bands.
+    expect(Array.from(snapshot.rawDb)).toEqual([-10, -20, -30]);
+
+    unmount(app);
+  });
+
+  it("analyzes the selection when one exists, not the whole file", async () => {
+    mockIPC((cmd) => (cmd === "document_open" ? docDto({ len_samples: 96_000 }) : null));
+    await openDocument("/home/user/take.wav");
+    clearMocks();
+    setSelectionFromResult([1000, 5000]);
+
+    stubSize(900, 200);
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(AnalyzerPanel, { target });
+    await settle();
+
+    const requests: unknown[] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "spectrum_analyze_start") {
+        requests.push((args as { request: unknown }).request);
+        return { job_id: 7 };
+      }
+      return null;
+    });
+    target.querySelector<HTMLButtonElement>('[data-testid="analyzer-explain-open"]')!.click();
+    await settle();
+    expect(requests[0]).toMatchObject({ start_sample: 1000, end_sample: 5000 });
+
     unmount(app);
   });
 });

@@ -5,6 +5,7 @@
   import { analyzerState, applyAnalyzerPrefs } from "./lib/analyzer/analyzer.svelte";
   import { applyDiagnosticsPrefs } from "./lib/analyzer/diagnostics.svelte";
   import SpectrumInspector from "./lib/analyzer/SpectrumInspector.svelte";
+  import ExplainVoiceModal from "./lib/analyzer/explain/ExplainVoiceModal.svelte";
   import EqExpandedView from "./lib/eq/EqExpandedView.svelte";
   import ChannelChoiceDialog from "./lib/document/ChannelChoiceDialog.svelte";
   import ClipPromptDialog from "./lib/document/ClipPromptDialog.svelte";
@@ -537,6 +538,7 @@
 <ShortcutsDialog />
 <CalibrationDialog />
 <SpectrumInspector />
+<ExplainVoiceModal />
 <EqExpandedView />
 <WelcomeOffer />
 <TourOverlay />

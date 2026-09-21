@@ -147,6 +147,12 @@
   --analyzer-crosshair: rgba(230, 231, 234, 0.4);
   --analyzer-marker: #ffd08a; /* H-42: peak markers */
 
+  /* H-92: "Explain My Voice" graph — the dominant smoothed envelope and the voice-region tint.
+     The raw FFT curve, F0 line and harmonic ticks reuse --analyzer-noise/--analyzer-marker/
+     --analyzer-compare-b so the family stays small. */
+  --analyzer-explain-envelope: #ffa64d;
+  --analyzer-explain-band: rgba(148, 163, 184, 0.07);
+
   /* EQ graph (SPEC-015 §2.6.3): band colours follow the HP…LP processing order. */
   --eq-curve: #e6e7ea;
   --eq-fill: rgba(230, 231, 234, 0.15);
@@ -280,6 +286,9 @@
   --analyzer-crosshair: rgba(30, 33, 38, 0.4);
   --analyzer-marker: #9a4f00;
 
+  --analyzer-explain-envelope: #c1580a;
+  --analyzer-explain-band: rgba(71, 85, 105, 0.08);
+
   --eq-curve: #1a1d22;
   --eq-fill: rgba(26, 29, 34, 0.1);
   --eq-grid: #c3c8d0;
@@ -411,6 +420,9 @@
   --analyzer-noise: #c9ced6;
   --analyzer-crosshair: rgba(255, 255, 255, 0.7);
   --analyzer-marker: #ffe066;
+
+  --analyzer-explain-envelope: #ffb347;
+  --analyzer-explain-band: rgba(226, 232, 240, 0.14);
 
   --eq-curve: #ffffff;
   --eq-fill: rgba(255, 255, 255, 0.18);

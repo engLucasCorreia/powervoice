@@ -66,6 +66,7 @@ import Settings2 from "@lucide/svelte/icons/settings-2";
 import SkipBack from "@lucide/svelte/icons/skip-back";
 import SkipForward from "@lucide/svelte/icons/skip-forward";
 import SlidersHorizontal from "@lucide/svelte/icons/sliders-horizontal";
+import Sparkles from "@lucide/svelte/icons/sparkles";
 import Split from "@lucide/svelte/icons/split";
 import Square from "@lucide/svelte/icons/square";
 import Timer from "@lucide/svelte/icons/timer";
@@ -159,6 +160,7 @@ export const ICONS = {
   // Status
   info: Info,
   help: CircleQuestionMark,
+  explain: Sparkles,
   success: CircleCheck,
   warning: TriangleAlert,
   error: CircleAlert,

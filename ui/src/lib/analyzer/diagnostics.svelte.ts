@@ -41,6 +41,7 @@ import { noticeFromIpcError } from "../notices/fromIpcError";
 import { pushNotice } from "../state/notices.svelte";
 import { hasSelection, selectionState } from "../state/selection.svelte";
 import { saveSettings } from "../state/settings.svelte";
+import { startJobStatusPoll } from "../state/jobStatusPoll";
 
 export type AnalyzerMode = "live" | "average" | "compare";
 export type SnapshotSlot = "a" | "b";
@@ -101,6 +102,8 @@ let voiceId: number | undefined;
 let voiceGeneration = 0;
 let unlistenProgress: (() => void) | null = null;
 let unlistenReport: (() => void) | null = null;
+/** H-96 "belt and braces": stops the recovery poll for the current average/compare job. */
+let stopStatusPoll: (() => void) | null = null;
 
 /** Read-only accessor for components. */
 export function diagnosticsState(): {
@@ -294,6 +297,9 @@ async function start(sources: LoudnessSourceDto[], purpose: SpectrumJobState["pu
   if (!scope || job?.state === "running") {
     return;
   }
+  // H-96: subscribe *before* starting the job, so a fast job's terminal `job_progress` can never
+  // arrive before a listener is attached (the ordering bug H-96 fixed for export/normalize/bake;
+  // H-92's "Explain My Voice" starts this same job and needs the same guarantee).
   await ensureListening();
   try {
     const started = await spectrumAnalyzeStart({
@@ -304,6 +310,15 @@ async function start(sources: LoudnessSourceDto[], purpose: SpectrumJobState["pu
       window: prefs.inspector_window,
     });
     job = { jobId: started.job_id, fraction: 0, state: "running", purpose };
+    // H-96 "belt and braces": if the real event is ever missed anyway (a dropped IPC message, a
+    // webview reload mid-job), poll the shared `job_status` recovery cache rather than leaving
+    // the job stuck at "running" forever.
+    stopStatusPoll?.();
+    stopStatusPoll = startJobStatusPoll(
+      started.job_id,
+      () => job !== null && job.jobId === started.job_id && job.state === "running",
+      applySpectrumJobProgress,
+    );
   } catch (err) {
     if (isIpcError(err)) {
       pushNotice(noticeFromIpcError(err));
@@ -420,4 +435,6 @@ export function resetDiagnosticsForTest(): void {
   }
   unlistenProgress = null;
   unlistenReport = null;
+  stopStatusPoll?.();
+  stopStatusPoll = null;
 }

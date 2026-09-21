@@ -65,6 +65,10 @@ export interface ThemeColors {
     readonly noise: ThemeColor;
     readonly crosshair: ThemeColor;
     readonly marker: ThemeColor;
+    /** H-92: the "Explain My Voice" graph's dominant smoothed envelope and its voice-region
+     * tint. The raw curve, F0 line and harmonic ticks reuse `noise`/`marker`/`compareB` above. */
+    readonly explainEnvelope: ThemeColor;
+    readonly explainBand: ThemeColor;
   };
   readonly eq: {
     readonly grid: ThemeColor;
@@ -166,6 +170,8 @@ export function readThemeColors(theme: ResolvedTheme): ThemeColors {
       noise: color("--analyzer-noise"),
       crosshair: color("--analyzer-crosshair"),
       marker: color("--analyzer-marker"),
+      explainEnvelope: color("--analyzer-explain-envelope"),
+      explainBand: color("--analyzer-explain-band"),
     },
     eq: {
       grid: color("--eq-grid"),

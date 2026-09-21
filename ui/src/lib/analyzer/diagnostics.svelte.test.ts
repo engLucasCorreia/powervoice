@@ -1,5 +1,5 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DocumentDto, SpectrumReportDto, VoiceReportDto } from "../ipc/bindings";
 import { openDocument, resetDocumentStateForTest } from "../document/document.svelte";
 import { clearNotices } from "../state/notices.svelte";
@@ -197,5 +197,55 @@ describe("snapshots and the live voice stream (H-42)", () => {
     expect(calls.filter(([c]) => c === "analyzer_unsubscribe").length).toBe(0);
     r2();
     expect(calls.filter(([c]) => c === "analyzer_unsubscribe")).toEqual([["analyzer_unsubscribe", { id: 5 }]]);
+  });
+});
+
+describe("H-96 belt-and-braces recovery for the average job (H-92 needs this: it starts this job itself)", () => {
+  it("recovers via job_status if the terminal spectrum_report/job_progress pair never arrives", async () => {
+    await openFixture({ len_samples: 96_000 });
+    vi.useFakeTimers();
+    try {
+      mockIPC((cmd) => {
+        if (cmd === "spectrum_analyze_start") {
+          return { job_id: 55 };
+        }
+        if (cmd === "job_status") {
+          return { job_id: 55, kind: "spectrum_analyze", state: "done", fraction: 1 };
+        }
+        return null;
+      });
+      await startAverage();
+      expect(diagnosticsState().job?.state).toBe("running");
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(diagnosticsState().job).toMatchObject({ jobId: 55, state: "done", fraction: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops polling once the store is reset (no leaked timers)", async () => {
+    await openFixture({ len_samples: 96_000 });
+    vi.useFakeTimers();
+    try {
+      let statusCalls = 0;
+      mockIPC((cmd) => {
+        if (cmd === "spectrum_analyze_start") {
+          return { job_id: 56 };
+        }
+        if (cmd === "job_status") {
+          statusCalls += 1;
+          return { job_id: 56, kind: "spectrum_analyze", state: "running", fraction: 0.3 };
+        }
+        return null;
+      });
+      await startAverage();
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(statusCalls).toBe(1);
+      resetDiagnosticsForTest();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(statusCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

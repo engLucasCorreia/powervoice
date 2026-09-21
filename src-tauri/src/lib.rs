@@ -120,10 +120,13 @@ pub fn run() {
                 engine.handle().clone(),
             )?;
             // H-42: the long-term average spectrum job service (same render path as loudness).
+            // H-96/H-92: shares the belt-and-braces job-status registry — "Explain My Voice"
+            // starts this job itself and must be able to recover rather than get stuck.
             let spectrum = spectrum::start(
                 app.handle().clone(),
                 documents.clone(),
                 engine.handle().clone(),
+                job_status.clone(),
             )?;
             // H-09: the normalize job service (peak + LUFS) — no engine handle needed, unlike
             // export/nr_capture/loudness (SPEC-010 never touches the rack).

@@ -145,7 +145,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-121 | OWNER-TESTED: H-113 did not fix it — in the real app (WebKitGTK) the spectral selection is still a flat opaque block, and the hover readout card follows the selection drag | O | done |
 | H-122 | OWNER-TESTED: H-114 did not fix it — in the real app the waveform still does not appear while recording; trace the real path end to end | O | done |
 | H-123 | OWNER REQUEST: input/output level meters feel laggy — find why, make them responsive, add a Fast/Medium/Slow meter speed | S | todo |
-| H-124 | Found by H-122: audit every effect that starts async work for state tracked before its first await (the restart-every-frame bug), fix and test each | S | todo |
+| H-124 | Found by H-122: audit every effect that starts async work for state tracked before its first await (the restart-every-frame bug), fix and test each | S | done |
 | H-101 | The dashed EQ-suggestion overlay needs a way to evaluate a filter that isn't in the rack yet — backend preview, since SPEC-015 AC-17 forbids the UI evaluating filters (H-92 escalated rather than guessing) | S | done |
 | H-102 | The Explain modal is correct but cramped: the graph is the smallest element, annotation text truncates mid-sentence, cards overrun the plot — layout pass against the owner's reference image | S | done |
 | H-62 | Sandbox event-ring overflow is silent (H-55 open question): `HostEnd::push_event` / the proxy drop events when the ring is full (counted in `events_dropped`, never surfaced) — another timing-dependent divergence under heavy automation; surface it as a notice/slot status and test it | S | done |

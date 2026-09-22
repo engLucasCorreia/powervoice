@@ -8,12 +8,22 @@ A focused desktop editor for voice-over — record, edit, clean up, hit a loudne
 built as a Tauri 2 app with a Rust core and a Svelte 5 interface. It is an alternative to Adobe
 Audition's Waveform Editor, not a multitrack DAW. Mono, one recording at a time, on purpose.
 
-## Where things stand (2026-09-21)
-- **196 of 198 tickets done.** Open: **H-95** (verification of the Explain My Voice feature) and
-  **H-103** (the suspected cause of an export freeze; needs a real reproduction first).
-- **v0.3.2 is the public release.** Main is ~30 commits ahead, including the Explain My Voice
-  feature and the export-hang fix. **Cut v0.4.0 once H-95 reports.**
-- `just check` is green: ~4,650 tests — roughly 2,670 in the UI and 1,980 in Rust.
+## Where things stand (2026-09-22 — development paused here)
+- **204 of 207 tickets done** (1 dropped: VST2, T-811). Open: **H-103** (a rare freeze where the app stops responding and
+  cannot be closed — needs a live reproduction on the owner's machine, see below) and **H-126**
+  (a documentation sweep, dispatched as the pause began; check its branch `ticket/H-126`).
+- **v0.4.1 is the public release** (2026-09-22), and main is level with it plus H-125. It fixed
+  everything the owner reported against v0.4.0; they tested each fix in a local build before it
+  was tagged.
+- `just check` is green: ~4,870 tests — 2,868 in the UI and ~2,002 in Rust. It takes 10–15 minutes.
+- GitHub CI on main is green (it had been failing on and off for two days; H-125 found why).
+
+## To pick the work back up
+1. Read this file, then `CLAUDE.md`, `MEMORY.md`, `tickets/BOARD.md` (the two `todo` rows).
+2. `npm ci --prefix ui && just check` — expect the first build to take a while, the debug build
+   cache was deleted to reclaim disk (it was 243 GB).
+3. The next release needs the owner's testing first (see below). H-125's fix (a plugin installed
+   while a project is opening no longer stays "missing") is on main and has never shipped.
 
 ## Releasing — the owner tests first
 **Never tag a release until the owner has personally tested the fixes in it** (their instruction,
@@ -44,6 +54,24 @@ green and my own screenshots have both been wrong before.
    That one cost three attempts at a layout fix.
 5. **Subscribe to a job's events before starting it**, or a fast job's terminal event is lost and
    the UI hangs on "running" forever.
+6. **The shipped app is not the dev server.** Two fixes passed every screenshot and still failed for
+   the owner (2026-09-22). `vite build` minifies theme colours to `#rrggbbaa`/`#rgb`, which the
+   WebGL colour parser did not read — every selection was an opaque gray block in the release while
+   the dev server looked perfect. Verify rendering in **WebKitGTK** (what Tauri uses on Linux), not
+   Chromium: PyGObject `Gtk.OffscreenWindow` + `WebKit2 4.1`, `WEBKIT_DMABUF_RENDERER_FORCE_SHM=1`,
+   `HardwareAccelerationPolicy.ALWAYS`; inject the minified tokens to mimic a release build.
+7. **A Svelte 5 `$effect` tracks state read synchronously inside an async function it calls, up to
+   the first `await`.** The recording waveform's poll read the 60 Hz record head there, so every
+   frame restarted the effect and its cleanup threw away the reply in flight — the waveform stayed
+   empty while recording, for as long as recording had existed. Wrap such reads in `untrack`.
+8. **Instant IPC mocks hide timing bugs.** Mock live/streaming commands with a round trip slower
+   than one frame (30 ms), or the test proves nothing about the real app.
+9. **Every blocking wait on a child process needs a deadline** (H-119/H-120), or one stalled child
+   takes the whole gate to its ceiling with nothing in the log saying why.
+10. **Check GitHub CI after pushing** (`gh run list --workflow CI --limit 3`). A test failed there
+   on and off for two days while every local run passed; the cause was a test engine running a
+   never-advancing fake device on the real clock, so its stall detector killed the output after
+   500 ms.
 
 ## Running it
 ```sh
@@ -53,7 +81,18 @@ just check    # the full suite (must pass before anything merges)
 just build    # release build + Linux bundles
 ```
 AppImage bundling needs a Debian-like host or CI; see `docs/building.md` for the workarounds on a
-rolling-release distribution.
+rolling-release distribution. **Build test builds with `just build`, never a raw
+`npm run tauri build`** — the raw command skips the sandbox binary and the denylist strip, and
+produces exactly the broken AppImage that v0.3.0 and v0.3.1 shipped.
+
+A downloaded AppImage has no run permission: `chmod +x` it, or double-clicking does nothing.
+
+## H-103, the open freeze
+The app has once locked up so that the window stopped responding, Cancel did nothing and SIGTERM was
+ignored; the UI's JS thread was spinning at ~91 %. The suspected cause is `rfd`'s gtk3 backend
+starting a second permanent GTK main loop the first time a native dialog opens. It has never been
+reproduced on demand. **If it happens again, do not kill the app** — capture a JS profile from a dev
+build and the process state first; that is the missing evidence.
 
 ## Where to read next
 - `docs/README.md` — the documentation hub, including a non-technical introduction.

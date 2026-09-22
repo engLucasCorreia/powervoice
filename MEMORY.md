@@ -1,13 +1,24 @@
 # MEMORY.md — Project memory (curated by the orchestrator only)
 
 ## Status
-- **2026-09-21. Feature-complete and released; 196 of 198 tickets done.** Everything on the board is
-  merged except **H-95** (the Explain My Voice verification pass, running) and **H-103** (the
-  suspected cause of the owner's export freeze, which needs a real reproduction before any fix).
-  T-811 (VST2) was **dropped** by the owner — Steinberg no longer licenses the SDK (ADR-007 §7).
-- **Released:** v0.3.2 on GitHub (AppImage, .deb, unverified .msi/.exe/.dmg). **Main is ~30 commits
-  ahead of it**, including the whole Explain My Voice feature and the export-hang fix, so the next
-  release (v0.4.0) matters: anyone downloading today still hits the frozen "Exporting…" dialog.
+- **2026-09-22. Development paused here. v0.4.1 is released and 204 of 207 tickets are done.**
+  Open: **H-103** (a rare freeze — the window stops responding, Cancel does nothing, SIGTERM is
+  ignored, the UI's JS thread spins at ~91 %; suspected `rfd` gtk3 second GTK main loop; never
+  reproduced on demand — **if it happens again, capture a JS profile from a dev build before
+  killing it**) and **H-126** (the documentation sweep dispatched as the pause began — check
+  `ticket/H-126` before assuming the docs are unfinished). T-811 (VST2) was **dropped** by the
+  owner — Steinberg no longer licenses the SDK (ADR-007 §7).
+- **Released:** v0.4.1 on GitHub (AppImage, .deb, unverified .msi/.exe/.dmg), the first release the
+  owner tested fix by fix before it was tagged. Main carries one fix beyond it (H-125: a plugin
+  installed while a project is opening no longer stays "missing").
+- **Green everywhere:** `just check` ~4,870 tests (2,868 UI + ~2,002 Rust), 10–15 min; GitHub CI on
+  main green. The debug build cache (243 GB) was deleted at the pause — the first build back will
+  be slow.
+- **What the owner reported after v0.4.0, and what it taught us** (all fixed, H-108..H-125): the
+  shipped app differs from the dev server (minified CSS colours → opaque gray selections), an
+  effect that tracked state before its first `await` restarted every frame (recording waveform
+  never drew), CSS transitions on top of JS ballistics (laggy meters), instant IPC mocks hiding
+  all three, and a CI flake nobody was watching. Details in the entries below.
 - **Release drill, learned the hard way (v0.3.0 and v0.3.1 both shipped broken AppImages):** bump the
   version in `Cargo.toml`, `src-tauri/tauri.conf.json`, `ui/package.json` **and** the lockfile before
   tagging; after CI, **download the artifact, run it, and screenshot its contents** — a window

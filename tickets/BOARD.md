@@ -147,6 +147,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-123 | OWNER REQUEST: input/output level meters feel laggy — find why, make them responsive, add a Fast/Medium/Slow meter speed | S | done |
 | H-124 | Found by H-122: audit every effect that starts async work for state tracked before its first await (the restart-every-frame bug), fix and test each | S | done |
 | H-125 | CI: `a_live_plugin_recovery_does_not_mark_the_document_dirty` fails on and off on GitHub (4 of 8 pushes on 09-22) — find whether H-40's live recovery can be missed or is just slow | O | done |
+| H-126 | Documentation sweep before the pause: user guide, FAQ, Help Centre and tour must describe v0.4.1 (Explain export, Inspector legend, EQ menu, meter speed, live waveform, chmod +x) | S | todo |
 | H-101 | The dashed EQ-suggestion overlay needs a way to evaluate a filter that isn't in the rack yet — backend preview, since SPEC-015 AC-17 forbids the UI evaluating filters (H-92 escalated rather than guessing) | S | done |
 | H-102 | The Explain modal is correct but cramped: the graph is the smallest element, annotation text truncates mid-sentence, cards overrun the plot — layout pass against the owner's reference image | S | done |
 | H-62 | Sandbox event-ring overflow is silent (H-55 open question): `HostEnd::push_event` / the proxy drop events when the ring is full (counted in `events_dropped`, never surfaced) — another timing-dependent divergence under heavy automation; surface it as a notice/slot status and test it | S | done |

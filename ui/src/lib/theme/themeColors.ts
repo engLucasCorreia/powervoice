@@ -1,4 +1,4 @@
-import { cssColorToRgba, type Rgba } from "../render/quads";
+import { cssColorToRgba, parseCssColor, type Rgba } from "../render/quads";
 import { parseThemes, resolveValue, type ThemeTokens } from "./contrast";
 import { RESOLVED_THEMES, themeState, type ResolvedTheme } from "./theme.svelte";
 
@@ -118,6 +118,35 @@ function currentTheme(): ResolvedTheme {
   return RESOLVED_THEMES.find((name) => name === stamped) ?? "dark";
 }
 
+let canonicalizer: CanvasRenderingContext2D | null | undefined;
+
+/** H-121: the browser's own serialization of a colour `parseCssColor` doesn't read (a named
+ * colour, `hsl()`, … — a form the production CSS minifier may pick for a future token). A 2D
+ * context's `fillStyle` reads back as `#rrggbb` or `rgba(r, g, b, a)`; an invalid colour leaves it
+ * unchanged, so the probe sets a sentinel first. `""` without a 2D context (jsdom). */
+function canonicalCssColor(css: string): string {
+  if (css === "") {
+    return "";
+  }
+  if (canonicalizer === undefined) {
+    try {
+      canonicalizer = document.createElement("canvas").getContext("2d");
+    } catch {
+      canonicalizer = null;
+    }
+  }
+  if (!canonicalizer) {
+    return "";
+  }
+  // `transparent` is parsed before this is ever reached, so reading back the sentinel means the
+  // browser rejected `css`.
+  canonicalizer.fillStyle = "transparent";
+  const sentinel = String(canonicalizer.fillStyle);
+  canonicalizer.fillStyle = css;
+  const out = String(canonicalizer.fillStyle);
+  return out === sentinel ? "" : out;
+}
+
 /** Builds a fresh snapshot for `theme` (exported for tests; renderers use {@link themeColors}). */
 export function readThemeColors(theme: ResolvedTheme): ThemeColors {
   const style = getComputedStyle(document.documentElement);
@@ -126,7 +155,7 @@ export function readThemeColors(theme: ResolvedTheme): ThemeColors {
     style.getPropertyValue(name).trim() || resolveValue(fallback, name) || "";
   const color = (name: string): ThemeColor => {
     const css = raw(name);
-    return { css, rgba: cssColorToRgba(css) };
+    return { css, rgba: parseCssColor(css) ?? parseCssColor(canonicalCssColor(css)) ?? cssColorToRgba(css) };
   };
   const px = (name: string): number => {
     const value = Number.parseFloat(raw(name));
@@ -242,4 +271,5 @@ export function crispOffset(widthPx: number): number {
 
 export function resetThemeColorsForTest(): void {
   cache = null;
+  canonicalizer = undefined;
 }

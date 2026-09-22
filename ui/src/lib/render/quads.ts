@@ -15,26 +15,72 @@ export type Rgba = readonly [r: number, g: number, b: number, a: number];
 export const FLOATS_PER_VERTEX = 6;
 export const VERTICES_PER_QUAD = 6;
 
-/** `#rrggbb` (our theme tokens are always this shape) -> `[r, g, b, a]` in `0..1`. Falls back to
- * opaque mid-gray for anything else, so a badly-resolved CSS variable never throws mid-frame. */
+const HEX = /^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+
+/** `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa` ->`[r, g, b, a]` in `0..1`; `alpha` applies only
+ * when the colour carries no alpha of its own. Falls back to opaque mid-gray for anything else, so
+ * a badly-resolved CSS variable never throws mid-frame.
+ *
+ * H-121: the short and 8-digit forms are not optional. The source tokens are written as
+ * `#rrggbb`/`rgba(...)`, but `vite build` minifies the CSS the app actually ships
+ * (`rgba(233, 99, 184, 0.28)` → `#e963b847`, `#ffffff` → `#fff`), and `getComputedStyle` hands
+ * those forms back verbatim. Parsing only `#rrggbb` turned every translucent token into the opaque
+ * gray fallback in the real app — the flat gray selection block that hid the spectrogram. */
 export function hexToRgba(hex: string, alpha = 1): Rgba {
-  const m = /^#([0-9a-fA-F]{6})$/.exec(hex.trim());
+  const m = HEX.exec(hex.trim());
   if (!m) {
     return [0.5, 0.5, 0.5, alpha];
   }
-  const n = parseInt(m[1]!, 16);
-  return [((n >> 16) & 0xff) / 255, ((n >> 8) & 0xff) / 255, (n & 0xff) / 255, alpha];
+  let digits = m[1]!;
+  if (digits.length <= 4) {
+    digits = [...digits].map((d) => d + d).join("");
+  }
+  const channel = (i: number) => parseInt(digits.slice(i * 2, i * 2 + 2), 16) / 255;
+  return [channel(0), channel(1), channel(2), digits.length === 8 ? channel(3) : alpha];
 }
 
-/** `rgba(r, g, b, a)` (our theme tokens use this shape for translucent fills) -> `[r, g, b, a]` in
- * `0..1`. Falls back like {@link hexToRgba} on a shape it doesn't recognize. */
+/** One `rgb()` channel: a `0..255` number or a percentage. */
+function rgbChannel(token: string): number {
+  return token.endsWith("%") ? Number(token.slice(0, -1)) / 100 : Number(token) / 255;
+}
+
+/** An alpha value: a `0..1` number or a percentage. */
+function alphaValue(token: string): number {
+  return token.endsWith("%") ? Number(token.slice(0, -1)) / 100 : Number(token);
+}
+
+const NUM = String.raw`([\d.]+%?)`;
+/** `rgb(r, g, b)` / `rgba(r, g, b, a)` (legacy comma syntax). */
+const RGB_COMMAS = new RegExp(String.raw`^rgba?\(\s*${NUM}\s*,\s*${NUM}\s*,\s*${NUM}\s*(?:,\s*${NUM}\s*)?\)$`, "i");
+/** `rgb(r g b / a)` (modern space syntax). */
+const RGB_SPACES = new RegExp(String.raw`^rgba?\(\s*${NUM}\s+${NUM}\s+${NUM}\s*(?:\/\s*${NUM}\s*)?\)$`, "i");
+
+/** A CSS colour as theme tokens resolve to it — `rgb()`/`rgba()` in either syntax, any hex form
+ * ({@link hexToRgba}) or `transparent` — -> `[r, g, b, a]` in `0..1`. Falls back like
+ * {@link hexToRgba} on a shape it doesn't recognize. */
 export function cssColorToRgba(css: string, fallbackAlpha = 1): Rgba {
-  const rgbaMatch = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$/.exec(css.trim());
+  return parseCssColor(css, fallbackAlpha) ?? [0.5, 0.5, 0.5, fallbackAlpha];
+}
+
+/** {@link cssColorToRgba} without the fallback: `null` when the shape isn't recognized, so a
+ * caller can try another route (`themeColors.ts` asks the browser to canonicalize it). */
+export function parseCssColor(css: string, fallbackAlpha = 1): Rgba | null {
+  const value = css.trim();
+  const rgbaMatch = RGB_COMMAS.exec(value) ?? RGB_SPACES.exec(value);
   if (rgbaMatch) {
     const [, r, g, b, a] = rgbaMatch;
-    return [Number(r) / 255, Number(g) / 255, Number(b) / 255, a !== undefined ? Number(a) : fallbackAlpha];
+    const clamp = (x: number) => Math.min(1, Math.max(0, x));
+    return [
+      clamp(rgbChannel(r!)),
+      clamp(rgbChannel(g!)),
+      clamp(rgbChannel(b!)),
+      a !== undefined ? clamp(alphaValue(a)) : fallbackAlpha,
+    ];
   }
-  return hexToRgba(css, fallbackAlpha);
+  if (value.toLowerCase() === "transparent") {
+    return [0, 0, 0, 0];
+  }
+  return HEX.test(value) ? hexToRgba(value, fallbackAlpha) : null;
 }
 
 /** Initial vertex-buffer capacity in floats (64 quads); doubles as needed. */

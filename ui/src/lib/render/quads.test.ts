@@ -29,6 +29,50 @@ describe("hexToRgba / cssColorToRgba (H-13)", () => {
   });
 });
 
+/** Rounds a parsed colour back to 0..255 channels (+ alpha to 2 decimals) for readable asserts. */
+function bytes(rgba: readonly number[]): number[] {
+  return [...rgba.slice(0, 3).map((c) => Math.round(c * 255)), Math.round(rgba[3]! * 100) / 100];
+}
+
+describe("cssColorToRgba — every serialization the production CSS minifier emits (H-121)", () => {
+  // H-121: `vite build` minifies design-tokens.css, rewriting `rgba(233, 99, 184, 0.28)` into
+  // `#e963b847` and `#ffffff` into `#fff`. The parser only knew `#rrggbb`/`rgba(a, b, c, d)`, so in
+  // the shipped app every translucent token fell back to OPAQUE mid-gray — the flat gray block the
+  // owner saw over the selection in both panes on the WebGL2 renderer.
+  it("parses #rrggbbaa (the minified form of every translucent rgba() token)", () => {
+    expect(bytes(cssColorToRgba("#e963b847"))).toEqual([233, 99, 184, 0.28]);
+    expect(bytes(cssColorToRgba("#4DA3FF38"))).toEqual([77, 163, 255, 0.22]);
+  });
+
+  it("parses #rgb and #rgba short hex", () => {
+    expect(cssColorToRgba("#fff")).toEqual([1, 1, 1, 1]);
+    expect(bytes(cssColorToRgba("#fff3"))).toEqual([255, 255, 255, 0.2]);
+    expect(cssColorToRgba("#0000")).toEqual([0, 0, 0, 0]);
+    expect(hexToRgba("#f80")).toEqual([1, 136 / 255, 0, 1]);
+  });
+
+  it("an explicit alpha argument never overrides alpha the colour itself carries", () => {
+    expect(bytes(hexToRgba("#e963b847", 1))).toEqual([233, 99, 184, 0.28]);
+    expect(hexToRgba("#ffffff", 0.5)).toEqual([1, 1, 1, 0.5]);
+  });
+
+  it("parses the space-separated rgb() syntax with a slash alpha, and percentages", () => {
+    expect(bytes(cssColorToRgba("rgb(233 99 184 / 0.28)"))).toEqual([233, 99, 184, 0.28]);
+    expect(bytes(cssColorToRgba("rgb(233 99 184 / 28%)"))).toEqual([233, 99, 184, 0.28]);
+    expect(bytes(cssColorToRgba("rgba(100%, 0%, 50%, .5)"))).toEqual([255, 0, 128, 0.5]);
+    expect(bytes(cssColorToRgba("rgb(233,99,184)"))).toEqual([233, 99, 184, 1]);
+  });
+
+  it("parses transparent", () => {
+    expect(cssColorToRgba("transparent")).toEqual([0, 0, 0, 0]);
+  });
+
+  it("still falls back to opaque gray for something it cannot read", () => {
+    expect(cssColorToRgba("color-mix(in srgb, red, blue)")).toEqual([0.5, 0.5, 0.5, 1]);
+    expect(cssColorToRgba("#12345")).toEqual([0.5, 0.5, 0.5, 1]);
+  });
+});
+
 describe("QuadBatch (H-13, SPEC-006 §4.5)", () => {
   it("emits 6 vertices per rect, each FLOATS_PER_VERTEX floats", () => {
     const batch = new QuadBatch();

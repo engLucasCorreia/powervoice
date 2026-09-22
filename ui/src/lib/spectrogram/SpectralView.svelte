@@ -116,7 +116,9 @@
   let pointerDownClientX: number | null = null;
   let pointerDownSample: number | null = null;
   let pointerDownShiftKey = false;
-  let dragging = false;
+  /** $state (H-121): the hover readout hides while a selection drag is in progress — it used to
+   * follow the pointer across the very region being selected. */
+  let dragging = $state(false);
   let rulerDragStartY: number | null = null;
   let rulerDragStartRange: [number, number] | null = null;
   /** T-206 (SPEC-006 §2.10): invalidates a stale async zero-crossing snap result, same guard as
@@ -217,6 +219,7 @@
     if (
       hoverX === null ||
       hoverY === null ||
+      dragging ||
       !isOpen ||
       lenSamples <= 0 ||
       rateHz <= 0 ||

@@ -11,6 +11,57 @@ import { docDto, recordStateDto } from "../test/fixtures";
 import SpectralView from "./SpectralView.svelte";
 import { resetWaveformViewForTest } from "../state/waveformView.svelte";
 
+describe("SpectralView hover readout during a selection drag (H-121)", () => {
+  async function mountOpen(): Promise<{ target: HTMLElement; app: ReturnType<typeof mount>; fire: (type: string, clientX: number) => void }> {
+    stubSize(800, 200);
+    setupIpc([]);
+    await openDocument("/home/user/take.wav");
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(SpectralView, { target });
+    await settle();
+    await settle();
+    const container = target.querySelector<HTMLElement>(".canvas-container")!;
+    const fire = (type: string, clientX: number) => {
+      container.dispatchEvent(new PointerEvent(type, { clientX, clientY: 50, bubbles: true }));
+      flushSync();
+    };
+    return { target, app, fire };
+  }
+
+  it("hides the time/Hz/dB readout while a selection is being dragged and shows it again on hover after release", async () => {
+    const { target, app, fire } = await mountOpen();
+    const readout = () => target.querySelector('[data-testid="spectral-hover"]');
+
+    fire("pointermove", 100);
+    expect(readout(), "plain hover shows the readout").not.toBeNull();
+
+    fire("pointerdown", 100);
+    fire("pointermove", 110);
+    expect(readout(), "the readout must not follow the pointer during a drag").toBeNull();
+    fire("pointermove", 200);
+    expect(readout()).toBeNull();
+
+    fire("pointerup", 200);
+    fire("pointermove", 210);
+    expect(readout(), "hover after release shows it again").not.toBeNull();
+
+    unmount(app);
+    target.remove();
+  });
+
+  it("a press without a drag (under the 3 px threshold) keeps the readout", async () => {
+    const { target, app, fire } = await mountOpen();
+    fire("pointermove", 100);
+    fire("pointerdown", 100);
+    fire("pointermove", 101);
+    expect(target.querySelector('[data-testid="spectral-hover"]')).not.toBeNull();
+
+    unmount(app);
+    target.remove();
+  });
+});
+
 const widthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
 const heightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
 

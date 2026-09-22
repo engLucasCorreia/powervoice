@@ -144,7 +144,7 @@ Build thin end-to-end slices that work, then harden. Milestone sections further 
 | H-120 | Found by H-119: `engine/tests/punch_crash.rs` and `recording.rs` read a crash child's output with no timeout — the same hang class; give them the H-119 deadline | S | done |
 | H-121 | OWNER-TESTED: H-113 did not fix it — in the real app (WebKitGTK) the spectral selection is still a flat opaque block, and the hover readout card follows the selection drag | O | done |
 | H-122 | OWNER-TESTED: H-114 did not fix it — in the real app the waveform still does not appear while recording; trace the real path end to end | O | done |
-| H-123 | OWNER REQUEST: input/output level meters feel laggy — find why, make them responsive, add a Fast/Medium/Slow meter speed | S | todo |
+| H-123 | OWNER REQUEST: input/output level meters feel laggy — find why, make them responsive, add a Fast/Medium/Slow meter speed | S | done |
 | H-124 | Found by H-122: audit every effect that starts async work for state tracked before its first await (the restart-every-frame bug), fix and test each | S | done |
 | H-101 | The dashed EQ-suggestion overlay needs a way to evaluate a filter that isn't in the rack yet — backend preview, since SPEC-015 AC-17 forbids the UI evaluating filters (H-92 escalated rather than guessing) | S | done |
 | H-102 | The Explain modal is correct but cramped: the graph is the smallest element, annotation text truncates mid-sentence, cards overrun the plot — layout pass against the owner's reference image | S | done |

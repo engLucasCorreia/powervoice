@@ -88,6 +88,7 @@
   import { pushNotice } from "../state/notices.svelte";
   import { rendererPref } from "../state/rendererPref.svelte";
   import { decodeVxpk } from "./vxpk";
+  import { extendLiveBucketsToHead } from "./liveTakeDraw";
   import {
     type Column,
     type OpLayout,
@@ -162,10 +163,19 @@
   const NEW_RECORDING_FALLBACK: DefaultFormatDto = { sample_rate_hz: 48_000, bit_depth: "24" };
   const recState = recordState();
   const LIVE_PEAKS_SPB = 256;
-  /** The live view never zooms in tighter than this many seconds of the take. */
-  const LIVE_MIN_WINDOW_SECONDS = 10;
-  /** Live take peaks poll rate (H-07 ticket: "~10 Hz"). */
-  const LIVE_POLL_MS = 100;
+  /** H-114: the live view never zooms in tighter than this many seconds of the take — floored so
+   * a brand new take doesn't start over-zoomed (dividing by ~0 elapsed samples). Was 10 s (H-07),
+   * which measurably caused the owner-reported "looks dead for ~10 s": at a fixed 10 s window the
+   * first spoken word (typically well under 1 s in) fills only a few percent of the canvas width
+   * (measured: 1–5 % of the viewport for the first half-second, only reaching 100% at 10 s — see
+   * H-114's report). 2 s keeps the same "never over-zoomed" guarantee while making that same first
+   * word 4–5× as wide immediately (25 % of the viewport at 0.5 s, full width by 2 s) — the data was
+   * always real-time (H-07's poll/drain cadence, unchanged), only the display scale hid it. */
+  const LIVE_MIN_WINDOW_SECONDS = 2;
+  /** Live take peaks poll rate. H-114: 100 → 50 ms — with the smaller window above, one poll's
+   * worth of new samples is now a bigger fraction of what's on screen, so the growing edge needs
+   * to catch up twice as often to still look like continuous growth rather than a visible step. */
+  const LIVE_POLL_MS = 50;
   /** Same cap as `document_commands::peaks_get`'s `MAX_BUCKETS`. */
   const LIVE_MAX_BUCKETS = 65_536;
 
@@ -404,6 +414,12 @@
   const editPasteEnabled = $derived(hasClipboard() && !isRecording && !isImporting);
   /** H-07: a new recording into an empty document (its take isn't committed until Stop). */
   const liveNewTake = $derived(isRecording && lenSamples === 0);
+  /** H-114: see `liveTakeDraw.ts::extendLiveBucketsToHead` — closes the gap between the last
+   * `record_peaks_get` poll and the record head every frame, so the two renderers never visibly
+   * draw the wave lagging behind it. */
+  const liveDrawBuckets = $derived(
+    extendLiveBucketsToHead(liveBuckets, liveStartSample, liveSpb, rec.elapsedSamples),
+  );
   /** H-21: a running record operation on a document with audio (`null`: none). */
   const layout = $derived(lenSamples > 0 ? opLayout(rec.op, rec.phase, rec.elapsedSamples) : null);
   /** H-21: the first document sample `peaks_get` must cover (an Insert's shifted part). A number,
@@ -789,8 +805,8 @@
         overlay.rect(0, 0, viewportPx, heightPx, themeColors().wave.pending.rgba);
       }
     } else if (liveNewTake) {
-      if (liveBuckets.length > 0) {
-        const columns = reduceColumns(liveBuckets, liveStartSample, liveSpb, startSample, samplesPerPixel, Math.ceil(viewportPx));
+      if (liveDrawBuckets.length > 0) {
+        const columns = reduceColumns(liveDrawBuckets, liveStartSample, liveSpb, startSample, samplesPerPixel, Math.ceil(viewportPx));
         content = { mode: "columns", vertices: buildColumnQuads(columns, centerY, fillColor, vz).toFloat32Array() };
       }
       const recordHeadColor = themeColors().wave.recordHead.rgba;
@@ -970,8 +986,10 @@
     if (liveNewTake) {
       // H-07: the growing take (from record_peaks_get), plus a record-head line — never the
       // normal peaks_get state, which has nothing to show until the take is committed at Stop.
-      if (liveBuckets.length > 0) {
-        drawColumns(ctx, liveBuckets, liveStartSample, liveSpb, centerY, vz);
+      // H-114: `liveDrawBuckets` (not the raw poll response) closes the gap to the head every
+      // frame — see its doc comment.
+      if (liveDrawBuckets.length > 0) {
+        drawColumns(ctx, liveDrawBuckets, liveStartSample, liveSpb, centerY, vz);
       }
       drawRecordHead(ctx, centerY);
       ctx.restore();
@@ -1141,7 +1159,7 @@
 
   function drawColumns(
     ctx: CanvasRenderingContext2D,
-    buckets: Array<[number, number]>,
+    buckets: ReadonlyArray<readonly [number, number]>,
     bucketsStartSample: number,
     level: number,
     centerY: number,

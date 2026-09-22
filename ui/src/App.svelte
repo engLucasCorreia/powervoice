@@ -141,7 +141,13 @@
 
   const MARKERS_MIN_PX = 180;
   const RACK_MIN_PX = 200;
-  const SIDE_COLUMN_MAX_PX = 480;
+  // H-111 (owner report: "I can't drag the window more to the left to make it bigger"): the Rack
+  // holds the EQ graph, which needs real room to be readable — 480 was hit as a hard ceiling well
+  // before the 35% rule below ever bound it on the owner's own screen. Raised to 640 (a graph
+  // roughly a third wider than the old cap); `fitSideColumns`'s own `editorMinPx` (360, unchanged
+  // here) still guarantees the waveform never gives up its usable minimum, so this only ever
+  // helps on windows wide enough to spare the space.
+  const SIDE_COLUMN_MAX_PX = 640;
 
   // A column never eats more than 35% of the main area, so the editor always keeps most of the
   // width even on a narrow window (SPEC-007 §2.1-adjacent "nothing overlaps or clips" concern,

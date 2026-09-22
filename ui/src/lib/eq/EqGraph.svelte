@@ -12,7 +12,8 @@
   import { analyzerSubscribe, analyzerUnsubscribe, rackResponseCurve } from "../ipc/commands";
   import type { AnalyzerFrame } from "../ipc/analyzer";
   import { setParamPlain, setParamPlainDragged } from "../rack/rack.svelte";
-  import { totalCurveToScreen } from "./curvePoints";
+  import { localized } from "../rack/localized";
+  import { totalCurveToScreen, totalDbAtFreq } from "./curvePoints";
   import { CoalescedCurveRequest } from "./curveRequest";
   import { wheelNotches, wheelQFactor, dragPosition, type DragStart } from "./drag";
   import {
@@ -55,11 +56,12 @@
     spectrumOverlayPoints,
     yForSpectrumDbfs,
   } from "./spectrumOverlay";
-  import { formatRulerFreqHz } from "../spectrum/freqAxis";
+  import { formatHoverFreqHz, formatRulerFreqHz } from "../spectrum/freqAxis";
   import { eqBandColor, themeColors } from "../theme/themeColors";
   import { themeState } from "../theme/theme.svelte";
   import { createFrameClient } from "../render/frameScheduler";
-  import { IconButton } from "../ui";
+  import { IconButton, Menu, type PopoverAnchor } from "../ui";
+  import type { MenuEntry } from "../ui/menuModel";
   import { formatNumber } from "../ui/units";
 
   /**
@@ -77,9 +79,18 @@
    * steps HP/LP slope one notch per notch, reusing `keyboardNav.ts`'s `stepSlopeIndex` like ↑/↓
    * does.
    *
-   * Still out of scope (S3-07 "Out", not part of H-84 or H-86 either): the right-click context
-   * menu, and hover tooltips (H-84 adds the same Rust-sourced text as `aria-valuetext`/the live
-   * region, but not a visual hover tooltip).
+   * H-111 (owner report, SPEC-015 §2.6.4) built the remaining pieces: a cursor readout over empty
+   * graph area (frequency + the total response there, linearly interpolated between the curve's
+   * own points), a visual node tooltip (the same Rust-sourced text `aria-valuetext` already
+   * carries, now also shown on hover/drag, not just to assistive tech), a right-click menu (a
+   * node: On/Off — labelled "Delete band"/"Enable band" for its current state — Reset band, and
+   * for HP/LP a Slope submenu; empty graph/curve: "Add band here", which enables the nearest
+   * disabled band and moves it to the clicked frequency, or a quiet note when none is free), and
+   * double-click on empty graph background to open the expanded view (the existing Expand button
+   * wasn't discoverable enough on its own). The keyboard path (Shift+F10 on a focused node) reuses
+   * the same menu, matching H-66's pattern; "Add band here" has no keyboard equivalent — SPEC-015
+   * §2.6.5's key table doesn't name one, and it's a gesture tied to a graph position a keyboard
+   * focus target doesn't have.
    */
   let {
     slotIndex,
@@ -436,7 +447,14 @@
     start: DragStart;
   }
 
-  let dragging: Dragging | null = null;
+  // `$state`, not a plain `let` (H-111): the hover/tooltip `$derived`s below read it, and only a
+  // state rune's writes are tracked for that.
+  let dragging: Dragging | null = $state(null);
+
+  // --- Cursor readout and node tooltip (H-111, SPEC-015 §2.6.4 "Hover") --------------------------
+
+  /** The pointer's last canvas-relative position, or `null` once it leaves the canvas. */
+  let hoverPos: { x: number; y: number } | null = $state(null);
 
   function pointerPos(event: PointerEvent | MouseEvent | WheelEvent): { x: number; y: number } {
     const rect = canvasEl!.getBoundingClientRect();
@@ -482,6 +500,9 @@
   }
 
   function onPointerMove(event: PointerEvent): void {
+    // H-111: tracked on every move, dragging or not — the cursor readout and node tooltip below
+    // read this, not the drag math.
+    hoverPos = pointerPos(event);
     if (!dragging) {
       return;
     }
@@ -503,6 +524,13 @@
   function onPointerUp(event: PointerEvent): void {
     dragging = null;
     canvasEl?.releasePointerCapture?.(event.pointerId);
+  }
+
+  /** H-111: the readout/tooltip disappear once the pointer actually leaves the canvas — a
+   * `pointerup`/`pointercancel` alone (e.g. releasing a drag without moving off the canvas) must
+   * not clear them. */
+  function onPointerLeave(): void {
+    hoverPos = null;
   }
 
   function onWheel(event: WheelEvent): void {
@@ -546,13 +574,19 @@
     }
     const { x, y } = pointerPos(event);
     const node = nodeAt(x, y);
-    if (!node) {
+    if (node) {
+      // SPEC-015 §2.6.4: double-click resets the band's frequency/gain/Q (or slope) to defaults,
+      // same as the keyboard's Home (§2.6.5) — its on/off state is unchanged. S3-07 used
+      // double-click to toggle on/off instead; H-86 corrects that (Alt+click is the mouse toggle).
+      resetNode(node);
       return;
     }
-    // SPEC-015 §2.6.4: double-click resets the band's frequency/gain/Q (or slope) to defaults,
-    // same as the keyboard's Home (§2.6.5) — its on/off state is unchanged. S3-07 used
-    // double-click to toggle on/off instead; H-86 corrects that (Alt+click is the mouse toggle).
-    resetNode(node);
+    // H-111 (owner report: the Expand button "was not discoverable enough"): double-clicking
+    // empty graph background opens the expanded view, same as the button — only in compact mode,
+    // there's nothing further to expand to from inside the expanded view itself.
+    if (mode === "compact") {
+      openExpanded();
+    }
   }
 
   function bandLabel(node: EqNode): string {
@@ -570,6 +604,52 @@
       y: yForDb(nodeGainDb(node, curve) ?? 0, graphHeight, gainRangeDb),
     })),
   );
+
+  /** The node under the pointer, or being dragged (H-111: the tooltip follows the dragged node
+   * even if the pointer briefly outruns its exact circle — "updating live while dragging"). */
+  const hoveredNode = $derived.by((): EqNode | null => {
+    if (dragging) {
+      return nodes.find((n) => n.component === dragging!.component) ?? null;
+    }
+    if (!hoverPos) {
+      return null;
+    }
+    return nodeAt(hoverPos.x, hoverPos.y);
+  });
+
+  /** H-111 (SPEC-015 §2.6.4 "Hovering a node shows a tooltip ... The texts are Rust's"): reuses
+   * `nodeValueText` — the same string already carried as `aria-valuetext` — so the visible
+   * tooltip and the accessible name can never drift apart. */
+  const nodeTooltip = $derived.by((): { text: string; x: number; y: number } | null => {
+    const node = hoveredNode;
+    if (!node) {
+      return null;
+    }
+    const pos = nodePositions.find((p) => p.node.component === node.component);
+    if (!pos) {
+      return null;
+    }
+    return { text: nodeValueText(node, rackSlot), x: pos.x, y: pos.y };
+  });
+
+  /** H-111 (SPEC-015 §2.6.4 "Hovering empty graph area shows a readout of the pointer frequency
+   * [and] the total response there, linearly interpolated between the returned curve points"). No
+   * readout while a node is hovered/dragged (its own tooltip takes over) or before a curve has
+   * ever arrived. */
+  const cursorReadout = $derived.by((): { text: string; x: number } | null => {
+    if (hoveredNode || !hoverPos || width <= 0 || !curve) {
+      return null;
+    }
+    const freqHz = freqForX(hoverPos.x, width, fLo, fHi);
+    const db = totalDbAtFreq(curve, freqHz);
+    if (db === null) {
+      return null;
+    }
+    return {
+      text: t("eq.graph.hover", { freq: formatHoverFreqHz(freqHz), gain: formatNumber(db, 1, { signed: true }) }),
+      x: hoverPos.x,
+    };
+  });
 
   function onNodeFocus(node: EqNode): void {
     focusedComponent = node.component;
@@ -697,6 +777,176 @@
   function openExpanded(): void {
     openEqExpanded(rackSlot.uid);
   }
+
+  // --- Right-click menu (H-111, SPEC-015 §2.6.4 "Right-click") -----------------------------------
+
+  let contextMenuAnchor: PopoverAnchor | null = $state(null);
+  /** The right-clicked node, or `null` for a right-click on the curve/empty area. */
+  let contextMenuNodeComponent: number | null = $state(null);
+  /** Set only for the empty-area menu: the clicked frequency, for "Add band here". */
+  let contextMenuFreqHz: number | null = $state(null);
+
+  /** The disabled ("free") node whose own frequency is nearest `freqHz` — nearest measured in
+   * screen pixels (i.e. through the log axis) rather than raw Hz, so this file never needs its
+   * own frequency-distance math (AC-17's "no filter/taper math outside freqAxis.ts" lint covers
+   * `Math.log` too; `xForFreq` already gives the log-spaced pixel this comparison needs). `null`
+   * when every band is already enabled. */
+  function nearestFreeBand(freqHz: number): EqNode | null {
+    const free = nodes.filter((n) => !n.enabled);
+    if (free.length === 0) {
+      return null;
+    }
+    const clickX = xForFreq(freqHz, width, fLo, fHi);
+    let best = free[0]!;
+    let bestDist = Math.abs(xForFreq(best.freqHz, width, fLo, fHi) - clickX);
+    for (const n of free.slice(1)) {
+      const dist = Math.abs(xForFreq(n.freqHz, width, fLo, fHi) - clickX);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = n;
+      }
+    }
+    return best;
+  }
+
+  function slopeSubmenuItems(node: EqNode): MenuEntry[] {
+    if (node.slopeId === null) {
+      return [];
+    }
+    const slopeId = node.slopeId;
+    const slopeParam = rackSlot.params.find((p) => p.id === slopeId);
+    if (!slopeParam || slopeParam.enum_labels.length === 0) {
+      return [];
+    }
+    return slopeParam.enum_labels.map((label, i) => ({
+      kind: "radio" as const,
+      id: `slope-${i}`,
+      label: localized(label),
+      checked: node.slope === i,
+      testid: `eq-menu-slope-${i}`,
+      onselect: () => void setParamPlain(slotIndex, slopeId, i),
+    }));
+  }
+
+  /** SPEC-015 §2.6.4 "Right-click a node opens a menu: On/Off, Reset band and, for HP/LP, Slope
+   * ▸ ...". Labelled per the ticket's own words for the toggle ("Delete band"/"Enable band" —
+   * the fixed band is never actually removed, only disabled, same write as Alt+click/the header
+   * toggle). */
+  function nodeContextMenuItems(node: EqNode): MenuEntry[] {
+    const items: MenuEntry[] = [
+      {
+        kind: "item",
+        id: "toggle",
+        label: node.enabled ? t("eq.graph.menu.delete_band") : t("eq.graph.menu.enable_band"),
+        disabled: node.enableId === null,
+        testid: "eq-menu-toggle",
+        onselect: () => {
+          if (node.enableId !== null) {
+            void setParamPlain(slotIndex, node.enableId, node.enabled ? 0 : 1);
+          }
+        },
+      },
+      {
+        kind: "item",
+        id: "reset",
+        label: t("eq.graph.menu.reset_band"),
+        testid: "eq-menu-reset",
+        onselect: () => resetNode(node),
+      },
+    ];
+    const slopeItems = slopeSubmenuItems(node);
+    if (slopeItems.length > 0) {
+      items.push({
+        kind: "submenu",
+        id: "slope",
+        label: t("eq.graph.menu.slope"),
+        items: slopeItems,
+        testid: "eq-menu-slope",
+        menuTestid: "eq-menu-slope-popup",
+      });
+    }
+    return items;
+  }
+
+  /** SPEC-015 §2.6.4's "Add band here" (this ticket's own wording): the nearest disabled band is
+   * enabled and moved to the clicked frequency — "add" can only ever mean turning on one of the
+   * EQ's fixed bands (ticket: "The EQ has a fixed set of bands"). A quiet note when none is free,
+   * per the ticket ("say so in the menu rather than failing silently"). */
+  function emptyAreaContextMenuItems(freqHz: number): MenuEntry[] {
+    const band = nearestFreeBand(freqHz);
+    if (!band) {
+      return [{ kind: "note", id: "no-free-band", label: t("eq.graph.menu.no_free_band") }];
+    }
+    return [
+      {
+        kind: "item",
+        id: "add",
+        label: t("eq.graph.menu.add_band_here"),
+        testid: "eq-menu-add",
+        onselect: () => {
+          void setParamPlain(slotIndex, band.freqId, freqHz);
+          if (band.enableId !== null) {
+            void setParamPlain(slotIndex, band.enableId, 1);
+          }
+          selected = band.component;
+        },
+      },
+    ];
+  }
+
+  const contextMenuItems = $derived.by((): MenuEntry[] => {
+    if (contextMenuNodeComponent !== null) {
+      const node = nodes.find((n) => n.component === contextMenuNodeComponent);
+      return node ? nodeContextMenuItems(node) : [];
+    }
+    if (contextMenuFreqHz !== null) {
+      return emptyAreaContextMenuItems(contextMenuFreqHz);
+    }
+    return [];
+  });
+
+  function closeContextMenu(): void {
+    contextMenuAnchor = null;
+    contextMenuNodeComponent = null;
+    contextMenuFreqHz = null;
+  }
+
+  /** H-111 (SPEC-015 §2.6.4 "Right-click", "Keyboard-reachable, like H-66's menu"): a real mouse
+   * right-click always lands on the canvas (the focusable node layer sits under `pointer-events:
+   * none`), so it's hit-tested exactly like a click; a keyboard-fired `contextmenu` (Shift+F10 /
+   * the context-menu key) fires on the focused node-target `<div>` instead, at `clientX`/`clientY`
+   * 0,0 (same detection `WaveformView.svelte`'s H-66 menu uses) — found here through the element's
+   * own `data-eq-component`, and anchored at that node's real screen position rather than (0,0).
+   */
+  function onGraphContextMenu(event: MouseEvent): void {
+    if (!canvasEl) {
+      return;
+    }
+    event.preventDefault();
+    const targetEl = event.target as HTMLElement | null;
+    const componentAttr = targetEl?.closest?.("[data-eq-component]")?.getAttribute("data-eq-component");
+    if (componentAttr !== null && componentAttr !== undefined) {
+      const component = Number(componentAttr);
+      const pos = nodePositions.find((p) => p.node.component === component);
+      const rect = canvasEl.getBoundingClientRect();
+      contextMenuAnchor = pos ? { x: rect.left + pos.x, y: rect.top + pos.y } : canvasEl;
+      contextMenuNodeComponent = component;
+      contextMenuFreqHz = null;
+      selected = component;
+      return;
+    }
+    const { x, y } = pointerPos(event);
+    const node = nodeAt(x, y);
+    contextMenuAnchor = { x: event.clientX, y: event.clientY };
+    if (node) {
+      contextMenuNodeComponent = node.component;
+      contextMenuFreqHz = null;
+      selected = node.component;
+    } else {
+      contextMenuNodeComponent = null;
+      contextMenuFreqHz = freqForX(x, width, fLo, fHi);
+    }
+  }
 </script>
 
 <div class="eq-graph" data-testid="eq-graph">
@@ -734,7 +984,11 @@
       {gainRangeDb === EQ_GAIN_RANGE_WIDE_DB ? t("eq.graph.range_24") : t("eq.graph.range_12")}
     </button>
   </div>
-  <div class="graph-wrap">
+  <!-- H-111: catches both a real right-click (bubbling up from the canvas) and a keyboard-fired
+       contextmenu (bubbling up from the focused node-target div below) — one handler for both,
+       like H-66's waveform menu. -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="graph-wrap" oncontextmenu={onGraphContextMenu}>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <canvas
       bind:this={canvasEl}
@@ -745,6 +999,7 @@
       onpointermove={onPointerMove}
       onpointerup={onPointerUp}
       onpointercancel={onPointerUp}
+      onpointerleave={onPointerLeave}
       onwheel={onWheel}
       ondblclick={onDblClick}
     ></canvas>
@@ -767,12 +1022,40 @@
           aria-valuenow={node.freqHz}
           aria-valuetext={nodeValueText(node, rackSlot)}
           data-testid={`eq-node-${node.component}`}
+          data-eq-component={node.component}
           onfocus={() => onNodeFocus(node)}
           onblur={() => onNodeBlur(node)}
           onkeydown={(e) => onNodeKeydown(e, node)}
         ></div>
       {/each}
     </div>
+    <!-- H-111 (SPEC-015 §2.6.4 "Hovering a node shows a tooltip"): the same text `aria-valuetext`
+         already carries, made visible. -->
+    {#if nodeTooltip}
+      <div
+        class="node-tooltip"
+        data-testid="eq-node-tooltip"
+        style:left="{nodeTooltip.x}px"
+        style:top="{nodeTooltip.y}px"
+      >
+        {nodeTooltip.text}
+      </div>
+    {/if}
+    <!-- H-111 (SPEC-015 §2.6.4 "Hovering empty graph area shows a readout ..."), same visual
+         style as the analyzer's own hover readout (`SpectrumPlot.svelte`'s `.hover`). -->
+    {#if cursorReadout}
+      <div class="hover-readout" data-testid="eq-hover-readout" style:left="{cursorReadout.x}px">
+        {cursorReadout.text}
+      </div>
+    {/if}
+    <Menu
+      open={contextMenuAnchor !== null}
+      anchor={contextMenuAnchor}
+      items={contextMenuItems}
+      label={t("eq.graph.menu.aria_label")}
+      testid="eq-context-menu"
+      onclose={closeContextMenu}
+    />
   </div>
   <div class="band-labels" data-testid="eq-band-labels">
     {#each nodes as node (node.component)}
@@ -866,6 +1149,44 @@
   .node-target:focus-visible {
     outline: var(--pv-focus-width) solid var(--pv-focus-ring);
     outline-offset: 1px;
+  }
+
+  /* H-111: a node's tooltip, anchored above its own circle. Same visual language as
+   * `.hover-readout` below (and `SpectrumPlot.svelte`'s `.hover`) — border/overlay-bg/shadow, not
+   * the native `title` tooltip, so it can update live while dragging. */
+  .node-tooltip {
+    position: absolute;
+    transform: translate(-50%, calc(-100% - 12px));
+    padding: var(--pv-space-half) var(--pv-space-2);
+    border: var(--pv-border-width) solid var(--pv-border);
+    border-radius: var(--pv-radius-sm);
+    background: var(--pv-bg-overlay);
+    box-shadow: var(--pv-shadow-1);
+    color: var(--pv-text-primary);
+    font-size: var(--pv-text-xs);
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+    white-space: nowrap;
+    z-index: 1;
+  }
+
+  /* H-111 (SPEC-015 §2.6.4 "Hovering empty graph area shows a readout"): same look as the
+   * analyzer's own hover readout (`SpectrumPlot.svelte`'s `.hover`) — the house style for a
+   * pointer-frequency callout. */
+  .hover-readout {
+    position: absolute;
+    top: 2px;
+    transform: translateX(-50%);
+    padding: var(--pv-space-half) var(--pv-space-2);
+    border: var(--pv-border-width) solid var(--pv-border);
+    border-radius: var(--pv-radius-sm);
+    background: var(--pv-bg-overlay);
+    box-shadow: var(--pv-shadow-1);
+    color: var(--pv-text-primary);
+    font-size: var(--pv-text-xs);
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+    white-space: nowrap;
   }
 
   /* SPEC-015 §2.6.5: an off-screen, always-present live region (never `[hidden]`, which an AT

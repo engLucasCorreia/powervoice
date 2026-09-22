@@ -39,6 +39,11 @@ been verified yet — see the [README status note](../README.md) and [Where file
 live](architecture/data.md#where-files-live) for the platform differences that are and aren't
 tested. If you try Windows or macOS, reports of what does and doesn't work are welcome.
 
+### The AppImage won't open / says "There is no app installed for AppImage application bundle"
+
+A downloaded file isn't executable yet, and some file managers show that error instead of anything
+about permissions. Make it executable once, then run it — see [Install](user-guide.md#install).
+
 ### Can I record more than one microphone, or a stereo source?
 
 Recording is mono, from one chosen input channel — see [Set up your

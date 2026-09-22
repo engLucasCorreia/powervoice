@@ -409,6 +409,30 @@ export const HELP_DOCS: readonly HelpDoc[] = [
                 "text": " if you're building from source."
               }
             ]
+          },
+          {
+            "type": "p",
+            "spans": [
+              {
+                "text": "Linux AppImage:",
+                "bold": true
+              },
+              {
+                "text": " a downloaded file has no run permission yet, so double-clicking it does nothing useful — some file managers show "
+              },
+              {
+                "text": "\"There is no app installed for AppImage application bundle\"",
+                "italic": true
+              },
+              {
+                "text": ", which despite how it reads isn't about a missing dependency. Make it executable once, then run it:"
+              }
+            ]
+          },
+          {
+            "type": "code",
+            "lang": "sh",
+            "text": "chmod +x PowerVoice_*_amd64.AppImage\n./PowerVoice_*_amd64.AppImage"
           }
         ]
       },
@@ -602,7 +626,7 @@ export const HELP_DOCS: readonly HelpDoc[] = [
                   "bold": true
                 },
                 {
-                  "text": ") to start, and again to stop. A red "
+                  "text": ") to start, and again to stop. The waveform grows live as you speak, the same as Audition or Audacity — it isn't just a record head crawling across a blank track. A red "
                 },
                 {
                   "text": "CLIP",
@@ -1315,7 +1339,7 @@ export const HELP_DOCS: readonly HelpDoc[] = [
                   "bold": true
                 },
                 {
-                  "text": " extend it."
+                  "text": " extend it. A selection is a see-through tint with a clear edge in both panes — you can still read the waveform or the spectrogram underneath it, not a flat block hiding them. The spectral pane's time/Hz/dB hover readout hides while you're actively dragging a selection, so it doesn't cover what you're selecting, and reappears once you release."
                 }
               ],
               [
@@ -1411,7 +1435,28 @@ export const HELP_DOCS: readonly HelpDoc[] = [
                 "bold": true
               },
               {
-                "text": " menu; drag a module by its grip to reorder it; click a module's bypass toggle to A/B it against the rest of the chain."
+                "text": " menu; drag a module by its "
+              },
+              {
+                "text": "grip",
+                "bold": true
+              },
+              {
+                "text": " (the handle at the left of its header — only the grip starts a drag, so dragging a knob, slider or graph inside the module always adjusts that control instead) to reorder it, or focus the grip and press "
+              },
+              {
+                "text": "↑",
+                "bold": true
+              },
+              {
+                "text": "/"
+              },
+              {
+                "text": "↓",
+                "bold": true
+              },
+              {
+                "text": " to move it without a mouse; click a module's bypass toggle to A/B it against the rest of the chain."
               }
             ]
           },
@@ -1632,7 +1677,77 @@ export const HELP_DOCS: readonly HelpDoc[] = [
                   "italic": true
                 },
                 {
-                  "text": "). The rack's EQ graph shows the exact curve you're drawing, live, as you drag it. A little cut around 200–500 Hz can reduce \"boominess\"; a little boost around 2–5 kHz can add clarity or \"presence.\""
+                  "text": "). The rack's EQ graph shows the exact curve you're drawing, live, as you drag it. A little cut around 200–500 Hz can reduce \"boominess\"; a little boost around 2–5 kHz can add clarity or \"presence.\" - "
+                },
+                {
+                  "text": "Hover the graph",
+                  "bold": true
+                },
+                {
+                  "text": " to read the frequency and gain under the pointer; hover a node to see its band, frequency, gain and Q (or slope, for the HP/LP bands), updating live while you drag it. - "
+                },
+                {
+                  "text": "Right-click",
+                  "bold": true
+                },
+                {
+                  "text": " the curve or empty graph for "
+                },
+                {
+                  "text": "Add band here",
+                  "bold": true
+                },
+                {
+                  "text": " (enables the nearest disabled band at that frequency — it says \"No free bands\" if all five are already in use); right-click a node for "
+                },
+                {
+                  "text": "Delete band",
+                  "bold": true
+                },
+                {
+                  "text": " (or "
+                },
+                {
+                  "text": "Enable band",
+                  "bold": true
+                },
+                {
+                  "text": ", if you clicked a disabled one), "
+                },
+                {
+                  "text": "Reset band",
+                  "bold": true
+                },
+                {
+                  "text": " and, on HP/LP, its "
+                },
+                {
+                  "text": "Slope",
+                  "bold": true
+                },
+                {
+                  "text": ". - "
+                },
+                {
+                  "text": "Double-click",
+                  "bold": true
+                },
+                {
+                  "text": " the graph background, or the "
+                },
+                {
+                  "text": "Expand",
+                  "bold": true
+                },
+                {
+                  "text": " button in its header, opens the same graph much larger in its own window — everything above works there too. Drag the "
+                },
+                {
+                  "text": "Rack",
+                  "bold": true
+                },
+                {
+                  "text": " column's left edge to widen the whole panel if you'd rather work in place."
                 }
               ],
               [
@@ -2249,7 +2364,7 @@ export const HELP_DOCS: readonly HelpDoc[] = [
                   "bold": true
                 },
                 {
-                  "text": ": a vertical peak/RMS output meter (post-rack, with safe/loud/hot colour zones and a peak-hold tick) and, while recording, an input meter (with its own selectable scale floor — −60, −80 or −120 dBFS, for seeing a quiet mic or the room's noise floor). Either meter's "
+                  "text": ": a vertical peak/RMS output meter (post-rack, with safe/loud/hot colour zones and a peak-hold tick) and, while recording, a matching vertical input meter next to it (with its own selectable scale floor — −60, −80 or −120 dBFS, for seeing a quiet mic or the room's noise floor). Either meter's "
                 },
                 {
                   "text": "CLIP",
@@ -2263,7 +2378,7 @@ export const HELP_DOCS: readonly HelpDoc[] = [
                   "bold": true
                 },
                 {
-                  "text": " control above the two meters (Fast/Medium/Slow) sets how quickly the bars fall back after a peak — shared by both meters, and remembered."
+                  "text": " control above the two meters (Fast/Medium/Slow) sets how quickly the bars fall back after a peak — shared by both meters, remembered, and separate from the Analyzer's own Fast/Medium/Slow response speed below."
                 }
               ],
               [
@@ -2332,7 +2447,21 @@ export const HELP_DOCS: readonly HelpDoc[] = [
                   "bold": true
                 },
                 {
-                  "text": ", no default shortcut): a larger, dedicated live spectrum view with its own FFT size, window and response settings, for closer inspection than the compact Analyzer panel — wheel to zoom, drag to pan, Shift-drag to zoom to a range, double-click to reset."
+                  "text": ", no default shortcut): a larger, dedicated live spectrum view with its own FFT size, window and response settings, for closer inspection than the compact Analyzer panel — wheel to zoom, drag to pan, Shift-drag to zoom to a range, double-click to reset. A legend explains every curve it draws: your voice (Live or Average), the dashed gray "
+                },
+                {
+                  "text": "room tone",
+                  "bold": true
+                },
+                {
+                  "text": " curve (the spectrum of the quiet stretches between phrases, captured alongside an Average analysis — compare it with the voice curve to judge noise across frequency), and Snapshot A/B in Compare mode. Its own "
+                },
+                {
+                  "text": "Explain My Voice",
+                  "bold": true
+                },
+                {
+                  "text": " button opens the same analysis the dock button does; if the Inspector already holds an Average result for the current section, it opens straight from that instead of running a new job."
                 }
               ]
             ]
@@ -2361,7 +2490,14 @@ export const HELP_DOCS: readonly HelpDoc[] = [
                 }
               },
               {
-                "text": ", written out in full sentences instead of one-line hints. It needs an open file (and, ideally, a selection of clean speech); if nothing is selected it analyzes the whole file."
+                "text": ", written out in full sentences instead of one-line hints. It needs an open file (and, ideally, a selection of clean speech); if nothing is selected it analyzes the whole file. While it works, the button shows real progress (\"Analyzing… 42 %\") with a "
+              },
+              {
+                "text": "Cancel",
+                "bold": true
+              },
+              {
+                "text": ", so a slow analysis on a long file never looks the same as a stuck one."
               }
             ]
           },
@@ -2376,7 +2512,14 @@ export const HELP_DOCS: readonly HelpDoc[] = [
                 "bold": true
               },
               {
-                "text": " with three parts:"
+                "text": ", sized to a large share of your screen (not a fixed pixel size, so it makes real use of a big or high-resolution display) with a "
+              },
+              {
+                "text": "maximise",
+                "bold": true
+              },
+              {
+                "text": " control next to the export button for the full screen. It has three parts:"
               }
             ]
           },
@@ -2389,7 +2532,14 @@ export const HELP_DOCS: readonly HelpDoc[] = [
                   "bold": true
                 },
                 {
-                  "text": " of your voice's frequency content, from 20 Hz up to 24 kHz, with your pitch and its harmonics marked, seven shaded bands for the regions engineers talk about (rumble, fundamental, low-mids, midrange, presence, sibilance, air), and callout cards pointing at whatever stood out. Toggle Raw FFT, Smoothed, Harmonics, Voice Bands and EQ Advice on or off above the graph."
+                  "text": " of your voice's frequency content, from 20 Hz up to 24 kHz, with your pitch and its harmonics marked, seven shaded bands for the regions engineers talk about (rumble, fundamental, low-mids, midrange, presence, sibilance, air), and callout cards pointing at whatever stood out. Toggle Raw FFT, Smoothed, Harmonics, Voice Bands and EQ Advice on or off above the graph, or turn off "
+                },
+                {
+                  "text": "Annotations",
+                  "bold": true
+                },
+                {
+                  "text": " to hide the callout cards and their leader lines and see the curves, markers and bands unobstructed (remembered for next time). When EQ Advice is on but this take crossed no threshold by enough to suggest a change, a note next to the toggle says so — the EQ curve staying blank is the correct result, not a bug, and the note's tooltip explains why."
                 }
               ],
               [
@@ -2423,6 +2573,32 @@ export const HELP_DOCS: readonly HelpDoc[] = [
                   "text": " list underneath, for readings (noise floor, signal-to-noise, or \"no hum detected\") that don't point at one spot on the graph."
                 }
               ]
+            ]
+          },
+          {
+            "type": "p",
+            "spans": [
+              {
+                "text": "Export",
+                "bold": true
+              },
+              {
+                "text": " (the button beside maximise) saves what's on screen so you can send it to an audio engineer: an "
+              },
+              {
+                "text": "image (PNG)",
+                "bold": true
+              },
+              {
+                "text": " of the full analysis, or a self-contained "
+              },
+              {
+                "text": "report (HTML)",
+                "bold": true
+              },
+              {
+                "text": " with the graph, every finding's measured value and interpretation, and the take's duration and date. Either opens your system's native save dialog."
+              }
             ]
           },
           {
@@ -2512,7 +2688,17 @@ export const HELP_DOCS: readonly HelpDoc[] = [
                   "italic": true
                 },
                 {
-                  "text": " harmonic (twice the pitch frequency) or another one. Both are completely ordinary; this finding just tells you which one is happening in your recording and why that doesn't change what your actual pitch is."
+                  "text": " harmonic (twice the pitch frequency) or another one. Both are completely ordinary; this finding just tells you which one is happening in your recording and why that doesn't change what your actual pitch is. If the peak lines up with a harmonic your take moved too much to measure separately (see "
+                },
+                {
+                  "text": "\"Unresolved\" harmonics",
+                  "link": {
+                    "doc": "user-guide",
+                    "section": "explain-my-voice"
+                  }
+                },
+                {
+                  "text": " below), it says so and names the likely harmonic instead of guessing — it only calls a peak a possible room or voice resonance once it genuinely doesn't line up with any harmonic of the pitch range you actually used."
                 }
               ],
               [
@@ -4137,6 +4323,33 @@ export const HELP_DOCS: readonly HelpDoc[] = [
               },
               {
                 "text": " for the platform differences that are and aren't tested. If you try Windows or macOS, reports of what does and doesn't work are welcome."
+              }
+            ]
+          },
+          {
+            "type": "h3",
+            "id": "the-appimage-wont-open--says-there-is-no-app-installed-for-appimage-application-bundle",
+            "spans": [
+              {
+                "text": "The AppImage won't open / says \"There is no app installed for AppImage application bundle\""
+              }
+            ]
+          },
+          {
+            "type": "p",
+            "spans": [
+              {
+                "text": "A downloaded file isn't executable yet, and some file managers show that error instead of anything about permissions. Make it executable once, then run it — see "
+              },
+              {
+                "text": "Install",
+                "link": {
+                  "doc": "user-guide",
+                  "section": "install"
+                }
+              },
+              {
+                "text": "."
               }
             ]
           },

@@ -54,7 +54,9 @@ just build
 
 produces, under `target/release/bundle/`:
 
-- `appimage/PowerVoice_<version>_amd64.AppImage`
+- `appimage/PowerVoice_<version>_amd64.AppImage` (make it executable before running it —
+  `chmod +x PowerVoice_*_amd64.AppImage` — a fresh build has no run permission any more than a
+  downloaded one does; see the [user guide's Install section](user-guide.md#install))
 - `deb/PowerVoice_<version>_amd64.deb`
 - (also `rpm/PowerVoice-<version>-1.x86_64.rpm`, a side effect of Tauri's default `"targets": "all"`
   — not a ticket requirement, untested on an actual RPM distro)

@@ -35,6 +35,15 @@ Reduction, Punch & pre-roll and Plugin Manager headers starts a short tour of th
 See the [README](../README.md#download) for install instructions per platform, and
 [`docs/building.md`](building.md) if you're building from source.
 
+**Linux AppImage:** a downloaded file has no run permission yet, so double-clicking it does nothing
+useful — some file managers show *"There is no app installed for AppImage application bundle"*,
+which despite how it reads isn't about a missing dependency. Make it executable once, then run it:
+
+```sh
+chmod +x PowerVoice_*_amd64.AppImage
+./PowerVoice_*_amd64.AppImage
+```
+
 ## Set up your microphone
 
 Click the **Audio devices…** button in the toolbar (the gear icon) to open **Audio Devices**:
@@ -64,10 +73,11 @@ an input device is chosen.
    Choose a monitoring mode: **Off** / **Dry** (hear your raw input) / **Through rack** (hear it
    with the effects rack applied). Off is the default: monitoring through a rack adds the rack's
    latency to what you hear.
-3. Click **Record** (or press **Shift+R**) to start, and again to stop. A red **CLIP** indicator
-   lights if the input clips; click it to reset. If the input drops out for a moment (device
-   hiccup), PowerVoice fills the gap with silence and drops a marker there so you can find it
-   later.
+3. Click **Record** (or press **Shift+R**) to start, and again to stop. The waveform grows live as
+   you speak, the same as Audition or Audacity — it isn't just a record head crawling across a
+   blank track. A red **CLIP** indicator lights if the input clips; click it to reset. If the input
+   drops out for a moment (device hiccup), PowerVoice fills the gap with silence and drops a marker
+   there so you can find it later.
 4. **File → Save** (**Ctrl/⌘+S**) writes the audio file plus a sidecar `name.wav.vo.json` next to
    it, holding your rack, markers, noise profile and view settings. A long save (a big file, or a
    slow disk) shows a progress bar with a **Cancel** button; PowerVoice checks there's enough free
@@ -169,7 +179,11 @@ shows its frequency content, which makes hum, clicks and breaths easy to spot. T
   resets vertical zoom. The toolbar's **Zoom to Selection** and **Zoom Full** buttons jump straight
   to a range. You can also scroll with the mouse wheel and zoom with Ctrl + wheel.
 - **Select**: drag to select a range, **Ctrl/⌘+A** selects all, **Esc** clears the selection.
-  **←**/**→** nudge the cursor or selection, **Shift+←**/**Shift+→** extend it.
+  **←**/**→** nudge the cursor or selection, **Shift+←**/**Shift+→** extend it. A selection is a
+  see-through tint with a clear edge in both panes — you can still read the waveform or the
+  spectrogram underneath it, not a flat block hiding them. The spectral pane's time/Hz/dB hover
+  readout hides while you're actively dragging a selection, so it doesn't cover what you're
+  selecting, and reappears once you release.
 - **Snap to zero crossing** (View menu, off by default): when you extend a selection (drag or
   Shift-click), its new edge snaps to the nearest point where the waveform crosses silence, so cuts
   and edits never click.
@@ -190,8 +204,10 @@ shows its frequency content, which makes hum, clicks and breaths easy to spot. T
 The rack is a chain of **non-destructive** effects, processed in real time during playback,
 monitoring and export — nothing is baked into the file until you export or use [Apply the rack
 (bake)](#apply-the-rack-bake). Add modules from the rack panel's **Add module** menu; drag a
-module by its grip to reorder it; click a module's bypass toggle to A/B it against the rest of the
-chain.
+module by its **grip** (the handle at the left of its header — only the grip starts a drag, so
+dragging a knob, slider or graph inside the module always adjusts that control instead) to reorder
+it, or focus the grip and press **↑**/**↓** to move it without a mouse; click a module's bypass
+toggle to A/B it against the rest of the chain.
 
 Built-in modules: **Noise Gate**, **Noise Reduction**, **Parametric EQ**, **Dynamics**, **Gain**,
 and a **True-Peak Limiter** (a safety ceiling for loudness delivery). **Third-party plugins** (CLAP,
@@ -231,6 +247,15 @@ quiet parts compare) of your voice:
   boost or cut a chosen frequency by a chosen amount, over a chosen width (its *Q*). The rack's EQ
   graph shows the exact curve you're drawing, live, as you drag it. A little cut around 200–500 Hz
   can reduce "boominess"; a little boost around 2–5 kHz can add clarity or "presence."
+  - **Hover the graph** to read the frequency and gain under the pointer; hover a node to see its
+    band, frequency, gain and Q (or slope, for the HP/LP bands), updating live while you drag it.
+  - **Right-click** the curve or empty graph for **Add band here** (enables the nearest disabled
+    band at that frequency — it says "No free bands" if all five are already in use); right-click
+    a node for **Delete band** (or **Enable band**, if you clicked a disabled one), **Reset band**
+    and, on HP/LP, its **Slope**.
+  - **Double-click** the graph background, or the **Expand** button in its header, opens the same
+    graph much larger in its own window — everything above works there too. Drag the **Rack**
+    column's left edge to widen the whole panel if you'd rather work in place.
 - **Dynamics** evens out how loud and quiet parts of your voice are, in the style of Audition's
   Dynamics panel, as up to four stages in order: an **auto-gate** (quiets the sound between
   phrases, off by default), an **expander** (widens the gap between quiet and loud, off by
@@ -332,12 +357,13 @@ alphabetically:
 The dock along the bottom shows what you're hearing:
 
 - **Meters**: a vertical peak/RMS output meter (post-rack, with safe/loud/hot colour zones and a
-  peak-hold tick) and, while recording, an input meter (with its own selectable scale floor — −60,
-  −80 or −120 dBFS, for seeing a quiet mic or the room's noise floor). Either meter's **CLIP** lamp
-  latches on the moment a sample clips and stays lit until you click it — so a brief clip you
-  missed while looking away still gets your attention. A **Speed** control above the two meters
-  (Fast/Medium/Slow) sets how quickly the bars fall back after a peak — shared by both meters, and
-  remembered.
+  peak-hold tick) and, while recording, a matching vertical input meter next to it (with its own
+  selectable scale floor — −60, −80 or −120 dBFS, for seeing a quiet mic or the room's noise
+  floor). Either meter's **CLIP** lamp latches on the moment a sample clips and stays lit until you
+  click it — so a brief clip you missed while looking away still gets your attention. A **Speed**
+  control above the two meters (Fast/Medium/Slow) sets how quickly the bars fall back after a peak
+  — shared by both meters, remembered, and separate from the Analyzer's own Fast/Medium/Slow
+  response speed below.
 - **Analyzer**: a live graph of which frequencies are currently in the sound, in three modes —
   **Live** (right now), **Average** (analyze a whole selection or file, as the source or as
   processed through the rack, to see its long-term tone), and **Compare** (freeze two curves, A and
@@ -351,10 +377,14 @@ The dock along the bottom shows what you're hearing:
   300 Hz") and, for several, an **Add EQ band here** button that inserts a matching Parametric EQ
   move.
 - **Spectrum Inspector** (**View → Spectrum Inspector**, no default shortcut): a larger, dedicated
-  live spectrum view
-  with its own FFT size, window and response settings, for closer inspection than the compact
-  Analyzer panel — wheel to zoom, drag to pan, Shift-drag to zoom to a range, double-click to
-  reset.
+  live spectrum view with its own FFT size, window and response settings, for closer inspection
+  than the compact Analyzer panel — wheel to zoom, drag to pan, Shift-drag to zoom to a range,
+  double-click to reset. A legend explains every curve it draws: your voice (Live or Average), the
+  dashed gray **room tone** curve (the spectrum of the quiet stretches between phrases, captured
+  alongside an Average analysis — compare it with the voice curve to judge noise across
+  frequency), and Snapshot A/B in Compare mode. Its own **Explain My Voice** button opens the same
+  analysis the dock button does; if the Inspector already holds an Average result for the current
+  section, it opens straight from that instead of running a new job.
 
 ## Explain My Voice
 
@@ -364,20 +394,32 @@ across low, mid and high frequencies, whether there's sibilance, hum or rumble, 
 recording is — the same measurements as [Voice
 diagnostics](#check-your-levels-analyzer-and-diagnostics), written out in full sentences instead of
 one-line hints. It needs an open file (and, ideally, a selection of clean speech); if nothing is
-selected it analyzes the whole file.
+selected it analyzes the whole file. While it works, the button shows real progress ("Analyzing…
+42 %") with a **Cancel**, so a slow analysis on a long file never looks the same as a stuck one.
 
-It opens a window titled **Voice Spectrum Analysis** with three parts:
+It opens a window titled **Voice Spectrum Analysis**, sized to a large share of your screen (not a
+fixed pixel size, so it makes real use of a big or high-resolution display) with a **maximise**
+control next to the export button for the full screen. It has three parts:
 
 - **A graph** of your voice's frequency content, from 20 Hz up to 24 kHz, with your pitch and its
   harmonics marked, seven shaded bands for the regions engineers talk about (rumble, fundamental,
   low-mids, midrange, presence, sibilance, air), and callout cards pointing at whatever stood out.
-  Toggle Raw FFT, Smoothed, Harmonics, Voice Bands and EQ Advice on or off above the graph.
+  Toggle Raw FFT, Smoothed, Harmonics, Voice Bands and EQ Advice on or off above the graph, or turn
+  off **Annotations** to hide the callout cards and their leader lines and see the curves, markers
+  and bands unobstructed (remembered for next time). When EQ Advice is on but this take crossed no
+  threshold by enough to suggest a change, a note next to the toggle says so — the EQ curve staying
+  blank is the correct result, not a bug, and the note's tooltip explains why.
 - An **engineering summary**: a "voice profile" (pitch, body, presence, sibilance, rumble, hum,
   each read as in the usual range, above it or below it) and a **suggested focus** — one line per
   measurement worth a closer listen, each with a button to act on it (add a matching EQ band, or
   copy a suggested frequency) where a fix is actually justified.
 - An **"Also measured"** list underneath, for readings (noise floor, signal-to-noise, or "no hum
   detected") that don't point at one spot on the graph.
+
+**Export** (the button beside maximise) saves what's on screen so you can send it to an audio
+engineer: an **image (PNG)** of the full analysis, or a self-contained **report (HTML)** with the
+graph, every finding's measured value and interpretation, and the take's duration and date. Either
+opens your system's native save dialog.
 
 ### It's an average over time, not a snapshot
 
@@ -402,7 +444,11 @@ never comes with a verdict attached for free:
 - **Strongest partial**: the loudest single peak in your spectrum isn't always your pitch itself —
   for many voices it's the *second* harmonic (twice the pitch frequency) or another one. Both are
   completely ordinary; this finding just tells you which one is happening in your recording and
-  why that doesn't change what your actual pitch is.
+  why that doesn't change what your actual pitch is. If the peak lines up with a harmonic your take
+  moved too much to measure separately (see ["Unresolved"
+  harmonics](#unresolved-harmonics) below), it says so and names the likely harmonic instead of
+  guessing — it only calls a peak a possible room or voice resonance once it genuinely doesn't line
+  up with any harmonic of the pitch range you actually used.
 - **Harmonic series**: which of the pitch's overtones (H1, H2, H3…) stand out clearly enough in the
   spectrum to measure individually.
 - **Low-mid body, Presence, Air, Sibilance, Rumble**: how much energy sits in each frequency

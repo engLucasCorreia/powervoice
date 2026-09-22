@@ -257,7 +257,8 @@ const PLUGINS: TourDef = {
 
 const EXPLAIN: TourDef = {
   id: "explain",
-  version: 1,
+  // H-126: bumped for H-115's Annotations toggle, added to the "toggles" step's body text below.
+  version: 2,
   nameKey: "tour.name.explain",
   steps: [
     {

@@ -1571,7 +1571,7 @@
   "tour.explain.graph.title": "Read the annotated graph",
   "tour.explain.graph.body": "The fine line is the raw measurement; the smoother line rides its average, since a voice is noisy from one instant to the next. Shaded bands and labelled peaks mark where each finding was measured, and a dashed line shows a suggested EQ move — the same curve the module would draw if you applied it. Anything the graph has no room for appears as a card below it.",
   "tour.explain.toggles.title": "Turn overlays on or off",
-  "tour.explain.toggles.body": "Raw FFT, Smoothed, Harmonics, Voice Bands and EQ Advice each hide their layer when the graph gets busy. Closing this window changes nothing in your file — it only stops looking, and the live analyzer keeps running underneath.",
+  "tour.explain.toggles.body": "Raw FFT, Smoothed, Harmonics, Voice Bands and EQ Advice each hide their layer when the graph gets busy; Annotations hides just the callout cards and leader lines, for an unobstructed look at the curve. Maximise and Export sit beside the tour button above. Closing this window changes nothing in your file — it only stops looking, and the live analyzer keeps running underneath.",
 
   "menu.help.shortcuts": "Keyboard Shortcuts",
   "shortcuts.title": "Keyboard Shortcuts",

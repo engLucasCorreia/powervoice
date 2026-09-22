@@ -96,6 +96,9 @@ const PYRAMID_LEVELS_SPP = [64, 256, 1024, 4096, 16_384, 65_536] as const;
 /** Samples already recorded in the recording scene when the page opens. */
 const RECORDED_SAMPLES = 754_000;
 const LIVE_PEAKS_SPB = 256;
+/** H-122: the simulated `record_peaks_get` round trip — longer than one 60 Hz telemetry frame, as
+ * the real app's IPC often is under WebKitGTK. */
+const LIVE_PEAKS_ROUND_TRIP_MS = 30;
 const TILE_FRAMES = 256;
 
 export interface PreviewOptions {
@@ -1232,10 +1235,16 @@ export function installPreviewIpc(options: PreviewOptions): void {
           return vxpk(r.request_id, r.audio_rev, r.start_sample, r.spp, count, raw, values);
         }
         case "record_peaks_get": {
+          // H-122: like the real backend — the take is snapshotted up to the record head (the
+          // telemetry's `RECORDED_SAMPLES + seq * 800`) when the request arrives, and the frame
+          // lands one IPC round trip later, *slower than a telemetry frame*. Answering instantly
+          // (as before) hid the H-122 bug: the live poll was restarted by every telemetry frame
+          // and only a response faster than one frame survived — always here, rarely in the app.
           const start = a.startBucket as number;
-          const available = Math.floor((RECORDED_SAMPLES + seq * 2400) / LIVE_PEAKS_SPB);
+          const available = Math.floor((RECORDED_SAMPLES + seq * 800) / LIVE_PEAKS_SPB);
           const count = Math.max(0, Math.min(a.count as number, available - start));
-          return vxpk(0, 0, start * LIVE_PEAKS_SPB, LIVE_PEAKS_SPB, count, false, bucketPeaks(start * LIVE_PEAKS_SPB, LIVE_PEAKS_SPB, count));
+          const frame = vxpk(0, 0, start * LIVE_PEAKS_SPB, LIVE_PEAKS_SPB, count, false, bucketPeaks(start * LIVE_PEAKS_SPB, LIVE_PEAKS_SPB, count));
+          return new Promise<ArrayBuffer>((resolve) => setTimeout(() => resolve(frame), LIVE_PEAKS_ROUND_TRIP_MS));
         }
         // T-704: fire-and-forget subscriptions and view persistence the frame-time sweep hits
         // (the default case would log an error for each). `analyzer_subscribe` is with the H-42

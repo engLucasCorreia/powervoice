@@ -953,6 +953,50 @@ fn live_take_peaks_matches_the_appended_samples() {
     assert_eq!(r.fake.rt_violations(), 0, "a callback allocated");
 }
 
+/// H-122: the backend hop of the live waveform — polled the way the UI polls it (`start_bucket`
+/// 0, repeatedly while the take runs), the take's live peaks are readable mid-take and grow with
+/// every poll, every appended sample covered by a bucket carrying the signal. (The real app's
+/// missing wave was the UI discarding these responses, not this hop.) Polls are 100 ms apart
+/// because the fake input delivers its samples in ~50-75 ms bursts.
+#[test]
+fn live_take_peaks_grow_poll_by_poll_during_the_take() {
+    let mut r = rig(src, true, Some(1));
+    r.run_ms(20);
+    r.arm();
+    r.run_ms(50);
+    let mut session = r.session();
+    r.start(&mut session);
+
+    let spb = u64::from(LIVE_PEAKS_SPB);
+    let mut last_len = 0;
+    for poll in 1..=10 {
+        r.run_ms(100);
+        let snap = r
+            .eng
+            .live_take_peaks(0, 65_536)
+            .expect("a take is being captured");
+        assert!(
+            snap.len_samples > last_len,
+            "poll {poll}: the take grew ({} after {last_len})",
+            snap.len_samples
+        );
+        assert_eq!(
+            snap.buckets.len() as u64,
+            snap.len_samples.div_ceil(spb),
+            "poll {poll}: every appended sample is covered by a bucket"
+        );
+        assert!(
+            snap.buckets.iter().any(|&(mn, mx)| mx > mn),
+            "poll {poll}: the peaks carry the signal, not silence"
+        );
+        last_len = snap.len_samples;
+    }
+
+    r.stop();
+    let _ = r.result();
+    assert_eq!(r.fake.rt_violations(), 0, "a callback allocated");
+}
+
 /// H-05 (SPEC-002 §2.4, AC-8): when the capture-writer falls a whole ring (10 s) behind, the
 /// recording stops by itself and the take is kept as a contiguous, bit-exact run of the source up
 /// to the overflow — never a take with the lost samples silently spliced out.

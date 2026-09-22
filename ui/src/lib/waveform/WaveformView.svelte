@@ -611,7 +611,7 @@
     viewportWriter.set(startSample);
   });
 
-  // H-07: polls record_peaks_get at ~10 Hz while recording (the document has no committed audio
+  // H-07: polls record_peaks_get every LIVE_POLL_MS while recording (the document has no committed audio
   // yet, so the normal peaks_get effect above never fires: lenSamples stays 0 until Stop).
   $effect(() => {
     if (!isRecording) {
@@ -621,16 +621,32 @@
       return;
     }
     let disposed = false;
+    /** H-122: at most one request in flight — a round trip slower than `LIVE_POLL_MS` must not
+     * pile requests up behind each other (the next tick after it lands asks again). */
+    let inFlight = false;
     const poll = async (): Promise<void> => {
+      if (inFlight) {
+        return;
+      }
       // H-10 item 6: request sizing uses the last known bucket size, not always the starting
       // `LIVE_PEAKS_SPB` — once the take has decimated, fewer (coarser) buckets cover the same
       // span, and this still safely over-requests otherwise (the backend just returns fewer).
-      const count = Math.min(Math.ceil(rec.elapsedSamples / liveSpb) + 2, LIVE_MAX_BUCKETS);
+      // H-122: `untrack` — this runs synchronously inside the effect (the first `poll()` below),
+      // and a tracked read of `rec.elapsedSamples` made the effect depend on it: every 60 Hz
+      // telemetry frame then re-ran the effect, whose cleanup discarded the response in flight
+      // (`disposed`) and cleared the interval before it ever fired. Only a response faster than
+      // one telemetry frame survived — always in the mocked harness, rarely over the real app's
+      // IPC — so the real app drew the record head and no wave. This effect must depend on
+      // `isRecording` alone.
+      const count = untrack(() => Math.min(Math.ceil(rec.elapsedSamples / liveSpb) + 2, LIVE_MAX_BUCKETS));
+      inFlight = true;
       let buf: ArrayBuffer;
       try {
         buf = await recordPeaksGet(0, count);
       } catch {
         return; // keep showing the last good buckets; the next poll retries
+      } finally {
+        inFlight = false;
       }
       if (disposed) {
         return;

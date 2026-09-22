@@ -11,8 +11,8 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 use vox_engine::backend::fake::{CallbackSizes, FakeBackend, FakeDevice, FakeDirection, Loopback};
 use vox_engine::record::RecordingResult;
@@ -66,6 +66,79 @@ impl Drop for KillOnDrop {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
+    }
+}
+
+/// H-120: the deadline every blocking wait on the child in this file uses (same value and
+/// rationale as `crates/project/tests/crash.rs`'s `CHILD_TIMEOUT`, H-119) — generous enough to
+/// absorb a machine under heavy parallel load, while still turning a genuinely stuck child into a
+/// fast, readable test failure instead of a hang that eats the whole gate's ceiling.
+const CHILD_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Reads a child's stdout on a background thread and hands lines to the caller with a bounded
+/// wait, so a stalled child fails the read in seconds instead of blocking the test thread forever
+/// (H-119's pattern, copied from `crates/project/tests/crash.rs`).
+struct LineReader {
+    rx: mpsc::Receiver<String>,
+    seen: Vec<String>,
+}
+
+impl LineReader {
+    fn spawn(stdout: std::process::ChildStdout) -> Self {
+        let (tx, rx) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("punch-crash-reader".into())
+            .spawn(move || {
+                for line in BufReader::new(stdout).lines() {
+                    let Ok(line) = line else { break };
+                    if tx.send(line).is_err() {
+                        break;
+                    }
+                }
+            })
+            .expect("spawn the child's stdout reader thread");
+        LineReader {
+            rx,
+            seen: Vec::new(),
+        }
+    }
+
+    /// The next line within `timeout`. Panics naming `context` and every line seen from the child
+    /// so far, if the deadline passes or the child's output ends before a line arrives.
+    fn next_line(&mut self, timeout: Duration, context: &str) -> String {
+        match self.rx.recv_timeout(timeout) {
+            Ok(line) => {
+                self.seen.push(line.clone());
+                line
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => panic!(
+                "{context}: the child printed nothing for {timeout:?} (stalled or deadlocked); \
+                 lines seen from it so far: {:?}",
+                self.seen
+            ),
+            Err(mpsc::RecvTimeoutError::Disconnected) => panic!(
+                "{context}: the child's output ended before the expected line arrived; \
+                 lines seen from it so far: {:?}",
+                self.seen
+            ),
+        }
+    }
+}
+
+/// SIGKILLs `child` and waits up to `timeout` for it to be reaped. Panics naming `context` if it
+/// doesn't exit in time — `SIGKILL` can't be blocked, but a stuck OS wait shouldn't hang either.
+fn kill_and_reap(child: &mut Child, timeout: Duration, context: &str) {
+    let _ = child.kill();
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) if Instant::now() >= deadline => {
+                panic!("{context}: the child didn't exit within {timeout:?} of SIGKILL")
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(5)),
+            Err(e) => panic!("{context}: lost the child process while reaping it: {e}"),
+        }
     }
 }
 
@@ -210,7 +283,10 @@ fn punch_crash_child() {
 }
 
 /// Runs the child to `phase`, kills it (`SIGKILL`: no destructor runs) and returns its session
-/// directory and `K`.
+/// directory and `K`. Every wait on the child — for the next line, and for it to exit — is
+/// bounded by [`CHILD_TIMEOUT`] (H-120: this used to be an unbounded `lines.next()`/`wait()`, the
+/// hang class H-119 fixed in `crates/project/tests/crash.rs`), so a stalled child fails the test
+/// fast with a diagnostic instead of hanging the whole gate until its outer ceiling.
 fn crash_child(phase: &str, sessions: &Path) -> (PathBuf, u64) {
     let mut child = KillOnDrop(
         Command::new(std::env::current_exe().unwrap())
@@ -228,21 +304,18 @@ fn crash_child(phase: &str, sessions: &Path) -> (PathBuf, u64) {
             .spawn()
             .unwrap(),
     );
-    let mut lines = BufReader::new(child.0.stdout.take().unwrap()).lines();
+    let mut reader = LineReader::spawn(child.0.stdout.take().unwrap());
+    let context = format!("punch crash child (phase {phase})");
     let mut dir = None;
     loop {
-        let line = lines
-            .next()
-            .expect("the child ended before printing READY")
-            .unwrap();
+        let line = reader.next_line(CHILD_TIMEOUT, &context);
         // libtest prints `test name ... ` without a newline first: match markers anywhere.
         if let Some(i) = line.find("DIR=") {
             dir = Some(PathBuf::from(line[i + 4..].trim()));
         }
         if let Some(i) = line.find("READY K=") {
             let k = line[i + 8..].trim().parse().unwrap();
-            child.0.kill().unwrap();
-            child.0.wait().unwrap();
+            kill_and_reap(&mut child.0, CHILD_TIMEOUT, &context);
             return (dir.expect("DIR before READY"), k);
         }
     }
@@ -322,4 +395,87 @@ fn ac15_sigkill_during_pre_roll_leaves_the_document_unchanged() {
         "the document before the punch",
     );
     assert_eq!(session.history().undo_depth(), 0);
+}
+
+// --- H-120: the deadline itself ----------------------------------------------------------------
+
+/// Set to run this process as [`punch_crash_stall_child`] instead of a normal test binary
+/// invocation.
+const STALL_CHILD_ENV: &str = "VOX_PUNCH_CRASH_STALL";
+
+/// A child that never prints anything — used to prove the deadline in [`LineReader`]/
+/// [`crash_child`] actually bounds the wait instead of hanging (H-119's stall pattern, applied
+/// here to this file's own child-reading loop).
+#[test]
+fn punch_crash_stall_child() {
+    if std::env::var_os(STALL_CHILD_ENV).is_none() {
+        return;
+    }
+    loop {
+        std::thread::sleep(Duration::from_secs(3600));
+    }
+}
+
+/// H-120: a child that never prints `DIR=`/`READY K=` must fail [`crash_child`]'s wait within its
+/// timeout, with a message naming what it was waiting on and showing what the child had printed
+/// so far (nothing) — not hang until an outer ceiling (e.g. the gate's 50-minute one) kills the
+/// whole run.
+#[test]
+fn a_child_that_never_answers_fails_fast_with_a_diagnostic_message() {
+    if std::env::var_os(CHILD_DIR).is_some() || std::env::var_os(STALL_CHILD_ENV).is_some() {
+        return;
+    }
+    let mut child = KillOnDrop(
+        Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "punch_crash_stall_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(STALL_CHILD_ENV, "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let mut reader = LineReader::spawn(child.0.stdout.take().unwrap());
+    let timeout = Duration::from_millis(200);
+    let start = Instant::now();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // libtest itself prints a couple of header lines (a leading blank line, "running 1
+        // test") before the child ever would — skip past those and wait for a marker the child
+        // never prints, the same way `crash_child`'s loop searches for its own markers.
+        loop {
+            let line = reader.next_line(timeout, "stall test");
+            if line.contains("READY") {
+                break line;
+            }
+        }
+    }));
+    let elapsed = start.elapsed();
+    // Whether or not the read above reaped the child, make sure it's gone: it's only sleeping, so
+    // `SIGKILL` always lands instantly.
+    kill_and_reap(&mut child.0, CHILD_TIMEOUT, "stall test cleanup");
+
+    let payload = result.expect_err("a child that never answers must fail the test, not hang");
+    let message = payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+        .expect("panic payload is a string");
+
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "took {elapsed:?} to fail — the deadline isn't bounding the wait (timeout was {timeout:?})"
+    );
+    assert!(
+        message.contains("stall test"),
+        "message doesn't name the wait it stalled on: {message:?}"
+    );
+    assert!(
+        message.contains("stalled") || message.contains("printed nothing"),
+        "message doesn't say the child stalled: {message:?}"
+    );
 }

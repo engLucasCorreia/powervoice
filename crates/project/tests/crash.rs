@@ -8,6 +8,8 @@ mod common;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use common::script::*;
 use common::*;
@@ -20,6 +22,12 @@ const CHILD_DIR: &str = "VOX_PROJECT_CRASH_DIR";
 const CHILD_SEED: &str = "VOX_PROJECT_CRASH_SEED";
 const CHILD_MODE: &str = "VOX_PROJECT_CRASH_MODE";
 
+/// H-119: the deadline every blocking wait on a child in this file uses. A normal iteration
+/// answers within microseconds; this is generous enough to absorb a machine under heavy parallel
+/// load without false failures, while still turning a genuinely stuck child into a fast, readable
+/// test failure instead of a hang that eats the whole gate's ceiling.
+const CHILD_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// Kills (SIGKILL) and reaps the child on every exit path.
 struct ChildGuard(Child);
 
@@ -27,6 +35,74 @@ impl Drop for ChildGuard {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
+    }
+}
+
+/// Reads a child's stdout on a background thread and hands lines to the caller with a bounded
+/// wait, so a stalled child (wedged, deadlocked, or simply never answering the next `go`) fails
+/// the read in seconds instead of blocking the test thread forever.
+struct LineReader {
+    rx: mpsc::Receiver<String>,
+    seen: Vec<String>,
+}
+
+impl LineReader {
+    fn spawn(stdout: std::process::ChildStdout) -> Self {
+        let (tx, rx) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("crash-test-reader".into())
+            .spawn(move || {
+                for line in BufReader::new(stdout).lines() {
+                    let Ok(line) = line else { break };
+                    if tx.send(line).is_err() {
+                        break;
+                    }
+                }
+            })
+            .expect("spawn the child's stdout reader thread");
+        LineReader {
+            rx,
+            seen: Vec::new(),
+        }
+    }
+
+    /// The next line within `timeout`. Panics naming `context` (which step/iteration this was)
+    /// and every line seen from the child so far, if the deadline passes or the child's output
+    /// ends before the expected line arrives.
+    fn next_line(&mut self, timeout: Duration, context: &str) -> String {
+        match self.rx.recv_timeout(timeout) {
+            Ok(line) => {
+                self.seen.push(line.clone());
+                line
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => panic!(
+                "{context}: the child printed nothing for {timeout:?} (stalled or deadlocked); \
+                 lines seen from it so far: {:?}",
+                self.seen
+            ),
+            Err(mpsc::RecvTimeoutError::Disconnected) => panic!(
+                "{context}: the child's output ended before the expected line arrived; \
+                 lines seen from it so far: {:?}",
+                self.seen
+            ),
+        }
+    }
+}
+
+/// SIGKILLs `child` and waits up to `timeout` for it to be reaped. Panics naming `context` if it
+/// doesn't exit in time — `SIGKILL` can't be blocked, but a stuck OS wait shouldn't hang either.
+fn kill_and_reap(child: &mut Child, timeout: Duration, context: &str) {
+    let _ = child.kill();
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) if Instant::now() >= deadline => {
+                panic!("{context}: the child didn't exit within {timeout:?} of SIGKILL")
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(5)),
+            Err(e) => panic!("{context}: lost the child process while reaping it: {e}"),
+        }
     }
 }
 
@@ -51,6 +127,14 @@ fn crash_child() {
         line.clear();
         stdin.lock().read_line(line).unwrap() > 0
     };
+    if mode == "stall" {
+        // H-119: a child that accepts one `go` and then never answers again — used to prove the
+        // deadline in `LineReader`/`run_and_kill` actually bounds the wait instead of hanging.
+        wait_go(&mut line);
+        loop {
+            std::thread::sleep(Duration::from_secs(3600));
+        }
+    }
     if mode == "take" {
         for _ in 0..3 {
             random_op(&mut s, &mut rng, &mut clip);
@@ -99,16 +183,25 @@ fn spawn_child(dir: &Path, seed: u64, mode: &str) -> ChildGuard {
 }
 
 /// Lets the child run `steps` commands, then SIGKILLs it while it waits for the next `go`.
-/// Returns its last `prefix` line (without the prefix).
-fn run_and_kill(child: &mut ChildGuard, prefix: &str, steps: usize) -> String {
+/// Returns its last `prefix` line (without the prefix). Every wait on the child — for the next
+/// line, and for it to exit — is bounded by `timeout`; `context` (e.g. "point 3 (seed …)") names
+/// the run in any failure message.
+fn run_and_kill(
+    child: &mut ChildGuard,
+    prefix: &str,
+    steps: usize,
+    context: &str,
+    timeout: Duration,
+) -> String {
     let mut stdin = child.0.stdin.take().unwrap();
-    let mut lines = BufReader::new(child.0.stdout.take().unwrap()).lines();
+    let mut reader = LineReader::spawn(child.0.stdout.take().unwrap());
     let mut last = String::new();
-    for _ in 0..steps {
+    for step in 0..steps {
         writeln!(stdin, "go").unwrap();
         stdin.flush().unwrap();
+        let where_ = format!("{context}, step {}/{steps}", step + 1);
         last = loop {
-            let line = lines.next().expect("the child ended early").unwrap();
+            let line = reader.next_line(timeout, &where_);
             // Not `strip_prefix`: libtest prints "test crash_child ... " without a newline before
             // running the test, so the child's first line shares that line.
             if let Some(i) = line.find(prefix) {
@@ -116,8 +209,7 @@ fn run_and_kill(child: &mut ChildGuard, prefix: &str, steps: usize) -> String {
             }
         };
     }
-    child.0.kill().unwrap(); // SIGKILL: no destructor runs
-    child.0.wait().unwrap();
+    kill_and_reap(&mut child.0, timeout, context); // SIGKILL: no destructor runs
     last
 }
 
@@ -135,7 +227,8 @@ fn ac9_kill_9_after_success_at_50_points_recovers_the_exact_state() {
         let steps = 1 + rng.below(30) as usize;
         let seed = rng.next() >> 1;
         let mut child = spawn_child(dir.path(), seed, "edits");
-        let expected = run_and_kill(&mut child, "STATE ", steps);
+        let context = format!("point {point} (seed {seed}, {steps} steps)");
+        let expected = run_and_kill(&mut child, "STATE ", steps, &context, CHILD_TIMEOUT);
         let (session, report) = Session::recover(&only_session(dir.path()), options())
             .unwrap_or_else(|e| panic!("point {point} (seed {seed}): {e}"));
         assert_eq!(
@@ -160,7 +253,8 @@ fn kill_9_mid_take_then_apply_as_recorded_is_exact() {
         let steps = 1 + rng.below(8) as usize;
         let seed = rng.next() >> 1;
         let mut child = spawn_child(dir.path(), seed, "take");
-        let last = run_and_kill(&mut child, "TAKE ", steps);
+        let context = format!("point {point} (seed {seed}, {steps} steps)");
+        let last = run_and_kill(&mut child, "TAKE ", steps, &context, CHILD_TIMEOUT);
         let (samples, hash) = last.split_once(' ').unwrap();
         let samples: u64 = samples.parse().unwrap();
         let session_dir = only_session(dir.path());
@@ -185,6 +279,49 @@ fn kill_9_mid_take_then_apply_as_recorded_is_exact() {
         let got = hash_of(&read_all(s.store(), &s.current()));
         assert_eq!(format!("{got:016x}"), hash, "point {point}");
     }
+}
+
+// --- H-119: the deadline itself ----------------------------------------------------------------
+
+/// H-119: a child that accepts one `go` and then never answers again must fail `run_and_kill`
+/// within its timeout, with a message naming the step and showing what the child had printed so
+/// far — not hang until an outer ceiling (e.g. the gate's 50-minute one) kills the whole run.
+#[test]
+fn a_child_that_never_answers_fails_fast_with_a_diagnostic_message() {
+    if std::env::var_os(CHILD_DIR).is_some() {
+        return;
+    }
+    let dir = TempDir::new("stall");
+    let mut child = spawn_child(dir.path(), 1, "stall");
+    let timeout = Duration::from_millis(200);
+    let start = Instant::now();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_and_kill(&mut child, "STATE ", 2, "stall test", timeout)
+    }));
+    let elapsed = start.elapsed();
+    // Whether or not `run_and_kill` reaped the child before panicking, make sure it's gone: it's
+    // only sleeping, so `SIGKILL` always lands instantly.
+    kill_and_reap(&mut child.0, CHILD_TIMEOUT, "stall test cleanup");
+
+    let payload = result.expect_err("a child that never answers must fail the test, not hang");
+    let message = payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+        .expect("panic payload is a string");
+
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "took {elapsed:?} to fail — the deadline isn't bounding the wait (timeout was {timeout:?})"
+    );
+    assert!(
+        message.contains("stall test, step 1/2"),
+        "message doesn't name the step it stalled on: {message:?}"
+    );
+    assert!(
+        message.contains("stalled") || message.contains("printed nothing"),
+        "message doesn't say the child stalled: {message:?}"
+    );
 }
 
 // --- AC-12 -----------------------------------------------------------------------------------------
@@ -374,14 +511,12 @@ fn ac6_sigkill_during_a_sidecar_write_never_leaves_a_partial_or_corrupt_file() {
                 .unwrap(),
         );
         let mut stdin = child.0.stdin.take().unwrap();
-        let mut lines = BufReader::new(child.0.stdout.take().unwrap()).lines();
+        let mut reader = LineReader::spawn(child.0.stdout.take().unwrap());
         writeln!(stdin, "go").unwrap();
         stdin.flush().unwrap();
+        let context = format!("point {point} (seed {seed})");
         loop {
-            let line = lines
-                .next()
-                .expect("the child ended before printing READY")
-                .unwrap();
+            let line = reader.next_line(CHILD_TIMEOUT, &context);
             if line.contains("READY") {
                 break;
             }
@@ -389,9 +524,8 @@ fn ac6_sigkill_during_a_sidecar_write_never_leaves_a_partial_or_corrupt_file() {
         // A small seeded delay races the kill against the write itself. Exactly where it lands is
         // up to OS scheduling either way — that unpredictability is the point: every possible
         // instant must satisfy the invariant checked below.
-        std::thread::sleep(std::time::Duration::from_micros(rng.below(3_000)));
-        child.0.kill().unwrap();
-        child.0.wait().unwrap();
+        std::thread::sleep(Duration::from_micros(rng.below(3_000)));
+        kill_and_reap(&mut child.0, CHILD_TIMEOUT, &context);
 
         let bytes = std::fs::read(&path).unwrap_or_default();
         if bytes == s0_bytes {

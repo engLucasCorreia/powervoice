@@ -14,9 +14,18 @@
 
 import { chooseRenderer, rendererKindAfterLoss, type RendererKind, type RendererPreference } from "./rendererMode";
 
+/** H-113: both views paint an opaque background every frame, so the context is created with
+ * `alpha: false` by default — an `alpha: true` (the WebGL2 default) backbuffer lets the browser
+ * composite the canvas against whatever's behind it in the page using *our own* fragment alpha,
+ * which is exactly wrong for a translucent overlay (the selection wash): its low alpha (e.g. 0.28)
+ * ends up controlling how much of the *page* shows through the whole canvas element at that pixel,
+ * not how much of the content drawn earlier in the same canvas shows through — the bug reported as
+ * a flat, washed-out gray tint. `attributes` can still override this per caller if a future canvas
+ * genuinely needs to composite with the page. */
+const DEFAULT_CONTEXT_ATTRIBUTES: WebGLContextAttributes = { alpha: false };
+
 export interface GlContextHostOptions {
-  /** Extra `getContext("webgl2", ...)` attributes; `alpha: false` avoids compositing cost for an
-   * opaque canvas (both views paint an opaque background every frame). */
+  /** Extra `getContext("webgl2", ...)` attributes, merged over {@link DEFAULT_CONTEXT_ATTRIBUTES}. */
   attributes?: WebGLContextAttributes;
   /** Called once, the first time the effective kind is known (fresh creation, or a fallback
    * decided from a failed/missing context) — the caller turns this into a one-shot notice. Not
@@ -48,7 +57,10 @@ export class GlContextHost {
     } else {
       let gl: WebGL2RenderingContext | null = null;
       try {
-        gl = canvas.getContext("webgl2", options.attributes) as WebGL2RenderingContext | null;
+        gl = canvas.getContext("webgl2", {
+          ...DEFAULT_CONTEXT_ATTRIBUTES,
+          ...options.attributes,
+        }) as WebGL2RenderingContext | null;
       } catch {
         gl = null;
       }

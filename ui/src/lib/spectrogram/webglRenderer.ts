@@ -434,6 +434,11 @@ export class SpectrogramGlRenderer {
     const gl = this.gl;
     this.drawSeq += 1;
     gl.viewport(0, 0, opts.backingWidthPx, opts.backingHeightPx);
+    // H-113: see WaveformGlRenderer.draw's identical comment — without this, the overlay's
+    // translucent selection wash overwrites the opaque tile pixels underneath it instead of
+    // tinting them, which is what made a selection hide the spectrogram entirely.
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     const [br, bg, bb, ba] = opts.background;
     gl.clearColor(br, bg, bb, ba);
     gl.clear(gl.COLOR_BUFFER_BIT);

@@ -56,6 +56,13 @@ export class WaveformGlRenderer {
   draw(opts: WaveformGlDrawOptions): void {
     const gl = this.gl;
     gl.viewport(0, 0, opts.backingWidthPx, opts.backingHeightPx);
+    // H-113: without this, a translucent quad (the selection underlay/overlay's straight-alpha
+    // colour, `quads.ts`) simply *overwrites* whatever was drawn earlier in this same canvas
+    // instead of blending over it — the wash then reads as a flat, fully opaque colour instead of
+    // a tint, which is what made the selection hide the wave/spectrogram under it. Harmless for
+    // the fully-opaque draws (content, background) since `src*1 + dst*0 == src`.
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     const [br, bg, bb, ba] = opts.background;
     gl.clearColor(br, bg, bb, ba);
     gl.clear(gl.COLOR_BUFFER_BIT);

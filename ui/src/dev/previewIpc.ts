@@ -21,7 +21,14 @@
  *        | theme   (T-708: View → Theme ▸ open)
  *   &scene=tour&step=n[&tour=welcome|rack|noise|loudness|punch|plugins]   (T-709)
  *   &renderer=auto|webgl2|canvas2d   (T-704: the renderer Setting; default canvas2d, which keeps
- *                 screenshots deterministic — the app's own default is auto, i.e. WebGL2 first)
+ *                 screenshots deterministic — the app's own default is auto, i.e. WebGL2 first.
+ *                 H-113: this default is *not* what the owner runs — every screenshot that only
+ *                 ever opened plain `?preview` (no `&renderer=`) was checking Canvas2D while a
+ *                 real WebGL2-only bug (opaque, wrongly-blended selection overlays) shipped
+ *                 unnoticed. A visual/verification screenshot must pass `&renderer=webgl2`
+ *                 explicitly, or better, capture both — this default stays `canvas2d` only for
+ *                 the frame-time benchmark's reproducibility, and every `ui_frames.mjs` case
+ *                 already passes its own `&renderer=` for that reason.)
  *   &doc=60min   (T-704: a 60-minute document, zoomed to fit, whose peaks come from a full
  *                 precomputed pyramid — the frame-time sweep `scripts/bench/ui_frames.mjs` uses it)
  *   &dialog=tour-offer   (T-709: the first-run Welcome tour offer)

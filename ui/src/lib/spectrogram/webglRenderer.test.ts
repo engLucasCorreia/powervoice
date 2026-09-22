@@ -22,6 +22,7 @@ function fakeGl(): { gl: WebGL2RenderingContext; calls: Call[]; count: (name: st
     TEXTURE_MIN_FILTER: 14, TEXTURE_MAG_FILTER: 15, TEXTURE_WRAP_S: 16, TEXTURE_WRAP_T: 17,
     NEAREST: 18, CLAMP_TO_EDGE: 19, COMPILE_STATUS: 20, LINK_STATUS: 21, VERTEX_SHADER: 22,
     FRAGMENT_SHADER: 23, UNPACK_ALIGNMENT: 24, LINE_STRIP: 25, POINTS: 26,
+    BLEND: 27, SRC_ALPHA: 28, ONE_MINUS_SRC_ALPHA: 29,
   };
   let nextObject = 1;
   const object = (name: string) => () => {
@@ -51,7 +52,7 @@ function fakeGl(): { gl: WebGL2RenderingContext; calls: Call[]; count: (name: st
     "vertexAttribPointer", "bindTexture", "texParameteri", "texImage2D", "texSubImage2D",
     "pixelStorei", "activeTexture", "uniform1i", "uniform1f", "uniform2f", "uniform3f",
     "viewport", "clearColor", "clear", "drawArrays", "deleteTexture", "deleteBuffer",
-    "deleteVertexArray", "deleteProgram",
+    "deleteVertexArray", "deleteProgram", "enable", "blendFunc",
   ]) {
     gl[name] = record(name);
   }
@@ -104,6 +105,19 @@ function options(tiles: SpectrogramTileEntry[], over: Partial<SpectrogramGlDrawO
     ...over,
   };
 }
+
+describe("SpectrogramGlRenderer blend state (H-113)", () => {
+  it("enables straight-alpha blending every draw, so the overlay's translucent selection wash tints the tile content instead of overwriting it opaquely", () => {
+    const { gl, calls } = fakeGl();
+    const renderer = new SpectrogramGlRenderer(gl);
+    renderer.draw(options(entries([tile(0)], 800), { uploadBudget: { maxTiles: 8, maxBytes: 1 << 30 } }));
+    const blendConstants = gl as unknown as { BLEND: number; SRC_ALPHA: number; ONE_MINUS_SRC_ALPHA: number };
+    const enableCall = calls.find((c) => c.name === "enable");
+    const blendFuncCall = calls.find((c) => c.name === "blendFunc");
+    expect(enableCall?.args).toEqual([blendConstants.BLEND]);
+    expect(blendFuncCall?.args).toEqual([blendConstants.SRC_ALPHA, blendConstants.ONE_MINUS_SRC_ALPHA]);
+  });
+});
 
 describe("SpectrogramGlRenderer tile textures (H-47)", () => {
   it("uploads each tile once and never re-uploads or deletes an unchanged one", () => {

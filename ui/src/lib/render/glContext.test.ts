@@ -48,6 +48,32 @@ describe("GlContextHost (H-13, ADR-009 §4)", () => {
     expect(host.gl).toBeNull();
   });
 
+  it("creates the context with alpha:false by default (H-113: an alpha:true backbuffer lets a translucent overlay composite against the page instead of the canvas's own earlier content)", () => {
+    const fakeGl = {};
+    let capturedAttributes: WebGLContextAttributes | undefined;
+    const canvas = fakeCanvas((_type: string) => fakeGl);
+    const stubbable = canvas as unknown as { getContext: (type: string, attrs?: WebGLContextAttributes) => unknown };
+    stubbable.getContext = vi.fn((_type: string, attrs?: WebGLContextAttributes) => {
+      capturedAttributes = attrs;
+      return fakeGl;
+    });
+    new GlContextHost(canvas, "auto");
+    expect(capturedAttributes).toEqual({ alpha: false });
+  });
+
+  it("lets a caller override the default context attributes", () => {
+    const fakeGl = {};
+    let capturedAttributes: WebGLContextAttributes | undefined;
+    const canvas = fakeCanvas(() => fakeGl);
+    const stubbable = canvas as unknown as { getContext: (type: string, attrs?: WebGLContextAttributes) => unknown };
+    stubbable.getContext = vi.fn((_type: string, attrs?: WebGLContextAttributes) => {
+      capturedAttributes = attrs;
+      return fakeGl;
+    });
+    new GlContextHost(canvas, "auto", { attributes: { alpha: true, antialias: true } });
+    expect(capturedAttributes).toEqual({ alpha: true, antialias: true });
+  });
+
   it("never calls getContext when the preference forces canvas2d", () => {
     const getContext = vi.fn(() => ({}));
     const canvas = fakeCanvas(getContext);

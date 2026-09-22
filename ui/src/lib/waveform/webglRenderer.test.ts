@@ -8,7 +8,11 @@ import { WaveformGlRenderer, type WaveformGlDrawOptions } from "./webglRenderer"
  * every call `QuadProgram`/`WaveformGlRenderer` makes is a plain method on the context object, so
  * a fake records exactly what reached the driver.
  */
-function fakeGl(): { gl: WebGL2RenderingContext; drawnVertexArrays: Float32Array[] } {
+function fakeGl(): {
+  gl: WebGL2RenderingContext;
+  drawnVertexArrays: Float32Array[];
+  blendCalls: unknown[][];
+} {
   const constants: Record<string, number> = {
     ARRAY_BUFFER: 1,
     DYNAMIC_DRAW: 2,
@@ -20,6 +24,9 @@ function fakeGl(): { gl: WebGL2RenderingContext; drawnVertexArrays: Float32Array
     VERTEX_SHADER: 8,
     FRAGMENT_SHADER: 9,
     POINTS: 10,
+    BLEND: 11,
+    SRC_ALPHA: 12,
+    ONE_MINUS_SRC_ALPHA: 13,
   };
   let nextObject = 1;
   const object = () => () => ({ id: nextObject++ });
@@ -28,6 +35,7 @@ function fakeGl(): { gl: WebGL2RenderingContext; drawnVertexArrays: Float32Array
   // (shallow) copy of it, since QuadProgram re-binds/re-uploads once per `.draw()` call.
   let pendingVertices: Float32Array | null = null;
   const drawnVertexArrays: Float32Array[] = [];
+  const blendCalls: unknown[][] = [];
   const gl: Record<string, unknown> = {
     ...constants,
     createShader: object(),
@@ -56,6 +64,8 @@ function fakeGl(): { gl: WebGL2RenderingContext; drawnVertexArrays: Float32Array
     viewport: noop(),
     clearColor: noop(),
     clear: noop(),
+    enable: (cap: number) => blendCalls.push(["enable", cap]),
+    blendFunc: (sfactor: number, dfactor: number) => blendCalls.push(["blendFunc", sfactor, dfactor]),
     bufferData: (_target: number, data: Float32Array) => {
       pendingVertices = data;
     },
@@ -68,7 +78,7 @@ function fakeGl(): { gl: WebGL2RenderingContext; drawnVertexArrays: Float32Array
       }
     },
   };
-  return { gl: gl as unknown as WebGL2RenderingContext, drawnVertexArrays };
+  return { gl: gl as unknown as WebGL2RenderingContext, drawnVertexArrays, blendCalls };
 }
 
 function rgbaVertices(r: number, count: number): Float32Array {
@@ -91,6 +101,18 @@ const BASE: WaveformGlDrawOptions = {
   content: null,
   overlay: null,
 };
+
+describe("WaveformGlRenderer blend state (H-113)", () => {
+  it("enables straight-alpha blending every draw, so a translucent underlay/overlay tints earlier content instead of overwriting it opaquely", () => {
+    const { gl, blendCalls } = fakeGl();
+    const renderer = new WaveformGlRenderer(gl);
+    renderer.draw({ ...BASE, content: { mode: "columns", vertices: rgbaVertices(0.5, 3) } });
+    expect(blendCalls).toEqual([
+      ["enable", (gl as unknown as { BLEND: number }).BLEND],
+      ["blendFunc", (gl as unknown as { SRC_ALPHA: number }).SRC_ALPHA, (gl as unknown as { ONE_MINUS_SRC_ALPHA: number }).ONE_MINUS_SRC_ALPHA],
+    ]);
+  });
+});
 
 describe("WaveformGlRenderer draw order (H-79, SPEC-006 §2.12 Amendment 2)", () => {
   it("draws the underlay before the content, and the content before the overlay", () => {

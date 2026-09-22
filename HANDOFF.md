@@ -9,9 +9,9 @@ built as a Tauri 2 app with a Rust core and a Svelte 5 interface. It is an alter
 Audition's Waveform Editor, not a multitrack DAW. Mono, one recording at a time, on purpose.
 
 ## Where things stand (2026-09-22 — development paused here)
-- **204 of 207 tickets done** (1 dropped: VST2, T-811). Open: **H-103** (a rare freeze where the app stops responding and
-  cannot be closed — needs a live reproduction on the owner's machine, see below) and **H-126**
-  (a documentation sweep, dispatched as the pause began; check its branch `ticket/H-126`).
+- **205 of 208 tickets done** (1 dropped: VST2, T-811). Open: **H-103** (a rare freeze where the app stops responding and
+  cannot be closed — needs a live reproduction on the owner's machine, see below) and **H-127**
+  (retaking the four README screenshots, which show a pre-v0.4.1 app — it needs the real app running while the owner is not using it).
 - **v0.4.1 is the public release** (2026-09-22), and main is level with it plus H-125. It fixed
   everything the owner reported against v0.4.0; they tested each fix in a local build before it
   was tagged.

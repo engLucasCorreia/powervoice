@@ -1,12 +1,14 @@
 # MEMORY.md — Project memory (curated by the orchestrator only)
 
 ## Status
-- **2026-09-22. Development paused here. v0.4.1 is released and 204 of 207 tickets are done.**
+- **2026-09-22. Development paused here. v0.4.1 is released and 205 of 208 tickets are done.**
   Open: **H-103** (a rare freeze — the window stops responding, Cancel does nothing, SIGTERM is
   ignored, the UI's JS thread spins at ~91 %; suspected `rfd` gtk3 second GTK main loop; never
   reproduced on demand — **if it happens again, capture a JS profile from a dev build before
-  killing it**) and **H-126** (the documentation sweep dispatched as the pause began — check
-  `ticket/H-126` before assuming the docs are unfinished). T-811 (VST2) was **dropped** by the
+  killing it**) and **H-127** (retaking the four README
+  screenshots, which still show the pre-v0.4.1 meters, rack, EQ and selection — needs the real app
+  running at a moment the owner is not using the machine). The v0.4.1 documentation sweep (H-126)
+  is merged: the user guide, FAQ, Help Centre and tour describe the app as it ships. T-811 (VST2) was **dropped** by the
   owner — Steinberg no longer licenses the SDK (ADR-007 §7).
 - **Released:** v0.4.1 on GitHub (AppImage, .deb, unverified .msi/.exe/.dmg), the first release the
   owner tested fix by fix before it was tagged. Main carries one fix beyond it (H-125: a plugin

@@ -102,6 +102,13 @@ export async function runPreviewScene(options: PreviewOptions, menu: string | nu
     case "export":
       openExportDialog("chapter-03");
       break;
+    case "explain":
+      // H-115: same real path the `explain` tour already uses above — click the toolbar button
+      // and let the mocked average job (`spectrum_analyze_start` in `previewIpc.ts`) complete,
+      // rather than opening the modal through a store call the button itself wouldn't reach.
+      click("analyzer-explain-open");
+      await sleep(900);
+      break;
     case "new-recording":
       openNewRecordingPrompt({ sample_rate_hz: PREVIEW_RATE_HZ, bit_depth: "24" });
       break;

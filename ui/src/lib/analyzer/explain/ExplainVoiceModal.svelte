@@ -1,10 +1,18 @@
 <script lang="ts">
   import { t } from "../../i18n";
-  import { Dialog, StatusDot, ToggleButton } from "../../ui";
+  import { Button, Dialog, IconButton, Menu, StatusDot, ToggleButton } from "../../ui";
+  import type { MenuEntry } from "../../ui/menuModel";
   import { formatNumber } from "../../ui/units";
+  import type { IpcError } from "../../ipc/bindings";
+  import { noticeFromIpcError } from "../../notices/fromIpcError";
+  import { pushNotice } from "../../state/notices.svelte";
   import TourButton from "../../tour/TourButton.svelte";
   import { closeExplainVoice, explainModalState } from "./explainModal.svelte";
   import { explainVoiceState } from "./explainVoice.svelte";
+  import { explainDialogStyle } from "./explainDialogSize";
+  import { buildExplainExportData, type ExplainGraphExportFrame } from "./explainExport";
+  import { exportExplainImage, exportExplainReport } from "./explainExportIo";
+  import { loadShowAnnotationsPref, saveShowAnnotationsPref } from "./explainPrefs";
   import { explainFindings } from "./prose";
   import { buildVoiceSummary, type ProfileId } from "./summary";
   import ExplainGraph from "./ExplainGraph.svelte";
@@ -31,6 +39,16 @@
    * the largest region in the dialog, as the reference is. `DESKTOP_MAX_LABELS` rose with it: a
    * taller plot has room to keep most findings on the chart itself, which is what the reference
    * shows, rather than routing them to the "also measured" list below by default.
+   *
+   * **H-115**: four more owner requests. (1) The dialog now sizes itself from the viewport
+   * (`explainDialogSize.ts`) instead of the `min(840px, 90vh)` pixel cap H-102 left behind — a
+   * small box in the middle of a 4K display — plus a maximise/restore control next to the tour
+   * button. (2) An "Annotations" toggle hides `ExplainGraph`'s cards/leader lines only (curves,
+   * bands and markers keep drawing), remembered across sessions (`explainPrefs.ts`). (3) When
+   * EQ Advice is on and there is nothing to draw, a line beside the toggles says so, with the
+   * reason (reusing the summary's own "Suggested focus" prose — never a second explanation of the
+   * same numbers) available as its tooltip. (4) The export menu renders a PNG and a self-contained
+   * HTML report of exactly what is on screen (`explainExport*.ts`) through the native save dialog.
    */
 
   const MOBILE_MAX_LABELS = 3;
@@ -42,8 +60,18 @@
   let showHarmonics = $state(true);
   let showBands = $state(true);
   let showEqAdvice = $state(true);
+  /** H-115 ticket §2: hides the graph's annotation cards/leader lines only, remembered across
+   * sessions the same way the theme preference is (`explainPrefs.ts`). */
+  let showAnnotations = $state(loadShowAnnotationsPref());
+  /** H-115 ticket §1: the maximise/restore control next to the tour button. */
+  let maximized = $state(false);
   let isNarrow = $state(false);
   let beneath: VoiceFinding[] = $state([]);
+  /** H-115: `ExplainGraph`'s bound-out canvas + current placed-card layout, for the export. */
+  let exportFrame: ExplainGraphExportFrame | null = $state(null);
+  let exportMenuOpen = $state(false);
+  let exportTrigger: HTMLButtonElement | undefined = $state();
+  let exporting = $state(false);
 
   const open = $derived(explainModalState().open);
   const snapshot = $derived(explainVoiceState().snapshot);
@@ -51,6 +79,89 @@
   const subtitle = $derived(snapshot ? t("explain.subtitle", { seconds: formatNumber(snapshot.spanS, 1) }) : "");
   const summary = $derived(snapshot ? buildVoiceSummary(snapshot) : null);
   const prose = $derived(snapshot ? explainFindings(snapshot) : []);
+  const dialogStyle = $derived(explainDialogStyle(maximized));
+
+  /** H-115 ticket §3: "EQ Advice must never be a silent no-op." `summary.eqBands` is what
+   * `ExplainGraph` draws the dashed overlay from — empty means the toggle has nothing to show. */
+  const eqAdviceEmpty = $derived(!!summary && summary.eqBands.length === 0);
+  /** The reason, reusing the summary's own "Suggested focus" sentences (which already spell out
+   * *why* nothing crossed far enough to warrant a change, e.g. "close enough to the line to
+   * listen before anything is changed") rather than writing a second explanation of the same
+   * numbers. The processed-floor observation is not about EQ, so it is left out. */
+  const eqAdviceEmptyReason = $derived(
+    summary
+      ? summary.focus
+          .filter((item) => item.id !== "noise_processing")
+          .map((item) => item.text)
+          .join(" ")
+      : "",
+  );
+
+  const exportMenuItems = $derived<MenuEntry[]>([
+    {
+      kind: "item",
+      id: "image",
+      label: t("explain.export.image"),
+      disabled: !exportFrame || exporting,
+      testid: "explain-export-image",
+      onselect: () => void runExport("image"),
+    },
+    {
+      kind: "item",
+      id: "report",
+      label: t("explain.export.report"),
+      disabled: !exportFrame || exporting,
+      testid: "explain-export-report",
+      onselect: () => void runExport("report"),
+    },
+  ]);
+
+  $effect(() => {
+    saveShowAnnotationsPref(showAnnotations);
+  });
+
+  function isIpcError(value: unknown): value is IpcError {
+    return typeof value === "object" && value !== null && "code" in value && "key" in value;
+  }
+
+  function notify(level: "info" | "warning" | "error", key: string, params: Record<string, string> = {}): void {
+    pushNotice({ level, key, params, persistent: false, id: null, cleared: false, auto_dismiss_ms: null, action: null });
+  }
+
+  /** Builds the export data from exactly what is already on screen and hands it to the native
+   * save dialog (`explainExportIo.ts`); `false` back from that (the dialog was cancelled) shows
+   * no notice — cancelling is not a failure. */
+  async function runExport(kind: "image" | "report"): Promise<void> {
+    exportMenuOpen = false;
+    if (!snapshot || !summary || !exportFrame || exporting) {
+      return;
+    }
+    exporting = true;
+    try {
+      const data = buildExplainExportData({
+        snapshot,
+        summary,
+        prose,
+        subtitle,
+        graph: exportFrame,
+        showAnnotations,
+        showEqAdvice,
+        beneathFindings: beneath,
+      });
+      const saved = kind === "image" ? await exportExplainImage(data) : await exportExplainReport(data);
+      if (saved) {
+        notify("info", kind === "image" ? "notice.explain.export_saved_image" : "notice.explain.export_saved_report");
+      }
+    } catch (err) {
+      if (isIpcError(err)) {
+        pushNotice(noticeFromIpcError(err));
+      } else {
+        notify("error", "notice.explain.export_failed");
+      }
+    } finally {
+      exporting = false;
+    }
+  }
 
   const SEVERITY_TONE: Record<FindingSeverity, "success" | "accent" | "warning" | "danger"> = {
     good: "success",
@@ -101,9 +212,45 @@
     titleId="explain-voice-title"
     testid="explain-voice-modal"
     onkeydown={onKeydown}
-    style="height: min(840px, 90vh);"
+    style={dialogStyle}
   >
     {#snippet headerActions()}
+      <IconButton
+        icon={maximized ? "collapse" : "expand"}
+        label={t(maximized ? "explain.restore" : "explain.maximize")}
+        size="md"
+        pressed={maximized}
+        testid="explain-maximize"
+        onclick={() => (maximized = !maximized)}
+      />
+      <div class="export-menu">
+        <Button
+          variant="ghost"
+          size="md"
+          icon="save"
+          iconEnd="chevronDown"
+          title={t("explain.export.menu_title")}
+          aria-haspopup="menu"
+          aria-expanded={exportMenuOpen}
+          disabled={!exportFrame}
+          loading={exporting}
+          bind:element={exportTrigger}
+          testid="explain-export-menu-trigger"
+          onclick={() => (exportMenuOpen = !exportMenuOpen)}
+        >
+          {t("explain.export.menu")}
+        </Button>
+        <Menu
+          open={exportMenuOpen}
+          anchor={exportTrigger}
+          items={exportMenuItems}
+          label={t("explain.export.menu_title")}
+          testid="explain-export-menu"
+          placement="bottom-end"
+          minWidth={200}
+          onclose={() => (exportMenuOpen = false)}
+        />
+      </div>
       <TourButton tour="explain" size="md" />
     {/snippet}
     <p class="subtitle" data-testid="explain-subtitle" data-tour="explain-subtitle">{subtitle}</p>
@@ -151,6 +298,12 @@
       <ToggleButton size="sm" bind:pressed={showHarmonics} testid="explain-toggle-harmonics">{t("explain.toggle.harmonics")}</ToggleButton>
       <ToggleButton size="sm" bind:pressed={showBands} testid="explain-toggle-bands">{t("explain.toggle.bands")}</ToggleButton>
       <ToggleButton size="sm" bind:pressed={showEqAdvice} testid="explain-toggle-eq">{t("explain.toggle.eq_advice")}</ToggleButton>
+      <ToggleButton size="sm" bind:pressed={showAnnotations} testid="explain-toggle-annotations">{t("explain.toggle.annotations")}</ToggleButton>
+      {#if showEqAdvice && eqAdviceEmpty}
+        <span class="eq-advice-note" data-testid="explain-eq-advice-empty" title={eqAdviceEmptyReason}>
+          {t("explain.eq_advice.no_change")}
+        </span>
+      {/if}
     </div>
 
     <div class="graph-area" data-testid="explain-graph-area" data-tour="explain-graph-area">
@@ -161,9 +314,11 @@
         {showHarmonics}
         {showBands}
         {showEqAdvice}
+        {showAnnotations}
         eqBands={summary?.eqBands ?? []}
         {maxLabels}
         bind:beneath
+        bind:exportFrame
         testid="explain-graph"
       />
     </div>
@@ -346,7 +501,22 @@
     display: flex;
     flex: none;
     flex-wrap: wrap;
+    align-items: center;
     gap: var(--pv-space-2);
+  }
+
+  /* H-115 ticket §3: "EQ Advice must never be a silent no-op" — said in words, right beside the
+     toggle it describes, with the reason a tooltip away (`title`) rather than repeated in full. */
+  .eq-advice-note {
+    color: var(--pv-text-tertiary);
+    font-size: var(--pv-text-xs);
+    font-style: italic;
+    cursor: help;
+  }
+
+  .export-menu {
+    display: inline-flex;
+    position: relative;
   }
 
   /* H-102: this is the dominant element of the dialog, not a fifth of it — everything else above

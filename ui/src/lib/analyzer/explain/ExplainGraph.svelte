@@ -33,6 +33,7 @@
   import type { VoiceFinding } from "./findings";
   import type { VoiceSnapshot } from "./snapshot";
   import ExplainFindingCard from "./ExplainFindingCard.svelte";
+  import type { ExplainGraphExportFrame } from "./explainExport";
 
   /**
    * The annotated graph itself (H-92 ticket §3): the frozen curve pair on the shared log
@@ -41,6 +42,13 @@
    * and H-93's `layoutAnnotations` — no analysis or layout logic of its own beyond mapping
    * measured Hz/dB to plot pixels (`explainAnnotations.ts` does that mapping, tested without a
    * canvas).
+   *
+   * H-115: `showAnnotations` hides the cards and their leader lines only — the curves, bands and
+   * markers they would have annotated keep drawing, so turning it off gives an unobstructed view
+   * of the smoothed curve (the owner's request). `exportFrame` is bound out for
+   * `explainExport.ts`: the live canvas element (already drawn, whatever the current toggles are)
+   * plus the same placed-card rects/leaders this component itself draws, so the export composes
+   * from exactly the layout the user is looking at rather than recomputing anything.
    */
 
   const MARGIN = { left: 48, right: 10, top: 10, bottom: 20 };
@@ -54,9 +62,11 @@
     showHarmonics,
     showBands,
     showEqAdvice,
+    showAnnotations = true,
     eqBands = [],
     maxLabels,
     beneath = $bindable([]),
+    exportFrame = $bindable(null),
     testid,
   }: {
     snapshot: VoiceSnapshot;
@@ -65,6 +75,9 @@
     showHarmonics: boolean;
     showBands: boolean;
     showEqAdvice: boolean;
+    /** H-115: hides the annotation cards and their leader lines only (curves/bands/markers keep
+     * drawing) — the owner's "let me see the whole smoothed graph" request. */
+    showAnnotations?: boolean;
     /** H-101: H-94's conservative EQ suggestions, drawn as a dashed curve over — never
      * modifying — the measured spectrum, behind `showEqAdvice`. */
     eqBands?: EqAction[];
@@ -72,6 +85,9 @@
     maxLabels: number;
     /** Findings with no card on the graph — bound out for the modal's "also measured" list. */
     beneath?: VoiceFinding[];
+    /** H-115: the live canvas plus the current placed-card layout, bound out for
+     * `explainExport.ts` — `null` until the canvas has a real size. */
+    exportFrame?: ExplainGraphExportFrame | null;
     testid: string;
   } = $props();
 
@@ -529,6 +545,32 @@
 
   $effect(() => () => frames.dispose());
 
+  // H-115: the export frame is a thin snapshot of what is already reactive here — the canvas
+  // element itself (a live reference: whatever it holds by the time a caller actually reads it,
+  // not a copy taken now) plus the current placed cards' rects/leaders and the plot rect they are
+  // relative to. `showAnnotations` decides whether the caller draws them at all, so the frame
+  // always carries the data and lets the composer make that call, the same way this component
+  // does for its own overlay above.
+  $effect(() => {
+    if (!canvasEl || width <= 0 || height <= 0) {
+      exportFrame = null;
+      return;
+    }
+    exportFrame = {
+      canvas: canvasEl,
+      widthPx: width,
+      heightPx: height,
+      plot,
+      cards: layout.placed.map((p) => ({
+        rect: p.rect,
+        title: p.item.prose.title,
+        measured: p.item.prose.measured,
+        severity: p.item.prose.severity,
+      })),
+      leaders: layout.placed.map((p) => ({ from: p.leader.from, to: p.leader.to })),
+    };
+  });
+
   $effect(() => {
     const el = canvasEl;
     if (!el) {
@@ -574,22 +616,24 @@
       onmousemove={handleMouseMove}
       onmouseleave={handleMouseLeave}
     ></canvas>
-    <svg class="leaders" aria-hidden="true">
+    {#if showAnnotations}
+      <svg class="leaders" aria-hidden="true">
+        {#each layout.placed as p (p.item.id)}
+          <line x1={p.leader.from.x} y1={p.leader.from.y} x2={p.leader.to.x} y2={p.leader.to.y} />
+          <circle cx={p.leader.to.x} cy={p.leader.to.y} r="2.5" />
+        {/each}
+      </svg>
       {#each layout.placed as p (p.item.id)}
-        <line x1={p.leader.from.x} y1={p.leader.from.y} x2={p.leader.to.x} y2={p.leader.to.y} />
-        <circle cx={p.leader.to.x} cy={p.leader.to.y} r="2.5" />
+        <div class="annotation" style:left="{p.rect.x}px" style:top="{p.rect.y}px" style:width="{p.rect.width}px">
+          <ExplainFindingCard
+            prose={p.item.prose}
+            {showEqAdvice}
+            compact
+            testid={`${testid}-annotation-${p.item.id}`}
+          />
+        </div>
       {/each}
-    </svg>
-    {#each layout.placed as p (p.item.id)}
-      <div class="annotation" style:left="{p.rect.x}px" style:top="{p.rect.y}px" style:width="{p.rect.width}px">
-        <ExplainFindingCard
-          prose={p.item.prose}
-          {showEqAdvice}
-          compact
-          testid={`${testid}-annotation-${p.item.id}`}
-        />
-      </div>
-    {/each}
+    {/if}
     {#if hoverReadout}
       <div class="hover" data-testid={`${testid}-hover`} style:left="{hoverReadout.x}px">{hoverReadout.text}</div>
     {/if}

@@ -41,7 +41,14 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(settings::SettingsStore::load_default())
         .manage(presets::PresetStores::load_default())
+        // H-115 (security amendment): single-use save-dialog-picked destinations for the
+        // "Explain My Voice" export — see `ipc::explain_export_commands`'s module doc.
+        .manage(ipc::ExplainExportTokens::default())
         .setup(|app| {
+            // H-115 (security amendment): so `explain_export_pick_path` can reach the app handle
+            // through `State` (`ipc::explain_export_commands`'s module doc explains why not as a
+            // direct command argument).
+            app.manage(ipc::ExplainExportAppHandle(app.handle().clone()));
             // S1-01: the audio engine starts with the saved device prefs (SPEC-001 §2.5).
             let settings = app.state::<settings::SettingsStore>().get();
             let sessions_dir = document::default_sessions_dir();

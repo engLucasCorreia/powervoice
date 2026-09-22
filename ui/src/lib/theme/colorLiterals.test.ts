@@ -20,6 +20,13 @@ const ALLOWLIST: readonly RegExp[] = [
   /^\/src\/lib\/theme\/(design-tokens|tokens|theme-bridge)\.css$/,
   /^\/src\/lib\/spectrogram\/colormap\.ts$/, // Inferno/Viridis control points (SPEC-007 §2.5)
   /^\/src\/spike\/colormap\.ts$/, // the ADR-009 spike's copy of the same LUTs
+  // H-115: the exported HTML report is a static file, opened outside the running app (any
+  // browser, or printed) — it carries its own fixed, self-contained stylesheet rather than the
+  // live theme system, so it cannot read a CSS custom property the way everything else here
+  // does. Its colours are a print-friendly light palette, not "the live app's colours"; the
+  // rendered *image* embedded inside it still comes from `explainExportImage.ts`, which does
+  // read the current theme (via `themeColors.ts`) and carries no literal of its own.
+  /^\/src\/lib\/analyzer\/explain\/explainExportHtml\.ts$/,
 ];
 
 const HEX = /#[0-9a-fA-F]{3,8}\b/g;

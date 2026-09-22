@@ -16,7 +16,8 @@
  *           audio-devices | confirm | channel-choice | clip | low-disk |
  *           plugin-install | plugin-collision | plugin-failed   (T-809 "Install module…") |
  *           bake   (T-602, with `scene=rack`: the noise-only confirm or the progress dialog) |
- *           help[&help=<doc>:<section>]   (H-107: the Help Centre; default user-guide:plugins)
+ *           help[&help=<doc>:<section>]   (H-107: the Help Centre; default user-guide:plugins) |
+ *           explain   (H-115: "Explain My Voice", opened through the real button/mocked job)
  *   &menu=file | edit | view | effects | help | normalize | add-module | rack-slot
  *        | theme   (T-708: View → Theme ▸ open)
  *   &scene=tour&step=n[&tour=welcome|rack|noise|loudness|punch|plugins]   (T-709)

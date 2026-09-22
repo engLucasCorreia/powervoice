@@ -217,6 +217,19 @@ export function themeColors(): ThemeColors {
   return cache.colors;
 }
 
+/** One CSS custom property's current value — the same `getComputedStyle`-first,
+ * parsed-`design-tokens.css`-fallback lookup {@link readThemeColors} uses for every field of
+ * {@link ThemeColors}, exposed directly for a caller that needs a token outside that curated
+ * shape (H-115's export palette: status/text roles the canvas renderers above have no use for).
+ * T-708: this is how code outside `design-tokens.css` gets a colour without ever writing one
+ * down itself. */
+export function themeTokenValue(name: string): string {
+  const theme = currentTheme();
+  const style = getComputedStyle(document.documentElement);
+  const fallback = tokenFile(theme);
+  return style.getPropertyValue(name).trim() || resolveValue(fallback, name) || "";
+}
+
 /** EQ node colour for a band key (falls back to the curve colour for unknown keys). */
 export function eqBandColor(colors: ThemeColors, key: string): ThemeColor {
   return colors.eq.bands[key] ?? colors.eq.curve;

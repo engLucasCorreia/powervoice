@@ -106,3 +106,92 @@ describe("ExplainVoiceModal (H-92)", () => {
     unmount(app);
   });
 });
+
+/** H-115 ticket §1: "the screen is very small — it's OK to make it very big — and a maximise
+ * control." */
+describe("ExplainVoiceModal maximise (H-115)", () => {
+  it("starts at the default (non-maximised) size and toggles to nearly full-viewport on click", () => {
+    openExplainVoice(input());
+    const { target, app } = mountModal();
+    flushSync();
+    const dialog = target.querySelector<HTMLElement>('[data-testid="explain-voice-modal"]')!;
+    expect(dialog.getAttribute("style")).toContain("max(880px, 88vw)");
+
+    target.querySelector<HTMLButtonElement>('[data-testid="explain-maximize"]')!.click();
+    flushSync();
+    expect(dialog.getAttribute("style")).toContain("98vw");
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    unmount(app);
+  });
+});
+
+/** H-115 ticket §2: "I did not find something to toggle the comments in the picture." */
+describe("ExplainVoiceModal Annotations toggle (H-115)", () => {
+  afterEach(() => {
+    localStorage.removeItem("powervoice.explain.annotations");
+  });
+
+  it("is on by default, alongside the other five toggles", () => {
+    openExplainVoice(input());
+    const { target, app } = mountModal();
+    flushSync();
+    const toggle = target.querySelector('[data-testid="explain-toggle-annotations"]')!;
+    expect(toggle.textContent).toContain("Annotations");
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    unmount(app);
+  });
+
+  it("can be turned off without breaking the graph, and the choice is remembered", () => {
+    openExplainVoice(input());
+    const { target, app } = mountModal();
+    flushSync();
+    const toggle = target.querySelector<HTMLButtonElement>('[data-testid="explain-toggle-annotations"]')!;
+    toggle.click();
+    flushSync();
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    expect(target.querySelector('[data-testid="explain-graph-root"]')).not.toBeNull();
+    expect(localStorage.getItem("powervoice.explain.annotations")).toBe("0");
+    unmount(app);
+  });
+});
+
+/** H-115 ticket §3: "The EQ advice I toggle on and off but I don't find where it is" — the toggle
+ * must never look like a no-op. */
+describe("ExplainVoiceModal EQ Advice empty state (H-115)", () => {
+  it("says so, with the reason available, when the toggle is on but there is nothing to draw", () => {
+    // `balancedReport()` (the default fixture): "every measurement sits in the healthy zone" —
+    // no finding crosses a threshold, so `summary.eqBands` is empty.
+    openExplainVoice(input());
+    const { target, app } = mountModal();
+    flushSync();
+    const note = target.querySelector('[data-testid="explain-eq-advice-empty"]');
+    expect(note).not.toBeNull();
+    expect(note!.textContent).toContain("No EQ change suggested for this take");
+    expect(note!.getAttribute("title")).toContain("No action suggested");
+    unmount(app);
+  });
+
+  it("disappears when the EQ Advice toggle itself is off", () => {
+    openExplainVoice(input());
+    const { target, app } = mountModal();
+    flushSync();
+    target.querySelector<HTMLButtonElement>('[data-testid="explain-toggle-eq"]')!.click();
+    flushSync();
+    expect(target.querySelector('[data-testid="explain-eq-advice-empty"]')).toBeNull();
+    unmount(app);
+  });
+});
+
+/** H-115 ticket §4: "a button to export that screen". The rendered PNG itself needs a real 2D
+ * canvas context jsdom doesn't have (MEMORY.md); `explainExport*.test.ts` cover that logic. What
+ * is verified here is that the control only offers to export once there is something to export. */
+describe("ExplainVoiceModal export menu (H-115)", () => {
+  it("is disabled until the graph has produced an export frame (jsdom never sizes the canvas)", () => {
+    openExplainVoice(input());
+    const { target, app } = mountModal();
+    flushSync();
+    const trigger = target.querySelector<HTMLButtonElement>('[data-testid="explain-export-menu-trigger"]')!;
+    expect(trigger.disabled).toBe(true);
+    unmount(app);
+  });
+});

@@ -44,6 +44,7 @@ import Maximize from "@lucide/svelte/icons/maximize";
 import Maximize2 from "@lucide/svelte/icons/maximize-2";
 import Mic from "@lucide/svelte/icons/mic";
 import MicOff from "@lucide/svelte/icons/mic-off";
+import Minimize2 from "@lucide/svelte/icons/minimize-2";
 import Minus from "@lucide/svelte/icons/minus";
 import PackagePlus from "@lucide/svelte/icons/package-plus";
 import PanelBottom from "@lucide/svelte/icons/panel-bottom";
@@ -110,6 +111,7 @@ export const ICONS = {
   zoomToSelection: ScanSearch,
   zoomFull: Maximize,
   expand: Maximize2,
+  collapse: Minimize2,
   panelLeft: PanelLeft,
   panelRight: PanelRight,
   panelBottom: PanelBottom,

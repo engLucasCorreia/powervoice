@@ -808,6 +808,40 @@ export async function exportCancel(jobId: number): Promise<void> {
 }
 
 /**
+ * H-115 (security amendment): opens the native save dialog **on the backend** for "Explain My
+ * Voice"'s export — the frontend never supplies a path, only UI hints (a suggested file name and
+ * a filter). Returns the single-use token `explainExportWriteBytes` redeems, or `null` if the
+ * dialog was cancelled. See `explain_export_commands.rs`'s module doc for why the path moved to
+ * the backend (a `path: String` argument here would let any script in the webview overwrite any
+ * file the user can write, not just this feature's own code).
+ */
+export async function explainExportPickPath(args: {
+  suggestedFileName: string;
+  filterName: string;
+  filterExtensions: string[];
+}): Promise<string | null> {
+  return invoke<string | null>("explain_export_pick_path" satisfies CommandName, {
+    suggestedFileName: args.suggestedFileName,
+    filterName: args.filterName,
+    filterExtensions: args.filterExtensions,
+  });
+}
+
+/**
+ * H-115 (security amendment): writes `bytes` to the path `token` (from
+ * {@link explainExportPickPath}) was minted for. `bytes` is the command's *entire* request body —
+ * `invoke` sends a `Uint8Array`/`ArrayBuffer` payload as `application/octet-stream`, never a JSON
+ * number array (CLAUDE.md's binary-IPC rule; a print-resolution export PNG measured ~1 MB, which
+ * a JSON number array would have inflated to ~3.6 MB of decimal text) — so the token travels in a
+ * header instead of a second argument, the same way Tauri's own `Channel` fetches its data.
+ */
+export async function explainExportWriteBytes(token: string, bytes: Uint8Array): Promise<void> {
+  return invoke<void>("explain_export_write_bytes" satisfies CommandName, bytes, {
+    headers: { "X-Explain-Export-Token": token },
+  });
+}
+
+/**
  * H-96 "belt and braces": the last known status of any job (any kind — export, normalize
  * peak/LUFS, bake), or `null` for an id this app session never started or has long since
  * finished and evicted from the backend's small recovery cache. The UI polls this on a timeout

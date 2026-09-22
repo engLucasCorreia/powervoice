@@ -21,6 +21,7 @@ pub mod document_dto;
 mod dto;
 mod error;
 mod events;
+mod explain_export_commands;
 pub mod export_commands;
 pub mod export_dto;
 mod job_status_commands;
@@ -82,6 +83,7 @@ pub use events::{
     emit_normalize_result, emit_notice, emit_plugin_scan_progress, emit_plugin_scan_summary,
     emit_spectrum_report,
 };
+pub use explain_export_commands::*;
 pub use export_commands::*;
 pub use export_dto::{
     ExportFormatDto, ExportFormatsDto, ExportRangeDto, ExportRequestDto, ExportStartedDto,
@@ -251,6 +253,8 @@ crate::ipc_commands!(
     export_formats,
     export_start,
     export_cancel,
+    explain_export_pick_path,
+    explain_export_write_bytes,
     job_status,
     nr_capture_start,
     nr_capture_cancel,
@@ -394,6 +398,8 @@ crate::ipc_commands!(
     export_formats,
     export_start,
     export_cancel,
+    explain_export_pick_path,
+    explain_export_write_bytes,
     job_status,
     nr_capture_start,
     nr_capture_cancel,

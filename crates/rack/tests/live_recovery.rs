@@ -247,3 +247,105 @@ fn a_failing_reresolve_keeps_the_placeholder_and_its_blob() {
         d.notices
     );
 }
+
+/// A synchronous factory standing in for a concurrent install (H-125): the first time the rack
+/// instantiates it, it registers `GainFactory` into the registry the rack shares — so the
+/// registry changes *while the rack is still resolving its other slots*, the window a real
+/// background scan (T-804) can hit when it hot-adds a plugin during a document open or an
+/// output (re)open. Deterministic: no threads, the register happens at a fixed point.
+struct InstallsGainOnCreate {
+    descriptor: ModuleDescriptor,
+    registry: std::sync::Mutex<std::sync::Weak<Registry>>,
+    installed: AtomicBool,
+}
+
+impl ModuleFactory for InstallsGainOnCreate {
+    fn descriptor(&self) -> &ModuleDescriptor {
+        &self.descriptor
+    }
+    fn create(&self) -> Result<Box<dyn Module>, ModuleError> {
+        if !self.installed.swap(true, Ordering::SeqCst)
+            && let Some(registry) = self.registry.lock().unwrap().upgrade()
+        {
+            registry.register(Arc::new(GainFactory::new())).unwrap();
+        }
+        Ok(Box::new(Sentinel::new()))
+    }
+}
+
+/// A registry holding only [`InstallsGainOnCreate`] (under `Sentinel`'s id).
+fn registry_that_installs_gain_mid_resolve() -> Arc<Registry> {
+    let registry = Arc::new(Registry::new());
+    registry
+        .register(Arc::new(InstallsGainOnCreate {
+            descriptor: Sentinel::new().descriptor().clone(),
+            registry: std::sync::Mutex::new(Arc::downgrade(&registry)),
+            installed: AtomicBool::new(false),
+        }))
+        .unwrap();
+    registry
+}
+
+fn assert_recovered_after_ticks(d: &mut Driver, x: &[f32]) {
+    d.run_to_end(x);
+    assert_eq!(
+        d.host.slot_info(0).unwrap().status,
+        SlotStatus::Active,
+        "a module registered while the rack was resolving must still be picked up"
+    );
+    assert!(
+        d.notices
+            .iter()
+            .any(|(_, n)| matches!(n, RackNotice::SlotRecovered { index: 0, .. })),
+        "{:?}",
+        d.notices
+    );
+}
+
+/// H-125: a registry change that lands *during* `RackHost::new` (after slot 0 resolved as
+/// Missing, before the rack recorded the registry generation) must not be swallowed — the rack
+/// has to record the generation it resolved against, not the one after, or the slot stays
+/// Missing until the next unrelated registry change.
+#[test]
+fn a_module_registered_while_the_rack_is_being_built_still_recovers() {
+    let registry = registry_that_installs_gain_mid_resolve();
+    let m = model(vec![gain_slot(-6.0), slot(Sentinel::ID, &[])]);
+    let x = white(4, 12_000);
+    let mut d = Driver::with_registry(registry.clone(), &m, 10, x.len());
+    assert!(
+        registry.get(Gain::ID).is_some(),
+        "setup: resolving slot 1 installed Gain"
+    );
+    assert!(
+        matches!(
+            d.host.slot_info(0).unwrap().status,
+            SlotStatus::Missing { .. }
+        ),
+        "setup: slot 0 resolved before the install"
+    );
+    assert_recovered_after_ticks(&mut d, &x);
+}
+
+/// H-125: the same window in `RackHost::load_model` (document open into a live rack).
+#[test]
+fn a_module_registered_while_a_model_is_being_loaded_still_recovers() {
+    let registry = registry_that_installs_gain_mid_resolve();
+    let x = white(5, 12_000);
+    let mut d = Driver::with_registry(registry.clone(), &model(Vec::new()), 11, x.len());
+    d.run_until(&x, 2_000);
+    d.host
+        .load_model(&model(vec![gain_slot(-6.0), slot(Sentinel::ID, &[])]))
+        .unwrap();
+    assert!(
+        registry.get(Gain::ID).is_some(),
+        "setup: resolving slot 1 installed Gain"
+    );
+    assert!(
+        matches!(
+            d.host.slot_info(0).unwrap().status,
+            SlotStatus::Missing { .. }
+        ),
+        "setup: slot 0 resolved before the install"
+    );
+    assert_recovered_after_ticks(&mut d, &x);
+}

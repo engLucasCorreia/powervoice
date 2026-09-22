@@ -757,6 +757,10 @@ impl RackHost {
         let mut slots = Vec::with_capacity(model.slots.len());
         let mut layout = Vec::with_capacity(model.slots.len());
         let mut next_uid = 1;
+        // H-40/H-125: the generation the slots are resolved *against*, read before resolving —
+        // a register that lands mid-resolve (a background scan's hot-add) then still differs
+        // from it on the first `tick`, instead of being recorded as already seen and missed.
+        let registry_generation = registry.generation();
         for (i, s) in model.slots.iter().enumerate() {
             let uid = SlotUid(next_uid);
             next_uid += 1;
@@ -773,7 +777,6 @@ impl RackHost {
         let ab_capacity = (total as usize).max((config.sample_rate * 0.1).round() as usize);
         let (live, link) = LiveRack::new(Box::new(chain), ab_capacity);
         let (loads_tx, loads_rx) = mpsc::channel();
-        let registry_generation = registry.generation();
         let mut host = Self {
             registry,
             config,
@@ -2270,6 +2273,8 @@ impl RackHost {
         while !self.slots.is_empty() {
             self.remove(0)?;
         }
+        // H-40/H-125: read before resolving, like `new` — see there.
+        let registry_generation = self.registry.generation();
         for (i, s) in model.slots.iter().enumerate() {
             let uid = self.alloc_uid();
             let kind = resolve_lenient(&self.registry, &self.config, s, i);
@@ -2280,9 +2285,10 @@ impl RackHost {
         self.start_pending_loads();
         self.set_ab(false);
         self.dirty = true;
-        // H-40: every slot was just resolved fresh against the current registry — nothing to
-        // recover until it changes again.
-        self.registry_generation = self.registry.generation();
+        // H-40: every slot was just resolved fresh against the registry as of
+        // `registry_generation` — nothing to recover until it changes again (H-125: including a
+        // change that landed while they were being resolved).
+        self.registry_generation = registry_generation;
         self.flush();
         self.check_latency();
         Ok(())

@@ -4259,6 +4259,17 @@ mod tests {
         Engine::start(EngineConfig::new(Arc::new(fake), registry)).unwrap()
     }
 
+    /// The fake backend's simulated time as the engine's app clock (the `crates/engine` tests'
+    /// pattern). H-125: these tests never drive the fake (no `advance_*`, no `FakeDriver`), so its
+    /// output stream never calls back; on the real process clock the engine's stall detector
+    /// (`STALL_MIN_NS`, 500 ms without a callback) then declared the output lost and closed it —
+    /// taking the live rack with it — whenever a test body ran longer than that, which a loaded
+    /// 2-core CI runner routinely did. On the simulated clock, no callback + no time = no stall.
+    fn fake_clock(fake: &FakeBackend) -> vox_engine::Clock {
+        let fake = fake.clone();
+        Arc::new(move || fake.now_ns())
+    }
+
     /// Like [`service_with_output`] (a plugged, preferred fake output device, so a live
     /// [`vox_rack::RackHost`] actually exists to recover a slot in), but with `factories` only
     /// (not the full built-in set) and the `Registry` itself handed back — H-40 tests hot-add a
@@ -4272,7 +4283,9 @@ mod tests {
         let fake = FakeBackend::new(7);
         fake.plug(vox_engine::HostId::Alsa, dac());
         let registry = Arc::new(Registry::with_factories(factories).unwrap());
+        let clock = fake_clock(&fake);
         let mut cfg = EngineConfig::new(Arc::new(fake), registry.clone());
+        cfg.clock = clock;
         cfg.prefs = vox_engine::DevicePrefs {
             output_device: Some("DAC".into()),
             ..vox_engine::DevicePrefs::default()
@@ -6462,14 +6475,17 @@ mod tests {
 
     /// A threaded engine with one plugged, preferred output device (S1-01 pattern, `crates/engine`
     /// tests): the poll thread's immediate first pass discovers and opens it without a running
-    /// fake-time driver (no callbacks need to fire for `open_output` to succeed).
+    /// fake-time driver (no callbacks need to fire for `open_output` to succeed). The engine runs
+    /// on the fake's simulated clock ([`fake_clock`]), or the undriven stream is declared lost.
     fn service_with_output(tag: &str) -> (DocumentService, Engine, PathBuf) {
         let dir = tmp_dir(tag);
         let fake = FakeBackend::new(7);
         fake.plug(vox_engine::HostId::Alsa, dac());
         let registry =
             Arc::new(Registry::with_factories(vox_modules::builtin_factories()).unwrap());
+        let clock = fake_clock(&fake);
         let mut cfg = EngineConfig::new(Arc::new(fake), registry);
+        cfg.clock = clock;
         cfg.prefs = vox_engine::DevicePrefs {
             output_device: Some("DAC".into()),
             ..vox_engine::DevicePrefs::default()
@@ -7910,6 +7926,26 @@ mod tests {
     /// `DocumentService::mark_rack_recovered` stands in for `audio::forward_rack_notice`) must
     /// not flip `sidecar_dirty` — the saved file didn't change, only the live rack caught up to
     /// what it already named.
+    /// H-125: the fixture itself — the undriven fake output (and so the live rack the H-40 test
+    /// recovers a slot in) must survive a test body slower than the engine's 500 ms stall
+    /// threshold, as a loaded CI runner makes them. On the real clock this failed every time.
+    #[test]
+    fn the_test_output_device_survives_an_idle_test_body() {
+        let (engine, _registry) = test_engine_with_registry(Vec::new());
+        engine
+            .handle()
+            .rack_load_model(gain_rack_model(-4.0))
+            .unwrap()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(700));
+        assert_eq!(
+            engine.handle().devices().map(|d| d.output_status),
+            Some(vox_engine::device_state::DeviceStatus::Healthy),
+            "the fake output was declared lost while the test idled"
+        );
+        assert_eq!(engine.handle().rack_snapshot().slots.len(), 1);
+    }
+
     #[test]
     fn a_live_plugin_recovery_does_not_mark_the_document_dirty() {
         let dir = tmp_dir("live-recovery-dirty");
@@ -7949,21 +7985,35 @@ mod tests {
         registry
             .register(Arc::new(vox_modules::GainFactory::new()))
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // H-125: bounded, and on timeout it says what it saw — every distinct (slot status,
+        // output device status, registry generation) and when — so a failure tells a missed
+        // recovery (device healthy, slot still Missing) from a lost live rack (no slots at all).
+        let t0 = Instant::now();
+        let deadline = t0 + Duration::from_secs(5);
+        let mut seen: Vec<(u128, String)> = Vec::new();
         loop {
-            if matches!(
-                service
-                    .0
-                    .engine
-                    .rack_snapshot()
-                    .slots
-                    .first()
-                    .map(|s| &s.info.status),
-                Some(vox_rack::SlotStatus::Active)
-            ) {
+            let status = service
+                .0
+                .engine
+                .rack_snapshot()
+                .slots
+                .first()
+                .map(|s| s.info.status.clone());
+            if matches!(status, Some(vox_rack::SlotStatus::Active)) {
                 break;
             }
-            assert!(Instant::now() < deadline, "the slot never recovered");
+            let output = service.0.engine.devices().map(|d| d.output_status);
+            let state = format!(
+                "slot {status:?}, output {output:?}, registry generation {}",
+                registry.generation()
+            );
+            if seen.last().is_none_or(|(_, s)| *s != state) {
+                seen.push((t0.elapsed().as_millis(), state));
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the slot never recovered; states seen (ms since register): {seen:#?}"
+            );
             std::thread::sleep(Duration::from_millis(5));
         }
 

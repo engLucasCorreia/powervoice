@@ -484,7 +484,9 @@
         testid="inspector-explain-open"
         onclick={requestExplain}
       >
-        {pendingExplain ? t("analyzer.explain_analyzing") : t("analyzer.explain_open")}
+        {pendingExplain
+          ? t("analyzer.average.progress", { pct: Math.round((diag.job?.fraction ?? 0) * 100) })
+          : t("analyzer.explain_open")}
       </Button>
       <span class="spacer"></span>
       <span class="muted hint">{t("inspector.zoom_hint")}</span>

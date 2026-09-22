@@ -242,7 +242,13 @@
     background-size: 100% var(--track-h, 100%);
     background-position: left bottom;
     background-repeat: no-repeat;
-    transition: height 100ms linear;
+    /* H-123 (owner: "they are very leggy and slow"): a CSS transition here doubled up on the
+       ballistics in `meters/ballistics.ts`, which already compute a continuous, analytically
+       correct value every ~16.7 ms (real telemetry frame or animation frame) — every new value
+       re-triggered a fresh transition from wherever the last one had gotten to, so the rendered
+       bar perpetually chased the true value ~50-100 ms behind it and an "instant attack" visibly
+       ramped in over 100 ms. No transition: render exactly what was computed, like every canvas
+       renderer in this app already does. */
   }
 
   .fill-peak {
@@ -260,7 +266,7 @@
     height: 2px;
     transform: translateY(1px);
     background: var(--pv-meter-caution);
-    transition: bottom 100ms linear;
+    /* H-123: no transition here either — see `.fill`'s comment above. */
   }
 
   .hold.clip {
@@ -308,12 +314,5 @@
     font-size: var(--pv-text-xs);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .fill,
-    .hold {
-      transition: none;
-    }
   }
 </style>

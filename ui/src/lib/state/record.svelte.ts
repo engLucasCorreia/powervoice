@@ -29,7 +29,18 @@ import {
 import { VXTM_FLAGS, type TelemetryFrame } from "../ipc/telemetry";
 import { registerAction } from "../shortcuts";
 import { noticeFromIpcError } from "../notices/fromIpcError";
-import { nowMs, PeakBallistics, READOUT_SMOOTHING_TAU_MS, SmoothedDb, ThrottledReadout } from "../meters/ballistics";
+import {
+  METER_STALE_MS,
+  meterSourceAtRest,
+  meterSpeedProfile,
+  nowMs,
+  PeakBallistics,
+  READOUT_SMOOTHING_TAU_MS,
+  SILENT_SOURCE_DBFS,
+  SmoothedDb,
+  ThrottledReadout,
+} from "../meters/ballistics";
+import { createFrameClient } from "../render/frameScheduler";
 import { DISK_WARN_MINUTES } from "../record/format";
 import { DEFAULT_RECORD_PREFS, parseOffsetText } from "../record/punch";
 import { pushNotice } from "./notices.svelte";
@@ -212,6 +223,9 @@ function applyState(next: RecordStateDto): void {
     peakReadout.reset(Number.NEGATIVE_INFINITY);
     rmsReadout.reset(Number.NEGATIVE_INFINITY);
     meter = { ...SILENT };
+    lastInFrameAtMs = Number.NEGATIVE_INFINITY;
+    lastInPeakDbfs = Number.NEGATIVE_INFINITY;
+    lastInRmsDbfs = Number.NEGATIVE_INFINITY;
   }
   state = next;
   // T-304 (SPEC-022 §2.11): no selection gestures while a take or an operation runs.
@@ -223,6 +237,57 @@ async function run(command: () => Promise<RecordStateDto>): Promise<void> {
     applyState(await command());
   } catch (err) {
     report(err);
+  }
+}
+
+// --- H-123: the input meter's ballistics run at the selected speed, and — like the output meter
+// since H-43 — keep animating at display rate between/after real telemetry frames rather than
+// only snapping on arrival (previously the input meter had no animation-frame fallback at all:
+// its bar only ever moved on a real `VXTM` frame, so a throttled `telemetry_rate_hz` setting or
+// any gap between frames made it visibly stair-step while the output meter, mirrored below, had
+// already been smoothed out by H-43). ------------------------------------------------------------
+
+let lastInFrameAtMs = Number.NEGATIVE_INFINITY;
+let lastInPeakDbfs = Number.NEGATIVE_INFINITY;
+let lastInRmsDbfs = Number.NEGATIVE_INFINITY;
+
+/** Whether any bar or the hold tick still shows above the engine's own idle-rest floor (not
+ * whatever scale floor the UI currently displays — H-112's floor is selectable). */
+function meterVisible(m: InputMeterView): boolean {
+  return m.peakDbfs > SILENT_SOURCE_DBFS || m.holdDbfs > SILENT_SOURCE_DBFS || m.rmsDbfs > SILENT_SOURCE_DBFS;
+}
+
+/** One ballistics step toward `peakDbfs`/`rmsDbfs` at `atMs` (a telemetry frame or, once input
+ * has stopped changing, an animation frame repeating the last one) — at the currently selected
+ * meter speed (H-123, `Settings.meter_speed`, Fast/Medium/Slow, shared with the output meter). */
+function stepInputMeter(peakDbfs: number, rmsDbfs: number, atMs: number, maxDbfs: number): InputMeterView {
+  const profile = meterSpeedProfile(settingsState().current?.meter_speed);
+  ballistics.update(peakDbfs, atMs, profile.peakReleaseDbPerS, profile.peakHoldMs);
+  rmsSmoothed.update(rmsDbfs, atMs, profile.readoutSmoothingTauMs);
+  peakReadout.update(ballistics.hold, atMs);
+  rmsReadout.update(rmsSmoothed.value, atMs);
+  return {
+    peakDbfs: ballistics.bar,
+    holdDbfs: ballistics.hold,
+    rmsDbfs,
+    peakReadoutDbfs: peakReadout.value,
+    rmsReadoutDbfs: rmsReadout.value,
+    maxDbfs,
+  };
+}
+
+/** H-43: an unchanged meter (e.g. no input open: every frame reads −∞) is not written again, so
+ * nothing that reads it re-renders. */
+function writeInputMeter(next: InputMeterView): void {
+  if (
+    next.peakDbfs !== meter.peakDbfs ||
+    next.holdDbfs !== meter.holdDbfs ||
+    next.rmsDbfs !== meter.rmsDbfs ||
+    next.peakReadoutDbfs !== meter.peakReadoutDbfs ||
+    next.rmsReadoutDbfs !== meter.rmsReadoutDbfs ||
+    next.maxDbfs !== meter.maxDbfs
+  ) {
+    meter = next;
   }
 }
 
@@ -240,31 +305,39 @@ export function onInputTelemetry(frame: TelemetryFrame, atMs: number = nowMs()):
       elapsedSamples = frame.playheadSample;
     }
   }
-  ballistics.update(frame.inPeakDbfs, atMs);
-  rmsSmoothed.update(frame.inRmsDbfs, atMs);
-  peakReadout.update(ballistics.hold, atMs);
-  rmsReadout.update(rmsSmoothed.value, atMs);
-  const next: InputMeterView = {
-    peakDbfs: ballistics.bar,
-    holdDbfs: ballistics.hold,
-    rmsDbfs: frame.inRmsDbfs,
-    peakReadoutDbfs: peakReadout.value,
-    rmsReadoutDbfs: rmsReadout.value,
-    maxDbfs: Math.max(meter.maxDbfs, frame.inPeakDbfs),
-  };
-  // H-43: an unchanged meter (e.g. no input open: every frame reads −∞) is not written again, so
-  // nothing that reads it re-renders.
-  if (
-    next.peakDbfs !== meter.peakDbfs ||
-    next.holdDbfs !== meter.holdDbfs ||
-    next.rmsDbfs !== meter.rmsDbfs ||
-    next.peakReadoutDbfs !== meter.peakReadoutDbfs ||
-    next.rmsReadoutDbfs !== meter.rmsReadoutDbfs ||
-    next.maxDbfs !== meter.maxDbfs
-  ) {
-    meter = next;
+  lastInFrameAtMs = atMs;
+  lastInPeakDbfs = frame.inPeakDbfs;
+  lastInRmsDbfs = frame.inRmsDbfs;
+  writeInputMeter(stepInputMeter(frame.inPeakDbfs, frame.inRmsDbfs, atMs, Math.max(meter.maxDbfs, frame.inPeakDbfs)));
+  if (meterVisible(meter)) {
+    // H-123 (parity with H-43's output meter): keep animating at display rate — through pauses or
+    // a throttled telemetry setting — until the bar/hold have actually fallen to rest.
+    inputMeterClient.invalidate();
   }
 }
+
+/** H-123: the input meter's decay/interpolation once telemetry stops or falls behind display
+ * rate — see `transport.svelte.ts`'s identical `meterFrame` for the output meter. */
+function inputMeterFrame(): boolean {
+  const atMs = nowMs();
+  if (atMs - lastInFrameAtMs < METER_STALE_MS) {
+    return meterVisible(meter);
+  }
+  const prev = meter;
+  const next = stepInputMeter(lastInPeakDbfs, lastInRmsDbfs, atMs, meter.maxDbfs);
+  if (meterSourceAtRest(lastInPeakDbfs, lastInRmsDbfs) && !meterVisible(next)) {
+    ballistics.reset();
+    rmsSmoothed.reset(Number.NEGATIVE_INFINITY);
+    peakReadout.reset(Number.NEGATIVE_INFINITY);
+    rmsReadout.reset(Number.NEGATIVE_INFINITY);
+    writeInputMeter({ ...SILENT, maxDbfs: meter.maxDbfs });
+    return false;
+  }
+  writeInputMeter(next);
+  return !(meter === prev && next.holdDbfs <= next.peakDbfs);
+}
+
+const inputMeterClient = createFrameClient(inputMeterFrame, { name: "input-meter" });
 
 /** The Input (arm) toggle; locked on while recording. */
 export function toggleArm(): Promise<void> {
@@ -626,6 +699,9 @@ export function resetRecordForTest(): void {
   rmsSmoothed.reset(Number.NEGATIVE_INFINITY);
   peakReadout.reset(Number.NEGATIVE_INFINITY);
   rmsReadout.reset(Number.NEGATIVE_INFINITY);
+  lastInFrameAtMs = Number.NEGATIVE_INFINITY;
+  lastInPeakDbfs = Number.NEGATIVE_INFINITY;
+  lastInRmsDbfs = Number.NEGATIVE_INFINITY;
   setSelectionLocked(false);
 }
 

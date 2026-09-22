@@ -608,6 +608,27 @@ impl InputMeterFloorPref {
     }
 }
 
+// --- Meter speed (H-123, SPEC-002 §3/Amendment 2) -------------------------------------------------
+
+/// The input and output level meters' shared ballistics speed (owner request, H-123: "they are
+/// very leggy and slow, why is that? ... can i setup the speed? between fast and slow?"). Applied
+/// entirely in the UI (`ui/src/lib/meters/ballistics.ts`'s `METER_SPEED_PROFILES`) — the engine
+/// always sends raw peak/RMS values regardless of this choice, the same way `input_meter_floor`
+/// only ever changes how the UI displays what the engine sends. Reuses the analyzer's own
+/// Fast/Medium/Slow wording (`AnalyzerResponsePref` above) rather than inventing new terms, but is
+/// a separate setting: the analyzer's choice smooths an FFT-band average, this one paces a peak
+/// meter's release/hold — different UI, different knob, same familiar words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "bindings.ts", rename_all = "snake_case")]
+pub enum MeterSpeedPref {
+    Fast,
+    // SPEC-002 §3 factory default: unchanged from the pre-H-123 fixed ballistics.
+    #[default]
+    Medium,
+    Slow,
+}
+
 // --- Plugins (T-804, ADR-008 §5/§6) ---------------------------------------------------------------
 
 /// Settings → Plugins (T-804): extra folders scanned in addition to the standard per-format
@@ -741,6 +762,9 @@ pub struct Settings {
     /// H-112 (SPEC-002 §2.1 amended): the input meter's selectable scale floor (−60/−80/−120
     /// dBFS). Additive field — the settings version stays 1.
     pub input_meter_floor: InputMeterFloorPref,
+    /// H-123 (SPEC-002 §3/Amendment 2): the input and output meters' shared ballistics speed
+    /// (Fast/Medium/Slow). Additive field — the settings version stays 1.
+    pub meter_speed: MeterSpeedPref,
     #[serde(flatten)]
     #[ts(skip)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -775,6 +799,7 @@ impl Default for Settings {
             snap_to_zero_crossing: false,
             analyzer_diagnostics: AnalyzerDiagnosticsPrefsDto::default(),
             input_meter_floor: InputMeterFloorPref::default(),
+            meter_speed: MeterSpeedPref::default(),
             extra: serde_json::Map::new(),
         }
     }
@@ -1502,6 +1527,34 @@ mod tests {
         let migrated = parse_and_migrate(json).unwrap();
         assert_eq!(migrated.input_meter_floor, InputMeterFloorPref::Floor60);
         assert_eq!(migrated.input_meter_floor.floor_dbfs(), -60);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// H-123 (SPEC-002 §3/Amendment 2, owner request: "can i setup the speed?"): round-trips
+    /// through save/load, and an older settings file with no `meter_speed` key falls back to
+    /// Medium (container-level `#[serde(default)]`, same convention as `input_meter_floor`).
+    #[test]
+    fn meter_speed_round_trips_and_falls_back_to_medium() {
+        let dir = temp_dir("meter-speed");
+        let path = dir.join("settings.json");
+
+        let settings = Settings {
+            meter_speed: MeterSpeedPref::Fast,
+            ..Settings::default()
+        };
+        save(&path, &settings).unwrap();
+        let loaded = load_or_default(&path);
+        assert_eq!(loaded.meter_speed, MeterSpeedPref::Fast);
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            raw.contains(r#""meter_speed": "fast""#) || raw.contains(r#""meter_speed":"fast""#)
+        );
+
+        let json = br#"{"version":1,"monitor_mode":"dry"}"#;
+        let migrated = parse_and_migrate(json).unwrap();
+        assert_eq!(migrated.meter_speed, MeterSpeedPref::Medium);
 
         std::fs::remove_dir_all(&dir).ok();
     }

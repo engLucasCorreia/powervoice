@@ -332,9 +332,12 @@ alphabetically:
 The dock along the bottom shows what you're hearing:
 
 - **Meters**: a vertical peak/RMS output meter (post-rack, with safe/loud/hot colour zones and a
-  peak-hold tick) and, while recording, an input meter. Either meter's **CLIP** lamp latches on the
-  moment a sample clips and stays lit until you click it — so a brief clip you missed while looking
-  away still gets your attention.
+  peak-hold tick) and, while recording, an input meter (with its own selectable scale floor — −60,
+  −80 or −120 dBFS, for seeing a quiet mic or the room's noise floor). Either meter's **CLIP** lamp
+  latches on the moment a sample clips and stays lit until you click it — so a brief clip you
+  missed while looking away still gets your attention. A **Speed** control above the two meters
+  (Fast/Medium/Slow) sets how quickly the bars fall back after a peak — shared by both meters, and
+  remembered.
 - **Analyzer**: a live graph of which frequencies are currently in the sound, in three modes —
   **Live** (right now), **Average** (analyze a whole selection or file, as the source or as
   processed through the rack, to see its long-term tone), and **Compare** (freeze two curves, A and

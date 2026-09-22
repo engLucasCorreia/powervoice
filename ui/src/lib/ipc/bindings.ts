@@ -501,6 +501,18 @@ export type MarkerKindDto = "user" | "dropout" | "other";
 export type MarkerRangeKindDto = "move" | "resize";
 
 /**
+ * The input and output level meters' shared ballistics speed (owner request, H-123: "they are
+ * very leggy and slow, why is that? ... can i setup the speed? between fast and slow?"). Applied
+ * entirely in the UI (`ui/src/lib/meters/ballistics.ts`'s `METER_SPEED_PROFILES`) — the engine
+ * always sends raw peak/RMS values regardless of this choice, the same way `input_meter_floor`
+ * only ever changes how the UI displays what the engine sends. Reuses the analyzer's own
+ * Fast/Medium/Slow wording (`AnalyzerResponsePref` above) rather than inventing new terms, but is
+ * a separate setting: the analyzer's choice smooths an FFT-band average, this one paces a peak
+ * meter's release/hold — different UI, different knob, same familiar words.
+ */
+export type MeterSpeedPref = "fast" | "medium" | "slow";
+
+/**
  * A module in the registry (`rack_list_modules`; the Add-module menu, grouped client-side by
  * `features`).
  */
@@ -1274,7 +1286,12 @@ analyzer_diagnostics: AnalyzerDiagnosticsPrefsDto,
  * H-112 (SPEC-002 §2.1 amended): the input meter's selectable scale floor (−60/−80/−120
  * dBFS). Additive field — the settings version stays 1.
  */
-input_meter_floor: InputMeterFloorPref, };
+input_meter_floor: InputMeterFloorPref, 
+/**
+ * H-123 (SPEC-002 §3/Amendment 2): the input and output meters' shared ballistics speed
+ * (Fast/Medium/Slow). Additive field — the settings version stays 1.
+ */
+meter_speed: MeterSpeedPref, };
 
 /**
  * SPEC-007 §8.7.

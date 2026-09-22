@@ -15,11 +15,21 @@ import {
   transportStop,
 } from "../ipc/commands";
 import { VXTM_FLAGS, decodeVxtm, toArrayBuffer, type TelemetryFrame } from "../ipc/telemetry";
-import { nowMs, PeakBallistics, READOUT_SMOOTHING_TAU_MS, SmoothedDb, ThrottledReadout } from "../meters/ballistics";
+import {
+  METER_STALE_MS,
+  meterSourceAtRest,
+  meterSpeedProfile,
+  nowMs,
+  PeakBallistics,
+  READOUT_SMOOTHING_TAU_MS,
+  SmoothedDb,
+  ThrottledReadout,
+} from "../meters/ballistics";
 import { METER_FLOOR_DB } from "../meters/meterScale";
 import { createFrameClient } from "../render/frameScheduler";
 import { registerAction } from "../shortcuts";
 import { noticeFromIpcError } from "../notices/fromIpcError";
+import { settingsState } from "./settings.svelte";
 import { ClockSync, PlayheadExtrapolator } from "../transport/playhead";
 import { pushNotice } from "./notices.svelte";
 import { selectionState } from "./selection.svelte";
@@ -322,11 +332,6 @@ export function onTelemetry(message: unknown): void {
 
 // --- H-43: animation frames only while something moves ------------------------------------------
 
-/** With no telemetry frame for this long, the output meter's ballistics run on animation frames
- * (longer than two frame periods at the 30 Hz telemetry setting). */
-const METER_STALE_MS = 100;
-/** A level at or below this counts as the engine reporting silence (its idle rest floor). */
-const SILENT_SOURCE_DBFS = -120;
 /** A moving playhead keeps extrapolating for at most this long after its last telemetry frame
  * (the engine sends every frame while playing or recording; a stalled stream mustn't animate
  * forever). */
@@ -345,10 +350,12 @@ function writeMeter(next: OutputMeter): void {
 }
 
 /** One ballistics step toward `peakDbfs`/`rmsDbfs` at `atMs` (a telemetry frame or, once the
- * stream has stopped, an animation frame repeating the last one). */
+ * stream has stopped, an animation frame repeating the last one) — at the currently selected
+ * meter speed (H-123, `Settings.meter_speed`, Fast/Medium/Slow). */
 function stepMeter(peakDbfs: number, rmsDbfs: number, atMs: number): OutputMeter {
-  outputBallistics.update(peakDbfs, atMs);
-  rmsSmoothed.update(rmsDbfs, atMs);
+  const profile = meterSpeedProfile(settingsState().current?.meter_speed);
+  outputBallistics.update(peakDbfs, atMs, profile.peakReleaseDbPerS, profile.peakHoldMs);
+  rmsSmoothed.update(rmsDbfs, atMs, profile.readoutSmoothingTauMs);
   peakReadout.update(outputBallistics.hold, atMs);
   rmsReadout.update(rmsSmoothed.value, atMs);
   return {
@@ -381,7 +388,7 @@ function meterFrame(): boolean {
   }
   const prev = meter;
   const next = stepMeter(lastOutPeakDbfs, lastOutRmsDbfs, atMs);
-  const sourceSilent = lastOutPeakDbfs <= SILENT_SOURCE_DBFS && lastOutRmsDbfs <= SILENT_SOURCE_DBFS;
+  const sourceSilent = meterSourceAtRest(lastOutPeakDbfs, lastOutRmsDbfs);
   if (sourceSilent && !meterVisible(next)) {
     outputBallistics.reset();
     rmsSmoothed.reset(Number.NEGATIVE_INFINITY);

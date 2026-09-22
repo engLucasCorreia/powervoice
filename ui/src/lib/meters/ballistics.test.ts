@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_METER_SPEED,
+  METER_SPEED_PROFILES,
+  meterSourceAtRest,
+  meterSpeedProfile,
   PEAK_HOLD_MS,
   PEAK_RELEASE_DB_PER_S,
   PeakBallistics,
   READOUT_INTERVAL_MS,
+  SILENT_SOURCE_DBFS,
   SmoothedDb,
   ThrottledReadout,
+  type MeterSpeed,
 } from "./ballistics";
 
 /**
@@ -81,6 +87,73 @@ describe("PeakBallistics", () => {
   });
 });
 
+describe("meter speed profiles (H-123, owner request: \"can i setup the speed?\")", () => {
+  it("Medium keeps the pre-H-123 SPEC-002 §3 numbers exactly (no ballistics regression for the default)", () => {
+    expect(METER_SPEED_PROFILES.medium.peakReleaseDbPerS).toBe(PEAK_RELEASE_DB_PER_S);
+    expect(METER_SPEED_PROFILES.medium.peakHoldMs).toBe(PEAK_HOLD_MS);
+    expect(DEFAULT_METER_SPEED).toBe("medium");
+  });
+
+  it("Fast releases and returns to rest faster than Medium; Slow is slower than Medium", () => {
+    const { fast, medium, slow } = METER_SPEED_PROFILES;
+    expect(fast.peakReleaseDbPerS).toBeGreaterThan(medium.peakReleaseDbPerS);
+    expect(slow.peakReleaseDbPerS).toBeLessThan(medium.peakReleaseDbPerS);
+    expect(fast.peakHoldMs).toBeLessThan(medium.peakHoldMs);
+    expect(slow.peakHoldMs).toBeGreaterThan(medium.peakHoldMs);
+    expect(fast.readoutSmoothingTauMs).toBeLessThan(medium.readoutSmoothingTauMs);
+    expect(slow.readoutSmoothingTauMs).toBeGreaterThan(medium.readoutSmoothingTauMs);
+  });
+
+  it("meterSpeedProfile falls back to Medium for null/undefined/unrecognized input", () => {
+    expect(meterSpeedProfile(undefined)).toBe(METER_SPEED_PROFILES.medium);
+    expect(meterSpeedProfile(null)).toBe(METER_SPEED_PROFILES.medium);
+    expect(meterSpeedProfile("bogus" as MeterSpeed)).toBe(METER_SPEED_PROFILES.medium);
+    expect(meterSpeedProfile("fast")).toBe(METER_SPEED_PROFILES.fast);
+  });
+
+  it.each(["fast", "medium", "slow"] as const)(
+    "%s: PeakBallistics falls at exactly its own release rate, not the Medium default",
+    (speed) => {
+      const profile = METER_SPEED_PROFILES[speed];
+      const b = new PeakBallistics();
+      b.update(-6, 0, profile.peakReleaseDbPerS, profile.peakHoldMs);
+      // A much quieter peak (never the floor here) 0.1 s later: the bar only releases.
+      b.update(Number.NEGATIVE_INFINITY, 100, profile.peakReleaseDbPerS, profile.peakHoldMs);
+      expect(b.bar).toBeCloseTo(-6 - profile.peakReleaseDbPerS * 0.1, 5);
+    },
+  );
+
+  it("time to fall 24 dB is shorter for Fast than Medium, and shorter for Medium than Slow", () => {
+    function msToFall24Db(speed: MeterSpeed): number {
+      const profile = METER_SPEED_PROFILES[speed];
+      const b = new PeakBallistics();
+      b.update(0, 0, profile.peakReleaseDbPerS, profile.peakHoldMs);
+      // Release starts immediately after the hold tick's own duration (the bar itself has no
+      // hold — only the tick does — but this isolates pure release-rate comparison).
+      return (24 / profile.peakReleaseDbPerS) * 1000;
+    }
+    expect(msToFall24Db("fast")).toBeLessThan(msToFall24Db("medium"));
+    expect(msToFall24Db("medium")).toBeLessThan(msToFall24Db("slow"));
+  });
+
+  it("a mid-flight speed change takes effect on the very next update, with no discontinuity", () => {
+    const b = new PeakBallistics();
+    b.update(-6, 0, METER_SPEED_PROFILES.medium.peakReleaseDbPerS, METER_SPEED_PROFILES.medium.peakHoldMs);
+    // Switch to Slow immediately (still within Medium's hold window) — the bar must not jump.
+    b.update(-6, 10, METER_SPEED_PROFILES.slow.peakReleaseDbPerS, METER_SPEED_PROFILES.slow.peakHoldMs);
+    expect(b.bar).toBe(-6);
+  });
+});
+
+describe("meterSourceAtRest (H-43/H-123: shared animation-frame-fallback threshold)", () => {
+  it("is true only once both peak and RMS are at or below SILENT_SOURCE_DBFS", () => {
+    expect(meterSourceAtRest(SILENT_SOURCE_DBFS, SILENT_SOURCE_DBFS)).toBe(true);
+    expect(meterSourceAtRest(SILENT_SOURCE_DBFS + 1, SILENT_SOURCE_DBFS)).toBe(false);
+    expect(meterSourceAtRest(SILENT_SOURCE_DBFS, SILENT_SOURCE_DBFS + 1)).toBe(false);
+    expect(meterSourceAtRest(Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY)).toBe(true);
+  });
+});
+
 describe("ThrottledReadout (the numeric readouts' 4-5 Hz cap)", () => {
   it("changes on the very first update regardless of timing", () => {
     const r = new ThrottledReadout(Number.NEGATIVE_INFINITY);
@@ -141,5 +214,12 @@ describe("SmoothedDb (the RMS readout's extra smoothing)", () => {
     const s = new SmoothedDb(Number.NEGATIVE_INFINITY, 300);
     s.update(-6, 10);
     expect(s.value).toBe(-6);
+  });
+
+  it("H-123: a per-call tau overrides the constructor's default (a speed change applies immediately)", () => {
+    const fast = new SmoothedDb(-40, 300);
+    fast.update(-40, 0);
+    fast.update(-10, 150, 150); // one FAST time constant, not the constructor's 300 ms MEDIUM one
+    expect(fast.value).toBeCloseTo(-40 + (-10 - -40) * (1 - Math.exp(-1)), 3);
   });
 });

@@ -32,7 +32,9 @@ This spec covers **new-file recording** (M1) and the three monitoring modes. Rec
 - **Input meter** (meter bridge, visible while armed). It shows the selected input channel **before**
   any processing:
   - **Peak bar.** The sample peak since the previous telemetry frame (max-hold, `in_peak_dbfs` in
-    `VXTM`), in dBFS. Instant attack; release 20 dB/s. A peak-hold tick holds for 1.5 s, then falls.
+    `VXTM`), in dBFS. Instant attack; release at the selected **meter speed** (H-123 amendment —
+    see "Amendment 2" below; Medium is the pre-H-123 20 dB/s). A peak-hold tick holds for the
+    speed's hold duration (Medium: 1.5 s), then falls.
   - **RMS bar.** Unweighted RMS over a sliding 300 ms rectangular window, `20·log10(rms)` (the same
     convention as testkit and ACX, so a sine with peak −20 dBFS reads −23.0 dB), in `in_rms_dbfs`.
   - **Scale and readout** (H-112 amendment — see "Amendment 1" below). The scale runs from a
@@ -221,9 +223,10 @@ the SPEC-001 device-lost banner appears, and the take proceeds until the user st
 | `record_bit_depth` | Save bit depth of a new recording | — | {16, 24, 32f} | 24 | list | capture is always 32f |
 | `monitor_mode` | Monitoring | enum | Off / Dry / Through rack | Off | list | persisted preference; audible only while armed or recording |
 | `meter_input_floor_dbfs` | Input meter scale floor | dBFS | {−60, −80, −120} | −60 | list | H-112; persisted preference, UI-only (never read by the engine) |
-| `meter_rms_window_ms` | Input RMS window | ms | — | 300 | fixed | rectangular, unweighted |
-| `meter_peak_release_db_per_s` | Peak bar release | dB/s | — | 20 | fixed | UI ballistics |
-| `meter_peak_hold_s` | Peak-hold tick | s | — | 1.5 | fixed | UI |
+| `meter_rms_window_ms` | Input RMS window | ms | — | 300 | fixed | rectangular, unweighted; not affected by `meter_speed` |
+| `meter_speed` | Meter ballistics speed (input and output) | enum | Fast / Medium / Slow | Medium | list | H-123; persisted preference, UI-only — see Amendment 2 for the per-speed numbers |
+| `meter_peak_release_db_per_s` | Peak bar release | dB/s | — | 20 (Medium) | fixed per speed | UI ballistics; Amendment 2 |
+| `meter_peak_hold_s` | Peak-hold tick | s | — | 1.5 (Medium) | fixed per speed | UI; Amendment 2 |
 | `clip_threshold` | Clip threshold | linear | — | 0.99990 | fixed | ≈ −0.0009 dBFS |
 | `clip_merge_ms` | Clip-event merge gap | ms | — | 10 | fixed | for the per-take count |
 | `dropout_fill_max_s` | Maximum silence fill per dropout | s | — | 2 | fixed | larger gaps = device loss |
@@ -431,3 +434,51 @@ inline bullet above is updated to match:
 - **The output meter is unchanged** — its own scale floor stays the fixed −60 dBFS from H-41/H-48;
   the owner likes it as-is, and this amendment only ever generalizes the *shared* implementation to
   support a floor parameter, never applies a selectable floor to the output meter itself.
+
+## Amendment 2 — H-123 meter speed, and why the bars felt "laggy" (2026-09-22, owner-requested)
+
+The owner's words: "The input level bars and output level bar, are very nice. But they are very
+leggy and slow, why is that? can i setup the speed? between fast and slow? but it looks nice, but
+maybe could look less leggy."
+
+**Why they felt slow.** Two causes, both in the UI (the engine's telemetry was never the problem —
+`telemetry_rate_hz` defaults to 60 Hz, and an armed input meter is always "active" in the idle-
+telemetry gate, so real `VXTM` frames arrive every tick regardless):
+1. `ui/src/lib/meters/VerticalMeter.svelte`'s bar/hold elements had their own CSS
+   `transition: height/bottom 100ms linear`, on top of `meters/ballistics.ts` already computing a
+   continuous, correct value every telemetry/animation frame (~16.7 ms). Two layers of smoothing in
+   series: every new value re-triggered a fresh 100 ms CSS ramp from wherever the previous ramp had
+   gotten to, so the rendered bar perpetually chased the true value, and an "instant attack" (§2.1)
+   visibly took ~100 ms to arrive instead of being instant. **Removed** — the bar/hold now render
+   exactly the ballistics value, like every canvas renderer in this app already does.
+2. The release rate itself (20 dB/s, §3 `meter_peak_release_db_per_s`) was fixed, with no way to
+   make it feel snappier — the owner's actual request.
+
+**Meter speed.** A new **Fast / Medium / Slow** choice (`Settings.meter_speed`), shared by the
+input and output meters (one speed, not two — the owner asked to set "the speed"), reusing the live
+analyzer's own Fast/Medium/Slow wording and segmented-control look (SPEC-007 §2.9) though it is a
+separate setting from `analyzer_response` — that one paces an FFT-band average, this one paces a
+peak meter's release/hold. Attack stays instant at every speed (a real meter's speed choice governs
+its *return* time, not how fast it catches a peak — no metering standard this project found varies
+attack by a user-facing "speed" control). Medium keeps §3's pre-H-123 numbers exactly, so choosing
+Medium changes nothing about the ballistics — only cause 1 above (the CSS transition) is fixed for
+every speed. Fast halves Medium's release time and hold duration; Slow doubles them:
+
+| speed | release (dB/s) | peak-hold (s) | RMS-readout smoothing τ (ms) |
+|---|---|---|---|
+| Fast | 40 | 0.75 | 150 |
+| Medium (factory default) | 20 | 1.5 | 300 |
+| Slow | 10 | 2.5 | 600 |
+
+The RMS *bar* itself is unaffected by speed at every setting — it always tracks the engine's fixed
+300 ms window (§2.1); only the numeric RMS *readout*'s extra smoothing scales with speed, the same
+way the peak readout already follows the peak-hold tick. No metering standard in `docs/references.md`
+covers meter ballistics (checked, per this ticket's instruction) — Medium's 20 dB/s release is the
+pre-existing SPEC-002 value (never itself derived from a cited standard), and Fast/Slow are defined
+relative to it (half/double) rather than against an external reference.
+
+Persisted like the input meter's floor (`Settings.meter_speed`, UI-only — the engine always sends
+raw `in_peak_dbfs`/`in_rms_dbfs`/`out_peak_dbfs`/`out_rms_dbfs` regardless of the UI's choice). The
+control lives on the meter bridge itself (`ui/src/lib/layout/MeterBridge.svelte`), above the two
+meters, the same "control lives where the thing it controls is" placement as the input meter's own
+floor picker.

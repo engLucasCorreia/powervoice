@@ -1,9 +1,11 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TransportStateDto } from "../ipc/bindings";
+import type { MeterSpeedPref, TransportStateDto } from "../ipc/bindings";
 import { VXTM_FLAGS } from "../ipc/telemetry";
+import { METER_SPEED_PROFILES } from "../meters/ballistics";
 import { clearActionHandlers } from "../shortcuts";
-import { transportStateDto } from "../test/fixtures";
+import { loadSettings, resetSettingsStateForTest } from "./settings.svelte";
+import { settingsFixture, transportStateDto } from "../test/fixtures";
 import {
   clearOutputClip,
   extrapolatedPositionAt,
@@ -25,6 +27,7 @@ afterEach(() => {
   clearMocks();
   clearActionHandlers();
   resetTransportForTest();
+  resetSettingsStateForTest();
   frameScheduler.resetForTest();
 });
 
@@ -231,6 +234,65 @@ describe("the output meter (H-41)", () => {
       now.mockRestore();
       stop();
     }
+  });
+});
+
+// H-123 (owner: "they are very leggy and slow, why is that? can i setup the speed?"): the output
+// meter's ballistics now run at the persisted `Settings.meter_speed` (Fast/Medium/Slow), shared
+// with the input meter (`record/InputMeter.test.ts`'s identical describe block).
+describe("the output meter speed (H-123)", () => {
+  async function setUpWithSpeed(speed: MeterSpeedPref): Promise<() => void> {
+    mockIPC((cmd) => {
+      if (cmd === "clock_now_ns") return performance.now() * 1e6;
+      if (cmd === "transport_get") return TRANSPORT_GET;
+      if (cmd === "settings_get") return settingsFixture({ meter_speed: speed });
+      return null;
+    });
+    await loadSettings();
+    return initTransport();
+  }
+
+  it("defaults to Medium when settings haven't loaded (the pre-H-123 ballistics, unchanged)", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "clock_now_ns") return performance.now() * 1e6;
+      if (cmd === "transport_get") return TRANSPORT_GET;
+      return null;
+    });
+    const stop = await initTransport(); // no settings loaded at all
+    const now = vi.spyOn(performance, "now");
+    try {
+      now.mockReturnValue(0);
+      onTelemetry(buildVxtmFrame({ playheadSample: 0, playheadTimeNs: 0, rate: 48_000, outPeakDbfs: -6, outRmsDbfs: -9 }));
+      now.mockReturnValue(500);
+      onTelemetry(buildVxtmFrame({ playheadSample: 0, playheadTimeNs: 0, rate: 48_000, outPeakDbfs: -60, outRmsDbfs: -60 }));
+      expect(transportState().meter.peakDbfs).toBeCloseTo(-6 - METER_SPEED_PROFILES.medium.peakReleaseDbPerS * 0.5, 5);
+    } finally {
+      now.mockRestore();
+      stop();
+    }
+  });
+
+  it("Fast releases faster than Medium in the same time; Slow releases slower", async () => {
+    async function barAfterHalfSecond(speed: MeterSpeedPref): Promise<number> {
+      const stop = await setUpWithSpeed(speed);
+      const now = vi.spyOn(performance, "now");
+      now.mockReturnValue(0);
+      onTelemetry(buildVxtmFrame({ playheadSample: 0, playheadTimeNs: 0, rate: 48_000, outPeakDbfs: -6, outRmsDbfs: -9 }));
+      now.mockReturnValue(500);
+      onTelemetry(buildVxtmFrame({ playheadSample: 0, playheadTimeNs: 0, rate: 48_000, outPeakDbfs: -60, outRmsDbfs: -60 }));
+      const bar = transportState().meter.peakDbfs;
+      now.mockRestore();
+      stop();
+      resetTransportForTest();
+      resetSettingsStateForTest();
+      clearMocks();
+      return bar;
+    }
+    const fastBar = await barAfterHalfSecond("fast");
+    const mediumBar = await barAfterHalfSecond("medium");
+    const slowBar = await barAfterHalfSecond("slow");
+    expect(fastBar).toBeLessThan(mediumBar);
+    expect(slowBar).toBeGreaterThan(mediumBar);
   });
 });
 

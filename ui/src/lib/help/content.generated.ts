@@ -2249,14 +2249,21 @@ export const HELP_DOCS: readonly HelpDoc[] = [
                   "bold": true
                 },
                 {
-                  "text": ": a vertical peak/RMS output meter (post-rack, with safe/loud/hot colour zones and a peak-hold tick) and, while recording, an input meter. Either meter's "
+                  "text": ": a vertical peak/RMS output meter (post-rack, with safe/loud/hot colour zones and a peak-hold tick) and, while recording, an input meter (with its own selectable scale floor — −60, −80 or −120 dBFS, for seeing a quiet mic or the room's noise floor). Either meter's "
                 },
                 {
                   "text": "CLIP",
                   "bold": true
                 },
                 {
-                  "text": " lamp latches on the moment a sample clips and stays lit until you click it — so a brief clip you missed while looking away still gets your attention."
+                  "text": " lamp latches on the moment a sample clips and stays lit until you click it — so a brief clip you missed while looking away still gets your attention. A "
+                },
+                {
+                  "text": "Speed",
+                  "bold": true
+                },
+                {
+                  "text": " control above the two meters (Fast/Medium/Slow) sets how quickly the bars fall back after a peak — shared by both meters, and remembered."
                 }
               ],
               [

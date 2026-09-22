@@ -114,6 +114,7 @@ export function settingsFixture(overrides: Partial<Settings> = {}): Settings {
       inspector_response: "medium",
     },
     input_meter_floor: "-60",
+    meter_speed: "medium",
     ...overrides,
   };
 }

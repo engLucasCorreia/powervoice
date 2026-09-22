@@ -202,6 +202,8 @@
   "inspector.peak_col_level": "Level",
   "inspector.move": "Move the Spectrum Inspector",
   "inspector.resize": "Resize the Spectrum Inspector",
+  "inspector.legend.voice": "Voice — {mode}",
+  "inspector.legend.room_tone": "Room tone — the quiet between phrases; compare it with the voice to judge noise across frequency",
   "notice.analyzer.eq_added": "Parametric EQ band {band}: {what} at {freq}. Undo it in the rack.",
   "notice.analyzer.eq_hp_added": "Parametric EQ high-pass on at {freq}. Undo it in the rack.",
   "notice.analyzer.eq_no_free_band": "All five Parametric EQ peak bands are in use — set one to 0 dB and try again.",

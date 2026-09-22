@@ -20,6 +20,7 @@
   import {
     acquireLiveVoice,
     averageScope,
+    canAnalyzeAverage,
     cancelAverage,
     diagnosticsState,
     freezeSnapshot,
@@ -34,6 +35,8 @@
     startAverage,
     type SnapshotSlot,
   } from "./diagnostics.svelte";
+  import { openExplainVoice } from "./explain/explainModal.svelte";
+  import type { VoiceSnapshotInput } from "./explain/snapshot";
   import { closeInspectorStream, inspectorStream, openInspectorStream } from "./inspectorStream.svelte";
   import { formatNote } from "./notes";
   import type { SpectralPeak } from "./peaks";
@@ -207,6 +210,67 @@
     setInspectorOpen(false);
   }
 
+  // H-117: Explain My Voice belongs here too — the Inspector is "the analysis" as far as the
+  // owner is concerned — and must call the same `openExplainVoice` path the dock button (H-92)
+  // uses, so the two are indistinguishable. The one behaviour this adds: if an Average result for
+  // the current scope is already sitting in `average` (e.g. the owner just ran one in this same
+  // window), open on it immediately instead of running a second job — that avoidable wait was
+  // exactly what H-108 was filed over.
+  let pendingExplain = $state(false);
+
+  function explainInputFromAverage(): VoiceSnapshotInput | null {
+    const a = average;
+    const r = diag.averageReport;
+    if (!a || !r) {
+      return null;
+    }
+    return {
+      freqsHz: a.curve.freqsHz,
+      levelsDb: a.curve.levelsDb,
+      resolution: "bins",
+      report: a.report,
+      sampleRateHz: r.sample_rate_hz,
+      origin: "average",
+    };
+  }
+
+  function requestExplain(): void {
+    const existing = explainInputFromAverage();
+    if (existing) {
+      openExplainVoice(existing);
+      return;
+    }
+    if (!canAnalyzeAverage()) {
+      return;
+    }
+    pendingExplain = true;
+    void startAverage();
+  }
+
+  $effect(() => {
+    if (!pendingExplain) {
+      return;
+    }
+    const j = diag.job;
+    if (!j || j.purpose !== "average") {
+      return;
+    }
+    if (j.state === "done") {
+      // Same guard as H-92's: only trust `averageReport` once it is unmistakably this job's own
+      // (matched by `job_id`), since the "done" progress event can arrive before the report does.
+      if (diag.averageReport?.job_id !== j.jobId) {
+        return;
+      }
+      const input = explainInputFromAverage();
+      if (input) {
+        pendingExplain = false;
+        openExplainVoice(input);
+      }
+    } else if (j.state === "failed" || j.state === "cancelled") {
+      pendingExplain = false;
+    }
+  });
+
   function freeze(slot: SnapshotSlot): void {
     const c = curve;
     if (c) {
@@ -301,6 +365,30 @@
   }
 </script>
 
+<!-- H-117: every curve the plot can draw, named — the dock's chip style (H-92), plus the main
+     curve itself (unlabelled here before, unlike the dock's mode control) so this larger view
+     never leaves a line unexplained. -->
+{#snippet legend()}
+  <span class="legend-chip" data-tone="voice">
+    <span class="swatch" data-tone="voice"></span>
+    {t("inspector.legend.voice", { mode: t(`inspector.source.${source}` as `inspector.source.${Source}`) })}
+  </span>
+  {#each overlays as o (o.key)}
+    <span class="legend-chip" data-tone={o.tone}>
+      <span class="swatch" data-tone={o.tone}></span>
+      {#if o.tone === "noise"}
+        {t("inspector.legend.room_tone")}
+      {:else}
+        {@const snap = o.tone === "a" ? diag.snapshots.a : diag.snapshots.b}
+        {t("analyzer.snapshot.legend", {
+          slot: o.tone.toUpperCase(),
+          name: snap ? t(`analyzer.snapshot.${snap.origin}` as `analyzer.snapshot.${typeof snap.origin}`) : "",
+        })}
+      {/if}
+    </span>
+  {/each}
+{/snippet}
+
 {#if open}
   <div
     bind:this={windowEl}
@@ -387,6 +475,17 @@
       {/if}
       <Button size="sm" disabled={!curve} testid="inspector-freeze-a" onclick={() => freeze("a")}>{t("analyzer.compare.freeze_a")}</Button>
       <Button size="sm" disabled={!curve} testid="inspector-freeze-b" onclick={() => freeze("b")}>{t("analyzer.compare.freeze_b")}</Button>
+      <Button
+        size="sm"
+        icon="explain"
+        disabled={!scope || jobRunning}
+        loading={pendingExplain}
+        title={scope ? t("analyzer.explain_tooltip") : t("analyzer.explain_needs_document")}
+        testid="inspector-explain-open"
+        onclick={requestExplain}
+      >
+        {pendingExplain ? t("analyzer.explain_analyzing") : t("analyzer.explain_open")}
+      </Button>
       <span class="spacer"></span>
       <span class="muted hint">{t("inspector.zoom_hint")}</span>
       <Button size="sm" variant="ghost" disabled={zoom === null} testid="inspector-zoom-reset" onclick={() => (zoom = null)}>
@@ -401,6 +500,7 @@
       <SpectrumPlot
         {curve}
         {overlays}
+        {legend}
         scale={prefs.inspector_scale}
         {maxHz}
         floorDb={FLOOR_DB}
@@ -583,5 +683,36 @@
     height: 14px;
     cursor: nwse-resize;
     background: linear-gradient(135deg, transparent 50%, var(--pv-border) 50%);
+  }
+
+  /* H-117: the same chip look as the dock's legend (AnalyzerPanel.svelte), so the two views read
+     the same, plus a "voice" swatch for the main curve the dock never needed to name. */
+  .legend-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--pv-text-tertiary);
+    font-size: 10px;
+    line-height: 12px;
+    white-space: nowrap;
+  }
+
+  .swatch {
+    width: 12px;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--analyzer-fill);
+  }
+
+  .swatch[data-tone="a"] {
+    background: var(--analyzer-compare-a);
+  }
+
+  .swatch[data-tone="b"] {
+    background: var(--analyzer-compare-b);
+  }
+
+  .swatch[data-tone="noise"] {
+    background: var(--analyzer-noise);
   }
 </style>
